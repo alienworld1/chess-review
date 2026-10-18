@@ -123,8 +123,7 @@ Use private, user-controlled local storage. Path resolution does not verify acce
 rights or filesystem capabilities. Keep cache roots separate from data and
 configuration roots: custom XDG values or symbolic links can make them overlap.
 Any future cache cleanup must remove only files owned by that cache subsystem,
-never recursively delete a resolved root. Review details and supported boundaries
-are recorded in [`docs/app-paths-review.md`](docs/app-paths-review.md).
+never recursively delete a resolved root.
 
 Development launches share the installed application's storage locations. To
 isolate a manual run on Linux, supply temporary XDG roots explicitly:
@@ -237,5 +236,3 @@ offscreen platform plugin. Tests do not touch the normal user database.
 
 To build without test targets, configure with `-DBUILD_TESTING=OFF`.
 
-The adversarial review and supported security boundaries are recorded in
-[`docs/persistence-review.md`](docs/persistence-review.md).
