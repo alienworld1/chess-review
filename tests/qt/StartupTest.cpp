@@ -16,11 +16,15 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QLabel>
+#include <QLineEdit>
 #include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextCursor>
+#include <QTimer>
 
+#include <memory>
 #include <optional>
 
 using chess_review::app::AppPaths;
@@ -35,6 +39,11 @@ class StartupTest final : public QObject {
     void diagnosticMapping_data();
     void diagnosticMapping();
     void failureDetailsAndSafeCopy();
+    void largeDetailsKeepControlsUsable();
+    void diagnosticsSnapshotStaysStable();
+    void diagnosticsSurviveLoggerDestruction();
+    void loggingFailureMapping_data();
+    void loggingFailureMapping();
     void loggedLifecycle_data();
     void loggedLifecycle();
     void initializesAndCloses();
@@ -64,6 +73,7 @@ void StartupTest::diagnosticMapping_data() {
                             << QStringLiteral("storage.schema");
     QTest::newRow("backup") << static_cast<int>(DatabaseErrorCode::Backup)
                             << QStringLiteral("storage.backup");
+    QTest::newRow("unknown") << 999 << QStringLiteral("storage.unknown");
     QTest::newRow("migration") << static_cast<int>(DatabaseErrorCode::Migration)
                                << QStringLiteral("storage.migration");
 }
@@ -101,15 +111,15 @@ void StartupTest::failureDetailsAndSafeCopy() {
     window.show();
     auto* reveal = window.findChild<QPushButton*>(QStringLiteral("revealDetails"));
     auto* copy = window.findChild<QPushButton*>(QStringLiteral("copyDiagnostics"));
-    auto* detail = window.findChild<QLabel*>(QStringLiteral("startupDiagnostic"));
+    auto* detail = window.findChild<QPlainTextEdit*>(QStringLiteral("startupDiagnostic"));
     QVERIFY(reveal && copy && detail);
     QVERIFY(!detail->isVisible());
     reveal->setFocus();
     QTest::keyPress(reveal, Qt::Key_Space);
     QTest::keyRelease(reveal, Qt::Key_Space);
     QVERIFY(detail->isVisible());
-    QCOMPARE(detail->textFormat(), Qt::PlainText);
-    QVERIFY(detail->text().contains(error.databasePath));
+    QVERIFY(detail->isReadOnly());
+    QVERIFY(detail->toPlainText().contains(error.databasePath));
     copy->click();
     const auto report = QApplication::clipboard()->text();
     QVERIFY(report.contains(QStringLiteral("storage.open")));
@@ -126,6 +136,134 @@ void StartupTest::failureDetailsAndSafeCopy() {
     QVERIFY(!safe->toPlainText().contains(QStringLiteral("private")));
     QTest::keyPress(dialog, Qt::Key_Escape);
     window.close();
+}
+
+void StartupTest::largeDetailsKeepControlsUsable() {
+    StartupWindow window;
+    chess_review::persistence::DatabaseError error;
+    error.code = chess_review::persistence::DatabaseErrorCode::Open;
+    error.databasePath = QStringLiteral("/private/library.sqlite3");
+    error.detail = QStringLiteral("Untrusted native output\n").repeated(5000);
+    window.showFailure(chess_review::app::storageDiagnostic(error));
+    window.show();
+    auto* reveal = window.findChild<QPushButton*>(QStringLiteral("revealDetails"));
+    QVERIFY(reveal);
+    reveal->click();
+    QCoreApplication::sendPostedEvents();
+    auto* details = window.findChild<QPlainTextEdit*>(QStringLiteral("startupDiagnostic"));
+    QVERIFY(details);
+    QVERIFY(details->toPlainText().contains(error.detail));
+    QVERIFY(details->toPlainText().indexOf(error.databasePath) <
+            details->toPlainText().indexOf(error.detail));
+    QVERIFY2(window.height() <= 700,
+             "Technical details must scroll rather than grow the entire window");
+    auto* copy = window.findChild<QPushButton*>(QStringLiteral("copyDiagnostics"));
+    QVERIFY(copy);
+    QVERIFY(window.rect().contains(copy->mapTo(&window, copy->rect().center())));
+    window.close();
+}
+
+void StartupTest::diagnosticsSnapshotStaysStable() {
+    QTemporaryDir directory;
+    chess_review::diagnostics::Logger logger(directory.path());
+    QSignalSpy closed(&logger, &chess_review::diagnostics::Logger::closed);
+    const auto cleanup = qScopeGuard([&] {
+        logger.close();
+        if (closed.isEmpty() && !closed.wait(5000)) {
+            qFatal("Test logger failed to close");
+        }
+    });
+    StartupWindow window;
+    window.setDiagnostics(logger);
+    window.show();
+    window.findChild<QAction*>(QStringLiteral("diagnosticsAction"))->trigger();
+    auto* dialog = window.findChild<QDialog*>(QStringLiteral("diagnosticsDialog"));
+    QVERIFY(dialog);
+    auto* report = dialog->findChild<QPlainTextEdit*>(QStringLiteral("safeDiagnosticsReport"));
+    auto* refresh = dialog->findChild<QPushButton*>(QStringLiteral("refreshDiagnostics"));
+    auto* copy = dialog->findChild<QPushButton*>(QStringLiteral("copyDiagnosticsSnapshot"));
+    QVERIFY(report && refresh && copy);
+    auto* revealLocation = dialog->findChild<QPushButton*>(QStringLiteral("revealLogLocation"));
+    auto* location = dialog->findChild<QLineEdit*>(QStringLiteral("privateLogLocation"));
+    QVERIFY(revealLocation && location);
+    QVERIFY(!location->isVisible());
+    revealLocation->click();
+    QCOMPARE(location->text(), directory.path());
+    const auto snapshot = report->toPlainText();
+    QVERIFY(!snapshot.contains(directory.path()));
+    report->selectAll();
+    const auto selection = report->textCursor().selectedText();
+    logger.record(chess_review::diagnostics::Event::StorageFailed, {},
+                  chess_review::diagnostics::Severity::Error);
+    QTRY_COMPARE(logger.health(), chess_review::diagnostics::Health::Active);
+    QCOMPARE(report->toPlainText(), snapshot);
+    QCOMPARE(report->textCursor().selectedText(), selection);
+    copy->click();
+    QCOMPARE(QApplication::clipboard()->text(), snapshot);
+    refresh->click();
+    QVERIFY(report->toPlainText().contains(QStringLiteral("storage.failed")));
+    copy->click();
+    QCOMPARE(QApplication::clipboard()->text(), report->toPlainText());
+    window.close();
+}
+
+void StartupTest::diagnosticsSurviveLoggerDestruction() {
+    QTemporaryDir directory;
+    auto logger = std::make_unique<chess_review::diagnostics::Logger>(directory.path());
+    QSignalSpy closed(logger.get(), &chess_review::diagnostics::Logger::closed);
+    const auto cleanup = qScopeGuard([&] {
+        if (logger) {
+            logger->close();
+            if (closed.isEmpty() && !closed.wait(5000)) {
+                qFatal("Test logger failed to close");
+            }
+        }
+    });
+    StartupWindow window;
+    window.setDiagnostics(*logger);
+    window.show();
+    window.findChild<QAction*>(QStringLiteral("diagnosticsAction"))->trigger();
+    auto* dialog = window.findChild<QDialog*>(QStringLiteral("diagnosticsDialog"));
+    QVERIFY(dialog);
+    auto* report = dialog->findChild<QPlainTextEdit*>(QStringLiteral("safeDiagnosticsReport"));
+    auto* refresh = dialog->findChild<QPushButton*>(QStringLiteral("refreshDiagnostics"));
+    auto* folder = dialog->findChild<QPushButton*>(QStringLiteral("openLogFolder"));
+    QVERIFY(report && refresh && folder);
+    logger->close();
+    QTRY_COMPARE(closed.count(), 1);
+    logger.reset();
+    refresh->click();
+    QVERIFY(report->toPlainText().contains(QStringLiteral("Local logging is not configured")));
+    QVERIFY(!folder->isEnabled());
+    window.close();
+}
+
+void StartupTest::loggingFailureMapping_data() {
+    using chess_review::diagnostics::LogFailure;
+    QTest::addColumn<int>("failure");
+    QTest::addColumn<QString>("code");
+    QTest::newRow("location") << static_cast<int>(LogFailure::Location)
+                              << QStringLiteral("logging.location");
+    QTest::newRow("unsafe") << static_cast<int>(LogFailure::UnsafeTarget)
+                            << QStringLiteral("logging.unsafe_target");
+    QTest::newRow("busy") << static_cast<int>(LogFailure::Busy) << QStringLiteral("logging.busy");
+    QTest::newRow("open") << static_cast<int>(LogFailure::Open) << QStringLiteral("logging.open");
+    QTest::newRow("write") << static_cast<int>(LogFailure::Write)
+                           << QStringLiteral("logging.write");
+    QTest::newRow("rotation") << static_cast<int>(LogFailure::Rotation)
+                              << QStringLiteral("logging.rotation");
+    QTest::newRow("unknown") << 999 << QStringLiteral("logging.unknown");
+}
+
+void StartupTest::loggingFailureMapping() {
+    QFETCH(int, failure);
+    QFETCH(QString, code);
+    const auto diagnostic = chess_review::app::loggingDiagnostic(
+        static_cast<chess_review::diagnostics::LogFailure>(failure));
+    QCOMPARE(diagnostic.code, code);
+    QVERIFY(!diagnostic.summary.isEmpty());
+    QVERIFY(!diagnostic.nextSteps.isEmpty());
+    QVERIFY(diagnostic.sensitiveDetails.isEmpty());
 }
 
 void StartupTest::loggedLifecycle_data() {
@@ -154,7 +292,14 @@ void StartupTest::loggedLifecycle() {
         if (finished.isEmpty()) {
             QEventLoop loop;
             QObject::connect(&startup, &StartupCoordinator::finished, &loop, &QEventLoop::quit);
+            QTimer timeout;
+            timeout.setSingleShot(true);
+            QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+            timeout.start(5000);
             loop.exec();
+            if (finished.isEmpty()) {
+                qFatal("Test startup failed to close");
+            }
         }
     });
     const QString path = directory.filePath(QStringLiteral("private-library.sqlite3"));
@@ -235,13 +380,13 @@ void StartupTest::unusableDataDirectoryFails() {
     StartupCoordinator startup(window);
     QSignalSpy finished(&startup, &StartupCoordinator::finished);
     const auto* status = window.findChild<QLabel*>(QStringLiteral("startupStatus"));
-    const auto* diagnostic = window.findChild<QLabel*>(QStringLiteral("startupDiagnostic"));
+    const auto* diagnostic = window.findChild<QPlainTextEdit*>(QStringLiteral("startupDiagnostic"));
     QVERIFY(status);
     QVERIFY(diagnostic);
     window.show();
     startup.start(paths.databasePath());
     QTRY_COMPARE(status->text(), QStringLiteral("Could not initialize local storage"));
-    QVERIFY(diagnostic->text().contains(paths.databasePath()));
+    QVERIFY(diagnostic->toPlainText().contains(paths.databasePath()));
     QVERIFY(!QFileInfo::exists(paths.databasePath()));
     QVERIFY(!QFileInfo::exists(paths.configDirectory));
     QVERIFY(!QFileInfo::exists(paths.cacheDirectory));
@@ -277,14 +422,14 @@ void StartupTest::failureShowsDiagnostic() {
     StartupCoordinator startup(window);
     QSignalSpy finished(&startup, &StartupCoordinator::finished);
     const auto* status = window.findChild<QLabel*>(QStringLiteral("startupStatus"));
-    const auto* diagnostic = window.findChild<QLabel*>(QStringLiteral("startupDiagnostic"));
+    const auto* diagnostic = window.findChild<QPlainTextEdit*>(QStringLiteral("startupDiagnostic"));
     QVERIFY(status);
     QVERIFY(diagnostic);
     window.show();
     startup.start(path);
     QTRY_COMPARE(status->text(), QStringLiteral("Could not initialize local storage"));
-    QVERIFY(diagnostic->text().contains(path));
-    QCOMPARE(diagnostic->textFormat(), Qt::PlainText);
+    QVERIFY(diagnostic->toPlainText().contains(path));
+    QVERIFY(diagnostic->isReadOnly());
     window.close();
     QTRY_COMPARE(finished.count(), 1);
 }

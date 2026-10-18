@@ -7,6 +7,7 @@
 
 class QLabel;
 class QProgressBar;
+class QPlainTextEdit;
 class QPushButton;
 
 namespace chess_review::diagnostics {
@@ -34,7 +35,7 @@ class StartupWindow final : public QMainWindow {
   private:
     void showDiagnostics();
     QString safeReport() const;
-    diagnostics::Logger* logger_ = nullptr;
+    diagnostics::Logger* logger_ = nullptr; // Non-owning; cleared by destroyed().
     app::Diagnostic failure_;
     QLabel* summary_;
     QLabel* notice_;
@@ -42,7 +43,7 @@ class StartupWindow final : public QMainWindow {
     QPushButton* copy_;
     bool loggingNoticeShown_ = false;
     QLabel* status_;
-    QLabel* diagnostic_;
+    QPlainTextEdit* diagnostic_;
     QProgressBar* progress_;
 };
 

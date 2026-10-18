@@ -111,6 +111,12 @@ class DiagnosticsTest final : public QObject {
     void unsafeTargets();
     void permissionDenied();
     void boundedQueueAndSlowWriter();
+    void recentHistorySurvivesFullQueue();
+    void repeatedHandlerInstallation();
+    void oversizedLockMetadata();
+    void cleanupLockIsNotParsed();
+    void handlerOwnership();
+    void lossCountSurvivesHistoryEviction();
     void writeFailure();
     void rotationFailure();
 };
@@ -215,14 +221,19 @@ void DiagnosticsTest::frameworkPrivacyAndHandlerLifetime() {
     const auto restore = qScopeGuard([&] { qInstallMessageHandler(old); });
     Logger logger(directory.path(), true);
     const auto cleanup = qScopeGuard([&] { stop(logger); });
-    logger.installQtHandler();
+    QVERIFY(logger.installQtHandler());
     const QString secret =
         QString::fromUtf8("/home/private/棋\nhttps://personal.example/game [Event \"PGN\"]\x01");
     QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO, "qt.sql.private-secret")
         .warning("%s", qPrintable(secret));
     QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO, "arbitrary-private-category")
         .warning("%s", qPrintable(secret));
+    QByteArray longCategory("qt.widgets.");
+    longCategory += QByteArray(2 * 1024 * 1024, 'x');
+    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO, longCategory.constData())
+        .warning("%s", qPrintable(secret));
     const auto report = logger.report();
+    QVERIFY(report.size() < 8192);
     QVERIFY(!report.contains(QStringLiteral("private")));
     QVERIFY(!report.contains(QStringLiteral("PGN")));
     stop(logger);
@@ -247,6 +258,8 @@ void DiagnosticsTest::unavailableDirectory() {
     Logger logger(directory);
     const auto cleanup = qScopeGuard([&] { stop(logger); });
     QTRY_COMPARE(logger.health(), Health::MemoryOnly);
+    QCOMPARE(logger.failure(), LogFailure::Location);
+    QVERIFY(logger.report().contains(QStringLiteral("logging.location")));
     QVERIFY(logger.report().contains(QStringLiteral("session.started")));
     QVERIFY(!QFileInfo::exists(QStringLiteral("relative/logs")));
 }
@@ -259,6 +272,8 @@ void DiagnosticsTest::lockContention() {
     Logger second(directory.path());
     const auto cleanupSecond = qScopeGuard([&] { stop(second); });
     QTRY_COMPARE(second.health(), Health::MemoryOnly);
+    QCOMPARE(second.failure(), LogFailure::Busy);
+    QVERIFY(second.report().contains(QStringLiteral("logging.busy")));
     stop(second);
     QProcess child;
     child.setWorkingDirectory(directory.path());
@@ -425,7 +440,132 @@ void DiagnosticsTest::boundedQueueAndSlowWriter() {
         }
     }
     QVERIFY(dropped >= 3976);
-    QCOMPARE(records(logger->report().section('\n', 5).toUtf8()).size(), 200);
+    QByteArray history;
+    for (const auto& line : logger->report().split('\n')) {
+        if (line.startsWith('{')) {
+            history += line.toUtf8() + '\n';
+        }
+    }
+    QCOMPARE(records(history).size(), 200);
+    QVERIFY(logger->report().contains(QStringLiteral("Dropped disk events (queue overflow):")));
+}
+
+void DiagnosticsTest::recentHistorySurvivesFullQueue() {
+    QTemporaryDir directory;
+    QSemaphore entered;
+    QSemaphore release;
+    std::atomic<bool> first{true};
+    auto logger = LoggerTestAccess::create(directory.path(), [&] {
+        if (first.exchange(false)) {
+            entered.release();
+            release.acquire();
+        }
+        return true;
+    });
+    const auto cleanup = qScopeGuard([&] {
+        release.release();
+        stop(*logger);
+    });
+    QTRY_VERIFY(entered.available() > 0);
+    for (int index = 0; index < 1500; ++index) {
+        logger->record(Event::StorageStarted);
+    }
+    Context failure;
+    failure.errorCode = 6;
+    failure.migrationVersion = 42;
+    logger->record(Event::StorageFailed, failure, Severity::Error);
+    // Memory diagnostics must retain the latest failure even while disk is stalled.
+    QVERIFY(logger->report().contains(QStringLiteral("storage.failed")));
+    QVERIFY(logger->report().contains(QStringLiteral("\"migration_version\":42")));
+}
+
+void DiagnosticsTest::repeatedHandlerInstallation() {
+    QTemporaryDir directory;
+    QProcess child;
+    child.setWorkingDirectory(directory.path());
+    child.start(QCoreApplication::applicationFilePath(),
+                {QStringLiteral("--handler-probe"), directory.path()});
+    QVERIFY(child.waitForFinished(5000));
+    QCOMPARE(child.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(child.exitCode(), 0);
+}
+
+void DiagnosticsTest::oversizedLockMetadata() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("writer.lock"));
+    const QByteArray oversized(16 * 1024 + 1, 'x');
+    QVERIFY(write(path, oversized));
+    Logger logger(directory.path());
+    const auto cleanup = qScopeGuard([&] { stop(logger); });
+    QTRY_COMPARE(logger.health(), Health::MemoryOnly);
+    QCOMPARE(logger.failure(), LogFailure::UnsafeTarget);
+    QCOMPARE(read(path), oversized);
+    QVERIFY(!QFileInfo::exists(directory.filePath(QStringLiteral("events-0.jsonl"))));
+}
+
+void DiagnosticsTest::cleanupLockIsNotParsed() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("writer.lock.rmlock"));
+    const QByteArray oversized(20 * 1024, 'x');
+    QVERIFY(write(path, oversized));
+    Logger logger(directory.path());
+    const auto cleanup = qScopeGuard([&] { stop(logger); });
+    QTRY_COMPARE(logger.health(), Health::MemoryOnly);
+    QCOMPARE(logger.failure(), LogFailure::Busy);
+    QCOMPARE(read(path), oversized);
+}
+
+void DiagnosticsTest::handlerOwnership() {
+    QTemporaryDir firstDirectory;
+    QTemporaryDir secondDirectory;
+    const auto old = qInstallMessageHandler(previous);
+    const auto restore = qScopeGuard([&] { qInstallMessageHandler(old); });
+    Logger first(firstDirectory.path());
+    const auto firstCleanup = qScopeGuard([&] { stop(first); });
+    Logger second(secondDirectory.path());
+    const auto secondCleanup = qScopeGuard([&] { stop(second); });
+    QVERIFY(first.installQtHandler());
+    QVERIFY(!second.installQtHandler());
+    stop(second); // A non-owner must not remove the first logger's handler.
+    const int before = restoredCalls.load();
+    qWarning("private ownership probe");
+    QCOMPARE(restoredCalls.load(), before);
+    QVERIFY(first.report().contains(QStringLiteral("qt.message")));
+    stop(first);
+    QVERIFY(!first.installQtHandler());
+    qWarning("handler restoration probe");
+    QCOMPARE(restoredCalls.load(), before + 1);
+}
+
+void DiagnosticsTest::lossCountSurvivesHistoryEviction() {
+    QTemporaryDir directory;
+    QSemaphore entered;
+    QSemaphore release;
+    std::atomic<bool> first{true};
+    auto logger = LoggerTestAccess::create(directory.path(), [&] {
+        if (first.exchange(false)) {
+            entered.release();
+            release.acquire();
+        }
+        return true;
+    });
+    const auto cleanup = qScopeGuard([&] {
+        release.release();
+        stop(*logger);
+    });
+    QTRY_VERIFY(entered.available() > 0);
+    for (int index = 0; index < 1500; ++index) {
+        logger->record(Event::StorageStarted);
+    }
+    release.release();
+    QTRY_VERIFY(!logger->report().contains(QStringLiteral("Pending dropped events:")));
+    for (int index = 0; index < 250; ++index) {
+        logger->record(Event::StorageReady);
+    }
+    stop(*logger);
+    const auto report = logger->report();
+    QVERIFY(!report.contains(QStringLiteral("logging.events_dropped")));
+    QVERIFY(report.contains(QStringLiteral("Dropped disk events (queue overflow): 476")));
 }
 
 void DiagnosticsTest::writeFailure() {
@@ -433,7 +573,11 @@ void DiagnosticsTest::writeFailure() {
     auto logger = LoggerTestAccess::create(directory.path(), [] { return false; });
     const auto cleanup = qScopeGuard([&] { stop(*logger); });
     QTRY_COMPARE(logger->health(), Health::MemoryOnly);
+    QCOMPARE(logger->failure(), LogFailure::Write);
+    QVERIFY(logger->report().contains(QStringLiteral("logging.write")));
     QVERIFY(logger->report().contains(QStringLiteral("session.started")));
+    stop(*logger);
+    QCOMPARE(logger->failure(), LogFailure::Write);
 }
 
 void DiagnosticsTest::rotationFailure() {
@@ -489,10 +633,35 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         Logger logger(application.arguments()[2]);
-        logger.installQtHandler();
+        if (!logger.installQtHandler()) {
+            stop(logger);
+            return 3;
+        }
         qFatal("private fatal probe");
     }
 #endif
+    if (application.arguments().size() == 3 &&
+        application.arguments()[1] == QStringLiteral("--handler-probe")) {
+#ifdef Q_OS_UNIX
+        const struct rlimit limit {
+            0, 0
+        };
+        if (::setrlimit(RLIMIT_CORE, &limit) != 0) {
+            return 1;
+        }
+#endif
+        const auto old = qInstallMessageHandler(previous);
+        Logger logger(application.arguments()[2]);
+        if (!logger.installQtHandler() || !logger.installQtHandler()) {
+            stop(logger);
+            return 3;
+        }
+        stop(logger);
+        const int before = restoredCalls.load();
+        qWarning("restoration probe");
+        qInstallMessageHandler(old);
+        return restoredCalls.load() == before + 1 ? 0 : 2;
+    }
     DiagnosticsTest test;
     return QTest::qExec(&test, argc, argv);
 }

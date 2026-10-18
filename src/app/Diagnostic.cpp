@@ -1,5 +1,6 @@
 #include "app/Diagnostic.h"
 
+#include "diagnostics/Logger.h"
 #include "persistence/Database.h"
 
 #include <QCoreApplication>
@@ -16,6 +17,12 @@ QString Diagnostic::safeReport() const {
 Diagnostic storageDiagnostic(const persistence::DatabaseError& error) {
     using persistence::DatabaseErrorCode;
     Diagnostic result;
+    // Preserve a useful failure for an unknown value while retaining compiler
+    // warnings when a new known enumerator needs its own deliberate mapping.
+    result.code = QStringLiteral("storage.unknown");
+    result.summary = text("The local library could not be initialized.");
+    result.nextSteps =
+        text("Keep the library files and copy diagnostics for investigation before relaunching.");
     switch (error.code) {
     case DatabaseErrorCode::Path:
         result.code = QStringLiteral("storage.path");
@@ -65,9 +72,10 @@ Diagnostic storageDiagnostic(const persistence::DatabaseError& error) {
                  "investigation before making changes to these files.");
         break;
     }
+    // Recovery locations precede arbitrary-length native output so they remain
+    // immediately visible when technical details are expanded.
     result.sensitiveDetails =
-        QStringLiteral("%1: %2\n\nDatabase: %3\nNative code: %4")
-            .arg(error.operation, error.detail, error.databasePath, error.nativeCode);
+        QStringLiteral("Database: %1\nNative code: %2").arg(error.databasePath, error.nativeCode);
     if (error.migrationVersion) {
         result.sensitiveDetails += QStringLiteral("\nMigration: %1").arg(*error.migrationVersion);
         result.safeContext += QStringLiteral("Migration: %1\n").arg(*error.migrationVersion);
@@ -77,6 +85,51 @@ Diagnostic storageDiagnostic(const persistence::DatabaseError& error) {
             QStringLiteral("\nVerified pre-upgrade backup: %1").arg(error.backupPath);
         result.safeContext += QStringLiteral("Verified pre-upgrade backup available\n");
     }
+    result.sensitiveDetails +=
+        QStringLiteral("\n\nOperation: %1\nDetails: %2").arg(error.operation, error.detail);
     return result;
 }
+Diagnostic loggingDiagnostic(diagnostics::LogFailure failure) {
+    using diagnostics::LogFailure;
+    Diagnostic result;
+    result.code = diagnostics::loggingFailureCode(failure);
+    result.summary = text("Local logs could not be saved.");
+    result.nextSteps =
+        text("You can continue using the app and copy recent diagnostics from Help → Diagnostics.");
+    switch (failure) {
+    case LogFailure::None:
+        return {};
+    case LogFailure::Location:
+        result.summary = text("The local log folder could not be created or used.");
+        result.nextSteps += text(" Check access to the cache folder, then relaunch.");
+        break;
+    case LogFailure::UnsafeTarget:
+        result.summary = text("An existing log or lock file could not be used safely.");
+        result.nextSteps += text(" Check the log folder for unexpected files. Do not remove files "
+                                 "while another instance is running.");
+        break;
+    case LogFailure::Busy:
+        result.summary = text("The local log folder could not be reserved.");
+        result.nextSteps +=
+            text(" Close other instances before relaunching. Do not remove live lock files.");
+        break;
+    case LogFailure::Open:
+        result.summary = text("The local log files could not be opened or protected.");
+        result.nextSteps +=
+            text(" Check access to the cache folder and available disk space, then relaunch.");
+        break;
+    case LogFailure::Write:
+        result.summary = text("Writing local logs failed.");
+        result.nextSteps +=
+            text(" Check available disk space and access to the cache folder, then relaunch.");
+        break;
+    case LogFailure::Rotation:
+        result.summary = text("Local log rotation could not be completed.");
+        result.nextSteps +=
+            text(" Check access to the log folder and available disk space, then relaunch.");
+        break;
+    }
+    return result;
+}
+
 } // namespace chess_review::app

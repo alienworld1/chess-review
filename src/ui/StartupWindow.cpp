@@ -7,10 +7,10 @@
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QPlainTextEdit>
-#include <QTimer>
 #include <QUrl>
 
 #include <QCloseEvent>
@@ -19,6 +19,8 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <limits>
 
 namespace chess_review::ui {
 
@@ -32,10 +34,11 @@ StartupWindow::StartupWindow(QWidget* parent) : QMainWindow(parent) {
     status_ = new QLabel(QStringLiteral("Opening local database…"), content);
     status_->setObjectName(QStringLiteral("startupStatus"));
     status_->setTextFormat(Qt::PlainText);
-    diagnostic_ = new QLabel(content);
+    diagnostic_ = new QPlainTextEdit(content);
     diagnostic_->setObjectName(QStringLiteral("startupDiagnostic"));
-    diagnostic_->setTextFormat(Qt::PlainText);
-    diagnostic_->setWordWrap(true);
+    diagnostic_->setReadOnly(true);
+    diagnostic_->setAccessibleName(tr("Private technical details"));
+    diagnostic_->setMaximumHeight(200);
     diagnostic_->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     diagnostic_->hide();
     summary_ = new QLabel(content);
@@ -52,7 +55,11 @@ StartupWindow::StartupWindow(QWidget* parent) : QMainWindow(parent) {
     reveal_->setObjectName(QStringLiteral("revealDetails"));
     reveal_->setCheckable(true);
     reveal_->hide();
-    connect(reveal_, &QPushButton::toggled, diagnostic_, &QWidget::setVisible);
+    connect(reveal_, &QPushButton::toggled, this, [this](bool checked) {
+        diagnostic_->setVisible(checked);
+        reveal_->setText(checked ? tr("Hide technical &details")
+                                 : tr("Show technical &details (may contain private paths)"));
+    });
     copy_ = new QPushButton(tr("&Copy diagnostics"), content);
     copy_->setObjectName(QStringLiteral("copyDiagnostics"));
     copy_->hide();
@@ -90,7 +97,7 @@ void StartupWindow::showFailure(const app::Diagnostic& diagnostic) {
     failure_ = diagnostic;
     status_->setText(tr("Could not initialize local storage"));
     summary_->setText(diagnostic.summary + QStringLiteral("\n\n") + diagnostic.nextSteps);
-    diagnostic_->setText(diagnostic.sensitiveDetails);
+    diagnostic_->setPlainText(diagnostic.sensitiveDetails);
     reveal_->setChecked(false);
     diagnostic_->hide();
     reveal_->show();
@@ -105,11 +112,17 @@ QString StartupWindow::safeReport() const {
 
 void StartupWindow::setDiagnostics(diagnostics::Logger& logger) {
     logger_ = &logger;
+    connect(&logger, &QObject::destroyed, this, [this, bound = &logger] {
+        if (logger_ == bound) {
+            logger_ = nullptr;
+        }
+    });
     const auto updateHealth = [this] {
-        if (!loggingNoticeShown_ && logger_->health() == diagnostics::Health::MemoryOnly) {
+        if (!loggingNoticeShown_ && logger_ &&
+            logger_->failure() != diagnostics::LogFailure::None) {
             loggingNoticeShown_ = true;
-            notice_->setText(tr("Local logs could not be saved. You can continue using the app and "
-                                "copy recent diagnostics from Help → Diagnostics."));
+            const auto diagnostic = app::loggingDiagnostic(logger_->failure());
+            notice_->setText(diagnostic.summary + QStringLiteral("\n") + diagnostic.nextSteps);
             notice_->show();
         }
     };
@@ -138,28 +151,67 @@ void StartupWindow::showDiagnostics() {
     report->setPlainText(safeReport());
     layout->addWidget(report);
     auto* copy = new QPushButton(tr("&Copy diagnostics"), dialog);
+    copy->setObjectName(QStringLiteral("copyDiagnosticsSnapshot"));
     connect(copy, &QPushButton::clicked, dialog,
-            [this] { QApplication::clipboard()->setText(safeReport()); });
+            [report] { QApplication::clipboard()->setText(report->toPlainText()); });
     layout->addWidget(copy);
     auto* folder = new QPushButton(tr("Open &log folder"), dialog);
+    folder->setObjectName(QStringLiteral("openLogFolder"));
     folder->setEnabled(logger_ && logger_->health() == diagnostics::Health::Active);
-    connect(folder, &QPushButton::clicked, dialog, [this, folder] {
+    auto* folderError = new QLabel(dialog);
+    folderError->setTextFormat(Qt::PlainText);
+    folderError->setWordWrap(true);
+    folderError->hide();
+    connect(folder, &QPushButton::clicked, dialog, [this, folderError] {
         if (!logger_ || logger_->health() != diagnostics::Health::Active ||
             !QDesktopServices::openUrl(QUrl::fromLocalFile(logger_->logDirectory()))) {
-            folder->setText(tr("Log folder could not be opened"));
+            folderError->setText(tr("The log folder could not be opened. Check that a desktop file "
+                                    "manager is available."));
+            folderError->show();
+        } else {
+            folderError->hide();
         }
     });
     layout->addWidget(folder);
-    // Refresh only on a bounded UI timer, never one queued update per log event.
-    auto* refresh = new QTimer(dialog);
-    connect(refresh, &QTimer::timeout, dialog, [this, report, folder] {
-        const auto current = safeReport();
-        if (report->toPlainText() != current) {
-            report->setPlainText(current);
-        }
-        folder->setEnabled(logger_ && logger_->health() == diagnostics::Health::Active);
-    });
-    refresh->start(1000);
+    layout->addWidget(folderError);
+    auto* revealLocation = new QPushButton(tr("Show private log &location"), dialog);
+    revealLocation->setObjectName(QStringLiteral("revealLogLocation"));
+    revealLocation->setCheckable(true);
+    auto* location = new QLineEdit(dialog);
+    location->setObjectName(QStringLiteral("privateLogLocation"));
+    location->setReadOnly(true);
+    location->setMaxLength(std::numeric_limits<int>::max());
+    location->setAccessibleName(tr("Private attempted log folder"));
+    location->hide();
+    connect(revealLocation, &QPushButton::toggled, dialog,
+            [this, location, revealLocation](bool checked) {
+                if (checked) {
+                    const auto path = logger_ ? logger_->logDirectory() : QString();
+                    location->setText(path.isEmpty() ? tr("No valid log folder was resolved.")
+                                                     : path);
+                    location->setCursorPosition(0);
+                }
+                location->setVisible(checked);
+                revealLocation->setText(checked ? tr("Hide private log &location")
+                                                : tr("Show private log &location"));
+            });
+    layout->addWidget(revealLocation);
+    layout->addWidget(location);
+    // A stable snapshot lets users read/select a report without live log events
+    // resetting their selection or scrolling. Copy exports exactly this snapshot.
+    auto* refresh = new QPushButton(tr("&Refresh diagnostics"), dialog);
+    refresh->setObjectName(QStringLiteral("refreshDiagnostics"));
+    connect(refresh, &QPushButton::clicked, dialog,
+            [this, report] { report->setPlainText(safeReport()); });
+    layout->addWidget(refresh);
+    if (logger_) {
+        connect(logger_, &diagnostics::Logger::healthChanged, dialog, [this, folder] {
+            folder->setEnabled(logger_ && logger_->health() == diagnostics::Health::Active);
+        });
+        connect(logger_, &QObject::destroyed, dialog, [this, folder] {
+            folder->setEnabled(logger_ && logger_->health() == diagnostics::Health::Active);
+        });
+    }
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
     layout->addWidget(buttons);

@@ -1,6 +1,5 @@
 #include "diagnostics/Logger.h"
 
-#include <QByteArrayView>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -18,6 +17,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <deque>
 #include <utility>
 
@@ -61,6 +61,10 @@ const char* eventName(Event event) {
         return "migration.completed";
     case Event::QtMessage:
         return "qt.message";
+    case Event::LoggingFailed:
+        return "logging.failed";
+    case Event::QtCaptureUnavailable:
+        return "logging.qt_capture_unavailable";
     case Event::EventsDropped:
         return "logging.events_dropped";
     }
@@ -118,98 +122,128 @@ bool safeFile(const QString& path) {
 class FileSink {
   public:
     explicit FileSink(const QString& directory) : directory_(directory) {}
-    bool open() {
+    LogFailure open() {
         if (!QDir::isAbsolutePath(directory_) || directory_.contains(QChar::Null) ||
             QFileInfo(directory_).isSymLink() || !QDir().mkpath(directory_)) {
-            return false;
+            return LogFailure::Location;
         }
         const QString lockPath = QDir(directory_).filePath(QStringLiteral("writer.lock"));
-        if (!safeFile(lockPath)) {
-            return false;
+        // Qt reads lock metadata with unbounded readLine(). Bound the file before
+        // handing it to Qt, and avoid traversing a pre-existing stale-cleanup lock.
+        if (!safeFile(lockPath) || QFileInfo(lockPath).size() > 16 * 1024) {
+            return LogFailure::UnsafeTarget;
+        }
+        const QFileInfo cleanupLock(lockPath + QStringLiteral(".rmlock"));
+        if (cleanupLock.exists() || cleanupLock.isSymLink()) {
+            return LogFailure::Busy;
         }
         lock_ = std::make_unique<QLockFile>(lockPath);
         lock_->setStaleLockTime(0);
         if (!lock_->tryLock(0)) {
-            return false;
+            return lock_->error() == QLockFile::LockFailedError ? LogFailure::Busy
+                                                                : LogFailure::Open;
         }
         for (int index = 0; index < 5; ++index) {
-            if (!safeFile(path(index)) || QFileInfo(path(index)).size() > fileLimit ||
-                (QFileInfo::exists(path(index)) &&
-                 !QFile::setPermissions(path(index),
-                                        QFileDevice::ReadOwner | QFileDevice::WriteOwner))) {
-                return false;
+            if (!safeFile(path(index)) || QFileInfo(path(index)).size() > fileLimit) {
+                return LogFailure::UnsafeTarget;
+            }
+            if (QFileInfo::exists(path(index)) &&
+                !QFile::setPermissions(path(index),
+                                       QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+                return LogFailure::Open;
             }
         }
         return openCurrent();
     }
-    bool write(const QByteArray& record) {
-        if (file_.size() + record.size() > fileLimit && !rotate()) {
-            return false;
+    LogFailure write(const QByteArray& record) {
+        if (file_.size() + record.size() > fileLimit) {
+            if (const auto failure = rotate(); failure != LogFailure::None) {
+                return failure;
+            }
         }
-        return file_.write(record) == record.size() && file_.flush();
+        return file_.write(record) == record.size() && file_.flush() ? LogFailure::None
+                                                                     : LogFailure::Write;
     }
 
   private:
     QString path(int index) const {
         return QDir(directory_).filePath(QStringLiteral("events-%1.jsonl").arg(index));
     }
-    bool openCurrent() {
+    LogFailure openCurrent() {
         const QString current = path(0);
         if (!safeFile(current)) {
-            return false;
+            return LogFailure::UnsafeTarget;
         }
         file_.setFileName(current);
         const auto mode = QFileInfo::exists(current) ? QIODevice::ReadWrite
                                                      : QIODevice::ReadWrite | QIODevice::NewOnly;
         if (!file_.open(mode, QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
             !file_.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
-            return false;
+            return LogFailure::Open;
         }
-        // A terminated process or failed write may leave its final record partial.
-        // Inspect at most one bounded record and remove only that incomplete tail.
         const qint64 size = file_.size();
         const qint64 tailStart = std::max(qint64{0}, size - maxRecordBytes);
         if (!file_.seek(tailStart)) {
-            return false;
+            return LogFailure::Open;
         }
         const auto tail = file_.read(maxRecordBytes);
         if (file_.error() != QFileDevice::NoError) {
-            return false;
+            return LogFailure::Open;
         }
         if (!tail.isEmpty() && !tail.endsWith('\n')) {
             const auto newline = tail.lastIndexOf('\n');
             if (newline < 0 && tailStart != 0) {
-                return false;
+                return LogFailure::UnsafeTarget;
             }
             if (!file_.resize(tailStart + newline + 1)) {
-                return false;
+                return LogFailure::Open;
             }
         }
-        return file_.seek(file_.size());
+        return file_.seek(file_.size()) ? LogFailure::None : LogFailure::Open;
     }
-
-    bool rotate() {
+    LogFailure rotate() {
         file_.close();
         for (int index = 0; index < 5; ++index) {
             if (!safeFile(path(index))) {
-                return false;
+                return LogFailure::UnsafeTarget;
             }
         }
         if (QFileInfo::exists(path(4)) && !QFile::remove(path(4))) {
-            return false;
+            return LogFailure::Rotation;
         }
         for (int index = 3; index >= 0; --index) {
             if (QFileInfo::exists(path(index)) && !QFile::rename(path(index), path(index + 1))) {
-                return false;
+                return LogFailure::Rotation;
             }
         }
-        return openCurrent();
+        const auto result = openCurrent();
+        return result == LogFailure::Open ? LogFailure::Rotation : result;
     }
     QString directory_;
     std::unique_ptr<QLockFile> lock_;
     QFile file_;
 };
 } // namespace
+
+QString loggingFailureCode(LogFailure failure) {
+    switch (failure) {
+    case LogFailure::None:
+        return {};
+    case LogFailure::Location:
+        return QStringLiteral("logging.location");
+    case LogFailure::UnsafeTarget:
+        return QStringLiteral("logging.unsafe_target");
+    case LogFailure::Busy:
+        return QStringLiteral("logging.busy");
+    case LogFailure::Open:
+        return QStringLiteral("logging.open");
+    case LogFailure::Write:
+        return QStringLiteral("logging.write");
+    case LogFailure::Rotation:
+        return QStringLiteral("logging.rotation");
+    }
+    return QStringLiteral("logging.unknown");
+}
 
 struct Logger::Impl final : QThread {
     Impl(Logger& logger, QString directory, bool debug, std::function<bool()> writeHook)
@@ -280,19 +314,26 @@ struct Logger::Impl final : QThread {
         }
         history.push_back(record);
     }
-    void setHealth(Health value) {
+    void setHealth(Health value, LogFailure issue = LogFailure::None) {
         {
             QMutexLocker guard(&mutex);
             health = value;
+            if (issue != LogFailure::None) {
+                failure = issue;
+                Context context;
+                context.errorCode = static_cast<int>(issue);
+                remember(encode(Event::LoggingFailed, context, Severity::Warning));
+            }
         }
         emit owner.healthChanged();
     }
     void run() override {
         std::unique_ptr<FileSink> sink = std::make_unique<FileSink>(logDirectory);
-        if (!sink->open()) {
+        const auto openingFailure = sink->open();
+        if (openingFailure != LogFailure::None) {
             sink.reset();
         }
-        setHealth(sink ? Health::Active : Health::MemoryOnly);
+        setHealth(sink ? Health::Active : Health::MemoryOnly, openingFailure);
         for (;;) {
             QByteArray record;
             bool last = false;
@@ -318,11 +359,13 @@ struct Logger::Impl final : QThread {
             }
             if (sink && beforeWrite && !beforeWrite()) {
                 sink.reset();
-                setHealth(Health::MemoryOnly);
+                setHealth(Health::MemoryOnly, LogFailure::Write);
             }
-            if (sink && !sink->write(record)) {
-                sink.reset();
-                setHealth(Health::MemoryOnly);
+            if (sink) {
+                if (const auto issue = sink->write(record); issue != LogFailure::None) {
+                    sink.reset();
+                    setHealth(Health::MemoryOnly, issue);
+                }
             }
             if (last) {
                 break;
@@ -342,7 +385,9 @@ struct Logger::Impl final : QThread {
     std::deque<QByteArray> history;
     quint64 sequence = 0;
     quint64 dropped = 0;
+    quint64 droppedTotal = 0;
     Health health = Health::Starting;
+    LogFailure failure = LogFailure::None;
     bool stopping = false;
 };
 
@@ -368,49 +413,71 @@ void Logger::record(Event event, const Context& context, Severity severity) {
     if (severity == Severity::Debug && !impl_->debugEnabled) {
         return;
     }
-    {
-        QMutexLocker guard(&impl_->mutex);
-        if (impl_->stopping) {
+    QMutexLocker guard(&impl_->mutex);
+    if (impl_->stopping) {
+        return;
+    }
+    if (impl_->dropped != 0 && impl_->queue.size() < queueLimit &&
+        impl_->health != Health::MemoryOnly) {
+        Context loss;
+        loss.count = impl_->dropped;
+        impl_->dropped = 0;
+        auto lost = impl_->encode(Event::EventsDropped, loss, Severity::Warning);
+        impl_->remember(lost);
+        impl_->queue.push_back(std::move(lost));
+    }
+    auto record = impl_->encode(event, context, severity);
+    if (record.size() <= maxRecordBytes) {
+        // Memory history is independent of disk backpressure: keep the latest
+        // events even when the writer is slow or has permanently failed.
+        impl_->remember(record);
+        if (impl_->health == Health::MemoryOnly) {
             return;
         }
-        if (impl_->queue.size() == queueLimit) {
-            ++impl_->dropped;
+        if (impl_->queue.size() < queueLimit) {
+            impl_->queue.push_back(std::move(record));
         } else {
-            if (impl_->dropped != 0) {
-                Context loss;
-                loss.count = impl_->dropped;
-                impl_->dropped = 0;
-                auto lost = impl_->encode(Event::EventsDropped, loss, Severity::Warning);
-                impl_->remember(lost);
-                impl_->queue.push_back(std::move(lost));
-            }
-            if (impl_->queue.size() == queueLimit) {
-                ++impl_->dropped;
-            } else {
-                auto record = impl_->encode(event, context, severity);
-                if (record.size() <= maxRecordBytes) {
-                    impl_->remember(record);
-                    impl_->queue.push_back(std::move(record));
-                } else {
-                    ++impl_->dropped;
-                }
-            }
+            ++impl_->dropped;
+            ++impl_->droppedTotal;
         }
-        impl_->available.wakeOne();
+    } else {
+        ++impl_->dropped;
+        ++impl_->droppedTotal;
     }
+    impl_->available.wakeOne();
     // No per-record queued signal: a burst must not create an unbounded Qt event queue.
 }
 
 QString Logger::report() const {
-    QMutexLocker guard(&impl_->mutex);
+    // Copy implicitly shared record buffers while locked; format the report
+    // outside the producer lock so a reader cannot stall message submission.
+    std::deque<QByteArray> history;
+    Health health;
+    LogFailure failure;
+    quint64 dropped;
+    quint64 droppedTotal;
+    {
+        QMutexLocker guard(&impl_->mutex);
+        history = impl_->history;
+        health = impl_->health;
+        failure = impl_->failure;
+        dropped = impl_->dropped;
+        droppedTotal = impl_->droppedTotal;
+    }
     QString report = QStringLiteral("chess-review %1\nQt %2\nSession: %3\n%4\nRedacted "
                                     "diagnostics; no paths or native error text.\n")
                          .arg(QStringLiteral(CHESS_REVIEW_VERSION), QString::fromLatin1(qVersion()),
-                              impl_->session, healthName(impl_->health));
-    if (impl_->dropped != 0) {
-        report += QStringLiteral("Pending dropped events: %1\n").arg(impl_->dropped);
+                              impl_->session, healthName(health));
+    if (failure != LogFailure::None) {
+        report += QStringLiteral("Logging issue: %1\n").arg(loggingFailureCode(failure));
     }
-    for (const auto& record : impl_->history) {
+    if (droppedTotal != 0) {
+        report += QStringLiteral("Dropped disk events (queue overflow): %1\n").arg(droppedTotal);
+    }
+    if (dropped != 0) {
+        report += QStringLiteral("Pending dropped events: %1\n").arg(dropped);
+    }
+    for (const auto& record : history) {
         report += QString::fromUtf8(record);
     }
     return report;
@@ -418,6 +485,10 @@ QString Logger::report() const {
 Health Logger::health() const {
     QMutexLocker guard(&impl_->mutex);
     return impl_->health;
+}
+LogFailure Logger::failure() const {
+    QMutexLocker guard(&impl_->mutex);
+    return impl_->failure;
 }
 QString Logger::logDirectory() const { return impl_->logDirectory; }
 
@@ -441,12 +512,24 @@ void Logger::finishClose() {
     }
     emit closed();
 }
-void Logger::installQtHandler() {
+bool Logger::installQtHandler() {
     Q_ASSERT(QThread::currentThread() == thread());
     QMutexLocker guard(&bridgeMutex);
-    Q_ASSERT(bridgeLogger == nullptr);
+    {
+        QMutexLocker stateGuard(&impl_->mutex);
+        if (impl_->stopping) {
+            return false;
+        }
+    }
+    if (bridgeLogger == this) {
+        return true;
+    }
+    if (bridgeLogger != nullptr) {
+        return false;
+    }
     bridgeLogger = this;
     previousHandler = qInstallMessageHandler(&Logger::qtMessage);
+    return true;
 }
 void Logger::restoreQtHandler() {
     QMutexLocker guard(&bridgeMutex);
@@ -468,16 +551,22 @@ void Logger::qtMessage(QtMsgType type, const QMessageLogContext& qtContext, cons
         context.count = 1;
         context.qtCategory = QtCategory::Other;
         if (qtContext.category) {
-            const QByteArrayView category(qtContext.category);
-            if (category == "default") {
+            // Compare only the fixed family prefixes; never scan an arbitrary
+            // category to its end or retain any source-provided category text.
+            const char* category = qtContext.category;
+            if (std::strcmp(category, "default") == 0) {
                 context.qtCategory = QtCategory::Default;
-            } else if (category == "qt.core" || category.startsWith("qt.core.")) {
+            } else if (std::strcmp(category, "qt.core") == 0 ||
+                       std::strncmp(category, "qt.core.", 8) == 0) {
                 context.qtCategory = QtCategory::Core;
-            } else if (category == "qt.gui" || category.startsWith("qt.gui.")) {
+            } else if (std::strcmp(category, "qt.gui") == 0 ||
+                       std::strncmp(category, "qt.gui.", 7) == 0) {
                 context.qtCategory = QtCategory::Gui;
-            } else if (category == "qt.widgets" || category.startsWith("qt.widgets.")) {
+            } else if (std::strcmp(category, "qt.widgets") == 0 ||
+                       std::strncmp(category, "qt.widgets.", 11) == 0) {
                 context.qtCategory = QtCategory::Widgets;
-            } else if (category == "qt.sql" || category.startsWith("qt.sql.")) {
+            } else if (std::strcmp(category, "qt.sql") == 0 ||
+                       std::strncmp(category, "qt.sql.", 7) == 0) {
                 context.qtCategory = QtCategory::Sql;
             }
         }

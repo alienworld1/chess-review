@@ -23,12 +23,25 @@ enum class Event {
     MigrationStarted,
     MigrationCompleted,
     QtMessage,
+    LoggingFailed,
+    QtCaptureUnavailable,
     EventsDropped
 };
 
 enum class Severity { Debug, Info, Warning, Error, Fatal };
 enum class QtCategory { Default, Core, Gui, Widgets, Sql, Other };
 enum class Health { Starting, Active, MemoryOnly, Closed };
+// Stable, privacy-safe causes. No filesystem/native error strings cross this API.
+enum class LogFailure {
+    None = 0,
+    Location = 1,
+    UnsafeTarget = 2,
+    Busy = 3,
+    Open = 4,
+    Write = 5,
+    Rotation = 6
+};
+QString loggingFailureCode(LogFailure failure);
 
 // Only bounded numeric metadata crosses the logging boundary. Never add free-form
 // text, paths, or native error messages here.
@@ -55,10 +68,12 @@ class Logger final : public QObject {
     void record(Event event, const Context& context = {}, Severity severity = Severity::Info);
     QString report() const;
     Health health() const;
+    LogFailure failure() const;
     QString logDirectory() const;
     // Owning thread only. Await closed() before destruction; does not block the GUI.
     void close();
-    void installQtHandler();
+    // Idempotent for this owner; false if closed or another logger owns the bridge.
+    [[nodiscard]] bool installQtHandler();
 
   signals:
     void healthChanged();

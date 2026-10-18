@@ -23,7 +23,10 @@ int main(int argc, char* argv[]) {
     const auto paths = chess_review::app::AppPaths::resolve();
 
     chess_review::diagnostics::Logger logger(paths.logDirectory(), parser.isSet(debugOption));
-    logger.installQtHandler();
+    if (!logger.installQtHandler()) {
+        logger.record(chess_review::diagnostics::Event::QtCaptureUnavailable, {},
+                      chess_review::diagnostics::Severity::Warning);
+    }
     chess_review::ui::StartupWindow window;
     chess_review::app::StartupCoordinator startup(window, logger);
     QObject::connect(&startup, &chess_review::app::StartupCoordinator::finished, &application,
