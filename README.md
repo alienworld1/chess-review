@@ -102,7 +102,7 @@ On Linux the layout is:
 | Disposable cache | `CacheLocation` | `~/.cache/chess-review/` | Reserved `logs/` and `transient/` |
 
 Qt honors `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME`, using its
-standard defaults when unset or empty. Other platforms use Qt's native mappings;
+standard defaults when unset, empty, or relative. Other platforms use Qt's native mappings;
 data uses the local rather than roaming location on Windows.
 
 Resolving paths creates nothing. Each subsystem creates its directory when it
@@ -118,6 +118,13 @@ filesystem cache must not remove saved analysis. Database failures are reported
 explicitly; the app never silently switches to temporary or alternative storage.
 Existing directory permission behavior is preserved, along with the private file
 protections described below. No existing data is relocated.
+
+Use private, user-controlled local storage. Path resolution does not verify access
+rights or filesystem capabilities. Keep cache roots separate from data and
+configuration roots: custom XDG values or symbolic links can make them overlap.
+Any future cache cleanup must remove only files owned by that cache subsystem,
+never recursively delete a resolved root. Review details and supported boundaries
+are recorded in [`docs/app-paths-review.md`](docs/app-paths-review.md).
 
 Development launches share the installed application's storage locations. To
 isolate a manual run on Linux, supply temporary XDG roots explicitly:

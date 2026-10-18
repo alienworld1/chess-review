@@ -8,9 +8,12 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QLabel>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+
+#include <optional>
 
 using chess_review::app::AppPaths;
 using chess_review::app::StartupCoordinator;
@@ -20,13 +23,28 @@ class StartupTest final : public QObject {
     Q_OBJECT
 
   private slots:
+    void init();
     void initializesAndCloses();
     void failureShowsDiagnostic();
     void closeDuringStartup();
     void quitDuringStartup();
     void resolvedPathsInitializeLazily();
     void unusableDataDirectoryFails();
+
+  private:
+    std::optional<QTemporaryDir> storageRoot_;
 };
+
+void StartupTest::init() {
+#ifdef Q_OS_LINUX
+    // Each test owns fresh roots, including when selected repeatedly or reordered.
+    storageRoot_.emplace();
+    QVERIFY(storageRoot_->isValid());
+    qputenv("XDG_DATA_HOME", QFile::encodeName(storageRoot_->filePath(QStringLiteral("data"))));
+    qputenv("XDG_CONFIG_HOME", QFile::encodeName(storageRoot_->filePath(QStringLiteral("config"))));
+    qputenv("XDG_CACHE_HOME", QFile::encodeName(storageRoot_->filePath(QStringLiteral("cache"))));
+#endif
+}
 
 void StartupTest::resolvedPathsInitializeLazily() {
 #ifndef Q_OS_LINUX
@@ -47,7 +65,6 @@ void StartupTest::resolvedPathsInitializeLazily() {
     QVERIFY(!QFileInfo::exists(paths.cacheDirectory));
     window.close();
     QTRY_COMPARE(finished.count(), 1);
-    QVERIFY(QDir(paths.dataDirectory).removeRecursively());
 #endif
 }
 
@@ -147,6 +164,15 @@ int main(int argc, char* argv[]) {
     if (!home.isValid()) {
         return 1;
     }
+    const QString previousDirectory = QDir::currentPath();
+    if (!QDir::setCurrent(home.path())) {
+        return 1;
+    }
+    const auto restoreDirectory = qScopeGuard([&previousDirectory] {
+        if (!QDir::setCurrent(previousDirectory)) {
+            qFatal("Cannot restore test working directory");
+        }
+    });
 #ifdef Q_OS_LINUX
     qputenv("HOME", QFile::encodeName(home.path()));
     qputenv("XDG_DATA_HOME", QFile::encodeName(home.filePath(QStringLiteral("data"))));

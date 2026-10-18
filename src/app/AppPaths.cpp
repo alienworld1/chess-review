@@ -4,6 +4,16 @@
 #include <QStandardPaths>
 
 namespace chess_review::app {
+namespace {
+
+QString filePath(const QString& directory, const QString& name) {
+    if (!QDir::isAbsolutePath(directory) || directory.contains(QChar::Null)) {
+        return {};
+    }
+    return QDir(directory).filePath(name);
+}
+
+} // namespace
 
 AppPaths AppPaths::resolve() {
     return {QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation),
@@ -12,15 +22,11 @@ AppPaths AppPaths::resolve() {
 }
 
 QString AppPaths::databasePath() const {
-    return dataDirectory.isEmpty()
-               ? QString{}
-               : QDir(dataDirectory).filePath(QStringLiteral("chess-review.sqlite3"));
+    return filePath(dataDirectory, QStringLiteral("chess-review.sqlite3"));
 }
 
 QString AppPaths::configFilePath() const {
-    return configDirectory.isEmpty()
-               ? QString{}
-               : QDir(configDirectory).filePath(QStringLiteral("config.toml"));
+    return filePath(configDirectory, QStringLiteral("config.toml"));
 }
 
 } // namespace chess_review::app
