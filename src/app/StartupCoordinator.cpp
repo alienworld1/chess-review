@@ -2,13 +2,16 @@
 
 #include "ui/StartupWindow.h"
 
+#include <QCoreApplication>
 #include <QDir>
+#include <QEvent>
 #include <QStandardPaths>
 
 namespace chess_review::app {
 
 StartupCoordinator::StartupCoordinator(ui::StartupWindow& window, QObject* parent)
     : QObject(parent) {
+    QCoreApplication::instance()->installEventFilter(this);
     connect(&database_, &persistence::Database::progress, &window,
             &ui::StartupWindow::showProgress);
     connect(&database_, &persistence::Database::ready, &window, &ui::StartupWindow::showReady);
@@ -25,7 +28,18 @@ StartupCoordinator::StartupCoordinator(ui::StartupWindow& window, QObject* paren
                 window.showFailure(diagnostic);
             });
     connect(&window, &ui::StartupWindow::closeRequested, this, &StartupCoordinator::shutdown);
-    connect(&database_, &persistence::Database::closed, this, &StartupCoordinator::finished);
+    connect(&database_, &persistence::Database::closed, this, [this] {
+        stopped_ = true;
+        emit finished();
+    });
+}
+
+bool StartupCoordinator::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == QCoreApplication::instance() && event->type() == QEvent::Quit && !stopped_) {
+        shutdown();
+        return true;
+    }
+    return QObject::eventFilter(watched, event);
 }
 
 QString StartupCoordinator::defaultDatabasePath() {

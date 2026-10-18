@@ -113,10 +113,21 @@ connection cleanup. The startup coordinator uses this asynchronous shutdown path
 Database failures leave storage unavailable and display the diagnostic in the
 window; Exit and window-manager close both finish storage shutdown before quitting.
 
-Connections enable and verify foreign keys, WAL, and a 5000 ms busy timeout.
+Connections enable and verify foreign keys, a 5000 ms busy timeout, full durability
+synchronization, and disabled trusted-schema execution. WAL is enabled only after
+schema-history validation, so rejected databases are not converted to WAL.
+New database and backup files are exclusively created with owner-only read/write
+permissions. Recognized existing databases and their WAL/SHM sidecars are also
+restricted to owner-only access before further writes. Special files and
+dangling symbolic links are rejected. Symbolic aliases resolve to the same lock;
+Unix hard-linked databases are rejected because aliases make WAL and locking unsafe.
 A `.lock` file beside the database prevents concurrent application instances from
 opening it. Stale process locks are handled by Qt; do not delete a live process's
 lock. No database or backup is automatically replaced or restored after failure.
+Normal application quit requests also go through storage shutdown; `closed()` is
+emitted only after a nonblocking native-thread join has completed. Code should use
+the coordinator's shutdown path rather than bypassing it with immediate process
+exit or application destruction.
 
 ## Adding migrations
 
@@ -149,6 +160,10 @@ committed. Fix the cause and reopen with a compatible application, or preserve
 the database and its sidecars before performing a deliberate offline restore.
 Newer schemas, malformed history, and nonempty databases without recognized
 metadata are rejected rather than reset.
+Ledger columns, keys, and unexpected ledger triggers/indexes/foreign keys are
+validated too. Versions are read without integer narrowing, and metadata text and
+row counts are bounded before delivery to Qt. The ledger remains infrastructure
+metadata: future migrations must not repurpose or add triggers/indexes to it.
 
 ## Tests
 
@@ -167,3 +182,6 @@ failure presentation, and close during initialization. CTest runs these with Qt'
 offscreen platform plugin. Tests do not touch the normal user database.
 
 To build without test targets, configure with `-DBUILD_TESTING=OFF`.
+
+The adversarial review and supported security boundaries are recorded in
+[`docs/persistence-review.md`](docs/persistence-review.md).

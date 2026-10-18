@@ -41,6 +41,7 @@ class Database final : public QObject {
     void closed();
 
   private:
+    void finishClose();
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

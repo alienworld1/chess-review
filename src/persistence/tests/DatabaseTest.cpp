@@ -1,5 +1,6 @@
 #include "persistence/Database.h"
 #include "persistence/private/Migrations.h"
+#include "persistence/private/PrivateFile.h"
 #include "persistence/private/StorageSession.h"
 
 #include <QDir>
@@ -21,6 +22,11 @@
 #include <optional>
 #include <span>
 #include <vector>
+
+#ifdef Q_OS_UNIX
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 using namespace chess_review::persistence;
 using namespace chess_review::persistence::detail;
@@ -98,6 +104,13 @@ class DatabaseTest final : public QObject {
     void invalidHistory_data();
     void invalidHistory();
     void invalidRegistry();
+    void rejectedDatabaseRemainsUnchanged();
+    void forgedLedgerIsRejected();
+    void privateFilesAndAliases();
+    void specialFilesAreRejected();
+    void boundValuesCannotInjectSql();
+    void privateFileCannotOverwriteExistingData();
+    void legacyPermissionsAreRestricted();
     void unrecognizedDatabaseIsPreserved();
     void initialMigrationFailureIsAtomic();
     void backupFailurePreventsUpgrade();
@@ -132,6 +145,14 @@ void DatabaseTest::freshAndRepeatInitialization() {
             QVERIFY(query.exec(QStringLiteral("PRAGMA busy_timeout")));
             QVERIFY(query.next());
             QCOMPARE(query.value(0).toInt(), 5000);
+            query.finish();
+            QVERIFY(query.exec(QStringLiteral("PRAGMA trusted_schema")));
+            QVERIFY(query.next());
+            QCOMPARE(query.value(0).toInt(), 0);
+            query.finish();
+            QVERIFY(query.exec(QStringLiteral("PRAGMA synchronous")));
+            QVERIFY(query.next());
+            QCOMPARE(query.value(0).toInt(), 2);
         }
     }
     QCOMPARE(QSqlDatabase::connectionNames(), connectionsBefore);
@@ -212,6 +233,21 @@ void DatabaseTest::invalidHistory_data() {
     QTest::newRow("newer") << QStringLiteral(
         "INSERT INTO schema_migrations VALUES (2, 'future', '2026-10-19T00:00:00.000Z')");
     QTest::newRow("gap") << QStringLiteral("UPDATE schema_migrations SET version=3");
+    QTest::newRow("integer-overflow")
+        << QStringLiteral("UPDATE schema_migrations SET version=4294967297");
+    QTest::newRow("negative-overflow")
+        << QStringLiteral("UPDATE schema_migrations SET version=9223372032559808513");
+    QTest::newRow("oversized-name")
+        << QStringLiteral("UPDATE schema_migrations SET name=zeroblob(1048576)");
+    QTest::newRow("embedded-null")
+        << QStringLiteral("UPDATE schema_migrations SET name='initial'||char(0)||'hidden'");
+    QTest::newRow("ledger-trigger")
+        << QStringLiteral("CREATE TRIGGER skip_history BEFORE INSERT ON schema_migrations BEGIN "
+                          "SELECT RAISE(IGNORE); END");
+    QTest::newRow("ledger-index") << QStringLiteral(
+        "CREATE INDEX extra_ledger_index ON schema_migrations(name)");
+    QTest::newRow("extra-column") << QStringLiteral(
+        "ALTER TABLE schema_migrations ADD COLUMN extra TEXT");
     QTest::newRow("renamed") << QStringLiteral("UPDATE schema_migrations SET name='modified'");
     QTest::newRow("timestamp") << QStringLiteral(
         "UPDATE schema_migrations SET applied_at='invalid'");
@@ -247,6 +283,136 @@ void DatabaseTest::invalidRegistry() {
     QVERIFY(error);
     QCOMPARE(error->code, DatabaseErrorCode::Schema);
     QVERIFY(!initialize(path, migrations()));
+}
+
+void DatabaseTest::rejectedDatabaseRemainsUnchanged() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("other.sqlite3"));
+    {
+        FixtureConnection fixture(path);
+        QVERIFY(fixture.exec(QStringLiteral("CREATE TABLE other_data(value TEXT)")));
+        QCOMPARE(fixture.scalar(QStringLiteral("PRAGMA journal_mode")).toString(),
+                 QStringLiteral("delete"));
+    }
+    QFile original(path);
+    QVERIFY(original.open(QIODevice::ReadOnly));
+    const auto bytes = original.readAll();
+    original.close();
+    QVERIFY(initialize(path, migrations()));
+    QVERIFY(original.open(QIODevice::ReadOnly));
+    QCOMPARE(original.readAll(), bytes);
+}
+
+void DatabaseTest::forgedLedgerIsRejected() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("forged.sqlite3"));
+    {
+        FixtureConnection fixture(path);
+        QVERIFY(fixture.exec(QStringLiteral(
+            "CREATE TABLE schema_migrations(version INTEGER, name TEXT, applied_at TEXT)")));
+        QVERIFY(fixture.exec(QStringLiteral(
+            "INSERT INTO schema_migrations VALUES(1, 'initial', '2026-10-19T00:00:00.000Z')")));
+    }
+    const auto error = initialize(path, migrations());
+    QVERIFY(error);
+    QCOMPARE(error->code, DatabaseErrorCode::Schema);
+}
+
+void DatabaseTest::privateFilesAndAliases() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
+    const auto registry = fixtureMigrations();
+    QVERIFY(!initialize(path, std::span(registry).first(1)));
+    QVERIFY(!initialize(path, registry));
+#ifdef Q_OS_UNIX
+    const auto publicPermissions = QFileDevice::ReadGroup | QFileDevice::WriteGroup |
+                                   QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                                   QFileDevice::WriteOther | QFileDevice::ExeOther;
+    QCOMPARE(QFileInfo(path).permissions() & publicPermissions, QFileDevice::Permissions{});
+    const QDir backups(directory.filePath(QStringLiteral("backups")));
+    for (const auto& file : backups.entryList(QDir::Files)) {
+        QCOMPARE(QFileInfo(backups.filePath(file)).permissions() & publicPermissions,
+                 QFileDevice::Permissions{});
+    }
+    const QString hardLink = directory.filePath(QStringLiteral("hard.sqlite3"));
+    QCOMPARE(::link(QFile::encodeName(path).constData(), QFile::encodeName(hardLink).constData()),
+             0);
+    const auto linkedError = initialize(hardLink, registry);
+    QVERIFY(linkedError);
+    QCOMPARE(linkedError->code, DatabaseErrorCode::Path);
+    QVERIFY(QFile::remove(hardLink));
+#endif
+    const QString alias = directory.filePath(QStringLiteral("alias.sqlite3"));
+    if (!QFile::link(path, alias)) {
+        QSKIP("Cannot create symbolic links on this platform.");
+    }
+    StorageSession owner;
+    QVERIFY(!owner.initialize(path, registry, ignoreProgress));
+    const auto error = initialize(alias, registry);
+    QVERIFY(error);
+    QCOMPARE(error->code, DatabaseErrorCode::Locked);
+}
+
+void DatabaseTest::specialFilesAreRejected() {
+#ifdef Q_OS_UNIX
+    QTemporaryDir directory;
+    const QString pipe = directory.filePath(QStringLiteral("pipe.sqlite3"));
+    QCOMPARE(::mkfifo(QFile::encodeName(pipe).constData(), 0600), 0);
+    const auto error = initialize(pipe, migrations());
+    QVERIFY(error);
+    QCOMPARE(error->code, DatabaseErrorCode::Path);
+#else
+    QSKIP("Named pipe fixture is Unix-specific.");
+#endif
+}
+
+void DatabaseTest::boundValuesCannotInjectSql() {
+    QTemporaryDir directory;
+    // Quotes and SQL punctuation are ordinary filename/name data, never executable SQL.
+    const QString path =
+        directory.filePath(QStringLiteral("library'; DROP TABLE schema_migrations;--.sqlite3"));
+    auto registry = fixtureMigrations();
+    registry[1].name = QStringLiteral("second'); DROP TABLE schema_migrations;--");
+    QVERIFY(!initialize(path, std::span(registry).first(1)));
+    QVERIFY(!initialize(path, registry));
+    QVERIFY(!initialize(path, registry));
+    FixtureConnection fixture(path);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")).toInt(), 3);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM fixture_data")).toInt(), 1);
+}
+
+void DatabaseTest::privateFileCannotOverwriteExistingData() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("existing"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write("preserved"), 9);
+    file.close();
+    QVERIFY(createPrivateFile(path));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), QByteArray("preserved"));
+}
+
+void DatabaseTest::legacyPermissionsAreRestricted() {
+#ifdef Q_OS_UNIX
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("legacy.sqlite3"));
+    QVERIFY(!initialize(path, migrations()));
+    FixtureConnection writer(path);
+    QVERIFY(writer.exec(QStringLiteral("PRAGMA wal_autocheckpoint=0")));
+    QVERIFY(writer.exec(QStringLiteral("UPDATE schema_migrations SET name='initial'")));
+    for (const auto& file : {path, path + QStringLiteral("-wal"), path + QStringLiteral("-shm")}) {
+        QVERIFY(QFile::setPermissions(file, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                                QFileDevice::ReadGroup | QFileDevice::ReadOther));
+    }
+    QVERIFY(!initialize(path, migrations()));
+    for (const auto& file : {path, path + QStringLiteral("-wal"), path + QStringLiteral("-shm")}) {
+        QCOMPARE(QFileInfo(file).permissions() & (QFileDevice::ReadGroup | QFileDevice::ReadOther),
+                 QFileDevice::Permissions{});
+    }
+#else
+    QSKIP("Unix permission regression fixture.");
+#endif
 }
 
 void DatabaseTest::unrecognizedDatabaseIsPreserved() {

@@ -2,6 +2,7 @@
 #include "ui/StartupWindow.h"
 
 #include <QApplication>
+#include <QEvent>
 #include <QFile>
 #include <QLabel>
 #include <QSignalSpy>
@@ -18,6 +19,7 @@ class StartupTest final : public QObject {
     void initializesAndCloses();
     void failureShowsDiagnostic();
     void closeDuringStartup();
+    void quitDuringStartup();
 };
 
 void StartupTest::initializesAndCloses() {
@@ -66,6 +68,19 @@ void StartupTest::closeDuringStartup() {
     startup.start(directory.filePath(QStringLiteral("library.sqlite3")));
     window.close();
     QTRY_COMPARE(finished.count(), 1);
+}
+
+void StartupTest::quitDuringStartup() {
+    QTemporaryDir directory;
+    StartupWindow window;
+    StartupCoordinator startup(window);
+    QSignalSpy finished(&startup, &StartupCoordinator::finished);
+    window.show();
+    startup.start(directory.filePath(QStringLiteral("library.sqlite3")));
+    QEvent quit(QEvent::Quit);
+    QCoreApplication::sendEvent(QCoreApplication::instance(), &quit);
+    QTRY_COMPARE(finished.count(), 1);
+    window.close();
 }
 
 int main(int argc, char* argv[]) {

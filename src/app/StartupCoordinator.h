@@ -23,9 +23,13 @@ class StartupCoordinator final : public QObject {
   signals:
     void finished();
 
+  protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
   private:
     persistence::Database database_;
     bool stopping_ = false;
+    bool stopped_ = false;
 };
 
 } // namespace chess_review::app

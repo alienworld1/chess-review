@@ -69,7 +69,7 @@ void Database::initialize(const QString& databasePath) {
     impl_->worker = new detail::StorageWorker;
     impl_->worker->moveToThread(&impl_->thread);
     connect(&impl_->thread, &QThread::finished, impl_->worker, &QObject::deleteLater);
-    connect(&impl_->thread, &QThread::finished, this, &Database::closed, Qt::QueuedConnection);
+    connect(&impl_->thread, &QThread::finished, this, &Database::finishClose, Qt::QueuedConnection);
     connect(
         impl_->worker, &detail::StorageWorker::progress, this,
         [this](const QString& message) {
@@ -111,6 +111,17 @@ void Database::close() {
         return;
     }
     QMetaObject::invokeMethod(impl_->worker, &detail::StorageWorker::close, Qt::QueuedConnection);
+}
+
+void Database::finishClose() {
+    // finished() precedes native thread-local cleanup. Poll a nonblocking join so closed()
+    // means the thread is fully gone, without waiting on it in the GUI thread.
+    if (!impl_->thread.wait(0)) {
+        QTimer::singleShot(5, this, &Database::finishClose);
+        return;
+    }
+    impl_->worker = nullptr;
+    emit closed();
 }
 
 } // namespace chess_review::persistence

@@ -1,5 +1,8 @@
 #include "persistence/private/Migrations.h"
 
+#include "persistence/private/PrivateFile.h"
+#include "persistence/private/SchemaHistory.h"
+
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
@@ -24,7 +27,8 @@ std::optional<QString> verifyBackup(const QString& path) {
             error = backup.lastError().text();
         } else {
             QSqlQuery query(backup);
-            if (!query.exec(QStringLiteral("PRAGMA integrity_check")) || !query.next() ||
+            if (!query.exec(QStringLiteral("PRAGMA trusted_schema = OFF")) ||
+                !query.exec(QStringLiteral("PRAGMA integrity_check(1)")) || !query.next() ||
                 query.value(0).toString() != QStringLiteral("ok")) {
                 error = query.lastError().isValid()
                             ? query.lastError().text()
@@ -56,82 +60,34 @@ std::optional<DatabaseError> migrate(QSqlDatabase& database, const QString& path
         return DatabaseError{code, operation,  detail, sqlError.nativeErrorCode(),
                              path, backupPath, version};
     };
-    const auto schemaFailure = [&](const QString& detail) {
-        return failure(DatabaseErrorCode::Schema, QStringLiteral("Validate schema history"),
-                       detail);
-    };
-    if (registry.empty()) {
-        return schemaFailure(QStringLiteral("No schema migrations are registered."));
+    progress(QStringLiteral("Checking database schema…"));
+    const auto history = readSchemaVersion(database, path, registry);
+    if (const auto* error = std::get_if<DatabaseError>(&history)) {
+        return *error;
     }
-    int expectedVersion = 1;
-    for (const auto& migration : registry) {
-        if (migration.version != expectedVersion || migration.name.isEmpty() ||
-            migration.statements.isEmpty()) {
-            return schemaFailure(
-                QStringLiteral("The migration registry is not contiguous and valid."));
+    const int currentVersion = std::get<int>(history);
+
+    // Repair permissive files created by earlier versions, including live WAL contents.
+    for (const auto& file : {path, path + QStringLiteral("-wal"), path + QStringLiteral("-shm")}) {
+        if (QFileInfo::exists(file)) {
+            if (const auto error = restrictFilePermissions(file)) {
+                return failure(DatabaseErrorCode::Path, QStringLiteral("Protect database file"),
+                               *error);
+            }
         }
-        ++expectedVersion;
     }
 
-    progress(QStringLiteral("Checking database schema…"));
-    int currentVersion = 0;
-    {
-        QSqlQuery query(database);
-        if (!query.exec(QStringLiteral("SELECT name, type FROM sqlite_schema "
-                                       "WHERE name NOT GLOB 'sqlite_*'"))) {
-            return failure(DatabaseErrorCode::Schema, QStringLiteral("Read database schema"),
-                           query.lastError().text(), query.lastError());
-        }
-        bool hasObjects = false;
-        bool hasLedger = false;
-        while (query.next()) {
-            hasObjects = true;
-            hasLedger =
-                hasLedger || (query.value(0).toString() == QStringLiteral("schema_migrations") &&
-                              query.value(1).toString() == QStringLiteral("table"));
-        }
-        if (query.lastError().isValid()) {
-            return schemaFailure(query.lastError().text());
-        }
-        query.finish();
-        if (hasObjects && !hasLedger) {
-            return schemaFailure(
-                QStringLiteral("The database has no recognized migration history."));
-        }
-        if (hasLedger) {
-            if (!query.exec(QStringLiteral("SELECT version, name, applied_at, typeof(version) "
-                                           "FROM schema_migrations ORDER BY version"))) {
-                return schemaFailure(query.lastError().text());
-            }
-            while (query.next()) {
-                bool validVersion = false;
-                const int version = query.value(0).toInt(&validVersion);
-                if (!validVersion || query.value(3).toString() != QStringLiteral("integer") ||
-                    version != currentVersion + 1) {
-                    return schemaFailure(
-                        QStringLiteral("Migration history contains invalid versions or gaps."));
-                }
-                if (version > registry.back().version) {
-                    return schemaFailure(
-                        QStringLiteral("This database requires a newer application version."));
-                }
-                const auto& migration = registry[static_cast<std::size_t>(version - 1)];
-                if (query.value(1).toString() != migration.name ||
-                    !QDateTime::fromString(query.value(2).toString(), Qt::ISODateWithMs)
-                         .isValid()) {
-                    return schemaFailure(
-                        QStringLiteral("Migration history has invalid names or timestamps."));
-                }
-                currentVersion = version;
-            }
-            if (query.lastError().isValid()) {
-                return schemaFailure(query.lastError().text());
-            }
-            if (currentVersion == 0) {
-                return schemaFailure(QStringLiteral("The migration ledger is empty."));
-            }
-        }
+    // Change persistent settings only after recognizing and validating the database.
+    QSqlQuery configuration(database);
+    if (!configuration.exec(QStringLiteral("PRAGMA journal_mode = WAL")) || !configuration.next() ||
+        configuration.value(0).toString() != QStringLiteral("wal")) {
+        return failure(DatabaseErrorCode::Configuration, QStringLiteral("Enable WAL"),
+                       configuration.lastError().isValid()
+                           ? configuration.lastError().text()
+                           : QStringLiteral("SQLite did not enable WAL mode."),
+                       configuration.lastError());
     }
+    configuration.finish();
     if (currentVersion == registry.back().version) {
         return std::nullopt;
     }
@@ -150,6 +106,10 @@ std::optional<DatabaseError> migrate(QSqlDatabase& database, const QString& path
                                    .arg(QDateTime::currentDateTimeUtc().toString(
                                             QStringLiteral("yyyyMMddTHHmmsszzzZ")),
                                         QUuid::createUuid().toString(QUuid::Id128)));
+        if (const auto error = createPrivateFile(candidate)) {
+            return failure(DatabaseErrorCode::Backup, QStringLiteral("Reserve backup file"),
+                           *error);
+        }
         QSqlQuery query(database);
         if (!query.prepare(QStringLiteral("VACUUM INTO ?"))) {
             return failure(DatabaseErrorCode::Backup, QStringLiteral("Prepare backup"),
@@ -161,10 +121,11 @@ std::optional<DatabaseError> migrate(QSqlDatabase& database, const QString& path
                            query.lastError().text(), query.lastError());
         }
         query.finish();
-        backupPath = candidate;
         if (const auto error = verifyBackup(candidate)) {
             return failure(DatabaseErrorCode::Backup, QStringLiteral("Verify backup"), *error);
         }
+        // Only a successfully verified snapshot is advertised as a recovery backup.
+        backupPath = candidate;
     }
 
     for (const auto& migration : registry) {
@@ -199,7 +160,7 @@ std::optional<DatabaseError> migrate(QSqlDatabase& database, const QString& path
         query.addBindValue(migration.version);
         query.addBindValue(migration.name);
         query.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
-        if (!query.exec()) {
+        if (!query.exec() || query.numRowsAffected() != 1) {
             return rollbackFailure(QStringLiteral("Record migration"), query.lastError());
         }
         query.finish();

@@ -14,6 +14,8 @@ add_library(chess_review_persistence STATIC
     src/persistence/Database.cpp
     src/persistence/private/StorageSession.cpp
     src/persistence/private/Migrations.cpp
+    src/persistence/private/SchemaHistory.cpp
+    src/persistence/private/PrivateFile.cpp
     src/persistence/migrations/001_initial.cpp
 )
 target_include_directories(chess_review_persistence PUBLIC src)
