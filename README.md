@@ -34,7 +34,7 @@ and Ninja handle the actual build.
 | `make format` | Format C++ source |
 | `make format-check` | Verify C++ formatting |
 | `make lint` | Build and run the curated clang-tidy checks |
-| `make test` | Build and run the persistence and startup tests through CTest |
+| `make test` | Build and run persistence, startup, and application-path tests through CTest |
 
 Builds are incremental. Debug and release outputs live in `build/dev` and
 `build/release`. `build/dev/compile_commands.json` is available for C++ editors.
@@ -88,6 +88,49 @@ cmake --preset dev
 cmake --build --preset dev
 cmake --build --preset dev --target run
 ```
+
+## Application storage paths
+
+`AppPaths` resolves application-specific locations through `QStandardPaths` after
+the application name is set to `chess-review`, without an organization prefix.
+On Linux the layout is:
+
+| Purpose | Qt location | Linux default | Contents |
+| --- | --- | --- | --- |
+| Durable data | `AppLocalDataLocation` | `~/.local/share/chess-review/` | `chess-review.sqlite3`, migration `backups/` |
+| Configuration | `AppConfigLocation` | `~/.config/chess-review/` | Reserved `config.toml` |
+| Disposable cache | `CacheLocation` | `~/.cache/chess-review/` | Reserved `logs/` and `transient/` |
+
+Qt honors `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME`, using its
+standard defaults when unset or empty. Other platforms use Qt's native mappings;
+data uses the local rather than roaming location on Windows.
+
+Resolving paths creates nothing. Each subsystem creates its directory when it
+first writes there; currently only database startup does so, on the storage
+thread. Configuration parsing, UI-state persistence through `QSettings`, logging,
+and filesystem cache management are not implemented yet. Product configuration
+will use TOML, while `QSettings` is reserved for UI-local state. There are no
+placeholder configuration files or unused directories. SQL migrations remain
+compiled into the application, without an on-disk `migrations/` directory.
+
+Saved engine analysis belongs in the durable SQLite database, so clearing the
+filesystem cache must not remove saved analysis. Database failures are reported
+explicitly; the app never silently switches to temporary or alternative storage.
+Existing directory permission behavior is preserved, along with the private file
+protections described below. No existing data is relocated.
+
+Development launches share the installed application's storage locations. To
+isolate a manual run on Linux, supply temporary XDG roots explicitly:
+
+```sh
+storage_root=$(mktemp -d)
+XDG_DATA_HOME="$storage_root/data" \
+XDG_CONFIG_HOME="$storage_root/config" \
+XDG_CACHE_HOME="$storage_root/cache" make run
+# After closing the app, inspect the files under "$storage_root" as needed.
+```
+
+Tests use temporary locations and do not touch the normal user database.
 
 ## Local database
 
@@ -172,6 +215,10 @@ make test
 # Or, after configuring and building:
 ctest --test-dir build/dev --output-on-failure
 ```
+
+Path tests cover Linux XDG overrides and defaults, spaces/Unicode, and side-effect-free
+resolution. Startup tests also verify lazy creation and explicit failure for an
+unusable resolved data directory.
 
 Persistence tests use temporary databases and internal fixture migrations to cover
 initialization, upgrades, rollback, WAL-aware backups, invalid history, lock

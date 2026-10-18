@@ -21,6 +21,10 @@ add_library(chess_review_persistence STATIC
 target_include_directories(chess_review_persistence PUBLIC src)
 target_link_libraries(chess_review_persistence PUBLIC Qt6::Core PRIVATE Qt6::Sql)
 
+add_library(chess_review_app_paths STATIC src/app/AppPaths.cpp)
+target_include_directories(chess_review_app_paths PUBLIC src)
+target_link_libraries(chess_review_app_paths PUBLIC Qt6::Core)
+
 add_library(chess_review_startup STATIC
     src/app/StartupCoordinator.cpp
     src/ui/StartupWindow.cpp
@@ -34,7 +38,7 @@ set_target_properties(chess_review_app PROPERTIES
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
-target_link_libraries(chess_review_app PRIVATE chess_review_startup)
+target_link_libraries(chess_review_app PRIVATE chess_review_startup chess_review_app_paths)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -44,13 +48,16 @@ if(BUILD_TESTING)
     add_test(NAME persistence COMMAND persistence_tests)
 
     add_executable(startup_tests tests/qt/StartupTest.cpp)
-    target_link_libraries(startup_tests PRIVATE chess_review_startup Qt6::Test)
+    target_link_libraries(startup_tests PRIVATE chess_review_startup chess_review_app_paths Qt6::Test)
     add_test(NAME startup COMMAND startup_tests)
     set_tests_properties(startup PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    set_tests_properties(persistence startup PROPERTIES TIMEOUT 30)
+    add_executable(app_paths_tests tests/qt/AppPathsTest.cpp)
+    target_link_libraries(app_paths_tests PRIVATE chess_review_app_paths Qt6::Test)
+    add_test(NAME app_paths COMMAND app_paths_tests)
+    set_tests_properties(persistence startup app_paths PROPERTIES TIMEOUT 30)
 endif()
 
-foreach(target chess_review_app chess_review_startup chess_review_persistence persistence_tests startup_tests)
+foreach(target chess_review_app chess_review_app_paths chess_review_startup chess_review_persistence persistence_tests startup_tests app_paths_tests)
     if(TARGET ${target})
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             target_compile_options(${target} PRIVATE

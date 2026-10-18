@@ -1,14 +1,18 @@
+#include "app/AppPaths.h"
 #include "app/StartupCoordinator.h"
 #include "ui/StartupWindow.h"
 
 #include <QApplication>
+#include <QDir>
 #include <QEvent>
 #include <QFile>
+#include <QFileInfo>
 #include <QLabel>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 
+using chess_review::app::AppPaths;
 using chess_review::app::StartupCoordinator;
 using chess_review::ui::StartupWindow;
 
@@ -20,7 +24,62 @@ class StartupTest final : public QObject {
     void failureShowsDiagnostic();
     void closeDuringStartup();
     void quitDuringStartup();
+    void resolvedPathsInitializeLazily();
+    void unusableDataDirectoryFails();
 };
+
+void StartupTest::resolvedPathsInitializeLazily() {
+#ifndef Q_OS_LINUX
+    QSKIP("Linux XDG startup test");
+#else
+    const auto paths = AppPaths::resolve();
+    QVERIFY(!QFileInfo::exists(paths.dataDirectory));
+    StartupWindow window;
+    StartupCoordinator startup(window);
+    QSignalSpy finished(&startup, &StartupCoordinator::finished);
+    const auto* status = window.findChild<QLabel*>(QStringLiteral("startupStatus"));
+    QVERIFY(status);
+    window.show();
+    startup.start(paths.databasePath());
+    QTRY_COMPARE(status->text(), QStringLiteral("Ready"));
+    QVERIFY(QFileInfo::exists(paths.databasePath()));
+    QVERIFY(!QFileInfo::exists(paths.configDirectory));
+    QVERIFY(!QFileInfo::exists(paths.cacheDirectory));
+    window.close();
+    QTRY_COMPARE(finished.count(), 1);
+    QVERIFY(QDir(paths.dataDirectory).removeRecursively());
+#endif
+}
+
+void StartupTest::unusableDataDirectoryFails() {
+#ifndef Q_OS_LINUX
+    QSKIP("Linux XDG startup test");
+#else
+    const auto paths = AppPaths::resolve();
+    QVERIFY(QDir().mkpath(QFileInfo(paths.dataDirectory).absolutePath()));
+    QFile obstruction(paths.dataDirectory);
+    QVERIFY(obstruction.open(QIODevice::WriteOnly | QIODevice::NewOnly));
+    obstruction.close();
+    StartupWindow window;
+    StartupCoordinator startup(window);
+    QSignalSpy finished(&startup, &StartupCoordinator::finished);
+    const auto* status = window.findChild<QLabel*>(QStringLiteral("startupStatus"));
+    const auto* diagnostic = window.findChild<QLabel*>(QStringLiteral("startupDiagnostic"));
+    QVERIFY(status);
+    QVERIFY(diagnostic);
+    window.show();
+    startup.start(paths.databasePath());
+    QTRY_COMPARE(status->text(), QStringLiteral("Could not initialize local storage"));
+    QVERIFY(diagnostic->text().contains(paths.databasePath()));
+    QVERIFY(!QFileInfo::exists(paths.databasePath()));
+    QVERIFY(!QFileInfo::exists(paths.configDirectory));
+    QVERIFY(!QFileInfo::exists(paths.cacheDirectory));
+    QVERIFY(!QFileInfo::exists(QDir::homePath() + QStringLiteral("/.local/share/chess-review")));
+    QVERIFY(!QFileInfo::exists(QStringLiteral("chess-review.sqlite3")));
+    window.close();
+    QTRY_COMPARE(finished.count(), 1);
+#endif
+}
 
 void StartupTest::initializesAndCloses() {
     QTemporaryDir directory;
@@ -84,6 +143,16 @@ void StartupTest::quitDuringStartup() {
 }
 
 int main(int argc, char* argv[]) {
+    QTemporaryDir home;
+    if (!home.isValid()) {
+        return 1;
+    }
+#ifdef Q_OS_LINUX
+    qputenv("HOME", QFile::encodeName(home.path()));
+    qputenv("XDG_DATA_HOME", QFile::encodeName(home.filePath(QStringLiteral("data"))));
+    qputenv("XDG_CONFIG_HOME", QFile::encodeName(home.filePath(QStringLiteral("config"))));
+    qputenv("XDG_CACHE_HOME", QFile::encodeName(home.filePath(QStringLiteral("cache"))));
+#endif
     QApplication application(argc, argv);
     application.setApplicationName(QStringLiteral("chess-review"));
     application.setQuitOnLastWindowClosed(false);

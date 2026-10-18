@@ -18,7 +18,6 @@ class StartupCoordinator final : public QObject {
     explicit StartupCoordinator(ui::StartupWindow& window, QObject* parent = nullptr);
     void start(const QString& databasePath);
     void shutdown();
-    static QString defaultDatabasePath();
 
   signals:
     void finished();

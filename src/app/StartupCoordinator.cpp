@@ -3,9 +3,7 @@
 #include "ui/StartupWindow.h"
 
 #include <QCoreApplication>
-#include <QDir>
 #include <QEvent>
-#include <QStandardPaths>
 
 namespace chess_review::app {
 
@@ -40,13 +38,6 @@ bool StartupCoordinator::eventFilter(QObject* watched, QEvent* event) {
         return true;
     }
     return QObject::eventFilter(watched, event);
-}
-
-QString StartupCoordinator::defaultDatabasePath() {
-    const QString directory =
-        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    return directory.isEmpty() ? QString{}
-                               : QDir(directory).filePath(QStringLiteral("chess-review.sqlite3"));
 }
 
 void StartupCoordinator::start(const QString& databasePath) { database_.initialize(databasePath); }
