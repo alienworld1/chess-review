@@ -29,7 +29,8 @@ StorageSession::~StorageSession() {
 
 std::optional<DatabaseError> StorageSession::initialize(const QString& path,
                                                         std::span<const Migration> registry,
-                                                        const Progress& progress) {
+                                                        const Progress& progress,
+                                                        const Observe& observe) {
     const auto failure = [&path](DatabaseErrorCode code, const QString& operation,
                                  const QString& detail, const QString& nativeCode = {}) {
         return DatabaseError{code, operation, detail, nativeCode, path, {}, std::nullopt};
@@ -131,7 +132,7 @@ std::optional<DatabaseError> StorageSession::initialize(const QString& path,
     if (auto error = configure(QStringLiteral("PRAGMA busy_timeout"), 5000)) {
         return error;
     }
-    return migrate(database_, canonicalPath, registry, progress);
+    return migrate(database_, canonicalPath, registry, progress, observe);
 }
 
 } // namespace chess_review::persistence::detail

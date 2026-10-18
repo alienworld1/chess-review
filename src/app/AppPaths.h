@@ -17,6 +17,7 @@ struct AppPaths {
     // Writers must handle that case and report filesystem failures at the write boundary.
     QString databasePath() const;
     QString configFilePath() const;
+    QString logDirectory() const;
 };
 
 } // namespace chess_review::app

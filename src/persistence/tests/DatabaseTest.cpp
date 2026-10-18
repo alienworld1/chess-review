@@ -98,6 +98,7 @@ class DatabaseTest final : public QObject {
 
   private slots:
     void init() { QTest::failOnWarning(); }
+    void storageEventsAreTypedAndTruthful();
     void freshAndRepeatInitialization();
     void sequentialUpgradeAndWalBackup();
     void migrationFailureRollsBackAndRetainsBackup();
@@ -121,6 +122,57 @@ class DatabaseTest final : public QObject {
     void closeDuringInitialization();
     void closeBeforeInitialization();
 };
+
+void DatabaseTest::storageEventsAreTypedAndTruthful() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
+    auto registry = fixtureMigrations();
+    QVERIFY(!initialize(path, std::span(registry).first(1)));
+    std::vector<std::pair<StorageEvent, int>> events;
+    const Observe observe = [&](StorageEvent event, int version) {
+        events.emplace_back(event, version);
+    };
+    {
+        StorageSession session;
+        QVERIFY(!session.initialize(path, registry, ignoreProgress, observe));
+    }
+    const std::vector<std::pair<StorageEvent, int>> expected{
+        {StorageEvent::SchemaChecked, 1},      {StorageEvent::BackupStarted, 1},
+        {StorageEvent::BackupVerified, 1},     {StorageEvent::MigrationStarted, 2},
+        {StorageEvent::MigrationCompleted, 2}, {StorageEvent::MigrationStarted, 3},
+        {StorageEvent::MigrationCompleted, 3}};
+    QVERIFY(events == expected);
+    events.clear();
+    registry.push_back(
+        {4, QStringLiteral("broken"), {QStringLiteral("INSERT INTO missing_table VALUES (1)")}});
+    {
+        StorageSession session;
+        const auto error = session.initialize(path, registry, ignoreProgress, observe);
+        QVERIFY(error);
+        QCOMPARE(error->code, DatabaseErrorCode::Migration);
+    }
+    const std::vector<std::pair<StorageEvent, int>> failureExpected{
+        {StorageEvent::SchemaChecked, 3},
+        {StorageEvent::BackupStarted, 3},
+        {StorageEvent::BackupVerified, 3},
+        {StorageEvent::MigrationStarted, 4}};
+    QVERIFY(events == failureExpected);
+    // A backup failure must never advertise a verified snapshot or a migration.
+    const QString second = directory.filePath(QStringLiteral("second/library.sqlite3"));
+    QVERIFY(!initialize(second, std::span(registry).first(1)));
+    QFile obstruction(directory.filePath(QStringLiteral("second/backups")));
+    QVERIFY(obstruction.open(QIODevice::WriteOnly));
+    obstruction.close();
+    events.clear();
+    StorageSession session;
+    const auto error = session.initialize(second, registry, ignoreProgress, observe);
+    QVERIFY(error);
+    QCOMPARE(error->code, DatabaseErrorCode::Backup);
+    QVERIFY(error->backupPath.isEmpty());
+    const std::vector<std::pair<StorageEvent, int>> backupExpected{
+        {StorageEvent::SchemaChecked, 1}, {StorageEvent::BackupStarted, 1}};
+    QVERIFY(events == backupExpected);
+}
 
 void DatabaseTest::freshAndRepeatInitialization() {
     QTemporaryDir directory;

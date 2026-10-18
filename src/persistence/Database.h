@@ -7,9 +7,22 @@
 #include <memory>
 #include <optional>
 
+namespace chess_review::diagnostics {
+class Logger;
+}
+
 namespace chess_review::persistence {
 
-enum class DatabaseErrorCode { Path, Locked, Open, Configuration, Schema, Backup, Migration };
+// Values are stable diagnostic identifiers; do not renumber.
+enum class DatabaseErrorCode {
+    Path = 0,
+    Locked = 1,
+    Open = 2,
+    Configuration = 3,
+    Schema = 4,
+    Backup = 5,
+    Migration = 6
+};
 
 struct DatabaseError {
     DatabaseErrorCode code{};
@@ -29,6 +42,8 @@ class Database final : public QObject {
 
   public:
     explicit Database(QObject* parent = nullptr);
+    // The injected logger must outlive closed(); a default instance has no logging.
+    explicit Database(diagnostics::Logger& logger, QObject* parent = nullptr);
     ~Database() override;
 
     void initialize(const QString& databasePath);

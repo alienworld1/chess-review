@@ -20,8 +20,9 @@ class StorageSession final {
     StorageSession(const StorageSession&) = delete;
     StorageSession& operator=(const StorageSession&) = delete;
 
-    std::optional<DatabaseError>
-    initialize(const QString& path, std::span<const Migration> registry, const Progress& progress);
+    std::optional<DatabaseError> initialize(const QString& path,
+                                            std::span<const Migration> registry,
+                                            const Progress& progress, const Observe& observe = {});
 
   private:
     QString connectionName_;

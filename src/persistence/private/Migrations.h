@@ -20,6 +20,15 @@ struct Migration {
     QStringList statements;
 };
 
+enum class StorageEvent {
+    SchemaChecked,
+    BackupStarted,
+    BackupVerified,
+    MigrationStarted,
+    MigrationCompleted
+};
+using Observe = std::function<void(StorageEvent, int)>;
+
 using Progress = std::function<void(const QString&)>;
 
 Migration initialMigration();
@@ -27,6 +36,7 @@ const std::vector<Migration>& migrations();
 
 // Internal seam for migration fixtures; never exposed through Database.
 std::optional<DatabaseError> migrate(QSqlDatabase& database, const QString& path,
-                                     std::span<const Migration> registry, const Progress& progress);
+                                     std::span<const Migration> registry, const Progress& progress,
+                                     const Observe& observe = {});
 
 } // namespace chess_review::persistence::detail

@@ -1,5 +1,7 @@
 #include "app/StartupCoordinator.h"
 
+#include "app/Diagnostic.h"
+#include "diagnostics/Logger.h"
 #include "ui/StartupWindow.h"
 
 #include <QCoreApplication>
@@ -9,27 +11,39 @@ namespace chess_review::app {
 
 StartupCoordinator::StartupCoordinator(ui::StartupWindow& window, QObject* parent)
     : QObject(parent) {
+    connectWindow(window);
+}
+
+StartupCoordinator::StartupCoordinator(ui::StartupWindow& window, diagnostics::Logger& logger,
+                                       QObject* parent)
+    : QObject(parent), logger_(&logger), database_(logger) {
+    window.setDiagnostics(logger);
+    connect(&logger, &diagnostics::Logger::closed, this, &StartupCoordinator::finish);
+    connectWindow(window);
+}
+
+void StartupCoordinator::connectWindow(ui::StartupWindow& window) {
     QCoreApplication::instance()->installEventFilter(this);
     connect(&database_, &persistence::Database::progress, &window,
             &ui::StartupWindow::showProgress);
     connect(&database_, &persistence::Database::ready, &window, &ui::StartupWindow::showReady);
     connect(&database_, &persistence::Database::failed, &window,
             [&window](const persistence::DatabaseError& error) {
-                QString diagnostic = QStringLiteral("%1: %2\n\nDatabase: %3")
-                                         .arg(error.operation, error.detail, error.databasePath);
-                if (error.migrationVersion) {
-                    diagnostic += QStringLiteral("\nMigration: %1").arg(*error.migrationVersion);
-                }
-                if (!error.backupPath.isEmpty()) {
-                    diagnostic += QStringLiteral("\nPre-upgrade backup: %1").arg(error.backupPath);
-                }
-                window.showFailure(diagnostic);
+                window.showFailure(storageDiagnostic(error));
             });
     connect(&window, &ui::StartupWindow::closeRequested, this, &StartupCoordinator::shutdown);
     connect(&database_, &persistence::Database::closed, this, [this] {
-        stopped_ = true;
-        emit finished();
+        if (logger_) {
+            logger_->close();
+        } else {
+            finish();
+        }
     });
+}
+
+void StartupCoordinator::finish() {
+    stopped_ = true;
+    emit finished();
 }
 
 bool StartupCoordinator::eventFilter(QObject* watched, QEvent* event) {

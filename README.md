@@ -89,6 +89,51 @@ cmake --build --preset dev
 cmake --build --preset dev --target run
 ```
 
+## Diagnostics and troubleshooting
+
+Failures appear inline with an explanation and suggested next steps. **Show
+technical details** reveals the attempted database path, native error, and any
+verified backup path. These details can contain private information. Fix external
+conditions and relaunch to retry; the app never resets or restores a library
+on your behalf.
+
+Use **Help → Diagnostics** to inspect logging health and recent safe events.
+**Copy diagnostics** always copies a redacted report, even when private details
+are expanded. It includes app/Qt versions, session/error identifiers, safe
+metadata, and up to 200 recent events. Nothing is uploaded automatically.
+**Open log folder** is available while the local logging sink is active; opening
+the folder exposes the local files to your chosen desktop file manager.
+
+On Linux, logs default to `~/.cache/chess-review/logs/`. Qt honors the cache
+location override described below. Files `events-0.jsonl` (current) through
+`events-4.jsonl` hold newline-delimited JSON, capped at 2 MiB each (10 MiB total).
+Logs are disposable, rotate by size, and have no age-based expiry. A cooperating
+second process uses memory-only diagnostics while the log directory is locked.
+Only known log filenames rotate; unrelated cache and library files are preserved.
+
+Normal records cover session/storage lifecycle, schema version, backup/migration
+outcomes, elapsed time, and stable error codes. For extra safe intermediate events
+on one launch:
+
+```sh
+./build/dev/chess-review --debug-logging
+```
+
+Debug mode keeps the same privacy rules and size limits. Logs and copied reports
+exclude filesystem paths, native error strings, SQL, game text, personal URLs,
+and raw Qt/engine output. Framework warnings retain only normalized category,
+severity, and occurrence count. The scoped Qt handler does not forward raw text
+to the console while installed. Qt messages emitted before logging initializes
+retain Qt's normal behavior.
+
+If logs cannot be created or writing fails, one inline notice explains that recent
+diagnostics remain in memory; ordinary app use continues. Check free space, access
+to the cache directory, and other running instances. A bounded queue drops excess
+records rather than blocking the app and reports a loss count. Orderly shutdown
+drains accepted events; forced termination can lose queued records. A subsequent
+launch discards an incomplete final log line before appending. There is no crash
+capture, crash upload, or guaranteed fatal-event flush.
+
 ## Application storage paths
 
 `AppPaths` resolves application-specific locations through `QStandardPaths` after
@@ -99,16 +144,17 @@ On Linux the layout is:
 | --- | --- | --- | --- |
 | Durable data | `AppLocalDataLocation` | `~/.local/share/chess-review/` | `chess-review.sqlite3`, migration `backups/` |
 | Configuration | `AppConfigLocation` | `~/.config/chess-review/` | Reserved `config.toml` |
-| Disposable cache | `CacheLocation` | `~/.cache/chess-review/` | Reserved `logs/` and `transient/` |
+| Disposable cache | `CacheLocation` | `~/.cache/chess-review/` | Rotating `logs/`; reserved `transient/` |
 
 Qt honors `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME`, using its
 standard defaults when unset, empty, or relative. Other platforms use Qt's native mappings;
 data uses the local rather than roaming location on Windows.
 
 Resolving paths creates nothing. Each subsystem creates its directory when it
-first writes there; currently only database startup does so, on the storage
-thread. Configuration parsing, UI-state persistence through `QSettings`, logging,
-and filesystem cache management are not implemented yet. Product configuration
+first writes there. Database initialization runs on the storage thread; logging
+creates its directory on a separate writer thread. Configuration parsing, UI-state
+persistence through `QSettings`, and general filesystem cache management are not
+implemented yet. Product configuration
 will use TOML, while `QSettings` is reserved for UI-local state. There are no
 placeholder configuration files or unused directories. SQL migrations remain
 compiled into the application, without an on-disk `migrations/` directory.
@@ -234,5 +280,10 @@ Qt widget tests smoke-run the actual startup coordinator/window through readines
 failure presentation, and close during initialization. CTest runs these with Qt's
 offscreen platform plugin. Tests do not touch the normal user database.
 
-To build without test targets, configure with `-DBUILD_TESTING=OFF`.
+Logging tests exercise bounded queues and memory history, thread/process
+contention, privacy, rotation, unsafe targets, interrupted records, injected sink
+failure, concurrent producers, and Qt fatal termination. Widget tests also cover
+redacted clipboard contents, technical-detail disclosure, the diagnostics dialog,
+and storage-before-logging shutdown.
 
+To build without test targets, configure with `-DBUILD_TESTING=OFF`.

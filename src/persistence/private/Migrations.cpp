@@ -51,8 +51,8 @@ const std::vector<Migration>& migrations() {
 }
 
 std::optional<DatabaseError> migrate(QSqlDatabase& database, const QString& path,
-                                     std::span<const Migration> registry,
-                                     const Progress& progress) {
+                                     std::span<const Migration> registry, const Progress& progress,
+                                     const Observe& observe) {
     QString backupPath;
     const auto failure = [&](DatabaseErrorCode code, const QString& operation,
                              const QString& detail, const QSqlError& sqlError = {},
@@ -66,6 +66,9 @@ std::optional<DatabaseError> migrate(QSqlDatabase& database, const QString& path
         return *error;
     }
     const int currentVersion = std::get<int>(history);
+    if (observe) {
+        observe(StorageEvent::SchemaChecked, currentVersion);
+    }
 
     // Repair permissive files created by earlier versions, including live WAL contents.
     for (const auto& file : {path, path + QStringLiteral("-wal"), path + QStringLiteral("-shm")}) {
@@ -93,6 +96,9 @@ std::optional<DatabaseError> migrate(QSqlDatabase& database, const QString& path
     }
 
     if (currentVersion > 0) {
+        if (observe) {
+            observe(StorageEvent::BackupStarted, currentVersion);
+        }
         progress(QStringLiteral("Backing up database before upgrade…"));
         const QDir directory(QFileInfo(path).absolutePath());
         if (!directory.mkpath(QStringLiteral("backups"))) {
@@ -126,11 +132,17 @@ std::optional<DatabaseError> migrate(QSqlDatabase& database, const QString& path
         }
         // Only a successfully verified snapshot is advertised as a recovery backup.
         backupPath = candidate;
+        if (observe) {
+            observe(StorageEvent::BackupVerified, currentVersion);
+        }
     }
 
     for (const auto& migration : registry) {
         if (migration.version <= currentVersion) {
             continue;
+        }
+        if (observe) {
+            observe(StorageEvent::MigrationStarted, migration.version);
         }
         progress(QStringLiteral("Applying database migration %1…").arg(migration.version));
         QSqlQuery query(database);
@@ -166,6 +178,9 @@ std::optional<DatabaseError> migrate(QSqlDatabase& database, const QString& path
         query.finish();
         if (!database.commit()) {
             return rollbackFailure(QStringLiteral("Commit migration"), database.lastError());
+        }
+        if (observe) {
+            observe(StorageEvent::MigrationCompleted, migration.version);
         }
     }
     return std::nullopt;
