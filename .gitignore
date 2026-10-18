@@ -1,0 +1,6 @@
+AGENTS.md
+agent-docs
+
+/build/
+/.tools/
+/CMakeUserPresets.json
