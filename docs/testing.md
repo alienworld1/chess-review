@@ -1,0 +1,126 @@
+# Testing
+
+Tests use C++20, CMake/CTest, and Qt Test. Qt 6.8 is the API baseline.
+Catch2 3.8.1 is configured for future pure C++ tests; there are no pure domain
+modules or permanent Catch2 test cases yet. Do not manufacture tests to exercise
+a framework. Use risk-based regression tests rather than a coverage quota.
+
+## Configure, build, and run
+
+```sh
+make test
+make test PRESET=release
+make test PRESET=sanitized
+```
+
+Each command configures and builds before running CTest. Equivalent direct commands:
+
+```sh
+cmake --preset dev
+cmake --build --preset dev --parallel 4
+ctest --preset dev --parallel 4
+ctest --preset dev -L persistence
+ctest --preset dev --repeat until-fail:5 --parallel 4
+```
+
+The dev, release, and sanitized configure/build/test presets use separate build
+folders. Sanitizers require GCC or Clang on Linux. To select Clang, configure a
+fresh directory with `-DCMAKE_CXX_COMPILER=clang++-18`. A compiler cannot safely be
+changed in an existing build cache. Presets use CMake 3.24-compatible syntax.
+See the README for Qt SDK selection and `CMakeUserPresets.json` overrides.
+
+All test presets show failure output and fail if no tests match, including an
+accidentally empty label/regex selection. Every Qt suite has a 30-second CTest
+limit. Component labels are `diagnostics`, `persistence`, `startup`, and
+`app_paths`; all have `qt`, and the first three also have `integration`. These
+labels describe entire suites: individual suites can cover several boundaries.
+
+Qt Test also supports selecting individual functions and data rows directly:
+
+```sh
+./build/dev/tests/app_paths_tests standardLocations:overrides-with-spaces-and-unicode
+QT_QPA_PLATFORM=offscreen ./build/dev/tests/startup_tests unusableDataDirectoryFails resolvedPathsInitializeLazily
+./build/dev/src/persistence/tests/persistence_tests closeDuringInitialization
+```
+
+CTest sets the offscreen platform only for the startup/widget suite. Direct
+widget invocation must supply it when there is no desktop display. No global
+platform override is needed for Qt Core suites.
+
+## Test ownership and safety
+
+- `tests/qt/` owns application, widget, paths, and diagnostics tests.
+- `src/persistence/tests/` owns private storage tests and SQL fixtures. Keep SQL
+  fixture creation and private migration interfaces inside this module.
+- Keep pure C++ domain tests under `tests/unit/` when domain modules exist.
+  Link only their domain target and `Catch2::Catch2WithMain`, apply
+  `chess_review_apply_options(target)`, and register with
+  `catch_discover_tests(target PROPERTIES TIMEOUT 30 LABELS unit)`.
+- Register Qt suites with `chess_review_add_qt_test(target component SOURCES ...
+  LIBRARIES ...)`; use `WIDGETS` and `INTEGRATION` only when applicable. The helper
+  applies project warnings and optional sanitizers without exporting test
+  dependencies into production targets.
+
+Tests use temporary databases/logs. The path and widget runners establish their
+working directory and Linux HOME before constructing the Qt application. Widget
+cases receive fresh XDG roots individually. Preserve this ordering: Qt can cache
+paths. Do not replace it with the normal user's application locations, and do not
+share a writable database or fixture directory across parallel tests.
+
+Use observable conditions and bounded waits for asynchronous behavior. Preserve
+orderly worker shutdown before fixture destruction. Intentional fatal conditions
+and process-wide logging probes run in subprocesses. Expected warnings must be
+handled narrowly; do not globally suppress warnings or sanitizer findings.
+
+## Catch2 dependency
+
+With `BUILD_TESTING=ON` (the default), CMake downloads the pinned release archive
+and verifies its SHA-256. The initial configure needs network access. For an
+offline build, supply an already extracted, verified Catch2 3.8.1 source tree:
+
+```sh
+cmake --preset dev -DFETCHCONTENT_SOURCE_DIR_CATCH2=/absolute/path/to/Catch2-3.8.1
+```
+
+The source override is CMake's standard FetchContent override and bypasses archive
+verification; verifying that supplied source is the developer's responsibility.
+Upstream examples and self-tests are disabled. Catch2 is not linked into the app.
+With `-DBUILD_TESTING=OFF`, neither Catch2 nor Qt Test is required, and no tests
+are registered. Use a separate build directory for this configuration.
+
+## Sanitizers and tooling
+
+`CHESS_REVIEW_SANITIZERS=ON` instruments project targets with ASan/UBSan and links
+executable runtimes; it does not instrument the prebuilt Qt SDK or Catch2.
+The sanitized test preset enables leak detection and stops on sanitizer errors.
+For a local environment that prevents LeakSanitizer from operating (for example,
+a ptrace-restricted sandbox), override only that invocation:
+
+```sh
+cmake --build --preset sanitized
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+  ctest --test-dir build/sanitized --output-on-failure --no-tests=error
+```
+
+The explicit `--test-dir` invocation avoids the test preset replacing the local
+environment override. This establishes ASan/UBSan results, not leak-check results.
+Do not commit global leak-disable settings. Investigate hosted failures; any
+external-library suppression needs a narrow match and documented evidence.
+
+`make format-check` and `make lint` inspect only project sources/tests, excluding
+downloaded dependencies. CI uses clang-format/clang-tidy 18 and the checked-in
+configurations. `CHESS_REVIEW_WARNINGS_AS_ERRORS=ON` promotes project compiler
+warnings to errors; third-party targets do not receive these project flags.
+
+## Continuous integration and desktop QA
+
+Linux CI runs GCC Debug tests on Qt 6.8.3 and 6.12.0, GCC Release tests on 6.12.0,
+and Clang 18 ASan/UBSan with leak detection on 6.12.0. Formatting and curated
+clang-tidy run with the newer Debug configuration. Failure artifacts include
+CTest logs and JUnit output when available.
+
+Offscreen widget tests exercise startup, error presentation, clipboard privacy,
+and graceful shutdown. Native desktop behavior, accessibility, Windows behavior,
+and mixed-DPI rendering still require separate release validation. Optional real
+engine compatibility tests must supplement a deterministic fake UCI engine when
+engine orchestration is implemented; this infrastructure task adds neither.

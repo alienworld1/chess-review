@@ -12,7 +12,7 @@ help:
 	@echo "make format-check Check C++ formatting"
 	@echo "make lint         Build and run clang-tidy"
 	@echo "make test         Build and run CTest"
-	@echo "Use PRESET=release for an optimized build (default: dev)"
+	@echo "Use PRESET=release or PRESET=sanitized (default: dev)"
 
 configure:
 	cmake --preset $(PRESET)
@@ -27,7 +27,7 @@ clean:
 	cmake --build --preset $(PRESET) --target clean
 
 test: build
-	ctest --test-dir build/$(PRESET) --output-on-failure
+	ctest --preset $(PRESET)
 
 format:
 	find src tests -type f \( -name '*.cpp' -o -name '*.h' \) -exec clang-format -i {} +

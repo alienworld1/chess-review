@@ -34,7 +34,8 @@ and Ninja handle the actual build.
 | `make format` | Format C++ source |
 | `make format-check` | Verify C++ formatting |
 | `make lint` | Build and run the curated clang-tidy checks |
-| `make test` | Build and run persistence, startup, and application-path tests through CTest |
+| `make test` | Build and run all four Qt Test suites through CTest |
+| `make test PRESET=sanitized` | Build and test with ASan/UBSan and leak detection (Linux) |
 
 Builds are incremental. Debug and release outputs live in `build/dev` and
 `build/release`. `build/dev/compile_commands.json` is available for C++ editors.
@@ -270,6 +271,9 @@ row counts are bounded before delivery to Qt. The ledger remains infrastructure
 metadata: future migrations must not repurpose or add triggers/indexes to it.
 
 ## Tests
+
+See [the testing guide](docs/testing.md) for presets, labels, individual case
+selection, Catch2 setup, sanitizers, and Linux CI.
 
 ```sh
 make test
