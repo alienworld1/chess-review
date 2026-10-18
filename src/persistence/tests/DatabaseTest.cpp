@@ -1,0 +1,435 @@
+#include "persistence/Database.h"
+#include "persistence/private/Migrations.h"
+#include "persistence/private/StorageSession.h"
+
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QFileInfo>
+#include <QSignalSpy>
+#include <QSqlDatabase>
+#include <QSqlError>
+#include <QSqlQuery>
+#include <QStringList>
+#include <QTemporaryDir>
+#include <QTest>
+#include <QThread>
+#include <QTimer>
+#include <QUuid>
+#include <QVariant>
+
+#include <optional>
+#include <span>
+#include <vector>
+
+using namespace chess_review::persistence;
+using namespace chess_review::persistence::detail;
+
+namespace {
+
+class FixtureConnection {
+  public:
+    explicit FixtureConnection(const QString& path) {
+        name_ = QUuid::createUuid().toString();
+        database_ = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name_);
+        database_.setDatabaseName(path);
+        if (!database_.open()) {
+            qFatal("Cannot open test fixture: %s", qPrintable(database_.lastError().text()));
+        }
+    }
+
+    ~FixtureConnection() {
+        database_.close();
+        database_ = QSqlDatabase();
+        QSqlDatabase::removeDatabase(name_);
+    }
+
+    bool exec(const QString& statement) {
+        QSqlQuery query(database_);
+        return query.exec(statement);
+    }
+
+    QVariant scalar(const QString& statement) {
+        QSqlQuery query(database_);
+        if (!query.exec(statement) || !query.next()) {
+            return {};
+        }
+        return query.value(0);
+    }
+
+  private:
+    QString name_;
+    QSqlDatabase database_;
+};
+
+const Progress ignoreProgress = [](const QString&) {};
+
+std::vector<Migration> fixtureMigrations() {
+    return {
+        initialMigration(),
+        {2,
+         QStringLiteral("fixture_data"),
+         {QStringLiteral("CREATE TABLE fixture_data (id INTEGER PRIMARY KEY, value TEXT NOT NULL)"),
+          QStringLiteral("INSERT INTO fixture_data VALUES (1, 'preserved')")}},
+        {3,
+         QStringLiteral("fixture_index"),
+         {QStringLiteral("CREATE INDEX fixture_value ON fixture_data(value)")}}};
+}
+
+std::optional<DatabaseError> initialize(const QString& path, std::span<const Migration> registry) {
+    StorageSession session;
+    return session.initialize(path, registry, ignoreProgress);
+}
+
+DatabaseError signalError(const QSignalSpy& spy) {
+    return qvariant_cast<DatabaseError>(spy.at(0).at(0));
+}
+
+} // namespace
+
+class DatabaseTest final : public QObject {
+    Q_OBJECT
+
+  private slots:
+    void init() { QTest::failOnWarning(); }
+    void freshAndRepeatInitialization();
+    void sequentialUpgradeAndWalBackup();
+    void migrationFailureRollsBackAndRetainsBackup();
+    void invalidHistory_data();
+    void invalidHistory();
+    void invalidRegistry();
+    void unrecognizedDatabaseIsPreserved();
+    void initialMigrationFailureIsAtomic();
+    void backupFailurePreventsUpgrade();
+    void invalidPathsAndCorruption();
+    void lockContention();
+    void asynchronousLifecycle();
+    void busyTimeoutKeepsGuiResponsive();
+    void closeDuringInitialization();
+    void closeBeforeInitialization();
+};
+
+void DatabaseTest::freshAndRepeatInitialization() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("nested/library.sqlite3"));
+    const auto connectionsBefore = QSqlDatabase::connectionNames();
+    {
+        StorageSession session;
+        QVERIFY(!session.initialize(path, migrations(), ignoreProgress));
+        QStringList names = QSqlDatabase::connectionNames();
+        for (const auto& existing : connectionsBefore) {
+            names.removeAll(existing);
+        }
+        QCOMPARE(names.size(), 1);
+        {
+            auto database = QSqlDatabase::database(names.front());
+            QSqlQuery query(database);
+            QVERIFY(query.exec(QStringLiteral("PRAGMA foreign_keys")));
+            QVERIFY(query.next());
+            QCOMPARE(query.value(0).toInt(), 1);
+            query.finish();
+            QVERIFY(query.exec(QStringLiteral("PRAGMA busy_timeout")));
+            QVERIFY(query.next());
+            QCOMPARE(query.value(0).toInt(), 5000);
+        }
+    }
+    QCOMPARE(QSqlDatabase::connectionNames(), connectionsBefore);
+    QVERIFY(!initialize(path, migrations()));
+    FixtureConnection fixture(path);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")).toInt(), 1);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT version FROM schema_migrations")).toInt(), 1);
+    QCOMPARE(fixture.scalar(QStringLiteral("PRAGMA journal_mode")).toString(),
+             QStringLiteral("wal"));
+    QCOMPARE(fixture
+                 .scalar(QStringLiteral("SELECT COUNT(*) FROM sqlite_schema "
+                                        "WHERE type='table' AND name NOT GLOB 'sqlite_*'"))
+                 .toInt(),
+             1);
+    QVERIFY(!QDir(directory.filePath(QStringLiteral("nested/backups"))).exists());
+}
+
+void DatabaseTest::sequentialUpgradeAndWalBackup() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("player's library.sqlite3"));
+    const auto registry = fixtureMigrations();
+    QVERIFY(!initialize(path, std::span(registry).first(2)));
+    FixtureConnection writer(path);
+    QVERIFY(writer.exec(QStringLiteral("PRAGMA wal_autocheckpoint = 0")));
+    QVERIFY(writer.exec(QStringLiteral("INSERT INTO fixture_data VALUES (2, 'from WAL')")));
+    QVERIFY(QFileInfo(path + QStringLiteral("-wal")).size() > 0);
+    QVERIFY(!initialize(path, registry));
+    QCOMPARE(writer.scalar(QStringLiteral("SELECT MAX(version) FROM schema_migrations")).toInt(),
+             3);
+    QCOMPARE(writer.scalar(QStringLiteral("SELECT COUNT(*) FROM fixture_data")).toInt(), 2);
+    const QDir backups(directory.filePath(QStringLiteral("backups")));
+    const auto files = backups.entryList({QStringLiteral("*.sqlite3")}, QDir::Files);
+    QCOMPARE(files.size(), 1);
+    FixtureConnection backup(backups.filePath(files.front()));
+    QCOMPARE(backup.scalar(QStringLiteral("SELECT MAX(version) FROM schema_migrations")).toInt(),
+             2);
+    QCOMPARE(backup.scalar(QStringLiteral("SELECT value FROM fixture_data WHERE id=2")).toString(),
+             QStringLiteral("from WAL"));
+    QCOMPARE(backup.scalar(QStringLiteral("PRAGMA integrity_check")).toString(),
+             QStringLiteral("ok"));
+    QVERIFY(!initialize(path, registry));
+    QCOMPARE(backups.entryList({QStringLiteral("*.sqlite3")}, QDir::Files).size(), 1);
+}
+
+void DatabaseTest::migrationFailureRollsBackAndRetainsBackup() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
+    auto registry = fixtureMigrations();
+    QVERIFY(!initialize(path, std::span(registry).first(2)));
+    registry.push_back({4,
+                        QStringLiteral("broken"),
+                        {QStringLiteral("CREATE TABLE rolled_back (id INTEGER PRIMARY KEY)"),
+                         QStringLiteral("INSERT INTO missing_table VALUES (1)")}});
+    const auto error = initialize(path, registry);
+    QVERIFY(error);
+    QCOMPARE(error->code, DatabaseErrorCode::Migration);
+    QCOMPARE(error->migrationVersion, std::optional<int>(4));
+    QVERIFY(!error->nativeCode.isEmpty());
+    QVERIFY(QFileInfo::exists(error->backupPath));
+    FixtureConnection fixture(path);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT MAX(version) FROM schema_migrations")).toInt(),
+             3);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM fixture_data")).toInt(), 1);
+    QCOMPARE(
+        fixture
+            .scalar(QStringLiteral("SELECT COUNT(*) FROM sqlite_schema WHERE name='rolled_back'"))
+            .toInt(),
+        0);
+    FixtureConnection backup(error->backupPath);
+    QCOMPARE(backup.scalar(QStringLiteral("SELECT MAX(version) FROM schema_migrations")).toInt(),
+             2);
+    registry.pop_back();
+    QVERIFY(!initialize(path, registry));
+}
+
+void DatabaseTest::invalidHistory_data() {
+    QTest::addColumn<QString>("mutation");
+    QTest::newRow("newer") << QStringLiteral(
+        "INSERT INTO schema_migrations VALUES (2, 'future', '2026-10-19T00:00:00.000Z')");
+    QTest::newRow("gap") << QStringLiteral("UPDATE schema_migrations SET version=3");
+    QTest::newRow("renamed") << QStringLiteral("UPDATE schema_migrations SET name='modified'");
+    QTest::newRow("timestamp") << QStringLiteral(
+        "UPDATE schema_migrations SET applied_at='invalid'");
+    QTest::newRow("empty") << QStringLiteral("DELETE FROM schema_migrations");
+    QTest::newRow("unrecognized") << QStringLiteral(
+        "ALTER TABLE schema_migrations RENAME TO other_data");
+    QTest::newRow("malformed") << QStringLiteral(
+        "ALTER TABLE schema_migrations RENAME COLUMN version TO wrong_column");
+}
+
+void DatabaseTest::invalidHistory() {
+    QFETCH(QString, mutation);
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
+    QVERIFY(!initialize(path, migrations()));
+    {
+        FixtureConnection fixture(path);
+        QVERIFY(fixture.exec(mutation));
+    }
+    const auto error = initialize(path, migrations());
+    QVERIFY(error);
+    QCOMPARE(error->code, DatabaseErrorCode::Schema);
+    QVERIFY(error->backupPath.isEmpty());
+    QVERIFY(QFileInfo::exists(path));
+}
+
+void DatabaseTest::invalidRegistry() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
+    auto registry = fixtureMigrations();
+    registry[1].version = 3;
+    const auto error = initialize(path, registry);
+    QVERIFY(error);
+    QCOMPARE(error->code, DatabaseErrorCode::Schema);
+    QVERIFY(!initialize(path, migrations()));
+}
+
+void DatabaseTest::unrecognizedDatabaseIsPreserved() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("other.sqlite3"));
+    {
+        FixtureConnection fixture(path);
+        // The underscore in SQLite's reserved prefix must be matched literally.
+        QVERIFY(fixture.exec(QStringLiteral("CREATE TABLE sqliteXuser_data (value TEXT)")));
+        QVERIFY(fixture.exec(QStringLiteral("INSERT INTO sqliteXuser_data VALUES ('preserved')")));
+    }
+    const auto error = initialize(path, migrations());
+    QVERIFY(error);
+    QCOMPARE(error->code, DatabaseErrorCode::Schema);
+    FixtureConnection fixture(path);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT value FROM sqliteXuser_data")).toString(),
+             QStringLiteral("preserved"));
+    QCOMPARE(fixture
+                 .scalar(QStringLiteral(
+                     "SELECT COUNT(*) FROM sqlite_schema WHERE name='schema_migrations'"))
+                 .toInt(),
+             0);
+}
+
+void DatabaseTest::initialMigrationFailureIsAtomic() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
+    auto migration = initialMigration();
+    migration.statements.push_back(QStringLiteral("INSERT INTO missing_table VALUES (1)"));
+    const std::vector<Migration> registry{migration};
+    const auto error = initialize(path, registry);
+    QVERIFY(error);
+    QCOMPARE(error->migrationVersion, std::optional<int>(1));
+    QVERIFY(error->backupPath.isEmpty());
+    {
+        FixtureConnection fixture(path);
+        QCOMPARE(fixture
+                     .scalar(QStringLiteral(
+                         "SELECT COUNT(*) FROM sqlite_schema WHERE name='schema_migrations'"))
+                     .toInt(),
+                 0);
+    }
+    QVERIFY(!initialize(path, migrations()));
+}
+
+void DatabaseTest::backupFailurePreventsUpgrade() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
+    QVERIFY(!initialize(path, migrations()));
+    QFile obstruction(directory.filePath(QStringLiteral("backups")));
+    QVERIFY(obstruction.open(QIODevice::WriteOnly));
+    obstruction.close();
+    const auto error = initialize(path, fixtureMigrations());
+    QVERIFY(error);
+    QCOMPARE(error->code, DatabaseErrorCode::Backup);
+    FixtureConnection fixture(path);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT MAX(version) FROM schema_migrations")).toInt(),
+             1);
+    QCOMPARE(
+        fixture
+            .scalar(QStringLiteral("SELECT COUNT(*) FROM sqlite_schema WHERE name='fixture_data'"))
+            .toInt(),
+        0);
+}
+
+void DatabaseTest::invalidPathsAndCorruption() {
+    QTemporaryDir directory;
+    const auto empty = initialize({}, migrations());
+    QVERIFY(empty);
+    QCOMPARE(empty->code, DatabaseErrorCode::Path);
+    const auto relative = initialize(QStringLiteral("relative.sqlite3"), migrations());
+    QVERIFY(relative);
+    QCOMPARE(relative->code, DatabaseErrorCode::Path);
+    const QString path = directory.filePath(QStringLiteral("broken.sqlite3"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write("not a SQLite database"), 21);
+    file.close();
+    const auto blocked = initialize(path + QStringLiteral("/child.sqlite3"), migrations());
+    QVERIFY(blocked);
+    QCOMPARE(blocked->code, DatabaseErrorCode::Path);
+    const auto corrupt = initialize(path, migrations());
+    QVERIFY(corrupt);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), QByteArray("not a SQLite database"));
+    file.close();
+    QVERIFY(initialize(directory.path(), migrations()));
+}
+
+void DatabaseTest::lockContention() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
+    StorageSession owner;
+    QVERIFY(!owner.initialize(path, migrations(), ignoreProgress));
+    const auto error = initialize(path, migrations());
+    QVERIFY(error);
+    QCOMPARE(error->code, DatabaseErrorCode::Locked);
+}
+
+void DatabaseTest::asynchronousLifecycle() {
+    QTemporaryDir directory;
+    const auto before = QSqlDatabase::connectionNames();
+    for (int iteration = 0; iteration < 3; ++iteration) {
+        Database database;
+        QSignalSpy ready(&database, &Database::ready);
+        QSignalSpy failed(&database, &Database::failed);
+        QSignalSpy closed(&database, &Database::closed);
+        QThread* callbackThread = nullptr;
+        connect(&database, &Database::ready, this,
+                [&] { callbackThread = QThread::currentThread(); });
+        database.initialize(directory.filePath(QStringLiteral("library.sqlite3")));
+        QTRY_COMPARE(ready.count() + failed.count(), 1);
+        // Always close before assertions that might return from this test.
+        database.close();
+        QTRY_COMPARE(closed.count(), 1);
+        QCOMPARE(failed.count(), 0);
+        QCOMPARE(ready.front().front().toInt(), 1);
+        QCOMPARE(callbackThread, QThread::currentThread());
+        QCOMPARE(QSqlDatabase::connectionNames(), before);
+        database.close();
+        QCOMPARE(closed.count(), 1);
+    }
+}
+
+void DatabaseTest::busyTimeoutKeepsGuiResponsive() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
+    FixtureConnection writer(path);
+    QVERIFY(writer.exec(QStringLiteral("PRAGMA journal_mode=WAL")));
+    QVERIFY(writer.exec(QStringLiteral("BEGIN IMMEDIATE")));
+    Database database;
+    QSignalSpy ready(&database, &Database::ready);
+    QSignalSpy failed(&database, &Database::failed);
+    QSignalSpy closed(&database, &Database::closed);
+    int ticks = 0;
+    QTimer heartbeat;
+    heartbeat.setInterval(20);
+    connect(&heartbeat, &QTimer::timeout, this, [&] { ++ticks; });
+    heartbeat.start();
+    QElapsedTimer elapsed;
+    elapsed.start();
+    database.initialize(path);
+    QTRY_COMPARE_WITH_TIMEOUT(failed.count(), 1, 8000);
+    database.close();
+    QTRY_COMPARE(closed.count(), 1);
+    QCOMPARE(ready.count(), 0);
+    const auto error = signalError(failed);
+    QCOMPARE(error.code, DatabaseErrorCode::Migration);
+    QCOMPARE(error.migrationVersion, std::optional<int>(1));
+    QVERIFY(elapsed.elapsed() >= 4500);
+    QVERIFY(elapsed.elapsed() < 8000);
+    QVERIFY(ticks > 20);
+    QVERIFY(writer.exec(QStringLiteral("ROLLBACK")));
+    QCOMPARE(writer
+                 .scalar(QStringLiteral(
+                     "SELECT COUNT(*) FROM sqlite_schema WHERE name='schema_migrations'"))
+                 .toInt(),
+             0);
+}
+
+void DatabaseTest::closeDuringInitialization() {
+    QTemporaryDir directory;
+    Database database;
+    QSignalSpy ready(&database, &Database::ready);
+    QSignalSpy failed(&database, &Database::failed);
+    QSignalSpy closed(&database, &Database::closed);
+    const auto before = QSqlDatabase::connectionNames();
+    database.initialize(directory.filePath(QStringLiteral("library.sqlite3")));
+    database.close();
+    QTRY_COMPARE(closed.count(), 1);
+    QCOMPARE(ready.count(), 0);
+    QCOMPARE(failed.count(), 0);
+    QCOMPARE(QSqlDatabase::connectionNames(), before);
+    QVERIFY(!initialize(directory.filePath(QStringLiteral("library.sqlite3")), migrations()));
+}
+
+void DatabaseTest::closeBeforeInitialization() {
+    Database database;
+    QSignalSpy closed(&database, &Database::closed);
+    database.close();
+    database.close();
+    QTRY_COMPARE(closed.count(), 1);
+}
+
+QTEST_GUILESS_MAIN(DatabaseTest)
+#include "DatabaseTest.moc"

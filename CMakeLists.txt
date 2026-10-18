@@ -2,8 +2,28 @@ cmake_minimum_required(VERSION 3.24)
 
 project(chess_review VERSION 0.1.0 LANGUAGES CXX)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets Sql)
 qt_standard_project_setup(REQUIRES 6.8)
+
+add_library(chess_review_persistence STATIC
+    src/persistence/Database.h
+    src/persistence/Database.cpp
+    src/persistence/private/StorageSession.cpp
+    src/persistence/private/Migrations.cpp
+    src/persistence/migrations/001_initial.cpp
+)
+target_include_directories(chess_review_persistence PUBLIC src)
+target_link_libraries(chess_review_persistence PUBLIC Qt6::Core PRIVATE Qt6::Sql)
+
+add_library(chess_review_startup STATIC
+    src/app/StartupCoordinator.cpp
+    src/ui/StartupWindow.cpp
+)
+target_link_libraries(chess_review_startup PUBLIC chess_review_persistence Qt6::Widgets)
 
 qt_add_executable(chess_review_app src/main.cpp)
 set_target_properties(chess_review_app PROPERTIES
@@ -12,15 +32,33 @@ set_target_properties(chess_review_app PROPERTIES
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
-target_link_libraries(chess_review_app PRIVATE Qt6::Widgets)
+target_link_libraries(chess_review_app PRIVATE chess_review_startup)
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(chess_review_app PRIVATE
-        -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow
-    )
-elseif(MSVC)
-    target_compile_options(chess_review_app PRIVATE /W4 /permissive-)
+include(CTest)
+if(BUILD_TESTING)
+    find_package(Qt6 6.8 REQUIRED COMPONENTS Test)
+    add_executable(persistence_tests src/persistence/tests/DatabaseTest.cpp)
+    target_link_libraries(persistence_tests PRIVATE chess_review_persistence Qt6::Sql Qt6::Test)
+    add_test(NAME persistence COMMAND persistence_tests)
+
+    add_executable(startup_tests tests/qt/StartupTest.cpp)
+    target_link_libraries(startup_tests PRIVATE chess_review_startup Qt6::Test)
+    add_test(NAME startup COMMAND startup_tests)
+    set_tests_properties(startup PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    set_tests_properties(persistence startup PROPERTIES TIMEOUT 30)
 endif()
+
+foreach(target chess_review_app chess_review_startup chess_review_persistence persistence_tests startup_tests)
+    if(TARGET ${target})
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(${target} PRIVATE
+                -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow
+            )
+        elseif(MSVC)
+            target_compile_options(${target} PRIVATE /W4 /permissive-)
+        endif()
+    endif()
+endforeach()
 
 add_custom_target(run
     COMMAND $<TARGET_FILE:chess_review_app>

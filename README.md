@@ -1,12 +1,14 @@
 # chess-review
 
-Minimal native C++20 / Qt Widgets scaffold. The app currently opens an empty
-`QMainWindow`; product features will be added in later tasks.
+Native C++20 / Qt Widgets application foundation. Startup opens the local SQLite
+database asynchronously and displays progress, readiness, or a storage diagnostic.
+Chess product features will be added in later tasks.
 
 ## Requirements
 
 - C++20 compiler (GCC or Clang on Linux)
-- Qt **6.8+** development SDK with Widgets
+- Qt **6.8+** development SDK with Widgets, SQL, the QSQLITE driver, and Qt Test
+  (Qt Test is needed only when `BUILD_TESTING=ON`, the default)
 - CMake **3.24+**, Ninja, and GNU Make
 - Developer tools: clang-format 15+, clang-tidy, and clangd for editor integration
 
@@ -32,6 +34,7 @@ and Ninja handle the actual build.
 | `make format` | Format C++ source |
 | `make format-check` | Verify C++ formatting |
 | `make lint` | Build and run the curated clang-tidy checks |
+| `make test` | Build and run the persistence and startup tests through CTest |
 
 Builds are incremental. Debug and release outputs live in `build/dev` and
 `build/release`. `build/dev/compile_commands.json` is available for C++ editors.
@@ -86,6 +89,81 @@ cmake --build --preset dev
 cmake --build --preset dev --target run
 ```
 
-There is no chess, engine, database, or networking code yet, and no additional
-runtime dependency beyond Qt. Launching the window is the scaffold's smoke check;
-focused automated tests belong with the first application behavior.
+## Local database
+
+The default location is `QStandardPaths::AppLocalDataLocation/chess-review.sqlite3`.
+On Linux this is normally `$XDG_DATA_HOME/chess-review/chess-review.sqlite3`, or
+`~/.local/share/chess-review/chess-review.sqlite3` when XDG_DATA_HOME is unset.
+The data directory is created on the storage thread. Keep this database on a local
+filesystem supporting SQLite WAL and locking. Packaging must include Qt's QSQLITE
+driver plugin.
+
+The `chess_review_persistence` target owns all SQL, connection configuration,
+schema migrations, backups, and the dedicated storage thread. Its public header
+is `src/persistence/Database.h`; callers receive progress, a ready schema version,
+structured failure diagnostics, and shutdown completion. SQL types and generic
+query execution are not part of the public interface. Future repositories belong
+inside persistence and will use the same worker-owned write connection.
+
+`Database` is a one-shot service. Call `initialize(absolutePath)` and `close()` on
+its owning application thread. Before destroying it, await `closed()`; do not
+quit the application event loop first. Closing during initialization lets the
+current operation finish, suppresses readiness/failure delivery, and queues
+connection cleanup. The startup coordinator uses this asynchronous shutdown path.
+Database failures leave storage unavailable and display the diagnostic in the
+window; Exit and window-manager close both finish storage shutdown before quitting.
+
+Connections enable and verify foreign keys, WAL, and a 5000 ms busy timeout.
+A `.lock` file beside the database prevents concurrent application instances from
+opening it. Stale process locks are handled by Qt; do not delete a live process's
+lock. No database or backup is automatically replaced or restored after failure.
+
+## Adding migrations
+
+Migration definitions live under `src/persistence/migrations/`; the ordered
+registry and runner are private to the module. Version 1 creates only the
+`schema_migrations` ledger (version, name, UTC application timestamp). There are
+no game, engine, review, or other product tables yet.
+
+To add a migration:
+
+1. Add a numbered C++ migration definition containing its version, stable name,
+   and ordered SQL statements; register it in the private registry and CMake.
+2. Use the next contiguous integer version. Never edit a released migration.
+3. Provide one statement per entry. Do not include transaction control, ledger
+   updates, or operations that cannot run in a SQLite transaction. The runner owns
+   transactions and ledger writes; no SQL script parsing is performed.
+4. Add representative previous-version fixtures and preservation/failure tests
+   under `src/persistence/tests/`. Keep fixture SQL inside that module too.
+
+Before upgrading a recognized older database, the runner creates a uniquely named
+SQLite snapshot in the adjacent `backups/` directory, opens it read-only, and runs
+an integrity check. This includes committed WAL contents. Backup failure prevents
+the upgrade. Fresh databases and already-current databases do not create backups.
+Backups are retained; there is no automatic retention or restore policy yet.
+
+Each migration and its ledger entry commit together. A failed migration rolls
+back, initialization stops, and the diagnostic identifies the failed version and
+available backup path. Earlier migrations committed during that run remain
+committed. Fix the cause and reopen with a compatible application, or preserve
+the database and its sidecars before performing a deliberate offline restore.
+Newer schemas, malformed history, and nonempty databases without recognized
+metadata are rejected rather than reset.
+
+## Tests
+
+```sh
+make test
+# Or, after configuring and building:
+ctest --test-dir build/dev --output-on-failure
+```
+
+Persistence tests use temporary databases and internal fixture migrations to cover
+initialization, upgrades, rollback, WAL-aware backups, invalid history, lock
+contention, busy timeouts, and asynchronous lifecycle cleanup. The busy-timeout
+case deliberately takes about five seconds and checks event-loop responsiveness.
+Qt widget tests smoke-run the actual startup coordinator/window through readiness,
+failure presentation, and close during initialization. CTest runs these with Qt's
+offscreen platform plugin. Tests do not touch the normal user database.
+
+To build without test targets, configure with `-DBUILD_TESTING=OFF`.
