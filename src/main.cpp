@@ -61,6 +61,8 @@ int main(int argc, char* argv[]) {
         }
         window.showClosing();
     });
+    QObject::connect(&startup, &chess_review::app::StartupCoordinator::finished, &window,
+                     &chess_review::ui::MainWindow::completeShutdown);
     QObject::connect(&startup, &chess_review::app::StartupCoordinator::finished, &application,
                      &QApplication::quit);
     startup.start(paths.databasePath(), paths.uiStateFilePath());

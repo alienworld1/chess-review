@@ -270,11 +270,19 @@ void MainWindow::showClosing() {
     reset_->setEnabled(false);
     startup_->showClosing();
 }
+void MainWindow::completeShutdown() {
+    shutdownComplete_ = true;
+    close();
+}
 void MainWindow::showEvent(QShowEvent* event) {
     QMainWindow::showEvent(event);
     QTimer::singleShot(0, this, &MainWindow::fitToScreen);
 }
 void MainWindow::closeEvent(QCloseEvent* event) {
+    if (shutdownComplete_) {
+        QMainWindow::closeEvent(event);
+        return;
+    }
     event->ignore();
     if (!closing_) {
         emit closeRequested();

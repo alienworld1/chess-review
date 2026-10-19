@@ -13,3 +13,14 @@ chess_review_add_qt_test(app_paths_tests app_paths
 chess_review_add_qt_test(shell_tests shell INTEGRATION WIDGETS
     SOURCES qt/ShellTest.cpp
     LIBRARIES chess_review_ui)
+
+# Exercise the production composition root and QApplication::exec(), with a test-only UI driver.
+qt_add_executable(shell_exit_probe
+    "${PROJECT_SOURCE_DIR}/src/main.cpp"
+    qt/ShellExitProbe.cpp
+)
+target_link_libraries(shell_exit_probe PRIVATE chess_review_ui chess_review_app_paths)
+chess_review_apply_options(shell_exit_probe)
+add_dependencies(shell_tests shell_exit_probe)
+target_compile_definitions(shell_tests PRIVATE
+    CHESS_REVIEW_EXIT_PROBE="$<TARGET_FILE:shell_exit_probe>")

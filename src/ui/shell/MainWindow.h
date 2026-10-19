@@ -33,6 +33,8 @@ class MainWindow final : public QMainWindow {
     app::UiState uiState() const;
     void resetLayout();
     void showClosing();
+    // Call only after application services have closed; permits Qt's final window close.
+    void completeShutdown();
   signals:
     void closeRequested();
     void invalidUiState();
@@ -53,6 +55,7 @@ class MainWindow final : public QMainWindow {
     std::array<QAction*, 5> destinations_{};
     QAction* reset_;
     bool closing_ = false;
+    bool shutdownComplete_ = false;
     bool stateNoticeShown_ = false;
     bool stateRestored_ = false;
     QMetaObject::Connection screenGeometryConnection_;

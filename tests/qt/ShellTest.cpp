@@ -18,6 +18,8 @@
 #include <QLockFile>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScopeGuard>
@@ -59,6 +61,8 @@ class ShellTest final : public QObject {
     Q_OBJECT
   private slots:
     void init();
+    void processExitsAfterShutdown_data();
+    void processExitsAfterShutdown();
     void navigation();
     void navigationConstructionPreservesState();
     void navigationRedirectStaysSynchronized();
@@ -91,6 +95,74 @@ void ShellTest::init() {
         QTest::failOnWarning();
     }
 }
+void ShellTest::processExitsAfterShutdown_data() {
+    QTest::addColumn<QString>("mode");
+    for (const auto* mode :
+         {"window", "menu", "application", "startup", "failure", "diagnostics"}) {
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+    }
+}
+void ShellTest::processExitsAfterShutdown() {
+#ifndef Q_OS_LINUX
+    QSKIP("Full application profile isolation uses Linux XDG locations");
+#else
+    QFETCH(QString, mode);
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const auto data = root.filePath(QStringLiteral("data/chess-review"));
+    if (mode == QStringLiteral("failure")) {
+        QVERIFY(QDir().mkpath(data));
+        QFile invalid(QDir(data).filePath(QStringLiteral("chess-review.sqlite3")));
+        QVERIFY(invalid.open(QIODevice::WriteOnly));
+        QVERIFY(invalid.write("invalid database") > 0);
+    }
+    auto environment = QProcessEnvironment::systemEnvironment();
+    environment.insert(QStringLiteral("XDG_DATA_HOME"), root.filePath(QStringLiteral("data")));
+    environment.insert(QStringLiteral("XDG_CONFIG_HOME"), root.filePath(QStringLiteral("config")));
+    environment.insert(QStringLiteral("XDG_CACHE_HOME"), root.filePath(QStringLiteral("cache")));
+    environment.insert(QStringLiteral("CHESS_REVIEW_EXIT_MODE"), mode);
+    QProcess process;
+    process.setProcessEnvironment(environment);
+    process.setWorkingDirectory(root.path());
+    // This executable compiles the actual production main.cpp. Only its UI driver is test-only.
+    process.start(QString::fromUtf8(CHESS_REVIEW_EXIT_PROBE), QStringList{});
+    const auto cleanup = qScopeGuard([&] {
+        if (process.state() != QProcess::NotRunning) {
+            process.kill();
+            if (!process.waitForFinished(5000)) {
+                qFatal("Exit probe could not be reaped");
+            }
+        }
+    });
+    QVERIFY(process.waitForStarted(5000));
+    const bool exited = process.waitForFinished(5000);
+    if (!exited) {
+        process.kill();
+        QVERIFY(process.waitForFinished(5000));
+    }
+    QFile events(root.filePath(QStringLiteral("cache/chess-review/logs/events-0.jsonl")));
+    QVERIFY(events.open(QIODevice::ReadOnly));
+    const auto records = events.readAll();
+    QVERIFY2(records.contains("session.stopped"), "Probe never finished orderly service shutdown");
+    if (mode == QStringLiteral("failure")) {
+        QVERIFY(records.contains("storage.failed"));
+    } else if (mode != QStringLiteral("startup")) {
+        QVERIFY(records.contains("storage.ready"));
+    }
+    QVERIFY2(exited, "Services finished, but QApplication::exec() did not exit");
+    QVERIFY(process.readAllStandardOutput().contains("event-loop-quitting"));
+    QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(process.exitCode(), 0);
+    if (mode != QStringLiteral("startup")) {
+        QVERIFY(records.indexOf("storage.closed") < records.indexOf("session.stopped"));
+    }
+    QSettings saved(root.filePath(QStringLiteral("config/chess-review/ui-state.ini")),
+                    QSettings::IniFormat);
+    QCOMPARE(saved.value(QStringLiteral("shell/v1/destination")).toString(),
+             QStringLiteral("puzzles"));
+#endif
+}
+
 void ShellTest::navigation() {
     app::NavigationController navigation;
     ui::MainWindow window(navigation);
@@ -541,6 +613,8 @@ void ShellTest::shutdownAndPersistence() {
         startup.setFinalUiState(window.uiState());
         window.showClosing();
     });
+    connect(&startup, &app::StartupCoordinator::finished, &window,
+            &ui::MainWindow::completeShutdown);
     startup.start(database, preferences);
     QTRY_COMPARE(startup.state(), badStorage ? app::Lifecycle::Failed : app::Lifecycle::Ready);
     window.findChild<QAction*>(QStringLiteral("puzzlesAction"))->trigger();
@@ -552,6 +626,7 @@ void ShellTest::shutdownAndPersistence() {
     startup.shutdown();
     window.close();
     QTRY_COMPARE(finished.count(), 1);
+    QVERIFY(!window.isVisible());
     QCOMPARE(logger.health(), diagnostics::Health::Closed);
     const auto report = logger.report();
     QVERIFY(report.indexOf(QStringLiteral("storage.closed")) <

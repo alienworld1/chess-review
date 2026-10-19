@@ -150,6 +150,16 @@ suite uses temporary explicit settings filenames and covers settings failures
 independently of database failures. `UiStateStore::closed()` guarantees its worker
 has joined; retain fixtures/services until completion.
 
+Linux shell subprocess tests compile the actual production `main.cpp` into a
+`shell_exit_probe` executable with a test-only UI driver. They exercise window
+close, File → Quit, application Quit, closing during startup/after storage failure,
+and closing with Diagnostics open. Each child must exit normally after recording
+`session.stopped` and saving UI state. A service-completion signal alone is not
+sufficient: Qt can reject Quit while a visible window refuses its close event.
+The children use temporary XDG roots; the full-profile process cases are skipped
+on other platforms. No test driver or environment switch is compiled into the
+production executable, and the probe is absent with `BUILD_TESTING=OFF`.
+
 For optional shell render inspection, create an absolute output directory and run:
 
 ```sh

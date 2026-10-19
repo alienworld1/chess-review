@@ -43,6 +43,8 @@ void bindStartup(StartupCoordinator& startup, MainWindow& window) {
     QObject::connect(&startup, &StartupCoordinator::failed, &window, &MainWindow::showFailure);
     QObject::connect(&window, &MainWindow::closeRequested, &startup, &StartupCoordinator::shutdown);
     QObject::connect(&startup, &StartupCoordinator::stopping, &window, &MainWindow::showClosing);
+    QObject::connect(&startup, &StartupCoordinator::finished, &window,
+                     &MainWindow::completeShutdown);
 }
 } // namespace
 
