@@ -27,7 +27,8 @@ The dev, release, and sanitized configure/build/test presets use separate build
 folders. Sanitizers require GCC or Clang on Linux. To select Clang, configure a
 fresh directory with `-DCMAKE_CXX_COMPILER=clang++-18`. A compiler cannot safely be
 changed in an existing build cache. Presets use CMake 3.24-compatible syntax.
-See the README for Qt SDK selection and `CMakeUserPresets.json` overrides.
+See [development setup](development.md) for Qt SDK selection and
+`CMakeUserPresets.json` overrides.
 
 All test presets show failure output and fail if no tests match, including an
 accidentally empty label/regex selection. Every Qt suite has a 30-second CTest
