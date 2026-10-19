@@ -11,7 +11,7 @@ include(cmake/ProjectOptions.cmake)
 find_package(Qt6 6.12 REQUIRED COMPONENTS Widgets Sql)
 qt_standard_project_setup(REQUIRES 6.12)
 
-add_library(chess_review_chess STATIC src/chess/Position.cpp)
+add_library(chess_review_chess STATIC src/chess/Position.cpp src/chess/GameTree.cpp)
 set_target_properties(chess_review_chess PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 target_include_directories(chess_review_chess PUBLIC src)
 target_include_directories(chess_review_chess SYSTEM PRIVATE third_party/chess-library)

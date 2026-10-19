@@ -1,7 +1,7 @@
 # Testing
 
 Tests use C++20, CMake/CTest, Qt Test, and Catch2 3.8.1. Qt 6.12 is the API
-baseline. Pure chess-domain cases live in `tests/unit/PositionTest.cpp` and link
+baseline. Pure chess-domain cases live in `tests/unit/` and link
 only the chess target and Catch2. Use risk-based regression tests rather than a
 coverage quota.
 
@@ -40,7 +40,18 @@ They cover established perft fixtures, strict FEN, legal moves, SAN/UCI,
 make/undo, counter overflow/rollover, and history-aware identity. Adversarial cases
 reject impossible checks before upstream move generation and verify en-passant
 predecessors. Deterministic legal walks and 4,000 mutated byte inputs exercise
-FEN/notation safety and restoration invariants under sanitizers. These
+FEN/notation safety and restoration invariants under sanitizers.
+
+Game-tree cases cover main lines, nested variations, shared-prefix reuse,
+local promotion, deletion, stable IDs, independent copies, annotation accounting,
+atomic failures, exact root/history preservation, special moves, and transpositions.
+A 20,000-ply line and a broad two-ply tree exercise iterative navigation,
+resolution, copying, destruction, and subtree deletion without timing assertions.
+`game_tree_allocation_tests` is a separate executable with a test-only global
+ordinary-allocation override. It fails each allocation in turn during line
+addition, annotation replacement, subtree deletion, and copy assignment, checking
+unchanged nodes, budgets, root context, and next allocated ID after every failure.
+The override is absent from the app and ordinary chess/Qt test binaries. These
 labels describe entire suites: individual suites can cover several boundaries.
 
 Qt Test also supports selecting individual functions and data rows directly:

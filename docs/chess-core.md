@@ -87,3 +87,89 @@ would consume quadratic space. Make/undo do not copy history. Comparisons use
 full values, with no custom hash and no reliance on upstream Zobrist keys.
 Contexts have an identity version but no persisted wire format in this slice.
 No draw claim, repetition count, game result, or cache service is implemented.
+
+## Game trees
+
+Include `chess/GameTree.h` and link the same `chess_review_chess` target.
+`GameTree::initial(limits)` and `GameTree::fromFen(text, limits)` return
+`GameTreeResult<GameTree>`. FEN roots preserve unknown earlier history, even
+when the supplied FEN describes the initial board. A tree cannot be rooted at
+an existing played `Position` in this increment.
+
+A tree owns one root position and a flat map of nodes. Each node has a strongly
+typed, tree-local `NodeId`, optional parent/move/canonical SAN, ordered children,
+and `NodeAnnotations`. The root has no incoming move, SAN, or parent. The first
+child is the main continuation at that branch; other children are variations.
+Transpositions remain distinct nodes and retain distinct position contexts.
+
+`node(id)` returns an optional, independently owned snapshot. Its parent and
+children provide navigation; snapshots remain valid after edits or destruction.
+`mainLine(start)` includes start and then follows first children. `position(id)`
+replays the root-to-node path and returns an independent `Position`, including
+its complete root provenance, move history, clocks, and en-passant metadata.
+No position/context history is stored per node. Selection, preview, review
+navigation, and engine scheduling belong to consumers, not the tree.
+
+### Editing
+
+- `addMove(parent, move)` returns the child ID. Reuse an existing same-move
+  child without changing its annotations or sibling order; otherwise append a
+  variation. The first child of an empty node becomes its main continuation.
+- `addLine(start, spanOfMoves)` reuses existing prefixes and returns the final
+  node ID. Empty input returns start. Validate every move against the preceding
+  position and generate SAN internally. A failure anywhere leaves the whole
+  tree unchanged, including its ID allocator.
+- `promote(id)` moves that child to first among its siblings, preserving their
+  other relative ordering. Ancestors are not promoted. Root promotion is an error.
+- `removeSubtree(id)` deletes the selected node and every descendant. If the
+  main continuation is removed, the next sibling becomes main. Root deletion is
+  an error. Deleted IDs are never reused during that tree's lifetime.
+- `setAnnotations(id, annotations)` atomically replaces all comments and NAGs.
+  Comments are opaque bytes intended for UTF-8, preserved verbatim including
+  NULs. The tree does not validate Unicode, interpret markup, or normalize PGN.
+  NAGs are ordered 8-bit numbers; duplicates and all values are preserved.
+  Rendering and future import/export must apply their own text policies.
+
+Fallible tree operations return `GameTreeResult<T>` or `GameTreeStatus`
+(`std::monostate` on success). `GameTreeError` carries a stable code and bounded
+static message. Position failures retain the adapter's `Error`. Failures while
+processing a line identify its zero-based move index (`addMove` uses index zero).
+Invalid starting IDs have no move index. Missing snapshots use `std::nullopt`.
+Allocation failures propagate normally as exceptions; edits also preserve the
+original tree in that case. Application boundaries must handle resource failures.
+
+### Limits, ownership, and cost
+
+Default limits are 100,000 nodes including root, 16,384 plies below root,
+64 KiB for each individual comment, and 16 MiB total annotation payload.
+Payload counts both comment byte lengths and one byte per NAG across all nodes,
+including root. Replacing/deleting annotations reclaims this budget. SAN,
+container overhead, and temporary transaction storage are not annotation payload;
+these limits are not an exact resident-memory cap. A zero node budget is invalid;
+zero depth/comment/annotation budgets are permitted. Exhausted IDs never wrap.
+
+Copies own independent nodes and preserve their IDs. Moving transfers ownership;
+moved-from trees support destruction and assignment only. IDs are not globally
+unique and cannot detect accidental use with a different tree; keep them with
+their owning tree/snapshot. Assignment replaces the entire tree and its ID scope.
+Concurrent access to the same mutable instance requires external synchronization.
+
+Map lookup costs O(log N); a node snapshot additionally copies its child IDs and
+annotations. Position resolution costs O(D log N) map work plus D legal move
+applications, with O(D) temporary/history storage for depth D. Adding a line
+resolves its starting position once, validates its moves, scans existing siblings
+for matching prefixes, and stages only new nodes and the attachment's child list.
+Map insertion costs O(log N) per new node. Prefer `addLine` over repeatedly
+resolving increasingly deep nodes for batch input. Long path replay and batch
+import belong off the GUI thread; this synchronous core does not schedule work
+or promise constant-time navigation. Trees store O(N + annotation
+payload + SAN bytes), rather than quadratic complete position-history prefixes.
+Copies take linear storage/work in the stored data. Subtree deletion takes
+O(S log N) map work for S deleted nodes plus sibling removal, using O(S)
+temporary IDs. Traversal and subtree deletion are iterative; flat ownership
+prevents destruction from recursing through game ancestry.
+
+This model is an editable analysis tree. It does not preserve an immutable
+original played line: a later game/import owner must keep that separately.
+Undo/redo, arrows/highlights, PGN, durable serialization, database integration,
+draw adjudication, and a desktop board/tree view remain separate increments.
