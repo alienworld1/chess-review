@@ -10,7 +10,9 @@ asynchronously. Navigation remains available during startup and storage failure.
 File → Quit and window-manager close keep a closing indication visible until
 storage, UI preferences, and logging finish shutting down. Help provides
 Diagnostics and About; View → Reset Layout restores fitted default geometry and
-Home. Native Qt styling is used for this foundation; branded themes are deferred.
+Home. On constrained displays, native scrolling keeps commands reachable when
+errors or enlarged fonts exceed the available space. Native Qt styling is used
+for this foundation; branded themes are deferred.
 
 ## Requirements
 
@@ -180,7 +182,11 @@ View → Reset Layout unmaximizes, restores fitted defaults, and selects Home.
 
 Missing preferences use defaults without creating a file until shutdown. Invalid
 or inaccessible preferences show one nonmodal notice and a safe diagnostic;
-current/default layout remains usable independently of the game database.
+current/default layout remains usable independently of the game database. Notices
+and safe diagnostics distinguish invalid state, read/write failure, and lock
+contention. If another settings writer holds the lock, saving is skipped promptly
+instead of delaying shutdown. Writes preserve unknown keys and publish atomically;
+unsafe settings/lock targets are rejected without replacing them.
 A quit request before preference loading completes preserves the existing file.
 There is no fallback settings path or organization prefix. Product configuration
 parsing and general filesystem cache management are not implemented yet.

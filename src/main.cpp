@@ -48,7 +48,9 @@ int main(int argc, char* argv[]) {
     QObject::connect(&startup, &chess_review::app::StartupCoordinator::uiStateFailed, &window,
                      &chess_review::ui::MainWindow::showUiStateFailure);
     QObject::connect(&window, &chess_review::ui::MainWindow::invalidUiState, &startup, [&] {
-        logger.record(chess_review::diagnostics::Event::UiStateFailed, {},
+        chess_review::diagnostics::Context context;
+        context.errorCode = static_cast<int>(chess_review::app::UiStateError::Invalid);
+        logger.record(chess_review::diagnostics::Event::UiStateFailed, context,
                       chess_review::diagnostics::Severity::Warning);
     });
     QObject::connect(&window, &chess_review::ui::MainWindow::closeRequested, &startup,

@@ -4,33 +4,53 @@
 #include "app/UiStateStore.h"
 #include "diagnostics/Logger.h"
 #include "ui/shell/MainWindow.h"
+#include "ui/shell/StartupPanel.h"
 #include <QAction>
 #include <QApplication>
 #include <QDialog>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEvent>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QLabel>
+#include <QLockFile>
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScopeGuard>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStackedWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 #include <QToolButton>
 #include <array>
+#ifdef Q_OS_UNIX
+#include <sys/stat.h>
+#endif
 
 using namespace chess_review;
 
 namespace {
 void awaitClose(app::UiStateStore& store, QSignalSpy& closed) {
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QObject::connect(&store, &app::UiStateStore::closed, &loop, &QEventLoop::quit);
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
     store.saveAndClose();
-    if (closed.isEmpty() && !closed.wait(5000)) {
+    if (closed.isEmpty()) {
+        timeout.start(5000);
+        // Qt Test's signal wait skips its loop once an assertion has failed.
+        loop.exec();
+    }
+    if (closed.isEmpty()) {
         qFatal("UI state worker did not close");
     }
 }
@@ -40,7 +60,16 @@ class ShellTest final : public QObject {
   private slots:
     void init();
     void navigation();
+    void navigationConstructionPreservesState();
+    void navigationRedirectStaysSynchronized();
     void diagnosticsSurviveReadiness();
+    void diagnosticsOutlivePanel();
+    void preferencesLiveLock();
+    void preferencesLockMetadata_data();
+    void preferencesLockMetadata();
+    void preferencesPreserveUnknownKeys();
+    void preferencesUnsafeTargets_data();
+    void preferencesUnsafeTargets();
     void geometry_data();
     void geometry();
     void restoreAndReset();
@@ -107,6 +136,28 @@ void ShellTest::navigation() {
     QCOMPARE(navigation.current(), app::Destination::Games);
     QVERIFY(!window.findChild<QAction*>(QStringLiteral("resetLayoutAction"))->isEnabled());
 }
+void ShellTest::navigationConstructionPreservesState() {
+    app::NavigationController navigation;
+    navigation.navigate(app::Destination::Analyze);
+    ui::MainWindow window(navigation);
+    QCOMPARE(navigation.current(), app::Destination::Analyze);
+    QVERIFY(window.findChild<QAction*>(QStringLiteral("analyzeAction"))->isChecked());
+}
+void ShellTest::navigationRedirectStaysSynchronized() {
+    app::NavigationController navigation;
+    connect(&navigation, &app::NavigationController::destinationChanged, &navigation,
+            [&](app::Destination destination) {
+                if (destination == app::Destination::Games) {
+                    navigation.navigate(app::Destination::Settings);
+                }
+            });
+    ui::MainWindow window(navigation);
+    window.findChild<QAction*>(QStringLiteral("gamesAction"))->trigger();
+    QCOMPARE(navigation.current(), app::Destination::Settings);
+    auto* pages = window.findChild<QStackedWidget*>(QStringLiteral("destinationPages"));
+    QCOMPARE(pages->currentWidget()->objectName(), QStringLiteral("settingsPage"));
+    QVERIFY(window.findChild<QAction*>(QStringLiteral("settingsAction"))->isChecked());
+}
 void ShellTest::diagnosticsSurviveReadiness() {
     app::NavigationController navigation;
     ui::MainWindow window(navigation);
@@ -123,6 +174,156 @@ void ShellTest::diagnosticsSurviveReadiness() {
     action->trigger();
     dialog = window.findChild<QDialog*>(QStringLiteral("diagnosticsDialog"));
     QVERIFY(dialog && dialog->isVisible());
+}
+void ShellTest::diagnosticsOutlivePanel() {
+    QWidget owner;
+    {
+        ui::StartupPanel panel(&owner);
+        panel.showDiagnostics();
+    }
+    auto* dialog = owner.findChild<QDialog*>(QStringLiteral("diagnosticsDialog"));
+    QVERIFY(dialog);
+    auto* refresh = dialog->findChild<QPushButton*>(QStringLiteral("refreshDiagnostics"));
+    auto* report = dialog->findChild<QPlainTextEdit*>(QStringLiteral("safeDiagnosticsReport"));
+    QVERIFY(refresh && report);
+    refresh->click();
+    QVERIFY(report->toPlainText().contains(QStringLiteral("no longer available")));
+}
+void ShellTest::preferencesLiveLock() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const auto path = root.filePath(QStringLiteral("ui-state.ini"));
+    app::UiStateStore store;
+    QSignalSpy loaded(&store, &app::UiStateStore::loaded);
+    QSignalSpy failed(&store, &app::UiStateStore::failed);
+    QSignalSpy closed(&store, &app::UiStateStore::closed);
+    const auto cleanup = qScopeGuard([&] { awaitClose(store, closed); });
+    store.load(path);
+    QVERIFY(loaded.wait(5000));
+    QLockFile lock(path + QStringLiteral(".lock"));
+    QVERIFY(lock.tryLock(0));
+    // Release after a bounded interval so the original indefinite lock path can finish.
+    QTimer release;
+    release.setSingleShot(true);
+    connect(&release, &QTimer::timeout, &release, [&] { lock.unlock(); });
+    release.start(700);
+    QElapsedTimer elapsed;
+    elapsed.start();
+    store.saveAndClose(app::UiState{});
+    QTRY_COMPARE(closed.count(), 1);
+    QVERIFY2(elapsed.elapsed() < 500,
+             "Settings must fail promptly instead of waiting for another writer");
+    QCOMPARE(failed.count(), 1);
+    QCOMPARE(qvariant_cast<app::UiStateError>(failed.front().front()), app::UiStateError::Busy);
+    QVERIFY(!QFileInfo::exists(path));
+}
+void ShellTest::preferencesLockMetadata_data() {
+    QTest::addColumn<QString>("suffix");
+    QTest::addColumn<int>("bytes");
+    QTest::newRow("oversized") << QStringLiteral(".lock") << 16385;
+    QTest::newRow("cleanup-lock") << QStringLiteral(".lock.rmlock") << 1;
+}
+void ShellTest::preferencesLockMetadata() {
+    QFETCH(QString, suffix);
+    QFETCH(int, bytes);
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const auto path = root.filePath(QStringLiteral("ui-state.ini"));
+    const auto lockPath = path + suffix;
+    const QByteArray contents(bytes, 'x');
+    {
+        QFile file(lockPath);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(contents), contents.size());
+    }
+    app::UiStateStore store;
+    QSignalSpy loaded(&store, &app::UiStateStore::loaded);
+    QSignalSpy failed(&store, &app::UiStateStore::failed);
+    QSignalSpy closed(&store, &app::UiStateStore::closed);
+    const auto cleanup = qScopeGuard([&] { awaitClose(store, closed); });
+    store.load(path);
+    QVERIFY(loaded.wait(5000));
+    store.saveAndClose(app::UiState{});
+    QTRY_COMPARE(closed.count(), 1);
+    QCOMPARE(failed.count(), 1);
+    QVERIFY(!QFileInfo::exists(path));
+    QFile file(lockPath);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), contents);
+}
+void ShellTest::preferencesPreserveUnknownKeys() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const auto path = root.filePath(QStringLiteral("ui-state.ini"));
+    {
+        QSettings settings(path, QSettings::IniFormat);
+        settings.setValue(QStringLiteral("future/value"), QStringLiteral("preserve me"));
+        settings.sync();
+        QCOMPARE(settings.status(), QSettings::NoError);
+    }
+    app::UiStateStore store;
+    QSignalSpy loaded(&store, &app::UiStateStore::loaded);
+    QSignalSpy failed(&store, &app::UiStateStore::failed);
+    QSignalSpy closed(&store, &app::UiStateStore::closed);
+    const auto cleanup = qScopeGuard([&] { awaitClose(store, closed); });
+    store.load(path);
+    QVERIFY(loaded.wait(5000));
+    store.saveAndClose(app::UiState{{}, false, app::Destination::Games});
+    QTRY_COMPARE(closed.count(), 1);
+    QCOMPARE(failed.count(), 0);
+    QSettings settings(path, QSettings::IniFormat);
+    QCOMPARE(settings.value(QStringLiteral("future/value")).toString(),
+             QStringLiteral("preserve me"));
+    QCOMPARE(settings.value(QStringLiteral("shell/v1/destination")).toString(),
+             QStringLiteral("games"));
+    QCOMPARE(QDir(root.path()).entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot),
+             QStringList{QStringLiteral("ui-state.ini")});
+}
+void ShellTest::preferencesUnsafeTargets_data() {
+    QTest::addColumn<bool>("lockTarget");
+    QTest::addColumn<bool>("fifo");
+    QTest::newRow("state-symlink") << false << false;
+    QTest::newRow("lock-symlink") << true << false;
+    QTest::newRow("state-fifo") << false << true;
+    QTest::newRow("lock-fifo") << true << true;
+}
+void ShellTest::preferencesUnsafeTargets() {
+#ifndef Q_OS_UNIX
+    QSKIP("Unix symlink/FIFO fixtures");
+#else
+    QFETCH(bool, lockTarget);
+    QFETCH(bool, fifo);
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const auto path = root.filePath(QStringLiteral("ui-state.ini"));
+    const auto unsafe = lockTarget ? path + QStringLiteral(".lock") : path;
+    const auto sentinel = root.filePath(QStringLiteral("sentinel"));
+    const QByteArray contents("preserve this unrelated file");
+    {
+        QFile file(sentinel);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(contents), contents.size());
+    }
+    if (fifo) {
+        QCOMPARE(::mkfifo(QFile::encodeName(unsafe).constData(), 0600), 0);
+    } else {
+        QVERIFY(QFile::link(sentinel, unsafe));
+    }
+    app::UiStateStore store;
+    QSignalSpy loaded(&store, &app::UiStateStore::loaded);
+    QSignalSpy failed(&store, &app::UiStateStore::failed);
+    QSignalSpy closed(&store, &app::UiStateStore::closed);
+    const auto cleanup = qScopeGuard([&] { awaitClose(store, closed); });
+    store.load(path);
+    QVERIFY(loaded.wait(5000));
+    store.saveAndClose(app::UiState{});
+    QTRY_COMPARE(closed.count(), 1);
+    QVERIFY(!failed.isEmpty());
+    QFile file(sentinel);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), contents);
+    QVERIFY(fifo ? QFileInfo(unsafe).exists() : QFileInfo(unsafe).isSymLink());
+#endif
 }
 void ShellTest::geometry_data() {
     QTest::addColumn<QRect>("desired");
@@ -223,8 +424,9 @@ void ShellTest::preferencesSaveFailure() {
 }
 void ShellTest::preferencesFailure_data() {
     QTest::addColumn<QString>("kind");
-    for (const auto* kind : {"directory", "relative", "oversized", "malformed",
-                             "unknown-destination", "invalid-boolean"}) {
+    for (const auto* kind :
+         {"directory", "relative", "oversized", "malformed", "unknown-destination",
+          "invalid-boolean", "invalid-geometry-type", "blocked-parent"}) {
         QTest::newRow(kind) << QString::fromLatin1(kind);
     }
 }
@@ -233,7 +435,12 @@ void ShellTest::preferencesFailure() {
     QTemporaryDir root;
     QVERIFY(root.isValid());
     QString path = root.filePath(QStringLiteral("ui-state.ini"));
-    if (kind == QStringLiteral("directory")) {
+    if (kind == QStringLiteral("blocked-parent")) {
+        QFile obstruction(root.filePath(QStringLiteral("blocked")));
+        QVERIFY(obstruction.open(QIODevice::WriteOnly));
+        obstruction.close();
+        path = obstruction.fileName() + QStringLiteral("/ui-state.ini");
+    } else if (kind == QStringLiteral("directory")) {
         path = root.path();
     } else if (kind == QStringLiteral("relative")) {
         path = QStringLiteral("relative/ui-state.ini");
@@ -250,6 +457,9 @@ void ShellTest::preferencesFailure() {
         if (kind == QStringLiteral("invalid-boolean")) {
             bytes = QByteArray("[shell]\nv1\\maximized=garbage\n");
         }
+        if (kind == QStringLiteral("invalid-geometry-type")) {
+            bytes = QByteArray("[shell]\nv1\\geometry=@Rect(0 0 5 5)\n");
+        }
         QCOMPARE(file.write(bytes), bytes.size());
     }
     app::UiStateStore store;
@@ -263,6 +473,17 @@ void ShellTest::preferencesFailure() {
     const auto state = qvariant_cast<app::UiState>(loaded.front().front());
     QCOMPARE(state.destination, app::Destination::Home);
     QVERIFY(state.geometry.isEmpty());
+    if (kind == QStringLiteral("malformed")) {
+        QFile original(path);
+        QVERIFY(original.open(QIODevice::ReadOnly));
+        const auto contents = original.readAll();
+        original.close();
+        store.saveAndClose(app::UiState{});
+        QTRY_COMPARE(closed.count(), 1);
+        QCOMPARE(failed.count(), 2);
+        QVERIFY(original.open(QIODevice::ReadOnly));
+        QCOMPARE(original.readAll(), contents);
+    }
 }
 void ShellTest::shutdownAndPersistence_data() {
     QTest::addColumn<bool>("badStorage");
@@ -292,8 +513,17 @@ void ShellTest::shutdownAndPersistence() {
     app::StartupCoordinator startup(logger);
     QSignalSpy finished(&startup, &app::StartupCoordinator::finished);
     const auto cleanup = qScopeGuard([&] {
+        QEventLoop loop;
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        connect(&startup, &app::StartupCoordinator::finished, &loop, &QEventLoop::quit);
+        connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
         startup.shutdown();
-        if (finished.isEmpty() && !finished.wait(5000)) {
+        if (finished.isEmpty()) {
+            timeout.start(5000);
+            loop.exec();
+        }
+        if (finished.isEmpty()) {
             qFatal("Startup failed to close");
         }
     });
@@ -364,6 +594,7 @@ void ShellTest::layout_data() {
     QTest::newRow("default") << QSize(1360, 850) << false;
     QTest::newRow("laptop") << QSize(1100, 720) << true;
     QTest::newRow("small") << QSize(800, 600) << true;
+    QTest::newRow("constrained") << QSize(640, 480) << true;
     QTest::newRow("desktop") << QSize(1600, 1000) << false;
 }
 void ShellTest::layout() {
@@ -392,10 +623,21 @@ void ShellTest::layout() {
     QCoreApplication::sendPostedEvents();
     QVERIFY(window.size().width() <= size.width());
     QVERIFY(window.size().height() <= size.height());
+    auto* scroll = window.findChild<QScrollArea*>(QStringLiteral("shellScrollArea"));
+    QVERIFY(scroll);
     for (const auto* name : {"homeButton", "settingsButton"}) {
         auto* button = window.findChild<QToolButton*>(QString::fromLatin1(name));
-        QVERIFY(window.rect().contains(QRect(button->mapTo(&window, QPoint()), button->size())));
+        scroll->ensureWidgetVisible(button);
+        QVERIFY(scroll->viewport()->rect().contains(
+            QRect(button->mapTo(scroll->viewport(), QPoint()), button->size())));
     }
+    if (failure) {
+        auto* copy = window.findChild<QPushButton*>(QStringLiteral("copyDiagnostics"));
+        scroll->ensureWidgetVisible(copy);
+        QVERIFY(scroll->viewport()->rect().contains(
+            QRect(copy->mapTo(scroll->viewport(), QPoint()), copy->size())));
+    }
+    scroll->verticalScrollBar()->setValue(0);
     if (qEnvironmentVariableIsSet("CHESS_REVIEW_SCREENSHOT_DIR")) {
         const auto filename = qEnvironmentVariable("CHESS_REVIEW_SCREENSHOT_DIR") +
                               QLatin1Char('/') + QString::fromLatin1(QTest::currentDataTag()) +

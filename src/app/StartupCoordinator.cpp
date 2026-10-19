@@ -33,11 +33,14 @@ void StartupCoordinator::connectServices() {
         preferencesClosed_ = true;
         finishServices();
     });
-    connect(&uiState_, &UiStateStore::failed, this, [this] {
+    connect(&uiState_, &UiStateStore::failed, this, [this](UiStateError error) {
         if (logger_) {
-            logger_->record(diagnostics::Event::UiStateFailed, {}, diagnostics::Severity::Warning);
+            diagnostics::Context context;
+            context.errorCode = static_cast<int>(error);
+            logger_->record(diagnostics::Event::UiStateFailed, context,
+                            diagnostics::Severity::Warning);
         }
-        emit uiStateFailed();
+        emit uiStateFailed(error);
     });
 }
 void StartupCoordinator::finishServices() {

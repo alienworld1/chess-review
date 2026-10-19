@@ -12,11 +12,13 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QScreen>
+#include <QScrollArea>
 #include <QShowEvent>
 #include <QStackedWidget>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QVariant>
 #include <QWindow>
 #include <algorithm>
 
@@ -70,6 +72,7 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
         auto* action = new QAction(labels[i], this);
         action->setObjectName(app::destinationId(values[i]) + QStringLiteral("Action"));
         action->setCheckable(true);
+        action->setData(QVariant::fromValue(values[i]));
         group->addAction(action);
         view->addAction(action);
         destinations_[i] = action;
@@ -97,7 +100,13 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     row->addWidget(sidebar);
     row->addWidget(pages_, 1);
     column->addLayout(row, 1);
-    setCentralWidget(central);
+    // Keep every command reachable when enlarged fonts/errors exceed a small work area.
+    auto* scroll = new QScrollArea(this);
+    scroll->setObjectName(QStringLiteral("shellScrollArea"));
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setWidget(central);
+    setCentralWidget(scroll);
     view->addSeparator();
     reset_ = view->addAction(tr("Reset &Layout"));
     reset_->setObjectName(QStringLiteral("resetLayoutAction"));
@@ -116,16 +125,23 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     });
     connect(&navigation_, &app::NavigationController::destinationChanged, this,
             &MainWindow::selectDestination);
-    selectDestination(navigation_.current());
-    resetLayout();
+    selectDestination();
+    resetWindowGeometry();
     // Screen removal/changes are handled through Qt's current window screen.
     connect(qApp, &QGuiApplication::screenRemoved, this,
             [this] { QTimer::singleShot(0, this, &MainWindow::fitToScreen); });
 }
-void MainWindow::selectDestination(app::Destination destination) {
-    const auto index = static_cast<int>(destination);
-    destinations_.at(static_cast<std::size_t>(index))->setChecked(true);
-    pages_->setCurrentIndex(index);
+void MainWindow::selectDestination() {
+    // A previous signal subscriber may have synchronously redirected navigation.
+    for (std::size_t i = 0; i < destinations_.size(); ++i) {
+        auto* action = destinations_[i];
+        if (action->data().value<app::Destination>() == navigation_.current()) {
+            action->setChecked(true);
+            pages_->setCurrentIndex(static_cast<int>(i));
+            return;
+        }
+    }
+    Q_ASSERT_X(false, "MainWindow", "Navigation destination has no page");
 }
 void MainWindow::showProgress(const QString& message) {
     if (!closing_) {
@@ -143,15 +159,35 @@ void MainWindow::showFailure(const app::Diagnostic& diagnostic) {
     }
 }
 void MainWindow::setDiagnostics(diagnostics::Logger& logger) { startup_->setDiagnostics(logger); }
-void MainWindow::showUiStateFailure() {
+void MainWindow::showUiStateFailure(app::UiStateError error) {
     if (stateNoticeShown_) {
         return;
     }
     stateNoticeShown_ = true;
-    preferencesNotice_->setText(
-        tr("Window preferences could not be restored or saved. "
-           "Use View → Reset Layout or check access to the configuration folder. "
-           "The app remains usable."));
+    QString reason;
+    switch (error) {
+    case app::UiStateError::Read:
+        reason =
+            tr("Window preferences could not be read. Check access to the configuration folder.");
+        break;
+    case app::UiStateError::Invalid:
+        reason = tr("Window preferences are invalid or unavailable. Use View → Reset Layout or "
+                    "check the configuration file.");
+        break;
+    case app::UiStateError::Write:
+        reason = tr("Window preferences could not be saved. Check free space and access to the "
+                    "configuration folder.");
+        break;
+    case app::UiStateError::Busy:
+        reason = tr(
+            "Window preferences were not saved because another settings writer or lock is present. "
+            "Close other instances and check the configuration folder before relaunching.");
+        break;
+    }
+    if (reason.isEmpty()) {
+        reason = tr("Window preferences are unavailable.");
+    }
+    preferencesNotice_->setText(reason + tr(" The app remains usable."));
     preferencesNotice_->show();
 }
 void MainWindow::watchScreen(QScreen* screen) {
@@ -176,7 +212,7 @@ void MainWindow::fitToScreen() {
         setGeometry(fittedWindowGeometry(geometry(), available));
     }
 }
-void MainWindow::resetLayout() {
+void MainWindow::resetWindowGeometry() {
     if (closing_) {
         return;
     }
@@ -189,18 +225,24 @@ void MainWindow::resetLayout() {
     } else {
         resize(1360, 850);
     }
-    navigation_.navigate(app::Destination::Home);
     fitToScreen();
+}
+void MainWindow::resetLayout() {
+    if (closing_) {
+        return;
+    }
+    resetWindowGeometry();
+    navigation_.navigate(app::Destination::Home);
 }
 void MainWindow::restoreUiState(const app::UiState& state) {
     if (closing_ || stateRestored_) {
         return;
     }
-    resetLayout();
+    resetWindowGeometry();
     if (!state.geometry.isEmpty() && !restoreGeometry(state.geometry)) {
         showUiStateFailure();
         emit invalidUiState();
-        resetLayout();
+        resetWindowGeometry();
     }
     setWindowState(state.maximized ? Qt::WindowMaximized : Qt::WindowNoState);
     navigation_.navigate(state.destination);

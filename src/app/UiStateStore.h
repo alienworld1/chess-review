@@ -7,6 +7,9 @@
 #include <optional>
 
 namespace chess_review::app {
+// Stable privacy-safe diagnostic identifiers.
+enum class UiStateError { Read = 0, Invalid = 1, Write = 2, Busy = 3 };
+
 struct UiState {
     QByteArray geometry;
     bool maximized = false;
@@ -15,6 +18,7 @@ struct UiState {
 
 // Owning thread only. One load, then one saveAndClose; await closed() before destruction.
 // The private single-worker pool serializes all settings I/O and is joined asynchronously.
+// Contended settings saves fail with Busy; they never wait for another writer to exit.
 class UiStateStore final : public QObject {
     Q_OBJECT
   public:
@@ -24,7 +28,7 @@ class UiStateStore final : public QObject {
     void saveAndClose(const std::optional<UiState>& state = std::nullopt);
   signals:
     void loaded(const chess_review::app::UiState& state);
-    void failed(); // Safe settings failure; no paths/native error strings.
+    void failed(chess_review::app::UiStateError error);
     void closed();
 
   private:
@@ -36,3 +40,5 @@ class UiStateStore final : public QObject {
 };
 } // namespace chess_review::app
 Q_DECLARE_METATYPE(chess_review::app::UiState)
+
+Q_DECLARE_METATYPE(chess_review::app::UiStateError)

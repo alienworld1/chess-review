@@ -5,6 +5,7 @@
 #include <QClipboard>
 #include <QLabel>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -126,12 +127,19 @@ void StartupPanel::showDiagnostics() {
         existing->activateWindow();
         return;
     }
-    auto* dialog = new DiagnosticsDialog(logger_, [this] { return safeReport(); }, window());
+    auto* dialog = new DiagnosticsDialog(
+        logger_,
+        [source = QPointer<StartupPanel>(this)] {
+            return source ? source->safeReport()
+                          : tr("Startup diagnostics are no longer available.\n");
+        },
+        window());
     dialog->show();
 }
 
 void StartupPanel::showClosing() {
     show();
+    progress_->setAccessibleName(tr("Application shutdown"));
     status_->setText(tr("Closing…"));
     status_->show();
     progress_->show();

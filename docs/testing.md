@@ -163,8 +163,10 @@ QT_QPA_PLATFORM=offscreen:configfile=/tmp/chess-review-shell-renders/screen.json
   ./build/dev/tests/shell_tests layout
 ```
 
-This captures four window sizes with enlarged text and normal/failure states.
-These images are inspection artifacts, not pixel-perfect golden tests.
+This captures five window sizes with enlarged text and normal/failure states.
+The matrix includes a constrained 640×480 case and checks that navigation and
+Copy diagnostics can be reached through the shell's scroll area. These images
+are inspection artifacts, not pixel-perfect golden tests.
 
 Native desktop behavior, accessibility, Windows behavior,
 and mixed-DPI rendering still require separate release validation. Optional real

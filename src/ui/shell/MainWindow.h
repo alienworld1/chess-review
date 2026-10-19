@@ -22,12 +22,13 @@ QRect fittedWindowGeometry(const QRect& desired, const QRect& available);
 class MainWindow final : public QMainWindow {
     Q_OBJECT
   public:
+    // The application-owned navigation controller must outlive the window.
     explicit MainWindow(app::NavigationController& navigation, QWidget* parent = nullptr);
     void showProgress(const QString& message);
     void showReady();
     void showFailure(const app::Diagnostic& diagnostic);
     void setDiagnostics(diagnostics::Logger& logger);
-    void showUiStateFailure();
+    void showUiStateFailure(app::UiStateError error = app::UiStateError::Invalid);
     void restoreUiState(const app::UiState& state);
     app::UiState uiState() const;
     void resetLayout();
@@ -41,7 +42,8 @@ class MainWindow final : public QMainWindow {
     void showEvent(QShowEvent* event) override;
 
   private:
-    void selectDestination(app::Destination destination);
+    void selectDestination();
+    void resetWindowGeometry();
     void fitToScreen();
     void watchScreen(QScreen* screen);
     app::NavigationController& navigation_;

@@ -28,7 +28,7 @@ class StartupCoordinator final : public QObject {
     void progress(const QString& message);
     void ready();
     void failed(const chess_review::app::Diagnostic& diagnostic);
-    void uiStateFailed();
+    void uiStateFailed(chess_review::app::UiStateError error);
     void stopping();
     void finished();
 
