@@ -47,10 +47,18 @@ local promotion, deletion, stable IDs, independent copies, annotation accounting
 atomic failures, exact root/history preservation, special moves, and transpositions.
 A 20,000-ply line and a broad two-ply tree exercise iterative navigation,
 resolution, copying, destruction, and subtree deletion without timing assertions.
+Four deterministic seeds run 800 mixed add/promote/delete/annotation operations;
+after every edit, bounded graph traversal checks reachability, unique parents,
+acyclicity, sibling move uniqueness, non-reused IDs, main-line order, annotation
+budgets, canonical SAN, and contexts against independent Position replay.
+Focused regressions cover late fullmove overflow, late node exhaustion, and
+256 caller-supplied promotion representations that cannot match a legal path.
 `game_tree_allocation_tests` is a separate executable with a test-only global
 ordinary-allocation override. It fails each allocation in turn during line
 addition, annotation replacement, subtree deletion, and copy assignment, checking
 unchanged nodes, budgets, root context, and next allocated ID after every failure.
+A separate regression forces the first allocation to fail and verifies that
+reusing an existing child or entire path still succeeds without allocation.
 The override is absent from the app and ordinary chess/Qt test binaries. These
 labels describe entire suites: individual suites can cover several boundaries.
 

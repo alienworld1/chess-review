@@ -121,3 +121,33 @@ TEST_CASE("Game tree edits remain atomic at every allocation failure", "[chess][
         return true;
     });
 }
+
+TEST_CASE("Reusing existing game tree paths needs no allocation", "[chess][unit]") {
+    auto game = unwrap(GameTree::initial());
+    auto board = Position::initial();
+    std::vector<Move> moves;
+    for (const auto uci : {"e2e4", "e7e5", "g1f3", "b8c6"}) {
+        const auto move = unwrap(board.parseUci(uci));
+        unwrap(board.play(move));
+        moves.push_back(move);
+    }
+    const auto end = unwrap(game.addLine(game.rootId(), moves));
+    const auto parent = *game.node(end)->parent;
+    const auto before = snapshot(game);
+    for (const bool wholeLine : {false, true}) {
+        bool allocationFailed = false;
+        bool reused = false;
+        try {
+            const FailAfter fail{0};
+            const auto result =
+                wholeLine ? game.addLine(game.rootId(), moves) : game.addMove(parent, moves.back());
+            const auto* id = std::get_if<NodeId>(&result);
+            reused = id && *id == end;
+        } catch (const std::bad_alloc&) {
+            allocationFailed = true;
+        }
+        CHECK(!allocationFailed);
+        CHECK(reused);
+        CHECK(snapshot(game) == before);
+    }
+}

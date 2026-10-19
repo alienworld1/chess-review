@@ -2,10 +2,15 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
+#include <map>
+#include <random>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -315,4 +320,178 @@ TEST_CASE("Deep and broad game trees use iterative traversal and deletion", "[ch
         unwrap(game.removeSubtree(child));
     }
     CHECK(game.size() == 1);
+}
+
+TEST_CASE("Mixed tree edits preserve graph history and budget invariants", "[chess][unit]") {
+    for (const auto seed : {7U, 41U, 97U, 601U}) {
+        CAPTURE(seed);
+        std::mt19937 random{seed};
+        auto limits = GameTreeLimits{};
+        limits.maxNodes = 48;
+        limits.maxDepth = 12;
+        limits.maxCommentBytes = 8;
+        limits.maxAnnotationBytes = 64;
+        auto game = tree(limits);
+        std::uint64_t highestId = 0;
+        std::set<NodeId> deleted;
+        for (int step = 0; step < 200; ++step) {
+            CAPTURE(step);
+            const auto before = snapshot(game);
+            const auto id = before[random() % before.size()].id;
+            switch (random() % 5) {
+            case 0:
+            case 1: {
+                const auto board = unwrap(game.position(id));
+                const auto legal = board.legalMoves();
+                if (legal.empty()) {
+                    break;
+                }
+                const auto& move = legal[random() % legal.size()];
+                const auto result = game.addMove(id, move);
+                if (const auto* failure = std::get_if<GameTreeError>(&result)) {
+                    CHECK(failure->code == GameTreeErrorCode::LimitExceeded);
+                    CHECK(snapshot(game) == before);
+                } else {
+                    const auto added = std::get<NodeId>(result);
+                    const auto old =
+                        std::find_if(before.begin(), before.end(),
+                                     [&](const auto& node) { return node.id == added; });
+                    if (old == before.end()) {
+                        CHECK(added.value > highestId);
+                        highestId = added.value;
+                    }
+                }
+                break;
+            }
+            case 2:
+                if (id != game.rootId()) {
+                    unwrap(game.promote(id));
+                }
+                break;
+            case 3:
+                if (id != game.rootId()) {
+                    unwrap(game.removeSubtree(id));
+                    for (const auto& node : before) {
+                        if (!game.node(node.id)) {
+                            deleted.insert(node.id);
+                        }
+                    }
+                }
+                break;
+            case 4: {
+                const NodeAnnotations notes{std::string(random() % 10, '\xFF'),
+                                            std::string(random() % 10, '\0'),
+                                            {0, 255, 0}};
+                const auto status = game.setAnnotations(id, notes);
+                if (const auto* failure = std::get_if<GameTreeError>(&status)) {
+                    CHECK(failure->code == GameTreeErrorCode::LimitExceeded);
+                    CHECK(snapshot(game) == before);
+                } else {
+                    CHECK(game.node(id)->annotations == notes);
+                }
+                break;
+            }
+            }
+            std::vector<NodeId> queue{game.rootId()};
+            std::set<NodeId> visited{game.rootId()};
+            std::map<NodeId, Position> replay;
+            replay.emplace(game.rootId(), Position::initial());
+            std::size_t payload = 0;
+            for (std::size_t index = 0; index < queue.size(); ++index) {
+                REQUIRE(index < game.size());
+                const auto node = game.node(queue[index]);
+                REQUIRE(node);
+                REQUIRE(node->id == queue[index]);
+                CHECK(!deleted.contains(node->id));
+                CHECK(node->annotations.commentBefore.size() <= limits.maxCommentBytes);
+                CHECK(node->annotations.commentAfter.size() <= limits.maxCommentBytes);
+                payload += node->annotations.commentBefore.size() +
+                           node->annotations.commentAfter.size() + node->annotations.nags.size();
+                CHECK(unwrap(game.position(node->id)).context() == replay.at(node->id).context());
+                for (const auto childId : node->children) {
+                    REQUIRE(visited.insert(childId).second); // No cycles or multiple parents.
+                    const auto child = game.node(childId);
+                    REQUIRE(child);
+                    CHECK(child->parent == node->id);
+                    REQUIRE(child->move);
+                    CHECK(std::count_if(node->children.begin(), node->children.end(),
+                                        [&](NodeId sibling) {
+                                            const auto siblingNode = game.node(sibling);
+                                            return siblingNode && siblingNode->move == child->move;
+                                        }) == 1);
+                    auto branch = replay.at(node->id);
+                    CHECK(child->san == unwrap(branch.san(*child->move)));
+                    unwrap(branch.play(*child->move));
+                    CHECK(branch.context().moves.size() <= limits.maxDepth);
+                    replay.emplace(childId, std::move(branch));
+                    queue.push_back(childId);
+                }
+            }
+            CHECK(visited.size() == game.size());
+            CHECK(game.size() <= limits.maxNodes);
+            CHECK(payload == game.annotationBytes());
+            CHECK(payload <= limits.maxAnnotationBytes);
+            const auto main = unwrap(game.mainLine(game.rootId()));
+            REQUIRE(!main.empty());
+            CHECK(main.front() == game.rootId());
+            for (std::size_t index = 1; index < main.size(); ++index) {
+                CHECK(game.node(main[index - 1])->children.front() == main[index]);
+            }
+            CHECK(game.node(main.back())->children.empty());
+        }
+    }
+}
+
+TEST_CASE("Tree transactions reject late overflow and node exhaustion atomically",
+          "[chess][unit]") {
+    auto game = unwrap(GameTree::fromFen("4k3/8/8/8/8/8/8/4K3 w - - 0 4294967295"));
+    auto board = unwrap(game.position(game.rootId()));
+    const auto white = unwrap(board.parseUci("e1d1"));
+    unwrap(board.play(white));
+    const auto black = unwrap(board.parseUci("e8d8"));
+    const auto before = snapshot(game);
+    const std::array line{white, black};
+    const auto overflow =
+        rejects(game.addLine(game.rootId(), line), GameTreeErrorCode::PositionFailure);
+    CHECK(overflow.moveIndex == 1);
+    REQUIRE(overflow.positionError);
+    CHECK(overflow.positionError->code == ErrorCode::CounterOverflow);
+    CHECK(snapshot(game) == before);
+    CHECK(unwrap(game.addMove(game.rootId(), white)).value == 1);
+
+    auto limits = GameTreeLimits{};
+    limits.maxNodes = 3;
+    auto bounded = tree(limits);
+    const auto moves = movesFor(Position::initial(), {"e2e4", "e7e5", "g1f3"});
+    const auto exhausted =
+        rejects(bounded.addLine(bounded.rootId(), moves), GameTreeErrorCode::LimitExceeded);
+    CHECK(exhausted.moveIndex == 2);
+    CHECK(bounded.size() == 1);
+    CHECK(unwrap(bounded.addMove(bounded.rootId(), moves.front())).value == 1);
+    const auto existing = snapshot(bounded);
+    const auto invalid = moves.front(); // White cannot move twice.
+    const auto last = existing.back().id;
+    rejects(bounded.addMove(last, invalid), GameTreeErrorCode::PositionFailure);
+    rejects(bounded.position(NodeId{std::numeric_limits<std::uint64_t>::max()}),
+            GameTreeErrorCode::InvalidNode);
+    CHECK(snapshot(bounded) == existing);
+}
+
+TEST_CASE("Caller created malformed moves cannot enter or match a stored path", "[chess][unit]") {
+    auto game = tree();
+    const auto root = game.rootId();
+    add(game, root, {"e2e4"});
+    const auto before = snapshot(game);
+    const auto ordinary = unwrap(Position::initial().parseUci("e2e4"));
+    for (int representation = 0; representation < 256; ++representation) {
+        CAPTURE(representation);
+        auto malformed = ordinary;
+        malformed.promotion = static_cast<PieceType>(representation);
+        const auto failure =
+            rejects(game.addMove(root, malformed), GameTreeErrorCode::PositionFailure);
+        CHECK(failure.moveIndex == 0);
+        REQUIRE(failure.positionError);
+        CHECK(failure.positionError->code == ErrorCode::IllegalMove);
+        CHECK(snapshot(game) == before);
+    }
 }

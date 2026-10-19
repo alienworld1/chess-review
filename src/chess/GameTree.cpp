@@ -111,25 +111,39 @@ GameTreeResult<NodeId> GameTree::addMove(NodeId parent, const Move& move) {
 }
 
 GameTreeResult<NodeId> GameTree::addLine(NodeId start, std::span<const Move> moves) {
-    const auto first = nodes_.find(start);
+    auto first = nodes_.find(start);
     if (first == nodes_.end()) {
         return error(GameTreeErrorCode::InvalidNode, "Node does not exist.");
     }
-    if (moves.empty()) {
-        return start;
+    // Existing links already encode validated legal moves and exact histories. Reusing
+    // them needs no board reconstruction, SAN regeneration, or allocation.
+    std::size_t prefix = 0;
+    while (prefix < moves.size()) {
+        const auto& children = first->second.data.children;
+        const auto existing = std::find_if(children.begin(), children.end(), [&](NodeId child) {
+            return nodes_.at(child).data.move == moves[prefix];
+        });
+        if (existing == children.end()) {
+            break;
+        }
+        first = nodes_.find(*existing);
+        ++prefix;
     }
-    auto resolved = position(start);
+    if (prefix == moves.size()) {
+        return first->first;
+    }
+    auto resolved = position(first->first);
     if (const auto* failure = std::get_if<GameTreeError>(&resolved)) {
         return *failure;
     }
     auto board = std::get<Position>(std::move(resolved));
     std::map<NodeId, StoredNode> staged;
     auto nextId = nextId_;
-    auto current = start;
+    auto current = first->first;
     auto depth = first->second.depth;
     StoredNode* attachment = nullptr;
     std::vector<NodeId> attachmentChildren;
-    for (std::size_t index = 0; index < moves.size(); ++index) {
+    for (std::size_t index = prefix; index < moves.size(); ++index) {
         const auto& move = moves[index];
         auto notation = board.san(move);
         if (const auto* failure = std::get_if<Error>(&notation)) {
@@ -140,14 +154,6 @@ GameTreeResult<NodeId> GameTree::addLine(NodeId start, std::span<const Move> mov
             return positionFailure(*failure, index);
         }
         auto& parent = staged.empty() ? nodes_.at(current) : staged.at(current);
-        const auto existing =
-            std::find_if(parent.data.children.begin(), parent.data.children.end(),
-                         [&](NodeId child) { return nodes_.at(child).data.move == move; });
-        if (existing != parent.data.children.end()) {
-            current = *existing;
-            ++depth;
-            continue;
-        }
         if (depth >= limits_.maxDepth) {
             return error(GameTreeErrorCode::LimitExceeded, "Depth budget exceeded.", index);
         }

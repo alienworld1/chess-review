@@ -113,12 +113,14 @@ navigation, and engine scheduling belong to consumers, not the tree.
 ### Editing
 
 - `addMove(parent, move)` returns the child ID. Reuse an existing same-move
-  child without changing its annotations or sibling order; otherwise append a
-  variation. The first child of an empty node becomes its main continuation.
+  child without changing its annotations or sibling order, reconstructing the
+  board, or allocating; otherwise append a variation. The first child of an
+  empty node becomes its main continuation.
 - `addLine(start, spanOfMoves)` reuses existing prefixes and returns the final
-  node ID. Empty input returns start. Validate every move against the preceding
-  position and generate SAN internally. A failure anywhere leaves the whole
-  tree unchanged, including its ID allocator.
+  node ID. Empty input returns start. Stored prefixes were already validated;
+  following a wholly existing line needs no allocation. New moves are validated
+  against the preceding position and SAN is generated internally. A failure
+  anywhere leaves the whole tree unchanged, including its ID allocator.
 - `promote(id)` moves that child to first among its siblings, preserving their
   other relative ordering. Ancestors are not promoted. Root promotion is an error.
 - `removeSubtree(id)` deletes the selected node and every descendant. If the
@@ -128,7 +130,9 @@ navigation, and engine scheduling belong to consumers, not the tree.
   Comments are opaque bytes intended for UTF-8, preserved verbatim including
   NULs. The tree does not validate Unicode, interpret markup, or normalize PGN.
   NAGs are ordered 8-bit numbers; duplicates and all values are preserved.
-  Rendering and future import/export must apply their own text policies.
+  Rendering must present comments as plain text or escape markup explicitly.
+  Future PGN export must handle delimiters/control bytes according to its format;
+  these opaque bytes are not already validated export text.
 
 Fallible tree operations return `GameTreeResult<T>` or `GameTreeStatus`
 (`std::monostate` on success). `GameTreeError` carries a stable code and bounded
@@ -153,15 +157,20 @@ moved-from trees support destruction and assignment only. IDs are not globally
 unique and cannot detect accidental use with a different tree; keep them with
 their owning tree/snapshot. Assignment replaces the entire tree and its ID scope.
 Concurrent access to the same mutable instance requires external synchronization.
+Async results must carry their owning game/snapshot identity as well as a node ID:
+independent copies can subsequently assign the same numeric ID to different moves.
 
 Map lookup costs O(log N); a node snapshot additionally copies its child IDs and
 annotations. Position resolution costs O(D log N) map work plus D legal move
 applications, with O(D) temporary/history storage for depth D. Adding a line
-resolves its starting position once, validates its moves, scans existing siblings
-for matching prefixes, and stages only new nodes and the attachment's child list.
-Map insertion costs O(log N) per new node. Prefer `addLine` over repeatedly
-resolving increasingly deep nodes for batch input. Long path replay and batch
-import belong off the GUI thread; this synchronous core does not schedule work
+scans matching stored prefixes without replay. If a suffix is new, it resolves
+only the divergence position, validates that suffix, and stages only new nodes
+and the attachment's child list. Reusing an existing child costs O(log N) lookup
+work per examined sibling, independent of its depth; an existing line costs that
+work along its supplied moves. Map insertion costs O(log N) per new node.
+Prefer `addLine` over repeatedly resolving increasingly deep nodes for batch
+input. Long path replay and batch import belong off the GUI thread; this
+synchronous core does not schedule work
 or promise constant-time navigation. Trees store O(N + annotation
 payload + SAN bytes), rather than quadratic complete position-history prefixes.
 Copies take linear storage/work in the stored data. Subtree deletion takes
