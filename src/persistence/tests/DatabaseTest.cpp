@@ -112,6 +112,8 @@ class DatabaseTest final : public QObject {
     void forgedLedgerIsRejected();
     void privateFilesAndAliases();
     void specialFilesAreRejected();
+    void unsafeStorageFiles_data();
+    void unsafeStorageFiles();
     void boundValuesCannotInjectSql();
     void privateFileCannotOverwriteExistingData();
     void legacyPermissionsAreRestricted();
@@ -427,6 +429,99 @@ void DatabaseTest::specialFilesAreRejected() {
     QCOMPARE(error->code, DatabaseErrorCode::Path);
 #else
     QSKIP("Named pipe fixture is Unix-specific.");
+#endif
+}
+
+void DatabaseTest::unsafeStorageFiles_data() {
+    QTest::addColumn<QString>("suffix");
+    QTest::addColumn<QString>("kind");
+    QTest::addColumn<bool>("existingDatabase");
+    for (const auto& suffix :
+         {QStringLiteral("-wal"), QStringLiteral("-shm"), QStringLiteral("-journal"),
+          QStringLiteral(".lock"), QStringLiteral(".lock.rmlock")}) {
+        for (const auto& kind :
+             {QStringLiteral("symlink"), QStringLiteral("dangling"), QStringLiteral("hardlink"),
+              QStringLiteral("fifo"), QStringLiteral("directory")}) {
+            for (const bool existing : {false, true}) {
+                const auto name =
+                    suffix + QLatin1Char('-') + kind +
+                    (existing ? QStringLiteral("-existing") : QStringLiteral("-fresh"));
+                QTest::newRow(qPrintable(name)) << suffix << kind << existing;
+            }
+        }
+    }
+    QTest::newRow("oversized-lock")
+        << QStringLiteral(".lock") << QStringLiteral("oversized") << false;
+    QTest::newRow("cleanup-metadata")
+        << QStringLiteral(".lock.rmlock") << QStringLiteral("regular") << false;
+}
+
+void DatabaseTest::unsafeStorageFiles() {
+#ifdef Q_OS_UNIX
+    QFETCH(QString, suffix);
+    QFETCH(QString, kind);
+    QFETCH(bool, existingDatabase);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
+    QByteArray original;
+    if (existingDatabase) {
+        QVERIFY(!initialize(path, migrations()));
+        QFile database(path);
+        QVERIFY(database.open(QIODevice::ReadOnly));
+        original = database.readAll();
+    }
+    const auto sentinel = directory.filePath(QStringLiteral("sentinel"));
+    const QByteArray contents("preserve unrelated data and permissions");
+    {
+        QFile file(sentinel);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(contents), contents.size());
+        QVERIFY(file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                    QFileDevice::ReadGroup));
+    }
+    const auto permissions = QFileInfo(sentinel).permissions();
+    const auto unsafe = path + suffix;
+    if (kind == QStringLiteral("symlink") || kind == QStringLiteral("dangling")) {
+        QVERIFY(QFile::link(kind == QStringLiteral("symlink")
+                                ? sentinel
+                                : directory.filePath(QStringLiteral("missing")),
+                            unsafe));
+    } else if (kind == QStringLiteral("hardlink")) {
+        QCOMPARE(
+            ::link(QFile::encodeName(sentinel).constData(), QFile::encodeName(unsafe).constData()),
+            0);
+    } else if (kind == QStringLiteral("fifo")) {
+        QCOMPARE(::mkfifo(QFile::encodeName(unsafe).constData(), 0600), 0);
+    } else if (kind == QStringLiteral("directory")) {
+        QVERIFY(QDir().mkdir(unsafe));
+    } else {
+        QFile file(unsafe);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        const QByteArray metadata(kind == QStringLiteral("oversized") ? 16385 : 1, 'x');
+        QCOMPARE(file.write(metadata), metadata.size());
+    }
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const auto error = initialize(path, migrations());
+    QVERIFY(error);
+    QCOMPARE(error->code, suffix.startsWith(QLatin1Char('.')) ? DatabaseErrorCode::Locked
+                                                              : DatabaseErrorCode::Path);
+    QVERIFY(elapsed.elapsed() < 1000);
+    QVERIFY(QFileInfo(unsafe).exists() || QFileInfo(unsafe).isSymLink());
+    QFile file(sentinel);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), contents);
+    QCOMPARE(QFileInfo(sentinel).permissions(), permissions);
+    if (existingDatabase) {
+        QFile database(path);
+        QVERIFY(database.open(QIODevice::ReadOnly));
+        QCOMPARE(database.readAll(), original);
+    } else {
+        QVERIFY(!QFileInfo::exists(path));
+    }
+#else
+    QSKIP("Unix filesystem alias and special-file fixtures.");
 #endif
 }
 

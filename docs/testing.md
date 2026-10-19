@@ -150,6 +150,12 @@ suite uses temporary explicit settings filenames and covers settings failures
 independently of database failures. `UiStateStore::closed()` guarantees its worker
 has joined; retain fixtures/services until completion.
 
+Persistence regressions check existing and fresh database locations with symbolic,
+dangling, hard-linked, FIFO, and directory targets at each WAL/SHM/rollback-journal
+and lock path. Oversized lock metadata and pre-existing cleanup locks fail before
+Qt/SQLite opens them. Rejection must preserve database bytes, unrelated file bytes
+and permissions, and the unsafe target, without creating a fresh database.
+
 Linux shell subprocess tests compile the actual production `main.cpp` into a
 `shell_exit_probe` executable with a test-only UI driver. They exercise window
 close, File → Quit, application Quit, closing during startup/after storage failure,

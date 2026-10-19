@@ -20,7 +20,8 @@ for this foundation; branded themes are deferred.
 - Qt **6.12+** development SDK with Widgets, SQL, the QSQLITE driver, and Qt Test
   (Qt Test is needed only when `BUILD_TESTING=ON`, the default)
 - CMake **3.24+**, Ninja, and GNU Make
-- Developer tools: clang-format 15+, clang-tidy, and clangd for editor integration
+- Developer tools: clang-format 18 and clang-tidy 18 (matching CI), and clangd for
+  editor integration
 
 ## Everyday commands
 
@@ -252,8 +253,15 @@ restricted to owner-only access before further writes. Special files and
 dangling symbolic links are rejected. Symbolic aliases resolve to the same lock;
 Unix hard-linked databases are rejected because aliases make WAL and locking unsafe.
 A `.lock` file beside the database prevents concurrent application instances from
-opening it. Stale process locks are handled by Qt; do not delete a live process's
-lock. No database or backup is automatically replaced or restored after failure.
+opening it. Before Qt reads lock metadata, the app rejects symbolic/nonregular
+locks, Unix multiply linked locks, metadata larger than 16 KiB, and pre-existing
+`.lock.rmlock` cleanup files. Before opening SQLite, it also rejects unsafe
+WAL, SHM, and rollback-journal sidecars, so recovery cannot follow those aliases
+or open special files. Ordinary database symbolic aliases remain supported.
+Stale process locks are handled by Qt; do not delete a live process's lock.
+These checks assume private user-controlled directories; they do not protect
+against concurrent malicious filesystem replacement by the same user.
+No database or backup is automatically replaced or restored after failure.
 Normal application quit requests also go through storage shutdown; `closed()` is
 emitted only after a nonblocking native-thread join has completed. Code should use
 the coordinator's shutdown path rather than bypassing it with immediate process

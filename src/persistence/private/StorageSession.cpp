@@ -16,6 +16,27 @@
 #endif
 
 namespace chess_review::persistence::detail {
+namespace {
+
+// Check before Qt/SQLite can read, recover, truncate, or chmod an existing file.
+bool safeFile(const QString& path) {
+    const QFileInfo file(path);
+    if (file.isSymLink() || (file.exists() && !file.isFile())) {
+        return false;
+    }
+#ifdef Q_OS_UNIX
+    if (file.exists()) {
+        struct stat information {};
+        const auto encoded = QFile::encodeName(path);
+        if (::lstat(encoded.constData(), &information) != 0 || information.st_nlink != 1) {
+            return false;
+        }
+    }
+#endif
+    return true;
+}
+
+} // namespace
 
 StorageSession::StorageSession() = default;
 
@@ -62,25 +83,35 @@ std::optional<DatabaseError> StorageSession::initialize(const QString& path,
         return failure(DatabaseErrorCode::Path, QStringLiteral("Locate database"),
                        QStringLiteral("Cannot resolve the database location."));
     }
-#ifdef Q_OS_UNIX
-    if (file.exists()) {
-        struct stat information {};
-        const auto encoded = QFile::encodeName(canonicalPath);
-        if (::stat(encoded.constData(), &information) != 0 || information.st_nlink != 1) {
-            return failure(
-                DatabaseErrorCode::Path, QStringLiteral("Validate database file"),
-                QStringLiteral(
-                    "Cannot use a database with multiple hard links or unreadable file metadata."));
-        }
+    const QString lockPath = canonicalPath + QStringLiteral(".lock");
+    // QLockFile reads metadata with unbounded readLine(); stale cleanup also opens
+    // a separate .rmlock file. Do not let either touch untrusted special files.
+    if (!safeFile(lockPath) || QFileInfo(lockPath).size() > 16 * 1024) {
+        return failure(DatabaseErrorCode::Locked, QStringLiteral("Validate database lock"),
+                       QStringLiteral("The database lock file is unsafe or oversized."));
     }
-#endif
-    lock_ = std::make_unique<QLockFile>(canonicalPath + QStringLiteral(".lock"));
+    const QFileInfo cleanupLock(lockPath + QStringLiteral(".rmlock"));
+    if (cleanupLock.exists() || cleanupLock.isSymLink()) {
+        return failure(DatabaseErrorCode::Locked, QStringLiteral("Validate database lock"),
+                       QStringLiteral("A database lock cleanup file is already present."));
+    }
+    lock_ = std::make_unique<QLockFile>(lockPath);
     lock_->setStaleLockTime(0);
     if (!lock_->tryLock(0)) {
         return failure(DatabaseErrorCode::Locked, QStringLiteral("Lock database"),
                        lock_->error() == QLockFile::LockFailedError
                            ? QStringLiteral("This database is already in use by another instance.")
                            : QStringLiteral("Cannot create the database lock file."));
+    }
+    // SQLite may recover journals or open WAL/SHM files during open/schema reads,
+    // before migration validation or permission repair has a chance to run.
+    for (const auto& suffix :
+         {QString(), QStringLiteral("-wal"), QStringLiteral("-shm"), QStringLiteral("-journal")}) {
+        if (!safeFile(canonicalPath + suffix)) {
+            return failure(DatabaseErrorCode::Path, QStringLiteral("Validate database files"),
+                           QStringLiteral("A database file or sidecar is not a regular, singly "
+                                          "linked file with readable metadata."));
+        }
     }
     if (!QFileInfo::exists(canonicalPath)) {
         if (const auto error = createPrivateFile(canonicalPath)) {
