@@ -18,6 +18,7 @@ struct AppPaths {
     QString databasePath() const;
     QString configFilePath() const;
     QString logDirectory() const;
+    QString uiStateFilePath() const;
 };
 
 } // namespace chess_review::app

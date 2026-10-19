@@ -31,8 +31,8 @@ See the README for Qt SDK selection and `CMakeUserPresets.json` overrides.
 
 All test presets show failure output and fail if no tests match, including an
 accidentally empty label/regex selection. Every Qt suite has a 30-second CTest
-limit. Component labels are `diagnostics`, `persistence`, `startup`, and
-`app_paths`; all have `qt`, and the first three also have `integration`. These
+limit. Component labels are `diagnostics`, `persistence`, `startup`, `shell`, and
+`app_paths`; all have `qt`, and all except `app_paths` also have `integration`. These
 labels describe entire suites: individual suites can cover several boundaries.
 
 Qt Test also supports selecting individual functions and data rows directly:
@@ -43,7 +43,7 @@ QT_QPA_PLATFORM=offscreen ./build/dev/tests/startup_tests unusableDataDirectoryF
 ./build/dev/src/persistence/tests/persistence_tests closeDuringInitialization
 ```
 
-CTest sets the offscreen platform only for the startup/widget suite. Direct
+CTest sets the offscreen platform only for the startup and shell widget suites. Direct
 widget invocation must supply it when there is no desktop display. Use absolute
 paths for Qt Test `-o` reports: temporary working directories are removed at exit.
 No global
@@ -64,7 +64,7 @@ platform override is needed for Qt Core suites.
   dependencies into production targets. Unknown options and missing keyword
   values fail configuration.
 
-All four runners construct `TestEnvironment` before the Qt application, isolating
+All five runners construct `TestEnvironment` before the Qt application, isolating
 working directories and Linux HOME/XDG roots. Exit with failure if it is invalid.
 Declare it before the application
 so workers and Qt shut down before the root is removed. Internal diagnostics
@@ -145,7 +145,28 @@ is not a fully hermetic toolchain. Review dependency and Action updates rather
 than moving pins automatically.
 
 Offscreen widget tests exercise startup, error presentation, clipboard privacy,
-and graceful shutdown. Native desktop behavior, accessibility, Windows behavior,
+shell navigation, preferences, layout recovery, and graceful shutdown. The `shell`
+suite uses temporary explicit settings filenames and covers settings failures
+independently of database failures. `UiStateStore::closed()` guarantees its worker
+has joined; retain fixtures/services until completion.
+
+For optional shell render inspection, create an absolute output directory and run:
+
+```sh
+mkdir -p /tmp/chess-review-shell-renders
+cat > /tmp/chess-review-shell-renders/screen.json <<'JSON'
+{"screens":[{"name":"qa","width":3840,"height":2400}]}
+JSON
+QT_QPA_PLATFORM=offscreen:configfile=/tmp/chess-review-shell-renders/screen.json \
+  QT_SCALE_FACTOR=1.25 \
+  CHESS_REVIEW_SCREENSHOT_DIR=/tmp/chess-review-shell-renders \
+  ./build/dev/tests/shell_tests layout
+```
+
+This captures four window sizes with enlarged text and normal/failure states.
+These images are inspection artifacts, not pixel-perfect golden tests.
+
+Native desktop behavior, accessibility, Windows behavior,
 and mixed-DPI rendering still require separate release validation. Optional real
 engine compatibility tests must supplement a deterministic fake UCI engine when
 engine orchestration is implemented; this infrastructure task adds neither.

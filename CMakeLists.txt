@@ -38,10 +38,19 @@ chess_review_apply_options(chess_review_app_paths)
 add_library(chess_review_startup STATIC
     src/app/Diagnostic.cpp
     src/app/StartupCoordinator.cpp
-    src/ui/StartupWindow.cpp
+    src/app/NavigationController.cpp
+    src/app/UiStateStore.cpp
 )
-target_link_libraries(chess_review_startup PUBLIC chess_review_persistence chess_review_diagnostics Qt6::Widgets)
+target_link_libraries(chess_review_startup PUBLIC chess_review_persistence chess_review_diagnostics Qt6::Core)
 chess_review_apply_options(chess_review_startup)
+
+add_library(chess_review_ui STATIC
+    src/ui/shell/MainWindow.cpp
+    src/ui/shell/StartupPanel.cpp
+    src/ui/shell/DiagnosticsDialog.cpp
+)
+target_link_libraries(chess_review_ui PUBLIC chess_review_startup Qt6::Widgets)
+chess_review_apply_options(chess_review_ui)
 
 qt_add_executable(chess_review_app src/main.cpp)
 set_target_properties(chess_review_app PROPERTIES
@@ -50,7 +59,7 @@ set_target_properties(chess_review_app PROPERTIES
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
-target_link_libraries(chess_review_app PRIVATE chess_review_startup chess_review_app_paths)
+target_link_libraries(chess_review_app PRIVATE chess_review_ui chess_review_app_paths)
 chess_review_apply_options(chess_review_app)
 
 include(CTest)

@@ -65,6 +65,8 @@ const char* eventName(Event event) {
         return "logging.failed";
     case Event::QtCaptureUnavailable:
         return "logging.qt_capture_unavailable";
+    case Event::UiStateFailed:
+        return "ui_state.failed";
     case Event::EventsDropped:
         return "logging.events_dropped";
     }

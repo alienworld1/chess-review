@@ -1,7 +1,8 @@
 #include "app/AppPaths.h"
+#include "app/NavigationController.h"
 #include "app/StartupCoordinator.h"
 #include "diagnostics/Logger.h"
-#include "ui/StartupWindow.h"
+#include "ui/shell/MainWindow.h"
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QString>
@@ -27,12 +28,40 @@ int main(int argc, char* argv[]) {
         logger.record(chess_review::diagnostics::Event::QtCaptureUnavailable, {},
                       chess_review::diagnostics::Severity::Warning);
     }
-    chess_review::ui::StartupWindow window;
-    chess_review::app::StartupCoordinator startup(window, logger);
+    chess_review::app::NavigationController navigation;
+    chess_review::ui::MainWindow window(navigation);
+    window.setDiagnostics(logger);
+    chess_review::app::StartupCoordinator startup(logger);
+    bool windowInitialized = false;
+    QObject::connect(&startup, &chess_review::app::StartupCoordinator::initialUiState, &window,
+                     [&](const chess_review::app::UiState& state) {
+                         window.restoreUiState(state);
+                         windowInitialized = true;
+                         window.show();
+                     });
+    QObject::connect(&startup, &chess_review::app::StartupCoordinator::progress, &window,
+                     &chess_review::ui::MainWindow::showProgress);
+    QObject::connect(&startup, &chess_review::app::StartupCoordinator::ready, &window,
+                     &chess_review::ui::MainWindow::showReady);
+    QObject::connect(&startup, &chess_review::app::StartupCoordinator::failed, &window,
+                     &chess_review::ui::MainWindow::showFailure);
+    QObject::connect(&startup, &chess_review::app::StartupCoordinator::uiStateFailed, &window,
+                     &chess_review::ui::MainWindow::showUiStateFailure);
+    QObject::connect(&window, &chess_review::ui::MainWindow::invalidUiState, &startup, [&] {
+        logger.record(chess_review::diagnostics::Event::UiStateFailed, {},
+                      chess_review::diagnostics::Severity::Warning);
+    });
+    QObject::connect(&window, &chess_review::ui::MainWindow::closeRequested, &startup,
+                     &chess_review::app::StartupCoordinator::shutdown);
+    QObject::connect(&startup, &chess_review::app::StartupCoordinator::stopping, &window, [&] {
+        if (windowInitialized) {
+            startup.setFinalUiState(window.uiState());
+        }
+        window.showClosing();
+    });
     QObject::connect(&startup, &chess_review::app::StartupCoordinator::finished, &application,
                      &QApplication::quit);
-    window.show();
-    startup.start(paths.databasePath());
+    startup.start(paths.databasePath(), paths.uiStateFilePath());
 
     return application.exec();
 }

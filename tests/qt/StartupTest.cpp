@@ -2,9 +2,10 @@
 
 #include "app/AppPaths.h"
 #include "app/Diagnostic.h"
+#include "app/NavigationController.h"
 #include "app/StartupCoordinator.h"
 #include "diagnostics/Logger.h"
-#include "ui/StartupWindow.h"
+#include "ui/shell/MainWindow.h"
 #include <QAction>
 #include <QClipboard>
 #include <QDialog>
@@ -31,8 +32,19 @@
 #include <optional>
 
 using chess_review::app::AppPaths;
+using chess_review::app::NavigationController;
 using chess_review::app::StartupCoordinator;
-using chess_review::ui::StartupWindow;
+using chess_review::ui::MainWindow;
+
+namespace {
+void bindStartup(StartupCoordinator& startup, MainWindow& window) {
+    QObject::connect(&startup, &StartupCoordinator::progress, &window, &MainWindow::showProgress);
+    QObject::connect(&startup, &StartupCoordinator::ready, &window, &MainWindow::showReady);
+    QObject::connect(&startup, &StartupCoordinator::failed, &window, &MainWindow::showFailure);
+    QObject::connect(&window, &MainWindow::closeRequested, &startup, &StartupCoordinator::shutdown);
+    QObject::connect(&startup, &StartupCoordinator::stopping, &window, &MainWindow::showClosing);
+}
+} // namespace
 
 class StartupTest final : public QObject {
     Q_OBJECT
@@ -105,7 +117,8 @@ void StartupTest::diagnosticMapping() {
 }
 
 void StartupTest::failureDetailsAndSafeCopy() {
-    StartupWindow window;
+    NavigationController navigation;
+    MainWindow window(navigation);
     chess_review::persistence::DatabaseError error;
     error.code = chess_review::persistence::DatabaseErrorCode::Open;
     error.databasePath = QStringLiteral("/private/<b>棋</b>/library.sqlite3");
@@ -142,12 +155,14 @@ void StartupTest::failureDetailsAndSafeCopy() {
 }
 
 void StartupTest::largeDetailsKeepControlsUsable() {
-    StartupWindow window;
+    NavigationController navigation;
+    MainWindow window(navigation);
     chess_review::persistence::DatabaseError error;
     error.code = chess_review::persistence::DatabaseErrorCode::Open;
     error.databasePath = QStringLiteral("/private/library.sqlite3");
     error.detail = QStringLiteral("Untrusted native output\n").repeated(5000);
     window.showFailure(chess_review::app::storageDiagnostic(error));
+    window.resize(1000, 700);
     window.show();
     auto* reveal = window.findChild<QPushButton*>(QStringLiteral("revealDetails"));
     QVERIFY(reveal);
@@ -177,7 +192,8 @@ void StartupTest::diagnosticsSnapshotStaysStable() {
             qFatal("Test logger failed to close");
         }
     });
-    StartupWindow window;
+    NavigationController navigation;
+    MainWindow window(navigation);
     window.setDiagnostics(logger);
     window.show();
     window.findChild<QAction*>(QStringLiteral("diagnosticsAction"))->trigger();
@@ -224,7 +240,8 @@ void StartupTest::diagnosticsSurviveLoggerDestruction() {
             }
         }
     });
-    StartupWindow window;
+    NavigationController navigation;
+    MainWindow window(navigation);
     window.setDiagnostics(*logger);
     window.show();
     window.findChild<QAction*>(QStringLiteral("diagnosticsAction"))->trigger();
@@ -289,8 +306,11 @@ void StartupTest::loggedLifecycle() {
     QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     chess_review::diagnostics::Logger logger(
         loggingAvailable ? directory.filePath(QStringLiteral("logs")) : QString());
-    StartupWindow window;
-    StartupCoordinator startup(window, logger);
+    NavigationController navigation;
+    MainWindow window(navigation);
+    StartupCoordinator startup(logger);
+    window.setDiagnostics(logger);
+    bindStartup(startup, window);
     QSignalSpy finished(&startup, &StartupCoordinator::finished);
     // Always shut down and await the native writer join, even on assertion failure.
     const auto cleanup = qScopeGuard([&] {
@@ -365,8 +385,10 @@ void StartupTest::resolvedPathsInitializeLazily() {
 #else
     const auto paths = AppPaths::resolve();
     QVERIFY(!QFileInfo::exists(paths.dataDirectory));
-    StartupWindow window;
-    StartupCoordinator startup(window);
+    NavigationController navigation;
+    MainWindow window(navigation);
+    StartupCoordinator startup;
+    bindStartup(startup, window);
     QSignalSpy finished(&startup, &StartupCoordinator::finished);
     const auto* status = window.findChild<QLabel*>(QStringLiteral("startupStatus"));
     QVERIFY(status);
@@ -390,8 +412,10 @@ void StartupTest::unusableDataDirectoryFails() {
     QFile obstruction(paths.dataDirectory);
     QVERIFY(obstruction.open(QIODevice::WriteOnly | QIODevice::NewOnly));
     obstruction.close();
-    StartupWindow window;
-    StartupCoordinator startup(window);
+    NavigationController navigation;
+    MainWindow window(navigation);
+    StartupCoordinator startup;
+    bindStartup(startup, window);
     QSignalSpy finished(&startup, &StartupCoordinator::finished);
     const auto* status = window.findChild<QLabel*>(QStringLiteral("startupStatus"));
     const auto* diagnostic = window.findChild<QPlainTextEdit*>(QStringLiteral("startupDiagnostic"));
@@ -414,8 +438,10 @@ void StartupTest::unusableDataDirectoryFails() {
 void StartupTest::initializesAndCloses() {
     QTemporaryDir directory;
     QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
-    StartupWindow window;
-    StartupCoordinator startup(window);
+    NavigationController navigation;
+    MainWindow window(navigation);
+    StartupCoordinator startup;
+    bindStartup(startup, window);
     QSignalSpy finished(&startup, &StartupCoordinator::finished);
     const auto* status = window.findChild<QLabel*>(QStringLiteral("startupStatus"));
     QVERIFY(status);
@@ -434,8 +460,10 @@ void StartupTest::failureShowsDiagnostic() {
     QVERIFY(file.open(QIODevice::WriteOnly));
     QVERIFY(file.write("invalid database") > 0);
     file.close();
-    StartupWindow window;
-    StartupCoordinator startup(window);
+    NavigationController navigation;
+    MainWindow window(navigation);
+    StartupCoordinator startup;
+    bindStartup(startup, window);
     QSignalSpy finished(&startup, &StartupCoordinator::finished);
     const auto* status = window.findChild<QLabel*>(QStringLiteral("startupStatus"));
     const auto* diagnostic = window.findChild<QPlainTextEdit*>(QStringLiteral("startupDiagnostic"));
@@ -453,8 +481,10 @@ void StartupTest::failureShowsDiagnostic() {
 void StartupTest::closeDuringStartup() {
     QTemporaryDir directory;
     QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
-    StartupWindow window;
-    StartupCoordinator startup(window);
+    NavigationController navigation;
+    MainWindow window(navigation);
+    StartupCoordinator startup;
+    bindStartup(startup, window);
     QSignalSpy finished(&startup, &StartupCoordinator::finished);
     window.show();
     startup.start(directory.filePath(QStringLiteral("library.sqlite3")));
@@ -465,8 +495,10 @@ void StartupTest::closeDuringStartup() {
 void StartupTest::quitDuringStartup() {
     QTemporaryDir directory;
     QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
-    StartupWindow window;
-    StartupCoordinator startup(window);
+    NavigationController navigation;
+    MainWindow window(navigation);
+    StartupCoordinator startup;
+    bindStartup(startup, window);
     QSignalSpy finished(&startup, &StartupCoordinator::finished);
     window.show();
     startup.start(directory.filePath(QStringLiteral("library.sqlite3")));

@@ -2,8 +2,8 @@
 
 #include "app/Diagnostic.h"
 
-#include <QMainWindow>
 #include <QString>
+#include <QWidget>
 
 class QLabel;
 class QProgressBar;
@@ -16,27 +16,27 @@ class Logger;
 
 namespace chess_review::ui {
 
-class StartupWindow final : public QMainWindow {
+class StartupPanel final : public QWidget {
     Q_OBJECT
 
   public:
-    explicit StartupWindow(QWidget* parent = nullptr);
+    explicit StartupPanel(QWidget* parent = nullptr);
     void showProgress(const QString& message);
     void showReady();
     void showFailure(const app::Diagnostic& diagnostic);
     void setDiagnostics(diagnostics::Logger& logger);
 
+    void showDiagnostics();
+    void showClosing();
+
   signals:
     void closeRequested();
 
-  protected:
-    void closeEvent(QCloseEvent* event) override;
-
   private:
-    void showDiagnostics();
     QString safeReport() const;
     diagnostics::Logger* logger_ = nullptr; // Non-owning; cleared by destroyed().
     app::Diagnostic failure_;
+    QPushButton* exit_;
     QLabel* summary_;
     QLabel* notice_;
     QPushButton* reveal_;

@@ -29,6 +29,10 @@ QString AppPaths::configFilePath() const {
     return filePath(configDirectory, QStringLiteral("config.toml"));
 }
 
+QString AppPaths::uiStateFilePath() const {
+    return filePath(configDirectory, QStringLiteral("ui-state.ini"));
+}
+
 QString AppPaths::logDirectory() const { return filePath(cacheDirectory, QStringLiteral("logs")); }
 
 } // namespace chess_review::app

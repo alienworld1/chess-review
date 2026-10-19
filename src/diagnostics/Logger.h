@@ -25,7 +25,8 @@ enum class Event {
     QtMessage,
     LoggingFailed,
     QtCaptureUnavailable,
-    EventsDropped
+    EventsDropped,
+    UiStateFailed
 };
 
 enum class Severity { Debug, Info, Warning, Error, Fatal };

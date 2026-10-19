@@ -62,6 +62,7 @@ void AppPathsTest::standardLocations() {
     QCOMPARE(paths.databasePath(), paths.dataDirectory + QStringLiteral("/chess-review.sqlite3"));
     QCOMPARE(paths.configFilePath(), paths.configDirectory + QStringLiteral("/config.toml"));
     QCOMPARE(paths.logDirectory(), paths.cacheDirectory + QStringLiteral("/logs"));
+    QCOMPARE(paths.uiStateFilePath(), paths.configDirectory + QStringLiteral("/ui-state.ini"));
     QVERIFY(!QFileInfo::exists(dataRoot));
     QVERIFY(!QFileInfo::exists(configRoot));
     QVERIFY(!QFileInfo::exists(cacheRoot));
@@ -75,6 +76,7 @@ void AppPathsTest::emptyDirectoryDoesNotBecomeRelative() {
     const AppPaths paths;
     QVERIFY(paths.databasePath().isEmpty());
     QVERIFY(paths.configFilePath().isEmpty());
+    QVERIFY(paths.uiStateFilePath().isEmpty());
     QVERIFY(paths.logDirectory().isEmpty());
 }
 
@@ -90,6 +92,7 @@ void AppPathsTest::invalidDirectories() {
     const AppPaths paths{directory, directory, directory};
     QVERIFY(paths.databasePath().isEmpty());
     QVERIFY(paths.configFilePath().isEmpty());
+    QVERIFY(paths.uiStateFilePath().isEmpty());
     QVERIFY(paths.logDirectory().isEmpty());
 }
 

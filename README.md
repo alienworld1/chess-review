@@ -1,8 +1,16 @@
 # chess-review
 
-Native C++20 / Qt Widgets application foundation. Startup opens the local SQLite
-database asynchronously and displays progress, readiness, or a storage diagnostic.
-Chess product features will be added in later tasks.
+Native C++20 / Qt Widgets application foundation with a main window and five
+empty destinations: Home, Games, Puzzles, Analyze, and Settings. The sidebar and
+View menu share navigation actions. Chess screens and product features will be
+added in later tasks.
+
+Startup restores window preferences, then opens the local SQLite database
+asynchronously. Navigation remains available during startup and storage failure.
+File → Quit and window-manager close keep a closing indication visible until
+storage, UI preferences, and logging finish shutting down. Help provides
+Diagnostics and About; View → Reset Layout restores fitted default geometry and
+Home. Native Qt styling is used for this foundation; branded themes are deferred.
 
 ## Requirements
 
@@ -34,7 +42,7 @@ and Ninja handle the actual build.
 | `make format` | Format C++ source |
 | `make format-check` | Verify C++ formatting |
 | `make lint` | Build and run the curated clang-tidy checks |
-| `make test` | Build and run all four Qt Test suites through CTest |
+| `make test` | Build and run all five Qt Test suites through CTest |
 | `make test PRESET=sanitized` | Build and test with ASan/UBSan and leak detection (Linux) |
 
 Builds are incremental. Debug and release outputs live in `build/dev` and
@@ -153,7 +161,7 @@ On Linux the layout is:
 | Purpose | Qt location | Linux default | Contents |
 | --- | --- | --- | --- |
 | Durable data | `AppLocalDataLocation` | `~/.local/share/chess-review/` | `chess-review.sqlite3`, migration `backups/` |
-| Configuration | `AppConfigLocation` | `~/.config/chess-review/` | Reserved `config.toml` |
+| Configuration | `AppConfigLocation` | `~/.config/chess-review/` | `ui-state.ini`; reserved `config.toml` |
 | Disposable cache | `CacheLocation` | `~/.cache/chess-review/` | Rotating `logs/`; reserved `transient/` |
 
 Qt honors `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME`, using its
@@ -162,11 +170,22 @@ data uses the local rather than roaming location on Windows.
 
 Resolving paths creates nothing. Each subsystem creates its directory when it
 first writes there. Database initialization runs on the storage thread; logging
-creates its directory on a separate writer thread. Configuration parsing, UI-state
-persistence through `QSettings`, and general filesystem cache management are not
-implemented yet. Product configuration
-will use TOML, while `QSettings` is reserved for UI-local state. There are no
-placeholder configuration files or unused directories. SQL migrations remain
+creates its directory on a separate writer thread. A private, single-worker
+UI-state store reads/writes `ui-state.ini` through `QSettings::IniFormat`, without
+GUI-thread file I/O. It saves window geometry, maximized state, and the last
+selected destination during orderly shutdown. It does not restore minimization.
+The initial window targets 1360×850 logical pixels, fitted to the available
+screen; valid saved geometry is restored and re-fitted when screen geometry changes.
+View → Reset Layout unmaximizes, restores fitted defaults, and selects Home.
+
+Missing preferences use defaults without creating a file until shutdown. Invalid
+or inaccessible preferences show one nonmodal notice and a safe diagnostic;
+current/default layout remains usable independently of the game database.
+A quit request before preference loading completes preserves the existing file.
+There is no fallback settings path or organization prefix. Product configuration
+parsing and general filesystem cache management are not implemented yet.
+Product configuration will use TOML; `QSettings` is reserved for UI-local state.
+There are no placeholder configuration files or unused directories. SQL migrations remain
 compiled into the application, without an on-disk `migrations/` directory.
 
 Saved engine analysis belongs in the durable SQLite database, so clearing the
@@ -289,7 +308,7 @@ Persistence tests use temporary databases and internal fixture migrations to cov
 initialization, upgrades, rollback, WAL-aware backups, invalid history, lock
 contention, busy timeouts, and asynchronous lifecycle cleanup. The busy-timeout
 case deliberately takes about five seconds and checks event-loop responsiveness.
-Qt widget tests smoke-run the actual startup coordinator/window through readiness,
+Qt widget tests smoke-run the actual startup coordinator/main window through readiness,
 failure presentation, and close during initialization. CTest runs these with Qt's
 offscreen platform plugin. Tests do not touch the normal user database.
 
@@ -297,6 +316,8 @@ Logging tests exercise bounded queues and memory history, thread/process
 contention, privacy, rotation, unsafe targets, interrupted records, injected sink
 failure, concurrent producers, and Qt fatal termination. Widget tests also cover
 redacted clipboard contents, technical-detail disclosure, the diagnostics dialog,
-and storage-before-logging shutdown.
+and storage-before-logging shutdown. Shell tests cover shared navigation actions,
+keyboard activation, saved state, malformed/unavailable settings, reset behavior,
+monitor-fitting calculations, and asynchronous shutdown with the window visible.
 
 To build without test targets, configure with `-DBUILD_TESTING=OFF`.
