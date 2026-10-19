@@ -1,3 +1,5 @@
+#include "TestEnvironment.h"
+
 #include "app/AppPaths.h"
 #include "app/Diagnostic.h"
 #include "app/StartupCoordinator.h"
@@ -8,6 +10,7 @@
 #include <QDialog>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 
 #include <QApplication>
 #include <QDir>
@@ -165,6 +168,7 @@ void StartupTest::largeDetailsKeepControlsUsable() {
 
 void StartupTest::diagnosticsSnapshotStaysStable() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     chess_review::diagnostics::Logger logger(directory.path());
     QSignalSpy closed(&logger, &chess_review::diagnostics::Logger::closed);
     const auto cleanup = qScopeGuard([&] {
@@ -209,6 +213,7 @@ void StartupTest::diagnosticsSnapshotStaysStable() {
 
 void StartupTest::diagnosticsSurviveLoggerDestruction() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     auto logger = std::make_unique<chess_review::diagnostics::Logger>(directory.path());
     QSignalSpy closed(logger.get(), &chess_review::diagnostics::Logger::closed);
     const auto cleanup = qScopeGuard([&] {
@@ -281,6 +286,7 @@ void StartupTest::loggedLifecycle() {
     QFETCH(bool, closeEarly);
     QFETCH(bool, badDatabase);
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     chess_review::diagnostics::Logger logger(
         loggingAvailable ? directory.filePath(QStringLiteral("logs")) : QString());
     StartupWindow window;
@@ -335,6 +341,14 @@ void StartupTest::loggedLifecycle() {
 }
 
 void StartupTest::init() {
+    if (QGuiApplication::platformName() == QStringLiteral("offscreen")) {
+        // Qt's offscreen backend cannot propagate native window size hints.
+        // Keep that exact backend diagnostic visible; fail on other warnings.
+        QTest::failOnWarning(QRegularExpression(
+            QStringLiteral("^(?!This plugin does not support propagateSizeHints\\(\\)$)")));
+    } else {
+        QTest::failOnWarning();
+    }
 #ifdef Q_OS_LINUX
     // Each test owns fresh roots, including when selected repeatedly or reordered.
     storageRoot_.emplace();
@@ -399,6 +413,7 @@ void StartupTest::unusableDataDirectoryFails() {
 
 void StartupTest::initializesAndCloses() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     StartupWindow window;
     StartupCoordinator startup(window);
     QSignalSpy finished(&startup, &StartupCoordinator::finished);
@@ -413,6 +428,7 @@ void StartupTest::initializesAndCloses() {
 
 void StartupTest::failureShowsDiagnostic() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("broken.sqlite3"));
     QFile file(path);
     QVERIFY(file.open(QIODevice::WriteOnly));
@@ -436,6 +452,7 @@ void StartupTest::failureShowsDiagnostic() {
 
 void StartupTest::closeDuringStartup() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     StartupWindow window;
     StartupCoordinator startup(window);
     QSignalSpy finished(&startup, &StartupCoordinator::finished);
@@ -447,6 +464,7 @@ void StartupTest::closeDuringStartup() {
 
 void StartupTest::quitDuringStartup() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     StartupWindow window;
     StartupCoordinator startup(window);
     QSignalSpy finished(&startup, &StartupCoordinator::finished);
@@ -459,25 +477,10 @@ void StartupTest::quitDuringStartup() {
 }
 
 int main(int argc, char* argv[]) {
-    QTemporaryDir home;
-    if (!home.isValid()) {
+    const TestEnvironment environment;
+    if (!environment.isValid()) {
         return 1;
     }
-    const QString previousDirectory = QDir::currentPath();
-    if (!QDir::setCurrent(home.path())) {
-        return 1;
-    }
-    const auto restoreDirectory = qScopeGuard([&previousDirectory] {
-        if (!QDir::setCurrent(previousDirectory)) {
-            qFatal("Cannot restore test working directory");
-        }
-    });
-#ifdef Q_OS_LINUX
-    qputenv("HOME", QFile::encodeName(home.path()));
-    qputenv("XDG_DATA_HOME", QFile::encodeName(home.filePath(QStringLiteral("data"))));
-    qputenv("XDG_CONFIG_HOME", QFile::encodeName(home.filePath(QStringLiteral("config"))));
-    qputenv("XDG_CACHE_HOME", QFile::encodeName(home.filePath(QStringLiteral("cache"))));
-#endif
     QApplication application(argc, argv);
     application.setApplicationName(QStringLiteral("chess-review"));
     application.setQuitOnLastWindowClosed(false);

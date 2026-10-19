@@ -1,3 +1,3 @@
 Checks: '-*,clang-analyzer-*,bugprone-use-after-move,bugprone-dangling-handle,bugprone-integer-division,modernize-use-nullptr,performance-unnecessary-copy-initialization,performance-for-range-copy'
 WarningsAsErrors: '*'
-HeaderFilterRegex: '(^|/)src/'
+HeaderFilterRegex: '(^|/)(src|tests)/'

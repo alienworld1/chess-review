@@ -44,7 +44,9 @@ QT_QPA_PLATFORM=offscreen ./build/dev/tests/startup_tests unusableDataDirectoryF
 ```
 
 CTest sets the offscreen platform only for the startup/widget suite. Direct
-widget invocation must supply it when there is no desktop display. No global
+widget invocation must supply it when there is no desktop display. Use absolute
+paths for Qt Test `-o` reports: temporary working directories are removed at exit.
+No global
 platform override is needed for Qt Core suites.
 
 ## Test ownership and safety
@@ -59,18 +61,30 @@ platform override is needed for Qt Core suites.
 - Register Qt suites with `chess_review_add_qt_test(target component SOURCES ...
   LIBRARIES ...)`; use `WIDGETS` and `INTEGRATION` only when applicable. The helper
   applies project warnings and optional sanitizers without exporting test
-  dependencies into production targets.
+  dependencies into production targets. Unknown options and missing keyword
+  values fail configuration.
 
-Tests use temporary databases/logs. The path and widget runners establish their
-working directory and Linux HOME before constructing the Qt application. Widget
-cases receive fresh XDG roots individually. Preserve this ordering: Qt can cache
-paths. Do not replace it with the normal user's application locations, and do not
-share a writable database or fixture directory across parallel tests.
+All four runners construct `TestEnvironment` before the Qt application, isolating
+working directories and Linux HOME/XDG roots. Exit with failure if it is invalid.
+Declare it before the application
+so workers and Qt shut down before the root is removed. Internal diagnostics
+subprocesses inherit their parent's isolated environment and fixture directory;
+fatal children allocate no unowned temporary root. Widget cases also receive
+fresh XDG roots individually. Check `QTemporaryDir::isValid()` before using each
+fixture. Never use normal user application locations or share writable databases
+or fixture directories across parallel tests. Qt can cache paths, so preserve
+this initialization order.
 
 Use observable conditions and bounded waits for asynchronous behavior. Preserve
 orderly worker shutdown before fixture destruction. Intentional fatal conditions
-and process-wide logging probes run in subprocesses. Expected warnings must be
+and process-wide logging probes run in subprocesses. A death test must verify
+that the intended probe ran and produced its expected termination; an unrelated
+crash must fail the test. Expected warnings must be
 handled narrowly; do not globally suppress warnings or sanitizer findings.
+Each suite fails on unexpected warnings reaching Qt Test. The offscreen widget
+suite permits only the exact backend `propagateSizeHints()` warning, which remains
+visible in its test log. Logging-handler tests deliberately intercept framework
+messages and verify their safe capture/restoration separately.
 
 ## Catch2 dependency
 
@@ -117,7 +131,18 @@ warnings to errors; third-party targets do not receive these project flags.
 Linux CI runs GCC Debug and Release tests on Qt 6.12.0,
 and Clang 18 ASan/UBSan with leak detection on 6.12.0. Formatting and curated
 clang-tidy run with the Debug configuration. Failure artifacts include
-CTest logs and JUnit output when available.
+CTest logs and JUnit output when available, retained for seven days. Debug CI also
+builds the application separately with `BUILD_TESTING=OFF` to guard against test
+dependencies leaking into the application build. New commits cancel obsolete
+runs of this workflow for the same branch or pull request.
+
+CI uses GitHub-hosted disposable runners, read-only repository permissions,
+commit-pinned Actions, and no persisted checkout credentials. It runs untrusted
+pull requests without privileged triggers, repository secrets, deployment steps,
+or shared dependency caches. The fixed aqtinstall version, PyPI dependencies,
+Qt SDK/mirrors, and signed runner OS packages remain trusted build inputs; this
+is not a fully hermetic toolchain. Review dependency and Action updates rather
+than moving pins automatically.
 
 Offscreen widget tests exercise startup, error presentation, clipboard privacy,
 and graceful shutdown. Native desktop behavior, accessibility, Windows behavior,

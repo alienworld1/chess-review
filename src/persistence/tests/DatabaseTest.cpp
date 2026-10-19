@@ -1,8 +1,11 @@
+#include "TestEnvironment.h"
+
 #include "persistence/Database.h"
 #include "persistence/private/Migrations.h"
 #include "persistence/private/PrivateFile.h"
 #include "persistence/private/StorageSession.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -125,6 +128,7 @@ class DatabaseTest final : public QObject {
 
 void DatabaseTest::storageEventsAreTypedAndTruthful() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
     auto registry = fixtureMigrations();
     QVERIFY(!initialize(path, std::span(registry).first(1)));
@@ -224,6 +228,7 @@ void DatabaseTest::freshAndRepeatInitialization() {
 
 void DatabaseTest::sequentialUpgradeAndWalBackup() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("player's library.sqlite3"));
     const auto registry = fixtureMigrations();
     QVERIFY(!initialize(path, std::span(registry).first(2)));
@@ -251,6 +256,7 @@ void DatabaseTest::sequentialUpgradeAndWalBackup() {
 
 void DatabaseTest::migrationFailureRollsBackAndRetainsBackup() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
     auto registry = fixtureMigrations();
     QVERIFY(!initialize(path, std::span(registry).first(2)));
@@ -313,6 +319,7 @@ void DatabaseTest::invalidHistory_data() {
 void DatabaseTest::invalidHistory() {
     QFETCH(QString, mutation);
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
     QVERIFY(!initialize(path, migrations()));
     {
@@ -328,6 +335,7 @@ void DatabaseTest::invalidHistory() {
 
 void DatabaseTest::invalidRegistry() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
     auto registry = fixtureMigrations();
     registry[1].version = 3;
@@ -339,6 +347,7 @@ void DatabaseTest::invalidRegistry() {
 
 void DatabaseTest::rejectedDatabaseRemainsUnchanged() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("other.sqlite3"));
     {
         FixtureConnection fixture(path);
@@ -357,6 +366,7 @@ void DatabaseTest::rejectedDatabaseRemainsUnchanged() {
 
 void DatabaseTest::forgedLedgerIsRejected() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("forged.sqlite3"));
     {
         FixtureConnection fixture(path);
@@ -372,6 +382,7 @@ void DatabaseTest::forgedLedgerIsRejected() {
 
 void DatabaseTest::privateFilesAndAliases() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
     const auto registry = fixtureMigrations();
     QVERIFY(!initialize(path, std::span(registry).first(1)));
@@ -408,6 +419,7 @@ void DatabaseTest::privateFilesAndAliases() {
 void DatabaseTest::specialFilesAreRejected() {
 #ifdef Q_OS_UNIX
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString pipe = directory.filePath(QStringLiteral("pipe.sqlite3"));
     QCOMPARE(::mkfifo(QFile::encodeName(pipe).constData(), 0600), 0);
     const auto error = initialize(pipe, migrations());
@@ -420,6 +432,7 @@ void DatabaseTest::specialFilesAreRejected() {
 
 void DatabaseTest::boundValuesCannotInjectSql() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     // Quotes and SQL punctuation are ordinary filename/name data, never executable SQL.
     const QString path =
         directory.filePath(QStringLiteral("library'; DROP TABLE schema_migrations;--.sqlite3"));
@@ -435,6 +448,7 @@ void DatabaseTest::boundValuesCannotInjectSql() {
 
 void DatabaseTest::privateFileCannotOverwriteExistingData() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("existing"));
     QFile file(path);
     QVERIFY(file.open(QIODevice::WriteOnly));
@@ -448,6 +462,7 @@ void DatabaseTest::privateFileCannotOverwriteExistingData() {
 void DatabaseTest::legacyPermissionsAreRestricted() {
 #ifdef Q_OS_UNIX
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("legacy.sqlite3"));
     QVERIFY(!initialize(path, migrations()));
     FixtureConnection writer(path);
@@ -469,6 +484,7 @@ void DatabaseTest::legacyPermissionsAreRestricted() {
 
 void DatabaseTest::unrecognizedDatabaseIsPreserved() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("other.sqlite3"));
     {
         FixtureConnection fixture(path);
@@ -491,6 +507,7 @@ void DatabaseTest::unrecognizedDatabaseIsPreserved() {
 
 void DatabaseTest::initialMigrationFailureIsAtomic() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
     auto migration = initialMigration();
     migration.statements.push_back(QStringLiteral("INSERT INTO missing_table VALUES (1)"));
@@ -512,6 +529,7 @@ void DatabaseTest::initialMigrationFailureIsAtomic() {
 
 void DatabaseTest::backupFailurePreventsUpgrade() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
     QVERIFY(!initialize(path, migrations()));
     QFile obstruction(directory.filePath(QStringLiteral("backups")));
@@ -532,6 +550,7 @@ void DatabaseTest::backupFailurePreventsUpgrade() {
 
 void DatabaseTest::invalidPathsAndCorruption() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const auto empty = initialize({}, migrations());
     QVERIFY(empty);
     QCOMPARE(empty->code, DatabaseErrorCode::Path);
@@ -556,6 +575,7 @@ void DatabaseTest::invalidPathsAndCorruption() {
 
 void DatabaseTest::lockContention() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
     StorageSession owner;
     QVERIFY(!owner.initialize(path, migrations(), ignoreProgress));
@@ -566,6 +586,7 @@ void DatabaseTest::lockContention() {
 
 void DatabaseTest::asynchronousLifecycle() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const auto before = QSqlDatabase::connectionNames();
     for (int iteration = 0; iteration < 3; ++iteration) {
         Database database;
@@ -591,6 +612,7 @@ void DatabaseTest::asynchronousLifecycle() {
 
 void DatabaseTest::busyTimeoutKeepsGuiResponsive() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
     FixtureConnection writer(path);
     QVERIFY(writer.exec(QStringLiteral("PRAGMA journal_mode=WAL")));
@@ -627,6 +649,7 @@ void DatabaseTest::busyTimeoutKeepsGuiResponsive() {
 
 void DatabaseTest::closeDuringInitialization() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     Database database;
     QSignalSpy ready(&database, &Database::ready);
     QSignalSpy failed(&database, &Database::failed);
@@ -649,5 +672,15 @@ void DatabaseTest::closeBeforeInitialization() {
     QTRY_COMPARE(closed.count(), 1);
 }
 
-QTEST_GUILESS_MAIN(DatabaseTest)
+int main(int argc, char* argv[]) {
+    const TestEnvironment environment;
+    if (!environment.isValid()) {
+        return 1;
+    }
+    QCoreApplication application(argc, argv);
+    application.setAttribute(Qt::AA_Use96Dpi, true);
+    DatabaseTest test;
+    QTEST_SET_MAIN_SOURCE_PATH
+    return QTest::qExec(&test, argc, argv);
+}
 #include "DatabaseTest.moc"

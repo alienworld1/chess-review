@@ -1,11 +1,11 @@
+#include "TestEnvironment.h"
+
 #include "app/AppPaths.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QScopeGuard>
-#include <QTemporaryDir>
 #include <QTest>
 
 using chess_review::app::AppPaths;
@@ -14,6 +14,7 @@ class AppPathsTest final : public QObject {
     Q_OBJECT
 
   private slots:
+    void init() { QTest::failOnWarning(); }
     void standardLocations_data();
     void standardLocations();
     void emptyDirectoryDoesNotBecomeRelative();
@@ -93,23 +94,10 @@ void AppPathsTest::invalidDirectories() {
 }
 
 int main(int argc, char* argv[]) {
-    // Isolate HOME before Qt can cache it; never inspect or write the user's paths.
-    QTemporaryDir home;
-    if (!home.isValid()) {
+    const TestEnvironment environment;
+    if (!environment.isValid()) {
         return 1;
     }
-    const QString previousDirectory = QDir::currentPath();
-    if (!QDir::setCurrent(home.path())) {
-        return 1;
-    }
-    const auto restoreDirectory = qScopeGuard([&previousDirectory] {
-        if (!QDir::setCurrent(previousDirectory)) {
-            qFatal("Cannot restore test working directory");
-        }
-    });
-#ifdef Q_OS_LINUX
-    qputenv("HOME", QFile::encodeName(home.path()));
-#endif
     QCoreApplication application(argc, argv);
     application.setApplicationName(QStringLiteral("chess-review"));
     application.setOrganizationName(QString{});

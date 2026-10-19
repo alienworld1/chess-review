@@ -1,3 +1,5 @@
+#include "TestEnvironment.h"
+
 #include "diagnostics/Logger.h"
 
 #include <QCoreApplication>
@@ -18,8 +20,12 @@
 #include <QTimer>
 
 #include <atomic>
+#include <csignal>
+#include <cstdio>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -98,6 +104,7 @@ void previous(QtMsgType, const QMessageLogContext&, const QString&) { ++restored
 class DiagnosticsTest final : public QObject {
     Q_OBJECT
   private slots:
+    void init() { QTest::failOnWarning(); }
     void structuredRecordsAndFiltering();
     void debugMode();
     void concurrentSubmission();
@@ -123,6 +130,7 @@ class DiagnosticsTest final : public QObject {
 
 void DiagnosticsTest::structuredRecordsAndFiltering() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     Logger logger(directory.path());
     const auto cleanup = qScopeGuard([&] { stop(logger); });
     QTRY_COMPARE(logger.health(), Health::Active);
@@ -170,6 +178,7 @@ void DiagnosticsTest::structuredRecordsAndFiltering() {
 
 void DiagnosticsTest::debugMode() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     Logger logger(directory.path(), true);
     const auto cleanup = qScopeGuard([&] { stop(logger); });
     logger.record(Event::SchemaChecked, {}, Severity::Debug);
@@ -179,6 +188,7 @@ void DiagnosticsTest::debugMode() {
 
 void DiagnosticsTest::concurrentSubmission() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     Logger logger(directory.path());
     const auto cleanup = qScopeGuard([&] { stop(logger); });
     std::vector<std::thread> threads;
@@ -204,12 +214,18 @@ void DiagnosticsTest::concurrentSubmission() {
 void DiagnosticsTest::fatalStillTerminates() {
 #ifdef Q_OS_UNIX
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     QProcess child;
     child.setWorkingDirectory(directory.path());
     child.start(QCoreApplication::applicationFilePath(),
                 {QStringLiteral("--fatal-probe"), directory.path()});
     QVERIFY(child.waitForFinished(5000));
+    const auto errorOutput = child.readAllStandardError();
     QCOMPARE(child.exitStatus(), QProcess::CrashExit);
+    QCOMPARE(child.exitCode(), SIGABRT);
+    QVERIFY2(errorOutput.contains("fatal-probe-ready"), errorOutput.constData());
+    QVERIFY2(!errorOutput.contains("Sanitizer") && !errorOutput.contains("runtime error:"),
+             errorOutput.constData());
 #else
     QSKIP("Fatal subprocess validation uses Unix core-dump suppression");
 #endif
@@ -217,6 +233,7 @@ void DiagnosticsTest::fatalStillTerminates() {
 
 void DiagnosticsTest::frameworkPrivacyAndHandlerLifetime() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const auto old = qInstallMessageHandler(previous);
     const auto restore = qScopeGuard([&] { qInstallMessageHandler(old); });
     Logger logger(directory.path(), true);
@@ -266,6 +283,7 @@ void DiagnosticsTest::unavailableDirectory() {
 
 void DiagnosticsTest::lockContention() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     Logger first(directory.path());
     const auto cleanupFirst = qScopeGuard([&] { stop(first); });
     QTRY_COMPARE(first.health(), Health::Active);
@@ -289,6 +307,7 @@ void DiagnosticsTest::lockContention() {
 
 void DiagnosticsTest::rotation() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     // Exactly one complete JSON line at the size boundary; rotation must occur
     // before the next record, leaving unrelated files untouched.
     QByteArray full("{\"padding\":\"");
@@ -315,6 +334,7 @@ void DiagnosticsTest::rotation() {
 
 void DiagnosticsTest::incompleteTailRecovery() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("events-0.jsonl"));
     const QByteArray complete("{\"event\":\"old.complete\"}\n");
     QVERIFY(write(path, complete + "{\"event\":\"incomplete"));
@@ -330,6 +350,7 @@ void DiagnosticsTest::incompleteTailRecovery() {
 
 void DiagnosticsTest::unsafeTargets() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString log = directory.filePath(QStringLiteral("events-0.jsonl"));
     QVERIFY(QDir().mkdir(log));
     {
@@ -372,6 +393,7 @@ void DiagnosticsTest::permissionDenied() {
         QSKIP("Root bypasses directory permissions");
     }
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     QVERIFY(
         QFile::setPermissions(directory.path(), QFileDevice::ReadOwner | QFileDevice::ExeOwner));
     const auto restore = qScopeGuard([&] {
@@ -391,6 +413,7 @@ void DiagnosticsTest::permissionDenied() {
 
 void DiagnosticsTest::boundedQueueAndSlowWriter() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     QSemaphore entered;
     QSemaphore release;
     std::atomic<bool> first{true};
@@ -452,6 +475,7 @@ void DiagnosticsTest::boundedQueueAndSlowWriter() {
 
 void DiagnosticsTest::recentHistorySurvivesFullQueue() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     QSemaphore entered;
     QSemaphore release;
     std::atomic<bool> first{true};
@@ -481,6 +505,7 @@ void DiagnosticsTest::recentHistorySurvivesFullQueue() {
 
 void DiagnosticsTest::repeatedHandlerInstallation() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     QProcess child;
     child.setWorkingDirectory(directory.path());
     child.start(QCoreApplication::applicationFilePath(),
@@ -492,6 +517,7 @@ void DiagnosticsTest::repeatedHandlerInstallation() {
 
 void DiagnosticsTest::oversizedLockMetadata() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("writer.lock"));
     const QByteArray oversized(16 * 1024 + 1, 'x');
     QVERIFY(write(path, oversized));
@@ -505,6 +531,7 @@ void DiagnosticsTest::oversizedLockMetadata() {
 
 void DiagnosticsTest::cleanupLockIsNotParsed() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("writer.lock.rmlock"));
     const QByteArray oversized(20 * 1024, 'x');
     QVERIFY(write(path, oversized));
@@ -517,7 +544,9 @@ void DiagnosticsTest::cleanupLockIsNotParsed() {
 
 void DiagnosticsTest::handlerOwnership() {
     QTemporaryDir firstDirectory;
+    QVERIFY2(firstDirectory.isValid(), qPrintable(firstDirectory.errorString()));
     QTemporaryDir secondDirectory;
+    QVERIFY2(secondDirectory.isValid(), qPrintable(secondDirectory.errorString()));
     const auto old = qInstallMessageHandler(previous);
     const auto restore = qScopeGuard([&] { qInstallMessageHandler(old); });
     Logger first(firstDirectory.path());
@@ -539,6 +568,7 @@ void DiagnosticsTest::handlerOwnership() {
 
 void DiagnosticsTest::lossCountSurvivesHistoryEviction() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     QSemaphore entered;
     QSemaphore release;
     std::atomic<bool> first{true};
@@ -570,6 +600,7 @@ void DiagnosticsTest::lossCountSurvivesHistoryEviction() {
 
 void DiagnosticsTest::writeFailure() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     auto logger = LoggerTestAccess::create(directory.path(), [] { return false; });
     const auto cleanup = qScopeGuard([&] { stop(*logger); });
     QTRY_COMPARE(logger->health(), Health::MemoryOnly);
@@ -582,6 +613,7 @@ void DiagnosticsTest::writeFailure() {
 
 void DiagnosticsTest::rotationFailure() {
     QTemporaryDir directory;
+    QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     QVERIFY(write(directory.filePath(QStringLiteral("events-0.jsonl")),
                   QByteArray(2 * 1024 * 1024, '\n')));
     QSemaphore entered;
@@ -606,6 +638,18 @@ void DiagnosticsTest::rotationFailure() {
 }
 
 int main(int argc, char* argv[]) {
+    // Internal child probes inherit the parent's isolated environment and cwd.
+    // A fatal child must not allocate a new root that abort() cannot clean up.
+    const bool isProbe = argc == 3 && (std::string_view{argv[1]} == "--logging-probe" ||
+                                       std::string_view{argv[1]} == "--fatal-probe" ||
+                                       std::string_view{argv[1]} == "--handler-probe");
+    std::optional<TestEnvironment> environment;
+    if (!isProbe) {
+        environment.emplace();
+        if (!environment->isValid()) {
+            return 1;
+        }
+    }
     QCoreApplication application(argc, argv);
     if (application.arguments().size() == 3 &&
         application.arguments()[1] == QStringLiteral("--logging-probe")) {
@@ -636,6 +680,10 @@ int main(int argc, char* argv[]) {
         if (!logger.installQtHandler()) {
             stop(logger);
             return 3;
+        }
+        if (std::fputs("fatal-probe-ready\n", stderr) == EOF || std::fflush(stderr) != 0) {
+            stop(logger);
+            return 4;
         }
         qFatal("private fatal probe");
     }
