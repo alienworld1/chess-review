@@ -32,6 +32,7 @@ struct Token {
     SourceLocation at;
     std::string_view text;
     std::string_view value;
+    std::string comments; // Bounded comments inside composite tag/number tokens.
     std::size_t dots{};
     std::optional<Diagnostic> error;
     bool unsafe{};
@@ -50,19 +51,7 @@ class Lexer {
     Token next() {
         problem_.reset();
         remaining_ = 0;
-        while (!ended()) {
-            if (space(current())) {
-                advance();
-            } else if (current() == '%' &&
-                       (at_.column == 1 ||
-                        (at_.offset == 3 && bytes_.starts_with("\xef\xbb\xbf")))) {
-                while (!ended() && current() != '\n' && current() != '\r') {
-                    advance();
-                }
-            } else {
-                break;
-            }
-        }
+        skipTrivia();
         Token token;
         token.at = at_;
         const auto begin = at_.offset;
@@ -76,32 +65,17 @@ class Lexer {
         const char c = current();
         advance();
         if (c == '{' || c == ';') {
-            token.kind = Kind::Comment;
-            const auto content = at_.offset;
-            while (!ended() &&
-                   (c == '{' ? current() != '}' : current() != '\n' && current() != '\r')) {
-                advance();
-            }
-            token.text = bytes_.substr(content, at_.offset - content);
-            if (c == '{') {
-                if (ended()) {
-                    fail(DiagnosticCode::InvalidSyntax, "Unterminated comment.", token.at);
-                    token.unsafe = true;
-                } else {
-                    advance();
-                }
-            }
+            readComment(token, c);
         } else if (c == '[') {
             token.kind = Kind::Tag;
-            skipSpace();
+            skipAnnotatedGap(token);
             const auto name = at_.offset;
             while (!ended() && tagLetter(current())) {
                 advance();
             }
             token.text = bytes_.substr(name, at_.offset - name);
-            const bool separated = !ended() && space(current());
-            skipSpace();
-            if (token.text.empty() || !separated || ended() || current() != '"') {
+            skipAnnotatedGap(token);
+            if (token.text.empty() || ended() || current() != '"') {
                 fail(DiagnosticCode::InvalidTag, "Malformed tag pair.", token.at);
                 token.unsafe = true;
             } else {
@@ -126,7 +100,7 @@ class Lexer {
                     token.unsafe = true;
                 } else {
                     advance();
-                    skipSpace();
+                    skipAnnotatedGap(token);
                     if (ended() || current() != ']') {
                         fail(DiagnosticCode::InvalidTag, "Missing tag closing bracket.", token.at);
                         token.unsafe = true;
@@ -153,6 +127,9 @@ class Lexer {
             } else {
                 advance();
             }
+        } else if (c == '<' || c == '>') {
+            token.kind = Kind::Invalid;
+            fail(DiagnosticCode::InvalidSyntax, "Reserved PGN token is unsupported.", token.at);
         } else if (c == '*') {
             token.kind = Kind::Symbol;
             token.text = bytes_.substr(begin, 1);
@@ -180,10 +157,11 @@ class Lexer {
                 if (ended() || space(current()) || current() == '.' || delimiter(current())) {
                     token.kind = Kind::Number;
                     token.text = bytes_.substr(begin, at_.offset - begin);
-                    skipSpace();
+                    skipAnnotatedGap(token);
                     while (!ended() && current() == '.') {
                         ++token.dots;
                         advance();
+                        skipAnnotatedGap(token);
                     }
                 }
             }
@@ -208,17 +186,71 @@ class Lexer {
     bool ended() const { return at_.offset == bytes_.size() || cancelled(); }
     char current() const { return bytes_[at_.offset]; }
     static bool delimiter(char c) {
-        return c == '*' || c == '[' || c == ']' || c == '{' || c == '}' || c == '(' || c == ')' ||
-               c == ';' || c == '$' || c == '!' || c == '?' || c == '"';
+        return c == '.' || c == '<' || c == '>' || c == '*' || c == '[' || c == ']' || c == '{' ||
+               c == '}' || c == '(' || c == ')' || c == ';' || c == '$' || c == '!' || c == '?' ||
+               c == '"';
     }
     void fail(DiagnosticCode code, const char* message, SourceLocation at) {
         if (!problem_) {
             problem_ = diagnostic(code, message, at);
         }
     }
-    void skipSpace() {
-        while (!ended() && space(current())) {
+    void skipTrivia() {
+        while (!ended()) {
+            if (space(current())) {
+                advance();
+            } else if (current() == '%' &&
+                       (at_.column == 1 ||
+                        (at_.offset == 3 && bytes_.starts_with("\xef\xbb\xbf")))) {
+                while (!ended() && current() != '\n' && current() != '\r') {
+                    advance();
+                }
+            } else {
+                break;
+            }
+        }
+    }
+    void readComment(Token& token, char opening) {
+        token.kind = Kind::Comment;
+        const auto content = at_.offset;
+        while (!ended() &&
+               (opening == '{' ? current() != '}' : current() != '\n' && current() != '\r')) {
             advance();
+        }
+        token.text = bytes_.substr(content, at_.offset - content);
+        if (opening == '{') {
+            if (ended()) {
+                fail(DiagnosticCode::InvalidSyntax, "Unterminated comment.", token.at);
+                token.unsafe = true;
+            } else {
+                advance();
+            }
+        }
+    }
+    void skipAnnotatedGap(Token& token) {
+        skipTrivia();
+        while (!ended() && (current() == '{' || current() == ';')) {
+            Token comment;
+            comment.at = at_;
+            const char opening = current();
+            advance();
+            readComment(comment, opening);
+            token.unsafe = token.unsafe || comment.unsafe;
+            if (!problem_) {
+                const std::size_t separator = token.comments.empty() ? 0 : 1;
+                const auto maximum =
+                    std::min(limits_.tree.maxCommentBytes, limits_.tree.maxAnnotationBytes);
+                if (separator > maximum - token.comments.size() ||
+                    comment.text.size() > maximum - token.comments.size() - separator) {
+                    fail(DiagnosticCode::LimitExceeded, "Comment budget exceeded.", comment.at);
+                } else {
+                    if (separator != 0) {
+                        token.comments.push_back('\n');
+                    }
+                    token.comments.append(comment.text);
+                }
+            }
+            skipTrivia();
         }
     }
     void advance() {
@@ -414,6 +446,15 @@ class Parser {
                     return recover(*failure, token);
                 }
             }
+            if (!token.comments.empty()) {
+                Token annotation;
+                annotation.kind = Kind::Comment;
+                annotation.at = token.at;
+                annotation.text = token.comments;
+                if (auto failure = comment(annotation)) {
+                    return recover(*failure, token);
+                }
+            }
             token = lexer_.next();
         }
         if (!board_) {
@@ -538,16 +579,13 @@ class Parser {
     }
     std::optional<Diagnostic> movetext(const Token& token) {
         if (token.kind == Kind::Number) {
-            if (numberPending_) {
-                return syntax(token);
-            }
             numberPending_ = true;
             std::uint32_t number{};
             const auto parsed =
                 std::from_chars(token.text.data(), token.text.data() + token.text.size(), number);
             const bool black = token.dots > 1;
             if (parsed.ec != std::errc{} || number != board_->fullmoveNumber() ||
-                black != (board_->sideToMove() == chess::Color::Black)) {
+                (token.dots != 0 && black != (board_->sideToMove() == chess::Color::Black))) {
                 warn(DiagnosticCode::MoveNumberMismatch, "Move number disagrees with position.",
                      token.at);
             }
@@ -629,7 +667,11 @@ class Parser {
             return limit(token.at);
         }
         std::string san(token.text);
-        if (san.starts_with("0-0")) {
+        auto castle = token.text;
+        if (castle.ends_with('+') || castle.ends_with('#')) {
+            castle.remove_suffix(1);
+        }
+        if (castle == "0-0" || castle == "0-0-0") {
             std::replace(san.begin(), san.end(), '0', 'O');
         }
         auto parsed = board_->parseSan(san);

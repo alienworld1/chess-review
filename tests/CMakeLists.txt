@@ -31,10 +31,12 @@ target_link_libraries(chess_tests PRIVATE chess_review_chess Catch2::Catch2WithM
 chess_review_apply_options(chess_tests)
 catch_discover_tests(chess_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)
 
-# Allocation interception is confined to this executable, not ordinary chess/Qt tests.
-add_executable(game_tree_allocation_tests unit/GameTreeAllocationTest.cpp)
+# Chess/PGN allocation interception stays in this executable, outside ordinary tests.
+add_executable(game_tree_allocation_tests
+    unit/GameTreeAllocationTest.cpp support/AllocationFailure.cpp)
+target_include_directories(game_tree_allocation_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 set_target_properties(game_tree_allocation_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
-target_link_libraries(game_tree_allocation_tests PRIVATE chess_review_chess Catch2::Catch2WithMain)
+target_link_libraries(game_tree_allocation_tests PRIVATE chess_review_pgn Catch2::Catch2WithMain)
 chess_review_apply_options(game_tree_allocation_tests)
 catch_discover_tests(game_tree_allocation_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)
 

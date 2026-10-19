@@ -242,3 +242,22 @@ independent chess-rules implementation. No test depends on a performance thresho
 The chess suite separately validates the public bulk-tree factory against malformed
 records, duplicate siblings, illegal moves, FEN provenance, budgets, cancellation,
 and subsequent editing/ID allocation.
+
+
+PGN import conformance regressions also cover compact tag pairs, comments and
+percent escapes between tag tokens, separated move-number periods, surplus move
+numbers, bare black move numbers without false side warnings, mixed castling
+spellings, reserved token boundaries after a completed result, and original played
+lines that end before a merged analysis continuation. Token-gap comments retain
+content and still obey comment/aggregate budgets; unterminated comments remain
+unreadable tails.
+
+The isolated `game_tree_allocation_tests` executable now also fails each ordinary
+allocation during bulk construction and PGN parsing. A PGN failure must propagate
+as an exceptional resource failure, leave earlier documents unchanged, and leak
+no staged state. Allocation interception lives in `tests/support/AllocationFailure.cpp`;
+its `FailAfter` guard is private to this executable. Splitting the hook from test
+logic avoids analyzer confusion through an inline global delete override and
+libstdc++ stop-token reference counting. No static-analysis rule is suppressed.
+No hook is linked into ordinary test binaries or production. The PGN fault case
+has a `pgn` label and is included by `ctest --preset dev -L pgn`.

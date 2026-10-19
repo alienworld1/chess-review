@@ -521,11 +521,83 @@ TEST_CASE("PGN recovery cannot interpret quoted unsupported text as a game heade
 }
 
 TEST_CASE("PGN move number indications require a following move", "[pgn][unit]") {
-    for (const auto text :
-         {"1.", "1. *", "1.2.e4 *", "1.e4 1... *", "1.e4 (1.d4 1...) *", "1.e4 1...! e5 *"}) {
+    for (const auto text : {"1.", "1. *", "1.e4 1... *", "1.e4 (1.d4 1...) *", "1.e4 1...! e5 *"}) {
         reject(text, DiagnosticCode::InvalidSyntax);
     }
     PgnReader reader("1.e4 1...\n[Event \"next\"] 1.d4 *");
     CHECK(!failure(reader.next(), DiagnosticCode::InvalidSyntax).unreadableTail);
     CHECK(document(reader.next()).tags.front().value == "next");
+}
+
+TEST_CASE("PGN import accepts self delimiting tags and token gap escapes", "[pgn][unit]") {
+    const std::string source =
+        "[Event\"compact\"][Site\n% ignored [Event \"fake\"]\n\"here\"] 1.e4*";
+    const auto doc = parse(source);
+    REQUIRE(doc.tags.size() == 2);
+    CHECK(doc.tags[0] == Tag{"Event", "compact"});
+    CHECK(doc.tags[1] == Tag{"Site", "here"});
+    CHECK(doc.originalText == source);
+    CHECK(doc.warnings.empty());
+    const auto beforeBracket = parse("[Event \"x\"\n% ignored ] \"\n] e4 *");
+    CHECK(beforeBracket.tags[0].value == "x");
+}
+
+TEST_CASE("PGN import accepts separated periods and surplus correct move numbers", "[pgn][unit]") {
+    for (const auto text :
+         {"1 . e4 1 . . . e5 *", "1.e4 1 e5 *", "1.1.e4 1...1...e5 *", "1\n%ignored\n. e4 *"}) {
+        const auto doc = parse(text);
+        CHECK(doc.warnings.empty());
+        validateTree(doc);
+    }
+    CHECK(warns(parse("1.2.e4 *"), DiagnosticCode::MoveNumberMismatch));
+}
+
+TEST_CASE("PGN castling cleanup accepts only the documented zero spellings", "[pgn][unit]") {
+    const std::string header = "[FEN \"r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1\"] [SetUp \"1\"] ";
+    for (const auto san : {"0-0", "0-0-0", "O-O", "O-O-O"}) {
+        CHECK(parse(header + san + " *").originalMainline().size() == 1);
+    }
+    for (const auto san : {"0-0-O", "O-0-0", "0-O-O", "O-O-0", "0-O", "O-0"}) {
+        reject(header + san + " *", DiagnosticCode::IllegalMove);
+    }
+}
+
+TEST_CASE("PGN original played line may end before a merged analysis continuation", "[pgn][unit]") {
+    const auto doc = parse("1.e4 (1.e4 e5) *");
+    CHECK(warns(doc, DiagnosticCode::MergedBranch));
+    CHECK(doc.originalMainline().size() == 1);
+    CHECK(mainline(doc).size() == 3);
+    validateTree(doc);
+}
+
+TEST_CASE("PGN result boundaries respect reserved self delimiting tokens", "[pgn][unit]") {
+    for (const auto suffix : {".", "<future>", ">future<"}) {
+        const std::string source = std::string("1.e4 1-0") + suffix;
+        PgnReader reader(source);
+        CHECK(document(reader.next()).result == GameResult::WhiteWin);
+        failure(reader.next(), DiagnosticCode::InvalidSyntax);
+    }
+}
+
+TEST_CASE("PGN preserves comments between header and move number tokens", "[pgn][unit]") {
+    const std::string source = "[{a}Event{b}\"x\"{c}] 1{d}.{e}e4 1.{f}.{g}.e5*";
+    const auto doc = parse(source);
+    CHECK(doc.tags.front().value == "x");
+    const auto line = mainline(doc);
+    CHECK(doc.tree.node(line[1])->annotations.commentBefore == "a\nb\nc\nd\ne");
+    CHECK(doc.tree.node(line[1])->annotations.commentAfter == "f\ng");
+    CHECK(doc.warnings.empty());
+    CHECK(doc.originalText == source);
+    PgnLimits limits;
+    limits.tree.maxCommentBytes = 3;
+    reject("[Event{abcd}\"x\"]*", DiagnosticCode::LimitExceeded, limits);
+    limits = {};
+    limits.tree.maxAnnotationBytes = 3;
+    reject("[Event{abcd}\"x\"]*", DiagnosticCode::LimitExceeded, limits);
+    PgnReader broken("[Event {unterminated [Site \"fake\"] *");
+    CHECK(failure(broken.next(), DiagnosticCode::InvalidSyntax).unreadableTail);
+    PgnReader multiple("e4\n[Event{intro}\"next\"] d4*");
+    CHECK(document(multiple.next()).originalMainline().size() == 1);
+    const auto next = document(multiple.next());
+    CHECK(next.tree.node(mainline(next)[1])->annotations.commentBefore == "intro");
 }

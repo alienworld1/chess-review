@@ -1,9 +1,10 @@
 #include "chess/GameTree.h"
+#include "pgn/Pgn.h"
+#include "support/AllocationFailure.h"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
-#include <cstdlib>
 #include <initializer_list>
 #include <new>
 #include <optional>
@@ -12,39 +13,10 @@
 #include <variant>
 #include <vector>
 
-// Isolated test executable: fail each ordinary allocation in turn, including allocations
-// inside standard containers and Position. Never install this override in the application.
-namespace {
-thread_local std::optional<std::size_t> allocationsBeforeFailure;
-}
-
-void* operator new(std::size_t size) {
-    if (allocationsBeforeFailure) {
-        if (*allocationsBeforeFailure == 0) {
-            throw std::bad_alloc{};
-        }
-        --*allocationsBeforeFailure;
-    }
-    if (void* memory = std::malloc(size == 0 ? 1 : size)) {
-        return memory;
-    }
-    throw std::bad_alloc{};
-}
-void* operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void* memory) noexcept { std::free(memory); }
-void operator delete[](void* memory) noexcept { ::operator delete(memory); }
-void operator delete(void* memory, std::size_t) noexcept { ::operator delete(memory); }
-void operator delete[](void* memory, std::size_t) noexcept { ::operator delete(memory); }
-
 using namespace chess_review::chess;
+using chess_review::test_support::FailAfter;
 
 namespace {
-struct FailAfter {
-    explicit FailAfter(std::size_t count) { allocationsBeforeFailure = count; }
-    ~FailAfter() { allocationsBeforeFailure.reset(); }
-    FailAfter(const FailAfter&) = delete;
-    FailAfter& operator=(const FailAfter&) = delete;
-};
 template <typename T, typename E> T unwrap(std::variant<T, E> result) {
     REQUIRE(std::holds_alternative<T>(result));
     return std::get<T>(std::move(result));
@@ -150,4 +122,78 @@ TEST_CASE("Reusing existing game tree paths needs no allocation", "[chess][unit]
         CHECK(reused);
         CHECK(snapshot(game) == before);
     }
+}
+
+TEST_CASE("Bulk tree construction handles every ordinary allocation failure", "[chess][unit]") {
+    const auto e4 = unwrap(Position::initial().parseSan("e4"));
+    auto board = Position::initial();
+    unwrap(board.play(e4));
+    const auto e5 = unwrap(board.parseSan("e5"));
+    const auto c5 = unwrap(board.parseSan("c5"));
+    const std::vector<GameTreeInputNode> records{
+        {0, std::nullopt, {std::string(200, 'r'), {}, {1}}},
+        {0, e4, {{}, std::string(300, 'a'), {1, 2}}},
+        {1, e5, {}},
+        {1, c5, {std::string(200, 'v'), {}, {255}}}};
+    bool reachedSuccess = false;
+    for (std::size_t count = 0; count < 2048; ++count) {
+        bool failed = false;
+        bool succeeded = false;
+        try {
+            const FailAfter fail{count};
+            auto result = GameTree::fromNodes(std::nullopt, records);
+            const auto* built = std::get_if<GameTree>(&result);
+            succeeded = built && built->size() == 4 && built->annotationBytes() == 704;
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        if (!failed) {
+            REQUIRE(succeeded);
+            reachedSuccess = true;
+            break;
+        }
+    }
+    REQUIRE(reachedSuccess);
+}
+
+TEST_CASE("PGN allocation failures preserve previously published documents", "[pgn][unit]") {
+    using namespace chess_review::pgn;
+    const std::string source = "[Event \"first\"] 1.e4 * [Event {" + std::string(200, 'g') +
+                               "} \"second\"] [Event \"second\"] {opening} 1{" +
+                               std::string(200, 'n') + "}.e4 {" + std::string(200, 'a') +
+                               "} (1.e4 {" + std::string(200, 'b') + "} c5 $255) e5 2.Nf3 *";
+    bool reachedSuccess = false;
+    for (std::size_t count = 0; count < 2048; ++count) {
+        PgnReader reader(source);
+        auto firstOutcome = reader.next();
+        REQUIRE(std::holds_alternative<PgnDocument>(firstOutcome));
+        const auto& first = std::get<PgnDocument>(firstOutcome);
+        const auto before = snapshot(first.tree);
+        const auto sourceBefore = first.originalText;
+        const auto played =
+            std::vector<Move>(first.originalMainline().begin(), first.originalMainline().end());
+        bool failed = false;
+        bool succeeded = false;
+        try {
+            const FailAfter fail{count};
+            auto outcome = reader.next();
+            const auto* document = std::get_if<PgnDocument>(&outcome);
+            succeeded = document && document->tree.size() == 5 &&
+                        document->originalMainline().size() == 3 && document->warnings.size() == 2;
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        CHECK(snapshot(first.tree) == before);
+        CHECK(first.originalText == sourceBefore);
+        CHECK(std::vector<Move>(first.originalMainline().begin(), first.originalMainline().end()) ==
+              played);
+        CHECK(first.tags.front().value == "first");
+        if (!failed) {
+            REQUIRE(succeeded);
+            reachedSuccess = true;
+            break;
+        }
+        // The reader is destroyed here after an exceptional failure, as its API requires.
+    }
+    REQUIRE(reachedSuccess);
 }

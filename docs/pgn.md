@@ -57,11 +57,16 @@ with explicit compatibility policy:
   non-whitespace ASCII controls, malformed UTF-8, invalid escapes, and malformed
   delimiters. Validate comment and percent-line bytes as well as visible text.
 - Ordered standard/unknown tags and identical duplicate tags are retained.
+  Whitespace is optional between tag tokens, including before the quoted value.
+  Comments and column-one percent escape lines are supported between tag tokens.
   Identical duplicates warn; different values for the same case-sensitive name
   reject the game. Tag strings decode only `\"` and `\\` escapes. Tag names use
   ASCII alphanumeric/underscore characters and are limited to 255 bytes.
 - Headers and move numbers are optional. Incorrect supplied move numbers warn;
-  the actual position determines side and counters. Missing termination at EOF
+  the actual position determines side and counters. Repeated move-number
+  indications and periods separated by whitespace/comments are accepted. A bare
+  number has no side indicator. A final indication still requires a following move.
+  Missing termination at EOF
   or a recognized following header warns. Use the header result if available,
   otherwise unknown. Explicit header and movetext results must agree, including
   `*`. Results are source claims, not board-derived adjudication.
@@ -69,12 +74,15 @@ with explicit compatibility policy:
   Missing `SetUp` with FEN warns. Reject `SetUp "0"` with FEN, `SetUp "1"`
   without FEN, and other setup values.
 - Legal canonical SAN is required, with `0-0`/`0-0-0` explicitly normalized to
-  letter-O castling, including their canonical check/mate suffixes. Do not
+  letter-O castling, including their canonical check/mate suffixes. Mixed digit/
+  letter forms such as `0-0-O` are rejected. Do not
   repair omitted check suffixes, accept coordinate moves, or guess moves.
 - Preserve recursive variations, brace/semicolon comments, numeric NAGs
   `$0`–`$255`, and symbolic suffixes `! ? !! ?? !? ?!` as NAGs 1–6.
   Empty variations and result markers inside variations are rejected.
-- Opening comments attach before the next move of that line; subsequent comments
+- Comments between tag tokens join the opening comments. Comments between
+  move-number tokens attach at that line's current comment position.
+  Opening comments attach before the next move of that line; subsequent comments
   attach after the preceding move. Empty-game comments attach before the root.
   Join multiple comments with newlines, removing PGN delimiters while preserving
   content. Percent escape lines in column one are ignored as syntax; they are
@@ -83,6 +91,15 @@ with explicit compatibility policy:
   to choose tree sibling order; merge comment/NAG payload in original textual
   occurrence order. Comments gain newline separators; NAG duplicates remain.
   The exact original source is also retained, but this is not an exporter.
+
+The structural mainline of the editable tree is not the original played game.
+For example, `1.e4 (1.e4 e5) *` merges into a tree containing `e4 e5`, while
+`originalMainline()` correctly contains only `e4`. Review, game length, and source
+result association must use the original sequence from the document's root,
+including its original FEN provenance. Promoting branches also changes tree
+mainlines without changing this sequence. Replacing the document's tree/root
+requires the game owner to retain the original root separately; this is an
+in-memory value model, not an authenticated record or persistence format.
 
 Comments, including `[%eval]`, `[%clk]`, and markup-looking text, remain opaque
 text. Render as plain text or explicitly escape markup. They are never engine
@@ -120,14 +137,18 @@ One game is staged at a time. Caller retention of prior documents is outside the
 reader's budget. Input storage is borrowed, but accepted source game text is
 copied. Source occurrences, normalization, bulk construction, and transient SAN
 conversion need additional memory: logical limits are not exact RSS limits.
-Recovery can scan the remaining input after a game limit is exceeded, with no
+Comments temporarily collected inside a tag or number token are bounded by the
+smaller of the comment and aggregate annotation limits before copying, and then
+charged through the normal node annotation boundary. Recovery can scan the remaining input after a game limit is exceeded, with no
 unbounded token allocations and with cancellation checks.
 
 Move reconstruction and final tree validation use working positions with
 make/undo; there is no full history prefix stored at each node or root replay per
 move. Tree insertion takes O(N log N) map work; legal chess bounds the search
 through unique siblings. Scanning and payload normalization are linear in source
-bytes and admitted occurrences/payload. Traversal and ownership are iterative,
+bytes and admitted occurrences/payload. Tag duplicate checks compare preceding
+tag names: O(T²) comparisons in the configured tag count T, bounded to 256 tags
+by default. Application-approved limits must account for this when raised. Traversal and ownership are iterative,
 including deeply nested or long games.
 
 The standard library has no PGN parser or UTF-8 validation facility; Qt is excluded
