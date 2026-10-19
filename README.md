@@ -7,7 +7,7 @@ Chess product features will be added in later tasks.
 ## Requirements
 
 - C++20 compiler (GCC or Clang on Linux)
-- Qt **6.8+** development SDK with Widgets, SQL, the QSQLITE driver, and Qt Test
+- Qt **6.12+** development SDK with Widgets, SQL, the QSQLITE driver, and Qt Test
   (Qt Test is needed only when `BUILD_TESTING=ON`, the default)
 - CMake **3.24+**, Ninja, and GNU Make
 - Developer tools: clang-format 15+, clang-tidy, and clangd for editor integration

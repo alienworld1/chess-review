@@ -1,6 +1,6 @@
 # Testing
 
-Tests use C++20, CMake/CTest, and Qt Test. Qt 6.8 is the API baseline.
+Tests use C++20, CMake/CTest, and Qt Test. Qt 6.12 is the API baseline.
 Catch2 3.8.1 is configured for future pure C++ tests; there are no pure domain
 modules or permanent Catch2 test cases yet. Do not manufacture tests to exercise
 a framework. Use risk-based regression tests rather than a coverage quota.
@@ -114,9 +114,9 @@ warnings to errors; third-party targets do not receive these project flags.
 
 ## Continuous integration and desktop QA
 
-Linux CI runs GCC Debug tests on Qt 6.8.3 and 6.12.0, GCC Release tests on 6.12.0,
+Linux CI runs GCC Debug and Release tests on Qt 6.12.0,
 and Clang 18 ASan/UBSan with leak detection on 6.12.0. Formatting and curated
-clang-tidy run with the newer Debug configuration. Failure artifacts include
+clang-tidy run with the Debug configuration. Failure artifacts include
 CTest logs and JUnit output when available.
 
 Offscreen widget tests exercise startup, error presentation, clipboard privacy,

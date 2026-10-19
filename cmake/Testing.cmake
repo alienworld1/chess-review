@@ -1,6 +1,6 @@
 include_guard(GLOBAL)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Test)
+find_package(Qt6 6.12 REQUIRED COMPONENTS Test)
 include(FetchContent)
 set(CATCH_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(CATCH_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)

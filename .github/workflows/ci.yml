@@ -16,10 +16,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Qt 6.8 Debug
-            qt: '6.8.3'
-            preset: dev
-            compiler: g++
           - name: Qt 6.12 Debug and tooling
             qt: '6.12.0'
             preset: dev

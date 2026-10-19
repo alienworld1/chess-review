@@ -8,8 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(cmake/ProjectOptions.cmake)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets Sql)
-qt_standard_project_setup(REQUIRES 6.8)
+find_package(Qt6 6.12 REQUIRED COMPONENTS Widgets Sql)
+qt_standard_project_setup(REQUIRES 6.12)
 
 add_library(chess_review_diagnostics STATIC src/diagnostics/Logger.cpp)
 target_include_directories(chess_review_diagnostics PUBLIC src)
