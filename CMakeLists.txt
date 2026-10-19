@@ -17,6 +17,12 @@ target_include_directories(chess_review_chess PUBLIC src)
 target_include_directories(chess_review_chess SYSTEM PRIVATE third_party/chess-library)
 chess_review_apply_options(chess_review_chess)
 
+add_library(chess_review_pgn STATIC src/pgn/Pgn.cpp)
+set_target_properties(chess_review_pgn PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+target_include_directories(chess_review_pgn PUBLIC src)
+target_link_libraries(chess_review_pgn PUBLIC chess_review_chess)
+chess_review_apply_options(chess_review_pgn)
+
 add_library(chess_review_diagnostics STATIC src/diagnostics/Logger.cpp)
 target_include_directories(chess_review_diagnostics PUBLIC src)
 target_link_libraries(chess_review_diagnostics PUBLIC Qt6::Core)

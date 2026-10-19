@@ -45,6 +45,95 @@ GameTreeResult<GameTree> GameTree::fromFen(std::string_view fen, GameTreeLimits 
     return GameTree{std::get<Position>(std::move(root)), limits};
 }
 
+GameTreeResult<GameTree> GameTree::fromNodes(std::optional<std::string_view> rootFen,
+                                             std::span<const GameTreeInputNode> input,
+                                             GameTreeLimits limits, std::stop_token stop) {
+    if (stop.stop_requested()) {
+        return error(GameTreeErrorCode::Cancelled, "Tree construction cancelled.");
+    }
+    if (input.empty() || input.front().move || input.front().parent != 0) {
+        return error(GameTreeErrorCode::InvalidNode, "Invalid root record.");
+    }
+    auto created = rootFen ? fromFen(*rootFen, limits) : initial(limits);
+    if (std::holds_alternative<GameTreeError>(created)) {
+        return created;
+    }
+    auto tree = std::get<GameTree>(std::move(created));
+    if (input.size() > limits.maxNodes ||
+        input.size() >= std::numeric_limits<std::uint64_t>::max()) {
+        return error(GameTreeErrorCode::LimitExceeded, "Node budget exceeded.");
+    }
+    auto status = tree.setAnnotations(tree.rootId(), input.front().annotations);
+    if (const auto* failure = std::get_if<GameTreeError>(&status)) {
+        return *failure;
+    }
+    for (std::size_t index = 1; index < input.size(); ++index) {
+        if (stop.stop_requested()) {
+            return error(GameTreeErrorCode::Cancelled, "Tree construction cancelled.");
+        }
+        const auto& record = input[index];
+        if (record.parent >= index || !record.move) {
+            return error(GameTreeErrorCode::InvalidNode, "Invalid parent or move record.", index);
+        }
+        const NodeId parentId{static_cast<std::uint64_t>(record.parent)};
+        auto& parent = tree.nodes_.at(parentId);
+        if (parent.depth >= limits.maxDepth) {
+            return error(GameTreeErrorCode::LimitExceeded, "Depth budget exceeded.", index);
+        }
+        const NodeId id{static_cast<std::uint64_t>(index)};
+        tree.nodes_.emplace(
+            id, StoredNode{GameTreeNode{id, parentId, record.move, std::nullopt, {}, {}},
+                           parent.depth + 1});
+        parent.data.children.push_back(id);
+        status = tree.setAnnotations(id, record.annotations);
+        if (const auto* failure = std::get_if<GameTreeError>(&status)) {
+            return *failure;
+        }
+    }
+    auto board = tree.root_;
+    struct Frame {
+        NodeId id;
+        std::size_t child{};
+    };
+    std::vector<Frame> stack{{tree.rootId(), 0}};
+    while (!stack.empty()) {
+        if (stop.stop_requested()) {
+            return error(GameTreeErrorCode::Cancelled, "Tree construction cancelled.");
+        }
+        auto& frame = stack.back();
+        auto& node = tree.nodes_.at(frame.id).data;
+        if (frame.child == node.children.size()) {
+            if (node.parent) {
+                (void)board.undo();
+            }
+            stack.pop_back();
+            continue;
+        }
+        const auto childId = node.children[frame.child++];
+        auto& child = tree.nodes_.at(childId).data;
+        // Earlier siblings have already passed legality checks, bounding this search
+        // by the number of legal moves rather than the number of untrusted records.
+        for (std::size_t i = 0; i + 1 < frame.child; ++i) {
+            if (tree.nodes_.at(node.children[i]).data.move == child.move) {
+                return error(GameTreeErrorCode::InvalidNode, "Duplicate sibling move.",
+                             static_cast<std::size_t>(childId.value));
+            }
+        }
+        auto notation = board.san(*child.move);
+        if (const auto* failure = std::get_if<Error>(&notation)) {
+            return positionFailure(*failure, static_cast<std::size_t>(childId.value));
+        }
+        const auto played = board.play(*child.move);
+        if (const auto* failure = std::get_if<Error>(&played)) {
+            return positionFailure(*failure, static_cast<std::size_t>(childId.value));
+        }
+        child.san = std::get<std::string>(std::move(notation));
+        stack.push_back({childId, 0});
+    }
+    tree.nextId_ = static_cast<std::uint64_t>(input.size());
+    return tree;
+}
+
 void GameTree::swap(GameTree& other) noexcept {
     using std::swap;
     swap(root_, other.root_);

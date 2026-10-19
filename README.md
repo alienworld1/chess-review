@@ -6,7 +6,8 @@ are empty destinations. Chess analysis and review features are not implemented y
 
 The shell includes navigation, saved window preferences, local SQLite storage,
 and diagnostics. A pure C++ chess core now provides validated positions, legal
-moves, notation, and history-aware identity; it is not yet connected to the UI.
+moves, notation, game trees, and history-aware identity. A pure C++ PGN reader
+parses single and multi-game input; neither module is connected to the UI yet.
 
 ## Requirements
 
@@ -52,3 +53,4 @@ libraries separate. Automated tests use temporary storage.
 - [Storage](docs/storage.md): paths, UI preferences, database lifecycle, and migrations
 - [Diagnostics](docs/diagnostics.md): troubleshooting, local logs, and privacy
 - [Chess core](docs/chess-core.md): adapter API, FEN policy, moves, and identity
+- [PGN parsing](docs/pgn.md): documents, compatibility, recovery, limits, and cancellation

@@ -180,5 +180,25 @@ prevents destruction from recursing through game ancestry.
 
 This model is an editable analysis tree. It does not preserve an immutable
 original played line: a later game/import owner must keep that separately.
-Undo/redo, arrows/highlights, PGN, durable serialization, database integration,
+Undo/redo, arrows/highlights, durable serialization, database integration,
 draw adjudication, and a desktop board/tree view remain separate increments.
+
+
+### Bulk construction
+
+`GameTree::fromNodes(optionalRootFen, records, limits, stopToken)` validates an
+entire tree. Record zero has parent zero, no move, and optional root annotations.
+Other records have an earlier parent index and an incoming move. Record indices
+become node IDs; input order determines sibling order. Repeated sibling moves,
+missing moves, forward/self parents, illegal moves, and exhausted limits reject
+the entire construction. `GameTreeError::moveIndex` is the zero-based input record
+index when available. A requested stop returns `GameTreeErrorCode::Cancelled`.
+Successful trees support ordinary edits and allocate new IDs after the records.
+
+Validation uses one working Position and iterative make/undo, with O(N log N)
+map work and O(N + annotation/SAN payload) storage, including staged links.
+No partial tree is published on ordinary errors or exceptional allocation failures.
+The original input records are unchanged. This is a validated bulk boundary,
+not a way to inject prevalidated SAN or arbitrary private nodes. PGN parsing,
+normalization, and repeated-branch merging live in the separate
+[PGN module](pgn.md), which owns original played history independently of edits.

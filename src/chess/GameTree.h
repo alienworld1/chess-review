@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -37,6 +38,13 @@ struct NodeAnnotations {
     bool operator==(const NodeAnnotations&) const = default;
 };
 
+// Record zero is the root; every other record names an earlier parent.
+struct GameTreeInputNode {
+    std::size_t parent{};
+    std::optional<Move> move;
+    NodeAnnotations annotations;
+};
+
 struct GameTreeNode {
     NodeId id;
     std::optional<NodeId> parent;
@@ -53,13 +61,14 @@ enum class GameTreeErrorCode {
     RootOperation,
     PositionFailure,
     LimitExceeded,
-    IdExhausted
+    IdExhausted,
+    Cancelled
 };
 
 struct GameTreeError {
     GameTreeErrorCode code;
     std::string message;                  // Bounded static diagnostic, without user content.
-    std::optional<std::size_t> moveIndex; // Zero-based index for addLine failures.
+    std::optional<std::size_t> moveIndex; // Zero-based move index, or input record for fromNodes.
     std::optional<Error> positionError;
 };
 template <typename T> using GameTreeResult = std::variant<T, GameTreeError>;
@@ -72,6 +81,11 @@ class GameTree {
     [[nodiscard]] static GameTreeResult<GameTree> initial(GameTreeLimits limits = {});
     [[nodiscard]] static GameTreeResult<GameTree> fromFen(std::string_view fen,
                                                           GameTreeLimits limits = {});
+    // Validates a complete flat tree using iterative make/undo. Duplicate sibling moves
+    // are rejected. Input order defines sibling order; record indices become node IDs.
+    [[nodiscard]] static GameTreeResult<GameTree>
+    fromNodes(std::optional<std::string_view> rootFen, std::span<const GameTreeInputNode> nodes,
+              GameTreeLimits limits = {}, std::stop_token stop = {});
     GameTree(const GameTree&) = default;
     GameTree& operator=(const GameTree& other);
     GameTree(GameTree&&) noexcept = default;

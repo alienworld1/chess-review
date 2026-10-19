@@ -37,3 +37,9 @@ set_target_properties(game_tree_allocation_tests PROPERTIES AUTOMOC OFF AUTOUIC 
 target_link_libraries(game_tree_allocation_tests PRIVATE chess_review_chess Catch2::Catch2WithMain)
 chess_review_apply_options(game_tree_allocation_tests)
 catch_discover_tests(game_tree_allocation_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)
+
+add_executable(pgn_tests unit/PgnTest.cpp)
+set_target_properties(pgn_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+target_link_libraries(pgn_tests PRIVATE chess_review_pgn Catch2::Catch2WithMain)
+chess_review_apply_options(pgn_tests)
+catch_discover_tests(pgn_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)

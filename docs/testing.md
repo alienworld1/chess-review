@@ -215,3 +215,30 @@ Native desktop behavior, accessibility, Windows behavior,
 and mixed-DPI rendering still require separate release validation. Optional real
 engine compatibility tests must supplement a deterministic fake UCI engine when
 engine orchestration is implemented; this infrastructure task adds neither.
+
+
+## PGN tests
+
+`ctest --preset dev -L pgn` runs the pure C++ `pgn_tests` executable. Fixtures
+exercise owned source/tag/result data, immutable original played history, nested
+variations, comment attachment, ordered/duplicate NAGs, repeated-branch merging,
+FEN roots, castling/en passant/underpromotion, strict SAN suffixes, UTF-8, and
+percent escape lines. Recovery cases include valid–invalid–valid input, misleading
+headers inside comments, conflicting header blocks, nested failures, and
+unreadable lexical tails, unsupported quoted text, and encoding errors in
+ignored text before a following header. Incomplete move-number indications
+are rejected rather than published as empty games. Limits include exact boundaries, zero budgets, decoded
+tag escapes, source occurrence accounting, newline separators, warning suppression,
+and next-header lookahead. Cancellation covers terminal behavior, earlier document
+ownership, and a concurrent stop request against a long-comment workload (allowing complete
+publication if completion wins the race).
+
+A 12,000-ply line, 100 nested variations, and a broad root with 1,000 repeated
+branches exercise iterative construction/destruction. A deterministic seed mutates
+1,500 inputs using insertions/deletions/arbitrary bytes; every outcome must be
+bounded and every accepted tree is independently walked with Position make/undo.
+This shares the chess adapter, so it is a consistency oracle rather than an
+independent chess-rules implementation. No test depends on a performance threshold.
+The chess suite separately validates the public bulk-tree factory against malformed
+records, duplicate siblings, illegal moves, FEN provenance, budgets, cancellation,
+and subsequent editing/ID allocation.

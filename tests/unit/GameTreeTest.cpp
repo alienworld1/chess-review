@@ -495,3 +495,53 @@ TEST_CASE("Caller created malformed moves cannot enter or match a stored path", 
         CHECK(snapshot(game) == before);
     }
 }
+
+TEST_CASE("Bulk tree construction validates records, annotations and legal branches",
+          "[chess][unit]") {
+    const auto e4 = unwrap(Position::initial().parseSan("e4"));
+    const auto d4 = unwrap(Position::initial().parseSan("d4"));
+    auto afterE4 = Position::initial();
+    unwrap(afterE4.play(e4));
+    const auto e5 = unwrap(afterE4.parseSan("e5"));
+    const std::vector<GameTreeInputNode> records{
+        {0, std::nullopt, {"root", {}, {}}}, {0, e4, {}}, {0, d4, {}}, {1, e5, {{}, "reply", {1}}}};
+    auto game = unwrap(GameTree::fromNodes(std::nullopt, records));
+    CHECK(game.size() == 4);
+    CHECK(game.node(NodeId{0})->children == std::vector<NodeId>{NodeId{1}, NodeId{2}});
+    CHECK(game.node(NodeId{3})->san == "e5");
+    CHECK(game.node(NodeId{3})->annotations.commentAfter == "reply");
+    CHECK(unwrap(game.mainLine(game.rootId())) ==
+          std::vector<NodeId>{NodeId{0}, NodeId{1}, NodeId{3}});
+    CHECK(unwrap(game.addMove(NodeId{1}, unwrap(afterE4.parseSan("c5")))) == NodeId{4});
+    auto invalid = records;
+    invalid[2].parent = 2;
+    rejects(GameTree::fromNodes(std::nullopt, invalid), GameTreeErrorCode::InvalidNode);
+    invalid = records;
+    invalid[0].move = e4;
+    rejects(GameTree::fromNodes(std::nullopt, invalid), GameTreeErrorCode::InvalidNode);
+    invalid = records;
+    invalid[2].move = e4;
+    rejects(GameTree::fromNodes(std::nullopt, invalid), GameTreeErrorCode::InvalidNode);
+    invalid = records;
+    invalid[3].move = e4;
+    rejects(GameTree::fromNodes(std::nullopt, invalid), GameTreeErrorCode::PositionFailure);
+    rejects(GameTree::fromNodes(std::nullopt, {}), GameTreeErrorCode::InvalidNode);
+    auto limits = GameTreeLimits{};
+    limits.maxNodes = 3;
+    rejects(GameTree::fromNodes(std::nullopt, records, limits), GameTreeErrorCode::LimitExceeded);
+    limits = {};
+    limits.maxDepth = 1;
+    rejects(GameTree::fromNodes(std::nullopt, records, limits), GameTreeErrorCode::LimitExceeded);
+    limits = {};
+    limits.maxAnnotationBytes = 8;
+    rejects(GameTree::fromNodes(std::nullopt, records, limits), GameTreeErrorCode::LimitExceeded);
+    std::stop_source stop;
+    stop.request_stop();
+    rejects(GameTree::fromNodes(std::nullopt, records, {}, stop.get_token()),
+            GameTreeErrorCode::Cancelled);
+    const std::array<GameTreeInputNode, 1> rootOnly{};
+    const auto fen = "8/8/8/8/8/2k5/8/4K3 b - - 0 7";
+    const auto fenTree = unwrap(GameTree::fromNodes(fen, rootOnly));
+    CHECK(unwrap(fenTree.position(fenTree.rootId())).context() ==
+          unwrap(Position::fromFen(fen)).context());
+}
