@@ -24,3 +24,9 @@ chess_review_apply_options(shell_exit_probe)
 add_dependencies(shell_tests shell_exit_probe)
 target_compile_definitions(shell_tests PRIVATE
     CHESS_REVIEW_EXIT_PROBE="$<TARGET_FILE:shell_exit_probe>")
+
+add_executable(chess_tests unit/PositionTest.cpp)
+set_target_properties(chess_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+target_link_libraries(chess_tests PRIVATE chess_review_chess Catch2::Catch2WithMain)
+chess_review_apply_options(chess_tests)
+catch_discover_tests(chess_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)

@@ -5,7 +5,8 @@ Currently an application foundation: Home, Games, Puzzles, Analyze, and Settings
 are empty destinations. Chess analysis and review features are not implemented yet.
 
 The shell includes navigation, saved window preferences, local SQLite storage,
-and diagnostics.
+and diagnostics. A pure C++ chess core now provides validated positions, legal
+moves, notation, and history-aware identity; it is not yet connected to the UI.
 
 ## Requirements
 
@@ -50,3 +51,4 @@ libraries separate. Automated tests use temporary storage.
 - [Testing](docs/testing.md): test selection, sanitizers, and CI
 - [Storage](docs/storage.md): paths, UI preferences, database lifecycle, and migrations
 - [Diagnostics](docs/diagnostics.md): troubleshooting, local logs, and privacy
+- [Chess core](docs/chess-core.md): adapter API, FEN policy, moves, and identity

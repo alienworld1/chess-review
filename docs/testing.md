@@ -1,9 +1,9 @@
 # Testing
 
-Tests use C++20, CMake/CTest, and Qt Test. Qt 6.12 is the API baseline.
-Catch2 3.8.1 is configured for future pure C++ tests; there are no pure domain
-modules or permanent Catch2 test cases yet. Do not manufacture tests to exercise
-a framework. Use risk-based regression tests rather than a coverage quota.
+Tests use C++20, CMake/CTest, Qt Test, and Catch2 3.8.1. Qt 6.12 is the API
+baseline. Pure chess-domain cases live in `tests/unit/PositionTest.cpp` and link
+only the chess target and Catch2. Use risk-based regression tests rather than a
+coverage quota.
 
 ## Configure, build, and run
 
@@ -33,7 +33,11 @@ See [development setup](development.md) for Qt SDK selection and
 All test presets show failure output and fail if no tests match, including an
 accidentally empty label/regex selection. Every Qt suite has a 30-second CTest
 limit. Component labels are `diagnostics`, `persistence`, `startup`, `shell`, and
-`app_paths`; all have `qt`, and all except `app_paths` also have `integration`. These
+`app_paths`; Qt suites have `qt`, and all except `app_paths` also have `integration`.
+Chess cases have `unit` and `chess` labels, assigned from their Catch2 tags.
+Run them with `ctest --preset dev -L chess` or `./build/dev/tests/chess_tests`.
+They cover established perft fixtures, strict FEN, legal moves, SAN/UCI,
+make/undo, counter overflow/rollover, and history-aware identity. These
 labels describe entire suites: individual suites can cover several boundaries.
 
 Qt Test also supports selecting individual functions and data rows directly:
@@ -65,7 +69,7 @@ platform override is needed for Qt Core suites.
   dependencies into production targets. Unknown options and missing keyword
   values fail configuration.
 
-All five runners construct `TestEnvironment` before the Qt application, isolating
+All five Qt runners construct `TestEnvironment` before the Qt application, isolating
 working directories and Linux HOME/XDG roots. Exit with failure if it is invalid.
 Declare it before the application
 so workers and Qt shut down before the root is removed. Internal diagnostics
