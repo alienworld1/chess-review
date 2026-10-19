@@ -2,12 +2,16 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 using namespace chess_review::chess;
 
@@ -321,4 +325,107 @@ TEST_CASE("Terminal boards expose legal moves and check without draw adjudicatio
     auto stalemate = load("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1");
     CHECK(!stalemate.inCheck());
     CHECK(stalemate.legalMoves().empty());
+}
+
+TEST_CASE("Impossible check configurations are rejected before move generation", "[chess][unit]") {
+    // These passed the original loader. Upstream assumes at most two check families,
+    // and counts multiple pawn/knight/bishop checkers as one.
+    for (const auto fen :
+         {"k3r3/8/8/8/1b6/5n2/8/4K3 w - - 0 1", "k7/8/8/8/8/5n2/2n5/1B2K3 w - - 0 1",
+          "k7/8/8/8/8/8/3p1p2/4K3 w - - 0 1", "k7/8/8/8/1b5b/8/8/4K3 w - - 0 1",
+          "k3r3/8/8/6pP/1b6/5n2/8/4K3 w - g6 0 2"}) {
+        rejectsFen(fen);
+    }
+    auto doubleCheck = load("k3r3/8/8/8/8/8/6n1/4K3 w - - 0 1");
+    CHECK(doubleCheck.inCheck());
+    for (const auto& move : doubleCheck.legalMoves()) {
+        CHECK(doubleCheck.pieceAt(move.from)->type == PieceType::King);
+    }
+}
+
+TEST_CASE("En passant metadata must describe a possible immediate predecessor", "[chess][unit]") {
+    rejectsFen("k7/8/8/3p4/8/8/8/r6K w - d6 0 2");
+    rejectsFen("k7/8/4K3/3p4/8/8/8/8 w - d6 0 2");
+    rejectsFen("R6k/8/8/8/3P4/8/8/K7 b - d3 0 1");
+    CHECK(load("8/7k/8/5p2/8/8/8/KB6 w - f6 0 2").fen() == "8/7k/8/5p2/8/8/8/KB6 w - f6 0 2");
+    auto discoveredCheck = load("k1b5/8/8/3p4/8/7K/8/8 w - d6 0 2");
+    CHECK(discoveredCheck.inCheck());
+}
+
+TEST_CASE("Legal walks preserve FEN notation identity and undo invariants", "[chess][unit]") {
+    std::mt19937 random(1701);
+    for (int game = 0; game < 12; ++game) {
+        auto position = Position::initial();
+        const auto start = position.context();
+        int played = 0;
+        for (; played < 160; ++played) {
+            const auto moves = position.legalMoves();
+            if (moves.empty()) {
+                break;
+            }
+            const auto move = moves[random() % moves.size()];
+            const auto before = position.context();
+            CHECK(value(position.parseSan(value(position.san(move)))) == move);
+            CHECK(value(position.parseUci(value(position.uci(move)))) == move);
+            CHECK(position.context() == before);
+            value(position.play(move));
+            auto restored = load(position.fen());
+            CHECK(restored.fen() == position.fen());
+            CHECK(restored.boardIdentity() == position.boardIdentity());
+            auto ordered = [](const Position& board) {
+                std::vector<std::string> result;
+                for (const auto& candidate : board.legalMoves()) {
+                    result.push_back(value(board.uci(candidate)));
+                }
+                std::sort(result.begin(), result.end());
+                return result;
+            };
+            CHECK(ordered(restored) == ordered(position));
+        }
+        for (int i = 0; i < played; ++i) {
+            REQUIRE(position.undo());
+        }
+        CHECK(position.context() == start);
+    }
+}
+
+TEST_CASE("Mutated untrusted inputs remain bounded and safe to query", "[chess][unit]") {
+    const std::array<std::string, 4> seeds{
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2", "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+        "k3r3/8/8/8/1b6/5n2/8/4K3 w - - 0 1"};
+    std::mt19937 random(8991);
+    for (int attempt = 0; attempt < 4000; ++attempt) {
+        auto text = seeds[random() % seeds.size()];
+        const auto index = random() % text.size();
+        switch (attempt % 3) {
+        case 0:
+            text[index] = static_cast<char>(random() % 256);
+            break;
+        case 1:
+            text.erase(index, 1);
+            break;
+        default:
+            text.insert(index, 1, static_cast<char>(random() % 256));
+            break;
+        }
+        auto result = Position::fromFen(text);
+        if (auto* board = std::get_if<Position>(&result)) {
+            CHECK(load(board->fen()).boardIdentity() == board->boardIdentity());
+            const auto moves = board->legalMoves();
+            if (!moves.empty()) {
+                value(board->san(moves.front()));
+                value(board->play(moves.front()));
+                REQUIRE(board->undo());
+            }
+        } else {
+            CHECK(std::get<Error>(result).message.size() <= 128);
+        }
+        // The same bytes must also be safe at both notation boundaries.
+        auto initial = Position::initial();
+        const auto before = initial.context();
+        CHECK(std::holds_alternative<Error>(initial.parseSan(text)));
+        CHECK(std::holds_alternative<Error>(initial.parseUci(text)));
+        CHECK(initial.context() == before);
+    }
 }

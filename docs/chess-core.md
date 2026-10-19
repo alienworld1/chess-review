@@ -40,7 +40,11 @@ single spaces. Castling order and numeric formatting are canonicalized. Validate
 placement, material/promotion feasibility (including bishop square colors), both
 kings, pawn ranks, orthodox castling pieces, and en-passant rank/pawn/origin/clock
 consistency. A position may have its current king in check, but cannot leave the
-previous mover's king in check. This is local validation, not proof of historical
+previous mover's king in check. Impossible multiple-check configurations are
+rejected before upstream move generation runs, including during en-passant
+normalization. When en passant identifies the preceding double push, its implied
+predecessor must also leave the nonmoving king safe. This is local validation,
+not proof of historical
 reachability; counter values are not used to reconstruct a missing game.
 
 FEN output preserves a double-push en-passant target even without a legal capture.
@@ -77,7 +81,9 @@ nothing about the real game's earlier repetitions. Future engine requests must
 use that same root and continuation rather than silently reconstructing only
 the current FEN.
 
-Snapshots copy history only on request; make/undo do not copy it. Comparisons use
+Snapshots and position copies take O(history length) time and space. Request
+contexts on demand; storing a complete context for every ply of a long game
+would consume quadratic space. Make/undo do not copy history. Comparisons use
 full values, with no custom hash and no reliance on upstream Zobrist keys.
 Contexts have an identity version but no persisted wire format in this slice.
 No draw claim, repetition count, game result, or cache service is implemented.

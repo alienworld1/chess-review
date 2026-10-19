@@ -177,12 +177,54 @@ Result<FenData> validateFen(std::string_view fen) {
         }
     }
     // Never feed unchecked placement, castling rights, or large counters to upstream.
-    for (std::size_t i = 0; i < 4; ++i) {
+    for (std::size_t i = 0; i < 3; ++i) {
         data.libraryFen += data.fields[i];
         data.libraryFen += ' ';
     }
-    data.libraryFen += "0 1";
+    // Defer en passant: upstream normalizes it using move generation, whose check
+    // assumptions must first be validated on the bare board.
+    data.libraryFen += "- 0 1";
     return data;
+}
+
+// Use upstream attack primitives to establish its legal-position preconditions before
+// invoking any move generation (including the EP normalization inside setFen).
+bool hasPossibleCheckers(const ::chess::Board& board) {
+    const auto side = board.sideToMove();
+    const auto king = board.kingSq(side);
+    const auto checkers = ::chess::attacks::attackers(board, ~side, king);
+    const auto diagonal = ::chess::attacks::bishop(king, board.occ()) & checkers &
+                          board.pieces(::chess::PieceType::BISHOP, ::chess::PieceType::QUEEN);
+    const auto orthogonal = ::chess::attacks::rook(king, board.occ()) & checkers &
+                            board.pieces(::chess::PieceType::ROOK, ::chess::PieceType::QUEEN);
+    return checkers.count() <= 2 && diagonal.count() <= 1 && orthogonal.count() <= 1 &&
+           (checkers & board.pieces(::chess::PieceType::PAWN)).count() <= 1 &&
+           (checkers & board.pieces(::chess::PieceType::KNIGHT)).count() <= 1;
+}
+
+bool hasPossibleEpPredecessor(const ::chess::Board& board, Square ep) {
+    const auto side = board.sideToMove();
+    const auto opponent = ~side;
+    const auto king = board.kingSq(side);
+    const int direction = side == ::chess::Color::WHITE ? 8 : -8;
+    const auto pawn = ::chess::Square(ep.index() - direction);
+    const auto origin = ::chess::Square(ep.index() + direction);
+    auto occupied = board.occ();
+    occupied.clear(pawn.index());
+    occupied.set(origin.index());
+    auto pawns = board.pieces(::chess::PieceType::PAWN, opponent);
+    pawns.clear(pawn.index());
+    pawns.set(origin.index());
+    // The nonmoving king cannot already have been attacked before the stated
+    // double push. Only pawn and sliding attacks change when that pawn is restored.
+    const auto unchanged = ::chess::attacks::attackers(board, opponent, king) &
+                           board.pieces(::chess::PieceType::KNIGHT, ::chess::PieceType::KING);
+    const auto pawnChecks = ::chess::attacks::pawn(side, king) & pawns;
+    const auto diagonal = ::chess::attacks::bishop(king, occupied) & board.us(opponent) &
+                          board.pieces(::chess::PieceType::BISHOP, ::chess::PieceType::QUEEN);
+    const auto orthogonal = ::chess::attacks::rook(king, occupied) & board.us(opponent) &
+                            board.pieces(::chess::PieceType::ROOK, ::chess::PieceType::QUEEN);
+    return !(unchanged | pawnChecks | diagonal | orthogonal);
 }
 
 // Upstream enum-range false positives: only validated boards and generated moves reach these calls.
@@ -279,6 +321,23 @@ Result<Position> Position::fromFen(std::string_view fen) {
     const auto side = impl->board.sideToMove();
     if (impl->board.isAttacked(impl->board.kingSq(~side), side)) {
         return Error{ErrorCode::InvalidPosition, "The side which just moved is in check."};
+    }
+    if (!hasPossibleCheckers(impl->board)) {
+        return Error{ErrorCode::InvalidPosition,
+                     "The checking pieces cannot result from a legal move."};
+    }
+    if (data.ep) {
+        if (!hasPossibleEpPredecessor(impl->board, *data.ep)) {
+            return Error{ErrorCode::InvalidPosition,
+                         "En passant implies an illegal preceding position."};
+        }
+        auto withEp = impl->board.getFen(false);
+        withEp.resize(withEp.rfind(' ') + 1);
+        withEp += data.ep->name() + " 0 1";
+        if (!impl->board.setFen(withEp)) {
+            return Error{ErrorCode::InvalidFen,
+                         "Chess backend rejected the validated en passant state."};
+        }
     }
     impl->halfmove = data.halfmove;
     impl->fullmove = data.fullmove;

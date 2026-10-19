@@ -37,7 +37,10 @@ limit. Component labels are `diagnostics`, `persistence`, `startup`, `shell`, an
 Chess cases have `unit` and `chess` labels, assigned from their Catch2 tags.
 Run them with `ctest --preset dev -L chess` or `./build/dev/tests/chess_tests`.
 They cover established perft fixtures, strict FEN, legal moves, SAN/UCI,
-make/undo, counter overflow/rollover, and history-aware identity. These
+make/undo, counter overflow/rollover, and history-aware identity. Adversarial cases
+reject impossible checks before upstream move generation and verify en-passant
+predecessors. Deterministic legal walks and 4,000 mutated byte inputs exercise
+FEN/notation safety and restoration invariants under sanitizers. These
 labels describe entire suites: individual suites can cover several boundaries.
 
 Qt Test also supports selecting individual functions and data rows directly:
