@@ -163,6 +163,15 @@ std::optional<DatabaseError> StorageSession::initialize(const QString& path,
     if (auto error = configure(QStringLiteral("PRAGMA busy_timeout"), 5000)) {
         return error;
     }
+    // Text-to-BLOB projections validate exact UTF-8 bytes. Application databases
+    // use SQLite's default encoding; reject foreign encodings before any migration/write.
+    QSqlQuery encoding(database_);
+    if (!encoding.exec(QStringLiteral("PRAGMA main.encoding")) || !encoding.next() ||
+        encoding.value(0).toString() != QStringLiteral("UTF-8")) {
+        return failure(DatabaseErrorCode::Configuration, QStringLiteral("Verify database encoding"),
+                       QStringLiteral("The application database must use UTF-8 text encoding."));
+    }
+    encoding.finish();
     return migrate(database_, canonicalPath, registry, progress, observe);
 }
 

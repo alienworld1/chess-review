@@ -4,6 +4,7 @@
 #include "persistence/private/StorageSession.h"
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSignalSpy>
@@ -13,6 +14,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <algorithm>
+#include <array>
 
 using namespace chess_review;
 using namespace chess_review::persistence;
@@ -46,6 +49,27 @@ class Fixture {
     bool exec(const QString& sql) {
         QSqlQuery query(database_);
         return query.exec(sql);
+    }
+    bool insertLegacy(GameId id, const pgn::PgnDocument& document) {
+        const auto encoded = encodeGame(document, 1);
+        const auto* game = std::get_if<EncodedGame>(&encoded);
+        if (!game) {
+            return false;
+        }
+        const auto metadata = gameMetadata(document, 1);
+        QSqlQuery query(database_);
+        if (!query.prepare(
+                QStringLiteral("INSERT INTO games VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"))) {
+            return false;
+        }
+        for (const auto& value : QVariantList{
+                 QVariant::fromValue(static_cast<qlonglong>(id)), 1, game->hash, game->identity,
+                 game->original, game->snapshot, 1, metadata.white, metadata.black, metadata.result,
+                 metadata.playedAt, metadata.timeControl, QStringLiteral("fixture"),
+                 QStringLiteral("original source"), QStringLiteral("2026-10-20T00:00:00.000Z")}) {
+            query.addBindValue(value);
+        }
+        return query.exec();
     }
     bool update(const QString& column, const QVariant& value, GameId id) {
         // Column names are internal test constants, never user input.
@@ -108,6 +132,13 @@ class GameRepositoryTest final : public QObject {
     void cancellationDuringCommitAndShutdown();
     void storageFailureStopsImport();
     void cancelWhileParsing();
+    void metadataRejectsHiddenBytes();
+    void summaryBoundsAndIsolation();
+    void parsedSnapshotsRemainPersistable();
+    void duplicateLargeSnapshots();
+    void reportWarningBudget();
+    void leadingBomInsideTagIsContent();
+    void legacyTextUpgradePreservesGames();
 };
 void GameRepositoryTest::roundTripAndReopen() {
     QTemporaryDir directory;
@@ -161,9 +192,12 @@ void GameRepositoryTest::duplicatePolicy() {
     QVERIFY(!session.initialize(directory.filePath(QStringLiteral("library.sqlite3")), migrations(),
                                 ignoreProgress));
     // Frozen v1 identity: changing the encoding requires a migration, not a new hash.
-    const auto frozen = std::get<EncodedGame>(encodeGame(*document("1. e4 e5 *")));
+    const auto frozen = std::get<EncodedGame>(encodeGame(*document("1. e4 e5 *"), 1));
     QCOMPARE(frozen.hash.toHex(),
              QByteArray("ce76558e5d88f05ead2e6ca4f21ca60ffbe0c7b0b2e8f4b8c90e2406fd1ea35c"));
+    const auto currentIdentity = std::get<EncodedGame>(encodeGame(*document("1. e4 e5 *")));
+    QCOMPARE(currentIdentity.hash.toHex(),
+             QByteArray("51629077a7bd8ffac667cca613a21e72b56f28af86b6a020de07f250f86a9991"));
     const auto first = session.insertGame(*document("1. e4 e5 *"), {});
     QVERIFY(std::holds_alternative<Inserted>(first));
     const auto id = std::get<Inserted>(first).id;
@@ -407,6 +441,225 @@ void GameRepositoryTest::cancelWhileParsing() {
     QCOMPARE(report.status, app::ImportStatus::Cancelled);
     QVERIFY(report.items.empty());
     QCOMPARE(inserted.count(), 0);
+}
+void GameRepositoryTest::metadataRejectsHiddenBytes() {
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
+    StorageSession session;
+    QVERIFY(!session.initialize(path, migrations(), ignoreProgress));
+    const auto id =
+        std::get<Inserted>(session.insertGame(*document("[White \"Alice\"]\n\n*"), {})).id;
+    Fixture fixture(path);
+    QVERIFY(fixture.exec(QStringLiteral("UPDATE games SET source_uri='a'||char(0)||'hidden'")));
+    QVERIFY2(std::holds_alternative<GameError>(session.loadGame(id)),
+             "Embedded NUL bytes must not disappear during SQL text projection");
+    QVERIFY(fixture.update(QStringLiteral("source_uri"), QStringLiteral(""), id));
+    QVERIFY(fixture.exec(QStringLiteral("UPDATE games SET white_name='Alice'||char(0)||'hidden'")));
+    QVERIFY(std::holds_alternative<GameError>(session.loadGame(id)));
+    const auto unicode =
+        std::get<Inserted>(session.insertGame(*document("[White \"�\"]\n\n*"), {})).id;
+    QVERIFY(
+        fixture.exec(QStringLiteral("UPDATE games SET white_name=CAST(X'FF' AS TEXT) WHERE id=2")));
+    QVERIFY(std::holds_alternative<GameError>(session.loadGame(unicode)));
+}
+void GameRepositoryTest::summaryBoundsAndIsolation() {
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
+    StorageSession session;
+    QVERIFY(!session.initialize(path, migrations(), ignoreProgress));
+    const auto first =
+        std::get<Inserted>(
+            session.insertGame(*document("[White \"" + std::string(60000, 'A') + "\"]\n\n1. e4 *"),
+                               {}))
+            .id;
+    const auto second = std::get<Inserted>(session.insertGame(*document("1. d4 *"), {})).id;
+    auto result = session.listGames(0, 200);
+    QVERIFY(std::holds_alternative<std::vector<GameSummary>>(result));
+    for (const auto& value : std::get<std::vector<GameSummary>>(result)) {
+        QVERIFY(value.white.capacity() <= 1024);
+        QVERIFY2(value.white.size() <= 256,
+                 "Page results must not retain full-size PGN tag values");
+    }
+    const auto full = session.loadGame(first);
+    QCOMPARE(std::get<StoredGame>(full).summary.white.size(), 60000);
+    QVERIFY(!std::get<StoredGame>(full).summary.metadataTruncated);
+    Fixture fixture(path);
+    QVERIFY(fixture.update(QStringLiteral("white_name"), QString(100000, u'x'), first));
+    result = session.listGames(0, 200);
+    QVERIFY2(std::holds_alternative<std::vector<GameSummary>>(result),
+             "One malformed row must not hide a healthy game on the same page");
+    const auto& values = std::get<std::vector<GameSummary>>(result);
+    QVERIFY(
+        std::ranges::any_of(values, [second](const auto& value) { return value.id == second; }));
+    const auto damaged =
+        std::ranges::find_if(values, [first](const auto& value) { return value.id == first; });
+    QVERIFY(damaged != values.end());
+    QVERIFY(damaged->metadataError.has_value());
+    QVERIFY(damaged->white.isEmpty() && damaged->result.isEmpty());
+    const auto emoji = document("[White \"" + std::string(255, 'a') + "😀x\"]\n\n1. c4 *");
+    const auto emojiId = std::get<Inserted>(session.insertGame(*emoji, {})).id;
+    const auto page = std::get<std::vector<GameSummary>>(session.listGames(0, 200));
+    const auto clipped =
+        std::ranges::find_if(page, [emojiId](const auto& value) { return value.id == emojiId; });
+    QVERIFY(clipped != page.end());
+    QVERIFY(clipped->metadataTruncated && clipped->white.isValidUtf16());
+    QCOMPARE(clipped->white.size(), 255);
+}
+void GameRepositoryTest::parsedSnapshotsRemainPersistable() {
+    const std::string source =
+        "[White \"A\"]\n[Result \"*\"]\n\n1. e4 $1 {note} (1. d4 d5) e5 *\n\n1. Nf3 *";
+    for (std::size_t index = 0; index < source.size(); ++index) {
+        for (const auto byte : {'[', ']', '{', '}', '"', '\\', '\0', '\r', '\n', '%', '*', '?'}) {
+            auto mutated = source;
+            mutated[index] = byte;
+            pgn::PgnReader reader(mutated);
+            for (int gameIndex = 0; gameIndex < 10; ++gameIndex) {
+                auto outcome = reader.next();
+                if (const auto* value = std::get_if<pgn::PgnDocument>(&outcome)) {
+                    const auto encoded = encodeGame(*value);
+                    QVERIFY2(std::holds_alternative<EncodedGame>(encoded),
+                             "Every default-budget accepted import must remain persistable");
+                    const auto& saved = std::get<EncodedGame>(encoded);
+                    QVERIFY(std::holds_alternative<StoredGame>(
+                        decodeGame(saved.original, saved.snapshot)));
+                } else if (std::holds_alternative<pgn::EndOfInput>(outcome) ||
+                           std::holds_alternative<pgn::Cancelled>(outcome)) {
+                    break;
+                }
+            }
+        }
+    }
+}
+void GameRepositoryTest::duplicateLargeSnapshots() {
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
+    StorageSession session;
+    QVERIFY(!session.initialize(path, migrations(), ignoreProgress));
+    std::string annotated;
+    std::string plain;
+    for (int index = 0; index < 16; ++index) {
+        const std::array moves{"Nf3", "Nf6", "Ng1", "Ng8"};
+        const std::string move = std::string(moves[static_cast<std::size_t>(index % 4)]) + " ";
+        plain += move;
+        annotated += move + "{" + std::string(60000, 'x') + "} ";
+    }
+    plain += "*";
+    annotated += "*";
+    const auto id = std::get<Inserted>(session.insertGame(*document(annotated), {})).id;
+    const auto incoming = document(plain);
+    QElapsedTimer timer;
+    timer.start();
+    for (int index = 0; index < 50; ++index) {
+        const auto outcome = session.insertGame(*incoming, {});
+        QVERIFY(std::holds_alternative<Duplicate>(outcome));
+        QCOMPARE(std::get<Duplicate>(outcome).id, id);
+    }
+    qInfo("50 repeated duplicate checks against a 960 KB annotated game: %lld ms",
+          static_cast<long long>(timer.elapsed()));
+    const auto names = QSqlDatabase::connectionNames();
+    QCOMPARE(names.size(), 1);
+    {
+        QSqlQuery query(QSqlDatabase::database(names.front()));
+        QVERIFY(query.exec(QStringLiteral("UPDATE games SET source_uri='x'||char(0)||'hidden'")));
+        QVERIFY(std::holds_alternative<GameError>(session.insertGame(*incoming, {})));
+        QVERIFY(query.exec(QStringLiteral("UPDATE games SET source_uri=''")));
+        QVERIFY(std::holds_alternative<Duplicate>(session.insertGame(*incoming, {})));
+    }
+    // External changes must invalidate any validation shortcut.
+    Fixture fixture(path);
+    const auto encoded = std::get<EncodedGame>(encodeGame(*document(annotated)));
+    QVERIFY(fixture.update(QStringLiteral("snapshot"), QByteArray("invalid"), id));
+    QVERIFY(std::holds_alternative<GameError>(session.insertGame(*incoming, {})));
+    QVERIFY(fixture.update(QStringLiteral("snapshot"), encoded.snapshot, id));
+    QVERIFY(std::holds_alternative<Duplicate>(session.insertGame(*incoming, {})));
+}
+void GameRepositoryTest::reportWarningBudget() {
+    QTemporaryDir directory;
+    AsyncStorage storage;
+    QSignalSpy ready(&storage.database, &Database::ready);
+    storage.database.initialize(directory.filePath(QStringLiteral("library.sqlite3")));
+    QTRY_COMPARE(ready.count(), 1);
+    QSignalSpy finished(&storage.importer, &app::GameImportService::finished);
+    std::size_t retainedCapacity = 0;
+    connect(&storage.importer, &app::GameImportService::progress, &storage.importer,
+            [&](const app::ImportItem& item) { retainedCapacity += item.warnings.capacity(); });
+    std::string source;
+    for (int index = 0; index < 11; ++index) {
+        for (int tagIndex = 0; tagIndex < 101; ++tagIndex) {
+            source += R"([White "A"])";
+        }
+        source += " *\n";
+    }
+    storage.importer.importText(QUuid::createUuid(), std::move(source));
+    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 10000);
+    const auto report = qvariant_cast<app::ImportReport>(finished.at(0).at(0));
+    QCOMPARE(report.items.size(), std::size_t(11));
+    std::size_t retained = 0;
+    std::size_t suppressed = 0;
+    for (const auto& item : report.items) {
+        retained += item.warnings.size();
+        suppressed += item.suppressedWarnings;
+    }
+    QCOMPARE(retained + suppressed, std::size_t(1100));
+    QVERIFY(retainedCapacity <= 2000);
+    QVERIFY2(retained <= 1000,
+             "The report must bound aggregate warning retention, not only warnings per game");
+}
+void GameRepositoryTest::leadingBomInsideTagIsContent() {
+    QTemporaryDir directory;
+    StorageSession session;
+    QVERIFY(!session.initialize(directory.filePath(QStringLiteral("library.sqlite3")), migrations(),
+                                ignoreProgress));
+    QVERIFY(std::holds_alternative<Inserted>(
+        session.insertGame(*document("[White \"Alice\"]\n\n*"), {})));
+    const auto input = document(std::string("[White \"") + "\xEF\xBB\xBF" + "Alice\"]\n\n*");
+    const auto result =
+        session.insertGame(*input, {QString(QChar(0xFEFF)) + QStringLiteral("paste"),
+                                    QString(QChar(0xFEFF)) + QStringLiteral("source")});
+    QVERIFY2(std::holds_alternative<Inserted>(result),
+             "U+FEFF inside a tag value is content, not a source BOM or whitespace normalization");
+    const auto loaded = session.loadGame(std::get<Inserted>(result).id);
+    QVERIFY(std::holds_alternative<StoredGame>(loaded));
+    QVERIFY(std::get<StoredGame>(loaded).summary.white.startsWith(QChar(0xFEFF)));
+    QVERIFY(std::get<StoredGame>(loaded).source.uri.startsWith(QChar(0xFEFF)));
+    QVERIFY(std::get<StoredGame>(loaded).source.type.startsWith(QChar(0xFEFF)));
+    const auto encoded = std::get<EncodedGame>(encodeGame(*input));
+    QVERIFY(std::holds_alternative<GameError>(decodeGame(encoded.original, encoded.snapshot, 1)));
+}
+void GameRepositoryTest::legacyTextUpgradePreservesGames() {
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
+    const auto original = document(std::string("[White \"") + "\xEF\xBB\xBF" +
+                                   "Alice\"]\n\n{\xEF\xBB\xBF"
+                                   "comment} *");
+    {
+        StorageSession old;
+        QVERIFY(!old.initialize(path, std::span(migrations()).first(2), ignoreProgress));
+        Fixture fixture(path);
+        QVERIFY(fixture.insertLegacy(41, *original));
+        QVERIFY(fixture.insertLegacy(42, *document("[White \"Bob\"]\n\n*")));
+        QVERIFY(fixture.update(QStringLiteral("snapshot"), QByteArray("broken"), 42));
+        QVERIFY(fixture.insertLegacy(43, *document("[White \"Charlie\"]\n\n*")));
+    }
+    StorageSession current;
+    QVERIFY(!current.initialize(path, migrations(), ignoreProgress));
+    const auto loaded = current.loadGame(41);
+    QVERIFY(std::holds_alternative<StoredGame>(loaded));
+    const auto& game = std::get<StoredGame>(loaded);
+    QCOMPARE(game.summary.id, GameId(41));
+    QCOMPARE(game.document->originalText, original->originalText);
+    QCOMPARE(game.source.uri, QStringLiteral("original source"));
+    QCOMPARE(game.summary.importedAt, QStringLiteral("2026-10-20T00:00:00.000Z"));
+    QVERIFY(game.summary.white.startsWith(QChar(0xFEFF)));
+    QVERIFY(std::holds_alternative<StoredGame>(current.loadGame(43)));
+    QVERIFY(std::holds_alternative<GameError>(current.loadGame(42)));
+    const auto duplicate = current.insertGame(*original, {});
+    QVERIFY(std::holds_alternative<Duplicate>(duplicate));
+    QCOMPARE(std::get<Duplicate>(duplicate).id, GameId(41));
+    QVERIFY(std::holds_alternative<Inserted>(
+        current.insertGame(*document("[White \"Alice\"]\n\n*"), {})));
+    const QDir backups(directory.filePath(QStringLiteral("backups")));
+    QCOMPARE(backups.entryList({QStringLiteral("*.sqlite3")}, QDir::Files).size(), 1);
 }
 int main(int argc, char* argv[]) {
     const TestEnvironment environment;

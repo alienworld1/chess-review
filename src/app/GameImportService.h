@@ -6,6 +6,7 @@
 #include <stop_token>
 
 namespace chess_review::app {
+inline constexpr std::size_t maxImportReportWarnings = 1000;
 enum class ImportStatus { Completed, Cancelled, Failed };
 using ImportOutcome = std::variant<persistence::Inserted, persistence::Duplicate, pgn::PgnFailure,
                                    persistence::GameError>;
@@ -58,6 +59,7 @@ class GameImportService final : public QObject {
     pgn::SourceRange range_{};
     std::vector<pgn::Diagnostic> warnings_;
     std::size_t suppressedWarnings_ = 0;
+    std::size_t retainedWarnings_ = 0;
     bool active_ = false;
     bool closing_ = false;
     bool closed_ = false;

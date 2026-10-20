@@ -2,6 +2,7 @@
 #include <QMetaObject>
 #include <QThread>
 #include <QTimer>
+#include <algorithm>
 #include <exception>
 
 namespace chess_review::app {
@@ -53,6 +54,7 @@ void GameImportService::importText(RequestId request, std::string bytes, GameSou
         return;
     }
     ordinal_ = 0;
+    retainedWarnings_ = 0;
     active_ = true;
     report_ = {request, ImportStatus::Completed, {}};
     source_ = std::move(source);
@@ -91,8 +93,14 @@ void GameImportService::parsed(pgn::PgnOutcome outcome) {
     if (auto* document = std::get_if<pgn::PgnDocument>(&outcome)) {
         ordinal_ = document->ordinal;
         range_ = document->range;
-        warnings_ = document->warnings;
-        suppressedWarnings_ = document->suppressedWarnings;
+        const auto retained =
+            std::min(document->warnings.size(), maxImportReportWarnings - retainedWarnings_);
+        suppressedWarnings_ = document->suppressedWarnings + document->warnings.size() - retained;
+        // Fresh storage bounds capacity too, including the zero-retained case.
+        warnings_ = std::vector<pgn::Diagnostic>(document->warnings.begin(),
+                                                 document->warnings.begin() +
+                                                     static_cast<std::ptrdiff_t>(retained));
+        retainedWarnings_ += retained;
         if (parse_->stop.stop_requested()) {
             finish(ImportStatus::Cancelled);
             return;

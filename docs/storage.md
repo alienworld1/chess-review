@@ -92,6 +92,9 @@ connection cleanup. The startup coordinator uses this asynchronous shutdown path
 Database failures leave storage unavailable and display the diagnostic in the
 window; Exit and window-manager close both finish storage shutdown before quitting.
 
+Application databases use SQLite’s default UTF-8 text encoding, verified before
+migrations or product writes. Foreign UTF-16 database files are rejected without
+conversion or replacement; PGN text import remains the supported interchange path.
 Connections enable and verify foreign keys, a 5000 ms busy timeout, full durability
 synchronization, and disabled trusted-schema execution. WAL is enabled only after
 schema-history validation, so rejected databases are not converted to WAL.
@@ -119,8 +122,11 @@ exit or application destruction.
 
 Migration definitions live under `src/persistence/migrations/`; the ordered
 registry and runner are private to the module. Version 1 creates only the
-`schema_migrations` ledger (version, name, UTC application timestamp). Migration 002 creates `games` and its import-order index. Engine, review, and
-puzzle tables remain future work.
+`schema_migrations` ledger (version, name, UTC application timestamp). Migration
+002 creates `games` and its import-order index. Migration 003 upgrades healthy
+games to snapshot/identity v2 while preserving IDs, original PGN, source metadata,
+and import times. Damaged records are copied unchanged and remain individually
+unreadable. Engine, review, and puzzle tables remain future work.
 
 To add a migration:
 
@@ -129,7 +135,10 @@ To add a migration:
 2. Use the next contiguous integer version. Never edit a released migration.
 3. Provide one statement per entry. Do not include transaction control, ledger
    updates, or operations that cannot run in a SQLite transaction. The runner owns
-   transactions and ledger writes; no SQL script parsing is performed.
+   transactions and ledger writes; no SQL script parsing is performed. A compiled
+   optional row transform can run within that same transaction when serialized
+   documents need migration. It must use bounded reads and propagate failures;
+   returned errors and standard exceptions roll back both DDL and data changes.
 4. Add representative previous-version fixtures and preservation/failure tests
    under `src/persistence/tests/`. Keep fixture SQL inside that module too.
 
@@ -172,12 +181,22 @@ Database startup diagnostics retain their existing, separate error identifiers.
 
 Listing defaults to 50 rows and accepts limits 1–200 and a nonnegative offset.
 It sorts by UTC import timestamp descending, then ID descending, and loads only
-summary columns. Pagination is for the current library view, not a frozen query
+summary columns. Display names, played date, and time control are limited to 256
+UTF-16 code units without splitting surrogate pairs; `metadataTruncated` indicates
+that full values require `loadGame`. Small copied strings release the original
+large buffers. A damaged metadata row returns its ID and `metadataError` with
+blank display fields, allowing healthy rows on the same page to remain available.
+Consumers must check `metadataError` and render all imported text as plain text.
+Pagination is for the current library view, not a frozen query
 snapshot across concurrent imports. Full games are loaded explicitly by ID.
 
-Migration 002 stores the original per-game PGN, a JSON snapshot with
-`formatVersion: 1`, normalized library fields, source type/URI, UTC import time,
-and version-1 duplicate identity. Each insert uses one explicit transaction;
+The current schema stores original per-game PGN, a JSON snapshot with
+`formatVersion: 2` and `textEncoding: "utf8-base64"`, normalized library fields,
+source type/URI, UTC import time, and version-2 duplicate identity. Tag names,
+tag values, and node comments are Base64-encoded exact UTF-8 bytes in snapshot
+JSON; ASCII moves and FEN remain ordinary JSON strings. This preserves field-level
+U+FEFF as content. Version 1 remains an explicit legacy decoder; migration 003
+validates each old game and writes v2 without changing owning game IDs. Each insert uses one explicit transaction;
 the duplicate check and write share that transaction. A failed write or COMMIT
 rolls back the current game. If rollback fails, further product operations on
 that storage session fail closed. No automatic retry or alternate database is used.
@@ -196,25 +215,35 @@ Readers bound projected database values before decoding: original PGN at 8 MiB,
 snapshot at 64 MiB, and identity at 1 MiB. Parser defaults additionally bound tree,
 tag, annotation, and diagnostic content. Invalid rows return a load error without
 removal; other rows can still be listed/loaded. Stored identity, hash, and indexed
-game metadata are checked against the validated document. The retained PGN is
-not an automatic repair path for a mismatching snapshot.
+game metadata are checked against the validated document. Metadata is projected
+as bounded raw bytes, checked for UTF-8/NUL/type/length errors, then decoded; text
+truncation and replacement decoding must never erase evidence of damage. The retained PGN is not an automatic repair path for a mismatching snapshot.
 
-Future format changes must retain an explicit v1 decoder or introduce a tested
-migration before writing a new version. Parser normalization changes must preserve
-v1 reconstruction compatibility or migrate existing snapshots. Unsupported
+Future format changes must retain explicit supported-version decoders or
+introduce a tested migration before writing a new version. Parser normalization
+changes must preserve reconstruction compatibility or migrate existing snapshots.
+Column and document versions must agree. Unsupported
 versions are rejected, never silently rewritten or guessed. These checks detect
 inconsistent content; they do not authenticate a database against its owner.
 
 ### Duplicate identity
 
-Identity v1 is compact UTF-8 JSON for the ordered array
-`[1, canonicalSixFieldRootFen, originalUciMoves, resultCode, White, Black, Date,
-Event, Site, Round, TimeControl]`. Tag values are decoded strings; missing and
-`?` both become empty strings. Other casing/whitespace is preserved. SHA-256 uses
-Qt's `QCryptographicHash`; matching hashes also require exact identity content and
-a valid existing snapshot. An inconsistent identity or hash collision is an
-error rather than a duplicate claim. Encoding changes require an identity-version
-migration; do not silently change v1 serialization.
+Identity v2 is compact ASCII JSON for the ordered array
+`[2, canonicalSixFieldRootFen, originalUciMoves, resultCode, base64(White),
+base64(Black), base64(Date), base64(Event), base64(Site), base64(Round),
+base64(TimeControl)]`. Tag values use their exact decoded UTF-8 bytes; missing and
+`?` both become empty strings before Base64 encoding. Other casing/whitespace
+and field-level U+FEFF are preserved. SHA-256 uses Qt's `QCryptographicHash`;
+matching hashes also require exact identity content and a valid existing snapshot.
+An inconsistent identity or hash collision is an error rather than a duplicate
+claim. Version 1's original encoding is retained for validation during upgrade;
+frozen digests cover both versions. Encoding changes require an explicit version
+transition and migration.
+
+Metadata writes bind UTF-8 bytes through `CAST(? AS TEXT)` and reads validate
+byte-bounded BLOB projections before decoding with field-level BOM preservation.
+This avoids SQLite UTF-16 binding's initial-BOM removal; keep this explicit
+persistence boundary when adding text columns.
 
 Formatting, annotations, variations, unknown tags, and source metadata do not
 participate. Root provenance is preserved in the snapshot but is not a duplicate
@@ -225,6 +254,16 @@ use the same available-data rule; matching does not prove real-world game identi
 `Inserted(id)` means a committed new game. `Duplicate(existingId)` means the
 existing snapshot was retained unchanged, including its annotations, source,
 and original import time. There is no merge, replacement, or explicit-copy mode.
+
+
+Repeated duplicate checks retain at most 256 already-validated IDs, never trees
+or source payloads. Identity content is still checked on every match. Cache reuse
+occurs inside the write transaction and requires unchanged SQLite `data_version`
+and connection `total_changes()` counters, invalidating on other-connection
+commits and same-connection DML. Startup migrations precede this cache's lifetime.
+An uncached game is fully validated before reporting a duplicate; explicit loads
+always validate independently. Cache capacity is a work optimization, not a bound
+on total import duration or protection against external filesystem modification.
 
 ## PGN text import service
 
@@ -243,8 +282,11 @@ These fields are opaque provenance, not instructions to fetch anything.
 
 `savingGame(ordinal)` identifies submission for persistence; it does not promise
 success. `progress(item)` reports completed per-game outcomes and retains source
-ordinal/range, parser warnings, and suppressed-warning count. `finished(report)`
-returns the complete report with `Completed`, `Cancelled`, or `Failed` status.
+ordinal/range, parser warnings, and suppressed-warning count. Reports retain at
+most 1,000 warnings across the entire import, with additional warnings reflected
+in each game's suppression count. This bounds retained capacity as well as logical
+warning count; per-game parser failures and all per-game outcomes remain present.
+`finished(report)` returns the complete report with `Completed`, `Cancelled`, or `Failed` status.
 Recoverable parser failures are reported and skipped. An unreadable tail or
 storage failure stops the import. Earlier committed games remain available.
 There is no automatic game analysis.

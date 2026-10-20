@@ -22,6 +22,7 @@
 #include <QUuid>
 #include <QVariant>
 
+#include <new>
 #include <optional>
 #include <span>
 #include <vector>
@@ -126,6 +127,8 @@ class DatabaseTest final : public QObject {
     void busyTimeoutKeepsGuiResponsive();
     void closeDuringInitialization();
     void closeBeforeInitialization();
+    void foreignEncodingIsRejectedWithoutChangingData();
+    void transformFailureRollsBack();
 };
 
 void DatabaseTest::storageEventsAreTypedAndTruthful() {
@@ -216,9 +219,9 @@ void DatabaseTest::freshAndRepeatInitialization() {
     QCOMPARE(QSqlDatabase::connectionNames(), connectionsBefore);
     QVERIFY(!initialize(path, migrations()));
     FixtureConnection fixture(path);
-    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")).toInt(), 2);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")).toInt(), 3);
     QCOMPARE(fixture.scalar(QStringLiteral("SELECT MAX(version) FROM schema_migrations")).toInt(),
-             2);
+             3);
     QCOMPARE(fixture.scalar(QStringLiteral("PRAGMA journal_mode")).toString(),
              QStringLiteral("wal"));
     QCOMPARE(fixture
@@ -292,7 +295,8 @@ void DatabaseTest::migrationFailureRollsBackAndRetainsBackup() {
 void DatabaseTest::invalidHistory_data() {
     QTest::addColumn<QString>("mutation");
     QTest::newRow("newer") << QStringLiteral(
-        "INSERT INTO schema_migrations VALUES (3, 'future', '2026-10-19T00:00:00.000Z')");
+        "INSERT INTO schema_migrations VALUES (2, 'games', '2026-10-19T00:00:00.000Z'),(3, "
+        "'game_text', '2026-10-19T00:00:00.000Z'),(4, 'future', '2026-10-19T00:00:00.000Z')");
     QTest::newRow("gap") << QStringLiteral("UPDATE schema_migrations SET version=3");
     QTest::newRow("integer-overflow")
         << QStringLiteral("UPDATE schema_migrations SET version=4294967297");
@@ -699,7 +703,7 @@ void DatabaseTest::asynchronousLifecycle() {
         database.close();
         QTRY_COMPARE(closed.count(), 1);
         QCOMPARE(failed.count(), 0);
-        QCOMPARE(ready.front().front().toInt(), 2);
+        QCOMPARE(ready.front().front().toInt(), 3);
         QCOMPARE(callbackThread, QThread::currentThread());
         QCOMPARE(QSqlDatabase::connectionNames(), before);
         database.close();
@@ -767,6 +771,70 @@ void DatabaseTest::closeBeforeInitialization() {
     database.close();
     database.close();
     QTRY_COMPARE(closed.count(), 1);
+}
+
+void DatabaseTest::foreignEncodingIsRejectedWithoutChangingData() {
+    for (const auto* encoding : {"UTF-16le", "UTF-16be"}) {
+        QTemporaryDir directory;
+        const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
+        {
+            FixtureConnection fixture(path);
+            QVERIFY(fixture.exec(QStringLiteral("PRAGMA encoding='") + QLatin1StringView(encoding) +
+                                 QStringLiteral("'")));
+            QVERIFY(fixture.exec(initialMigration().statements.front()));
+            QVERIFY(fixture.exec(QStringLiteral(
+                "INSERT INTO schema_migrations VALUES(1,'initial','2026-10-21T00:00:00.000Z')")));
+        }
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto before = file.readAll();
+        file.close();
+        const auto error = initialize(path, migrations());
+        QVERIFY(error);
+        QCOMPARE(error->code, DatabaseErrorCode::Configuration);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), before);
+    }
+}
+
+void DatabaseTest::transformFailureRollsBack() {
+    for (bool allocationFailure : {false, true}) {
+        QTemporaryDir directory;
+        const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
+        auto registry = fixtureMigrations();
+        registry.resize(2);
+        QVERIFY(!initialize(path, registry));
+        registry.push_back(
+            {3,
+             QStringLiteral("failing_transform"),
+             {QStringLiteral("CREATE TABLE transform_marker(value TEXT)")},
+             [allocationFailure](QSqlDatabase& database) -> std::optional<QString> {
+                 QSqlQuery query(database);
+                 if (!query.exec(QStringLiteral("UPDATE fixture_data SET value='modified'"))) {
+                     return QStringLiteral("Fixture update failed.");
+                 }
+                 if (allocationFailure) {
+                     throw std::bad_alloc();
+                 }
+                 return QStringLiteral("Fixture transformation failed.");
+             }});
+        const auto error = initialize(path, registry);
+        QVERIFY(error);
+        QCOMPARE(error->code, DatabaseErrorCode::Migration);
+        QCOMPARE(error->migrationVersion, std::optional<int>(3));
+        QVERIFY(!error->backupPath.isEmpty());
+        FixtureConnection fixture(path);
+        QCOMPARE(
+            fixture.scalar(QStringLiteral("SELECT MAX(version) FROM schema_migrations")).toInt(),
+            2);
+        QCOMPARE(fixture.scalar(QStringLiteral("SELECT value FROM fixture_data")).toString(),
+                 QStringLiteral("preserved"));
+        QCOMPARE(fixture
+                     .scalar(QStringLiteral(
+                         "SELECT COUNT(*) FROM sqlite_schema WHERE name='transform_marker'"))
+                     .toInt(),
+                 0);
+    }
 }
 
 int main(int argc, char* argv[]) {

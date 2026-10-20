@@ -11,6 +11,7 @@
 #include <QSqlQuery>
 #include <QUuid>
 #include <QVariant>
+#include <exception>
 
 namespace chess_review::persistence::detail {
 namespace {
@@ -46,7 +47,8 @@ std::optional<QString> verifyBackup(const QString& path) {
 } // namespace
 
 const std::vector<Migration>& migrations() {
-    static const std::vector<Migration> registry{initialMigration(), gamesMigration()};
+    static const std::vector<Migration> registry{initialMigration(), gamesMigration(),
+                                                 gameTextMigration()};
     return registry;
 }
 
@@ -163,6 +165,19 @@ std::optional<DatabaseError> migrate(QSqlDatabase& database, const QString& path
                 return rollbackFailure(QStringLiteral("Apply migration"), query.lastError());
             }
             query.finish();
+        }
+        if (migration.transform) {
+            std::optional<QString> error;
+            try {
+                error = migration.transform(database);
+            } catch (const std::exception&) {
+                error = QStringLiteral("Migration transform could not complete.");
+            }
+            if (error) {
+                return rollbackFailure(
+                    QStringLiteral("Transform migration"),
+                    QSqlError(QStringLiteral("Data migration"), *error, QSqlError::StatementError));
+            }
         }
         if (!query.prepare(
                 QStringLiteral("INSERT INTO schema_migrations (version, name, applied_at) "

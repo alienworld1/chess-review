@@ -6,6 +6,7 @@
 #include <QUuid>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -37,6 +38,10 @@ struct GameSummary {
     QString playedAt;
     QString timeControl;
     QString importedAt;
+    // List summaries clip display fields; load returns full values. Always display as plain text.
+    bool metadataTruncated = false;
+    // A damaged metadata row remains identifiable without hiding healthy rows on the page.
+    std::optional<GameError> metadataError = std::nullopt;
 };
 struct StoredGame {
     GameSummary summary;

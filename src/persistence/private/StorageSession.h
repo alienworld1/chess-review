@@ -8,6 +8,8 @@
 
 #include <memory>
 #include <optional>
+#include <set>
+#include <utility>
 
 class QLockFile;
 
@@ -30,7 +32,10 @@ class StorageSession final {
     ListGamesResult listGames(std::int64_t offset, int limit);
 
   private:
+    bool refreshGameValidationCache();
     bool usable_ = true;
+    std::optional<std::pair<std::int64_t, std::int64_t>> validationStamp_;
+    std::set<GameId> validatedGames_; // At most 256 IDs, never snapshots or source payloads.
     QString connectionName_;
     QSqlDatabase database_;
     std::unique_ptr<QLockFile> lock_;

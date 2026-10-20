@@ -274,3 +274,20 @@ INSERT/COMMIT rollback with retry, corrupt/oversized records, migration from
 version 1, bounded request queues, and cancellation/shutdown while SQLite is
 waiting on a fixture write lock. The latter keeps a GUI-thread heartbeat running
 and verifies that the accepted game is committed and reported before closure.
+
+
+The adversarial game-persistence regressions also cover embedded NUL and invalid
+UTF-8 in database metadata, oversized/damaged rows alongside healthy summaries,
+small retained display buffers and Unicode clipping, warning-rich import reports,
+byte-mutated accepted PGNs remaining persistable, and duplicate-validation cache
+invalidation on both storage-connection and external SQLite writes. A synthetic
+repeated-duplicate probe reports elapsed time without a machine-specific timing
+assertion. Foreign UTF-16 database fixtures must be rejected without changing
+file contents; application-created databases use UTF-8.
+
+
+Snapshot/identity v1 fixtures also exercise migration 003 into v2, including
+field-level U+FEFF, preserved game IDs/import times/source bytes, mixed healthy
+and damaged records, and correct duplicate behavior after reopening. Injected
+row-transform errors and exceptions must roll back schema/data/ledger changes
+and retain the verified backup. Frozen v1/v2 identity digests guard wire changes.

@@ -18,6 +18,8 @@ struct Migration {
     int version;
     QString name;
     QStringList statements;
+    // Optional bounded row transform, within the migration's existing transaction/backup.
+    std::function<std::optional<QString>(QSqlDatabase&)> transform = {};
 };
 
 enum class StorageEvent {
@@ -33,6 +35,7 @@ using Progress = std::function<void(const QString&)>;
 
 Migration initialMigration();
 Migration gamesMigration();
+Migration gameTextMigration();
 const std::vector<Migration>& migrations();
 
 // Internal seam for migration fixtures; never exposed through Database.

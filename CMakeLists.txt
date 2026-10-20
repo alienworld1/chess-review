@@ -34,6 +34,7 @@ add_library(chess_review_persistence STATIC
     src/persistence/private/GameCodec.cpp
     src/persistence/private/GameRepository.cpp
     src/persistence/migrations/002_games.cpp
+    src/persistence/migrations/003_game_text.cpp
     src/persistence/Database.h
     src/persistence/Database.cpp
     src/persistence/private/StorageSession.cpp
