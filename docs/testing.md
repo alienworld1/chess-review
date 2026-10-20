@@ -261,3 +261,16 @@ logic avoids analyzer confusion through an inline global delete override and
 libstdc++ stop-token reference counting. No static-analysis rule is suppressed.
 No hook is linked into ordinary test binaries or production. The PGN fault case
 has a `pgn` label and is included by `ctest --preset dev -L pgn`.
+
+
+## Game persistence and import
+
+`ctest --preset dev -R '^(persistence|game_repository)$' --output-on-failure`
+runs storage migration/lifecycle tests and transactional game/import regressions.
+All SQL fixtures remain under `src/persistence/tests/`; application/UI tests do
+not issue queries. Game tests cover reopened snapshots and IDs, Unicode and
+unknown tags, annotation-independent identity, per-game partial imports,
+INSERT/COMMIT rollback with retry, corrupt/oversized records, migration from
+version 1, bounded request queues, and cancellation/shutdown while SQLite is
+waiting on a fixture write lock. The latter keeps a GUI-thread heartbeat running
+and verifies that the accepted game is committed and reported before closure.

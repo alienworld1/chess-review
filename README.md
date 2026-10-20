@@ -7,7 +7,10 @@ are empty destinations. Chess analysis and review features are not implemented y
 The shell includes navigation, saved window preferences, local SQLite storage,
 and diagnostics. A pure C++ chess core now provides validated positions, legal
 moves, notation, game trees, and history-aware identity. A pure C++ PGN reader
-parses single and multi-game input; neither module is connected to the UI yet.
+parses single and multi-game input. An asynchronous application service imports
+owned PGN text into transactional SQLite snapshots with duplicate detection;
+games can be listed and reopened through the repository. Import/library widgets
+are not connected yet.
 
 ## Requirements
 

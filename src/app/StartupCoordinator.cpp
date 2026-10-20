@@ -15,6 +15,7 @@ StartupCoordinator::StartupCoordinator(diagnostics::Logger& logger, QObject* par
 }
 void StartupCoordinator::connectServices() {
     QCoreApplication::instance()->installEventFilter(this);
+    connect(&imports_, &GameImportService::closed, &database_, &persistence::Database::close);
     connect(&database_, &persistence::Database::progress, this, &StartupCoordinator::progress);
     connect(&database_, &persistence::Database::ready, this, [this] {
         state_ = Lifecycle::Ready;
@@ -92,7 +93,7 @@ void StartupCoordinator::shutdown() {
     }
     state_ = Lifecycle::Stopping;
     emit stopping();
-    database_.close();
+    imports_.close();
     uiState_.saveAndClose(finalUiState_);
 }
 } // namespace chess_review::app

@@ -8,6 +8,7 @@
 #include <QMetaObject>
 #include <QThread>
 #include <QTimer>
+#include <exception>
 
 namespace chess_review::persistence {
 namespace detail {
@@ -81,6 +82,18 @@ class StorageWorker final : public QObject {
         emit ready(registry.back().version);
     }
 
+    template <typename Result, typename Operation> Result execute(Operation operation) {
+        if (!session_) {
+            return GameError{GameErrorCode::Unavailable,
+                             QStringLiteral("Game storage is unavailable.")};
+        }
+        try {
+            return operation(*session_);
+        } catch (const std::exception&) {
+            return GameError{GameErrorCode::Storage,
+                             QStringLiteral("Game storage could not complete the request.")};
+        }
+    }
     void close() {
         session_.reset();
         if (logger_) {
@@ -106,6 +119,8 @@ struct Database::Impl {
     QThread thread;
     detail::StorageWorker* worker =
         nullptr; // Owned by the thread's finished/deleteLater connection.
+    int pending = 0;
+    bool ready = false;
     bool started = false;
     bool closing = false;
 };
@@ -145,6 +160,7 @@ void Database::initialize(const QString& databasePath) {
         impl_->worker, &detail::StorageWorker::ready, this,
         [this](int version) {
             if (!impl_->closing) {
+                impl_->ready = true;
                 emit ready(version);
             }
         },
@@ -160,6 +176,92 @@ void Database::initialize(const QString& databasePath) {
     impl_->thread.start();
     QMetaObject::invokeMethod(
         impl_->worker, [worker = impl_->worker, databasePath] { worker->initialize(databasePath); },
+        Qt::QueuedConnection);
+}
+
+std::optional<GameError> Database::acceptRequest() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (impl_->closing) {
+        return GameError{GameErrorCode::Closing, QStringLiteral("Game storage is closing.")};
+    }
+    if (!impl_->ready) {
+        return GameError{GameErrorCode::Unavailable,
+                         QStringLiteral("Game storage is unavailable.")};
+    }
+    if (impl_->pending >= 16) {
+        return GameError{GameErrorCode::Busy, QStringLiteral("Game storage is busy.")};
+    }
+    ++impl_->pending;
+    return std::nullopt;
+}
+void Database::insertGame(RequestId request, std::shared_ptr<const pgn::PgnDocument> document,
+                          GameSource source) {
+    if (auto error = acceptRequest()) {
+        QTimer::singleShot(0, this,
+                           [this, request, error = *error] { emit gameInserted(request, error); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, document = std::move(document), source = std::move(source)] {
+            const auto result = impl_->worker->execute<InsertGameResult>(
+                [&](detail::StorageSession& session) -> InsertGameResult {
+                    if (!document) {
+                        return GameError{GameErrorCode::InvalidSnapshot,
+                                         QStringLiteral("Missing imported snapshot.")};
+                    }
+                    return session.insertGame(*document, source);
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit gameInserted(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::loadGame(RequestId request, GameId id) {
+    if (auto error = acceptRequest()) {
+        QTimer::singleShot(0, this,
+                           [this, request, error = *error] { emit gameLoaded(request, error); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, id] {
+            const auto result = impl_->worker->execute<LoadGameResult>(
+                [&](detail::StorageSession& session) { return session.loadGame(id); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit gameLoaded(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::listGames(RequestId request, std::int64_t offset, int limit) {
+    if (auto error = acceptRequest()) {
+        QTimer::singleShot(0, this,
+                           [this, request, error = *error] { emit gamesListed(request, error); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, offset, limit] {
+            const auto result = impl_->worker->execute<ListGamesResult>(
+                [&](detail::StorageSession& session) { return session.listGames(offset, limit); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit gamesListed(request, result);
+                },
+                Qt::QueuedConnection);
+        },
         Qt::QueuedConnection);
 }
 
@@ -179,7 +281,7 @@ void Database::close() {
 void Database::finishClose() {
     // finished() precedes native thread-local cleanup. Poll a nonblocking join so closed()
     // means the thread is fully gone, without waiting on it in the GUI thread.
-    if (!impl_->thread.wait(0)) {
+    if (impl_->pending != 0 || !impl_->thread.wait(0)) {
         QTimer::singleShot(5, this, &Database::finishClose);
         return;
     }

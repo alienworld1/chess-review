@@ -32,6 +32,7 @@ using Observe = std::function<void(StorageEvent, int)>;
 using Progress = std::function<void(const QString&)>;
 
 Migration initialMigration();
+Migration gamesMigration();
 const std::vector<Migration>& migrations();
 
 // Internal seam for migration fixtures; never exposed through Database.

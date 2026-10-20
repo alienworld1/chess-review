@@ -216,15 +216,16 @@ void DatabaseTest::freshAndRepeatInitialization() {
     QCOMPARE(QSqlDatabase::connectionNames(), connectionsBefore);
     QVERIFY(!initialize(path, migrations()));
     FixtureConnection fixture(path);
-    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")).toInt(), 1);
-    QCOMPARE(fixture.scalar(QStringLiteral("SELECT version FROM schema_migrations")).toInt(), 1);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")).toInt(), 2);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT MAX(version) FROM schema_migrations")).toInt(),
+             2);
     QCOMPARE(fixture.scalar(QStringLiteral("PRAGMA journal_mode")).toString(),
              QStringLiteral("wal"));
     QCOMPARE(fixture
                  .scalar(QStringLiteral("SELECT COUNT(*) FROM sqlite_schema "
                                         "WHERE type='table' AND name NOT GLOB 'sqlite_*'"))
                  .toInt(),
-             1);
+             2);
     QVERIFY(!QDir(directory.filePath(QStringLiteral("nested/backups"))).exists());
 }
 
@@ -291,7 +292,7 @@ void DatabaseTest::migrationFailureRollsBackAndRetainsBackup() {
 void DatabaseTest::invalidHistory_data() {
     QTest::addColumn<QString>("mutation");
     QTest::newRow("newer") << QStringLiteral(
-        "INSERT INTO schema_migrations VALUES (2, 'future', '2026-10-19T00:00:00.000Z')");
+        "INSERT INTO schema_migrations VALUES (3, 'future', '2026-10-19T00:00:00.000Z')");
     QTest::newRow("gap") << QStringLiteral("UPDATE schema_migrations SET version=3");
     QTest::newRow("integer-overflow")
         << QStringLiteral("UPDATE schema_migrations SET version=4294967297");
@@ -323,7 +324,7 @@ void DatabaseTest::invalidHistory() {
     QTemporaryDir directory;
     QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
-    QVERIFY(!initialize(path, migrations()));
+    QVERIFY(!initialize(path, std::span(migrations()).first(1)));
     {
         FixtureConnection fixture(path);
         QVERIFY(fixture.exec(mutation));
@@ -562,7 +563,8 @@ void DatabaseTest::legacyPermissionsAreRestricted() {
     QVERIFY(!initialize(path, migrations()));
     FixtureConnection writer(path);
     QVERIFY(writer.exec(QStringLiteral("PRAGMA wal_autocheckpoint=0")));
-    QVERIFY(writer.exec(QStringLiteral("UPDATE schema_migrations SET name='initial'")));
+    QVERIFY(
+        writer.exec(QStringLiteral("UPDATE schema_migrations SET name='initial' WHERE version=1")));
     for (const auto& file : {path, path + QStringLiteral("-wal"), path + QStringLiteral("-shm")}) {
         QVERIFY(QFile::setPermissions(file, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
                                                 QFileDevice::ReadGroup | QFileDevice::ReadOther));
@@ -626,7 +628,7 @@ void DatabaseTest::backupFailurePreventsUpgrade() {
     QTemporaryDir directory;
     QVERIFY2(directory.isValid(), qPrintable(directory.errorString()));
     const QString path = directory.filePath(QStringLiteral("library.sqlite3"));
-    QVERIFY(!initialize(path, migrations()));
+    QVERIFY(!initialize(path, std::span(migrations()).first(1)));
     QFile obstruction(directory.filePath(QStringLiteral("backups")));
     QVERIFY(obstruction.open(QIODevice::WriteOnly));
     obstruction.close();
@@ -697,7 +699,7 @@ void DatabaseTest::asynchronousLifecycle() {
         database.close();
         QTRY_COMPARE(closed.count(), 1);
         QCOMPARE(failed.count(), 0);
-        QCOMPARE(ready.front().front().toInt(), 1);
+        QCOMPARE(ready.front().front().toInt(), 2);
         QCOMPARE(callbackThread, QThread::currentThread());
         QCOMPARE(QSqlDatabase::connectionNames(), before);
         database.close();

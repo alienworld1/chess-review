@@ -1,5 +1,6 @@
 #pragma once
 #include "app/Diagnostic.h"
+#include "app/GameImportService.h"
 #include "app/UiStateStore.h"
 #include "persistence/Database.h"
 #include <QObject>
@@ -23,6 +24,8 @@ class StartupCoordinator final : public QObject {
     // Called synchronously by the composition root on stopping(), before saving begins.
     void setFinalUiState(const UiState& state);
     Lifecycle state() const;
+    GameImportService& gameImports() { return imports_; }
+    persistence::Database& gameRepository() { return database_; }
   signals:
     void initialUiState(const chess_review::app::UiState& state);
     void progress(const QString& message);
@@ -40,6 +43,7 @@ class StartupCoordinator final : public QObject {
     void finishServices();
     diagnostics::Logger* logger_ = nullptr;
     persistence::Database database_;
+    GameImportService imports_{database_};
     UiStateStore uiState_;
     std::optional<UiState> finalUiState_;
     Lifecycle state_ = Lifecycle::Loading;

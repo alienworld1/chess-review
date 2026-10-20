@@ -77,11 +77,12 @@ filesystem supporting SQLite WAL and locking. Packaging must include Qt's QSQLIT
 driver plugin.
 
 The `chess_review_persistence` target owns all SQL, connection configuration,
-schema migrations, backups, and the dedicated storage thread. Its public header
-is `src/persistence/Database.h`; callers receive progress, a ready schema version,
-structured failure diagnostics, and shutdown completion. SQL types and generic
-query execution are not part of the public interface. Future repositories belong
-inside persistence and will use the same worker-owned write connection.
+schema migrations, backups, and the dedicated storage thread. Its lifecycle/repository facade is `src/persistence/Database.h`, with game value
+types in `src/persistence/GameRepository.h`. Callers receive initialization
+progress, a ready schema version, structured failures, typed repository outcomes,
+and shutdown completion. SQL types and generic
+query execution are not part of the public interface. Game repository operations use that same worker-owned connection; SQL remains
+private to persistence, including all SQL fixtures in its tests.
 
 `Database` is a one-shot service. Call `initialize(absolutePath)` and `close()` on
 its owning application thread. Before destroying it, await `closed()`; do not
@@ -118,8 +119,8 @@ exit or application destruction.
 
 Migration definitions live under `src/persistence/migrations/`; the ordered
 registry and runner are private to the module. Version 1 creates only the
-`schema_migrations` ledger (version, name, UTC application timestamp). There are
-no game, engine, review, or other product tables yet.
+`schema_migrations` ledger (version, name, UTC application timestamp). Migration 002 creates `games` and its import-order index. Engine, review, and
+puzzle tables remain future work.
 
 To add a migration:
 
@@ -149,3 +150,112 @@ Ledger columns, keys, and unexpected ledger triggers/indexes/foreign keys are
 validated too. Versions are read without integer narrowing, and metadata text and
 row counts are bounded before delivery to Qt. The ledger remains infrastructure
 metadata: future migrations must not repurpose or add triggers/indexes to it.
+
+
+## Immutable imported games
+
+`Database::insertGame(request, document, source)`, `loadGame(request, id)`, and
+`listGames(request, offset, limit)` are asynchronous repository calls on the
+Database object's application thread. Use a distinct `QUuid::createUuid()` request
+ID and correlate the corresponding `gameInserted`, `gameLoaded`, or `gamesListed`
+signal. No operation returns a SQL handle or accepts executable query text.
+A supplied `shared_ptr<const PgnDocument>` must remain immutable through all
+aliases until completion. Loaded documents have immutable shared ownership;
+make an independent copy for in-memory exploration.
+
+The repository accepts at most 16 outstanding requests; additional requests
+receive `Busy`. Before readiness it returns `Unavailable`; after close begins it
+returns `Closing`. Accepted requests finish and deliver results before `closed()`.
+Ordinary absence returns `Missing`. Snapshot-validation errors, unsupported
+versions, and storage failures are separate typed results with safe messages.
+Database startup diagnostics retain their existing, separate error identifiers.
+
+Listing defaults to 50 rows and accepts limits 1–200 and a nonnegative offset.
+It sorts by UTC import timestamp descending, then ID descending, and loads only
+summary columns. Pagination is for the current library view, not a frozen query
+snapshot across concurrent imports. Full games are loaded explicitly by ID.
+
+Migration 002 stores the original per-game PGN, a JSON snapshot with
+`formatVersion: 1`, normalized library fields, source type/URI, UTC import time,
+and version-1 duplicate identity. Each insert uses one explicit transaction;
+the duplicate check and write share that transaction. A failed write or COMMIT
+rolls back the current game. If rollback fails, further product operations on
+that storage session fail closed. No automatic retry or alternate database is used.
+
+Snapshot JSON retains ordered tags, resolved result, root FEN/provenance,
+ordered variation children, decimal-string node IDs, comments, NAGs, and original
+played moves independently of the displayed tree continuation. Wire result values
+are explicitly 0=unknown, 1=white win, 2=black win, 3=draw. Insertion verifies that
+the supplied document is the unchanged parsed import. Loading reconstructs from
+the retained PGN through the validated parser/chess APIs and compares the entire
+semantic snapshot before returning it. The source file or URL is never reread.
+Reader ordinals/ranges in loaded documents are relative to their retained per-game
+PGN; the import report preserves the original multi-game ordinals/ranges.
+
+Readers bound projected database values before decoding: original PGN at 8 MiB,
+snapshot at 64 MiB, and identity at 1 MiB. Parser defaults additionally bound tree,
+tag, annotation, and diagnostic content. Invalid rows return a load error without
+removal; other rows can still be listed/loaded. Stored identity, hash, and indexed
+game metadata are checked against the validated document. The retained PGN is
+not an automatic repair path for a mismatching snapshot.
+
+Future format changes must retain an explicit v1 decoder or introduce a tested
+migration before writing a new version. Parser normalization changes must preserve
+v1 reconstruction compatibility or migrate existing snapshots. Unsupported
+versions are rejected, never silently rewritten or guessed. These checks detect
+inconsistent content; they do not authenticate a database against its owner.
+
+### Duplicate identity
+
+Identity v1 is compact UTF-8 JSON for the ordered array
+`[1, canonicalSixFieldRootFen, originalUciMoves, resultCode, White, Black, Date,
+Event, Site, Round, TimeControl]`. Tag values are decoded strings; missing and
+`?` both become empty strings. Other casing/whitespace is preserved. SHA-256 uses
+Qt's `QCryptographicHash`; matching hashes also require exact identity content and
+a valid existing snapshot. An inconsistent identity or hash collision is an
+error rather than a duplicate claim. Encoding changes require an identity-version
+migration; do not silently change v1 serialization.
+
+Formatting, annotations, variations, unknown tags, and source metadata do not
+participate. Root provenance is preserved in the snapshot but is not a duplicate
+key: identical canonical starting FENs match even when one was explicitly supplied.
+All six FEN fields participate, including counters. Incomplete identifying tags
+use the same available-data rule; matching does not prove real-world game identity.
+
+`Inserted(id)` means a committed new game. `Duplicate(existingId)` means the
+existing snapshot was retained unchanged, including its annotations, source,
+and original import time. There is no merge, replacement, or explicit-copy mode.
+
+## PGN text import service
+
+`app::GameImportService` receives an explicitly injected `Database&` and accepts
+owned `std::string` PGN bytes plus optional source metadata. It performs no file,
+network, widget, or engine work. `StartupCoordinator` owns the production instance
+and exposes `gameImports()` and `gameRepository()` for future presentation code.
+
+One import may run per service; overlaps receive a separate `rejected(Busy)`
+signal. Input beyond the default 64 MiB parser limit is rejected before scheduling.
+The service's private parser pool has one worker and publishes one parsed game at
+a time, awaiting its repository outcome before reading the next. It retains the
+bounded input and report, not a queue of parsed trees. Source type is limited to
+128 UTF-16 code units and URI to 65,536, with valid UTF-16 and no embedded NUL.
+These fields are opaque provenance, not instructions to fetch anything.
+
+`savingGame(ordinal)` identifies submission for persistence; it does not promise
+success. `progress(item)` reports completed per-game outcomes and retains source
+ordinal/range, parser warnings, and suppressed-warning count. `finished(report)`
+returns the complete report with `Completed`, `Cancelled`, or `Failed` status.
+Recoverable parser failures are reported and skipped. An unreadable tail or
+storage failure stops the import. Earlier committed games remain available.
+There is no automatic game analysis.
+
+`cancel()` interrupts parsing and prevents the next game transaction. An already
+submitted game finishes; its committed/duplicate/error outcome remains in the
+report. `close()` prevents new imports, cancels production, and emits `closed()`
+only after the parser worker has joined and accepted persistence has completed.
+Keep the service alive until that signal and keep Database alive/available until
+then. Startup shutdown follows this order before the existing storage/preferences/
+logging drain. All waits are asynchronous; normal user callbacks perform no SQL.
+
+Reports and source metadata remain local, in memory or the game record. The
+service does not log PGN, players, comments, personal URLs, SQL, or native errors.

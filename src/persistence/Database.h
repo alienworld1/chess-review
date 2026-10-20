@@ -1,5 +1,6 @@
 #pragma once
 
+#include "persistence/GameRepository.h"
 #include <QMetaType>
 #include <QObject>
 #include <QString>
@@ -48,15 +49,28 @@ class Database final : public QObject {
 
     void initialize(const QString& databasePath);
     void close();
+    // Repository calls are asynchronous, on this object's owning thread. IDs are caller-owned.
+    // At most 16 accepted repository requests may be pending; otherwise returns Busy.
+    void insertGame(RequestId request, std::shared_ptr<const pgn::PgnDocument> document,
+                    GameSource source = {});
+    void loadGame(RequestId request, GameId id);
+    void listGames(RequestId request, std::int64_t offset = 0, int limit = 50);
 
   signals:
     void progress(const QString& message);
     void ready(int schemaVersion);
     void failed(const chess_review::persistence::DatabaseError& error);
     void closed();
+    void gameInserted(chess_review::persistence::RequestId request,
+                      const chess_review::persistence::InsertGameResult& result);
+    void gameLoaded(chess_review::persistence::RequestId request,
+                    const chess_review::persistence::LoadGameResult& result);
+    void gamesListed(chess_review::persistence::RequestId request,
+                     const chess_review::persistence::ListGamesResult& result);
 
   private:
     void finishClose();
+    std::optional<GameError> acceptRequest();
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

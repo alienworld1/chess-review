@@ -1,0 +1,160 @@
+#include "app/GameImportService.h"
+#include <QMetaObject>
+#include <QThread>
+#include <QTimer>
+#include <exception>
+
+namespace chess_review::app {
+using namespace persistence;
+struct GameImportService::ParseState {
+    explicit ParseState(std::string input) : bytes(std::move(input)) {}
+    std::string bytes;
+    std::stop_source stop;
+    std::unique_ptr<pgn::PgnReader> reader; // Used only by the single parser worker.
+};
+GameImportService::GameImportService(Database& database, QObject* parent)
+    : QObject(parent), database_(database) {
+    pool_.setMaxThreadCount(1);
+    connect(&database_, &Database::gameInserted, this,
+            [this](RequestId request, const InsertGameResult& result) {
+                if (!active_ || request != storageRequest_ || request.isNull()) {
+                    return;
+                }
+                storageRequest_ = {};
+                ImportOutcome outcome =
+                    std::visit([](const auto& value) -> ImportOutcome { return value; }, result);
+                report_.items.push_back({ordinal_, std::move(outcome), range_, std::move(warnings_),
+                                         suppressedWarnings_});
+                emit progress(report_.items.back());
+                if (std::holds_alternative<GameError>(result)) {
+                    finish(ImportStatus::Failed);
+                } else {
+                    next();
+                }
+            });
+}
+GameImportService::~GameImportService() {
+    Q_ASSERT_X(!active_ && pool_.activeThreadCount() == 0, "GameImportService",
+               "Await closed() before destruction");
+}
+void GameImportService::importText(RequestId request, std::string bytes, GameSource source) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (closing_ || active_) {
+        const auto error = GameError{closing_ ? GameErrorCode::Closing : GameErrorCode::Busy,
+                                     QStringLiteral("Game import is unavailable.")};
+        QTimer::singleShot(0, this, [this, request, error] { emit rejected(request, error); });
+        return;
+    }
+    if (bytes.size() > pgn::PgnLimits{}.maxInputBytes) {
+        QTimer::singleShot(0, this, [this, request] {
+            emit rejected(request, {GameErrorCode::InvalidSnapshot,
+                                    QStringLiteral("PGN input exceeds the import limit.")});
+        });
+        return;
+    }
+    ordinal_ = 0;
+    active_ = true;
+    report_ = {request, ImportStatus::Completed, {}};
+    source_ = std::move(source);
+    parse_ = std::make_shared<ParseState>(std::move(bytes));
+    next();
+}
+void GameImportService::next() {
+    if (parse_->stop.stop_requested()) {
+        finish(ImportStatus::Cancelled);
+        return;
+    }
+    pool_.start([this, state = parse_] {
+        try {
+            if (!state->reader) {
+                state->reader = std::make_unique<pgn::PgnReader>(state->bytes, pgn::PgnLimits{},
+                                                                 state->stop.get_token());
+            }
+            auto outcome = std::make_shared<pgn::PgnOutcome>(state->reader->next());
+            QMetaObject::invokeMethod(
+                this, [this, outcome] { parsed(std::move(*outcome)); }, Qt::QueuedConnection);
+        } catch (const std::exception&) {
+            QMetaObject::invokeMethod(
+                this,
+                [this] {
+                    report_.items.push_back(
+                        {ordinal_ + 1,
+                         GameError{GameErrorCode::Storage,
+                                   QStringLiteral("PGN import could not complete.")}});
+                    finish(ImportStatus::Failed);
+                },
+                Qt::QueuedConnection);
+        }
+    });
+}
+void GameImportService::parsed(pgn::PgnOutcome outcome) {
+    if (auto* document = std::get_if<pgn::PgnDocument>(&outcome)) {
+        ordinal_ = document->ordinal;
+        range_ = document->range;
+        warnings_ = document->warnings;
+        suppressedWarnings_ = document->suppressedWarnings;
+        if (parse_->stop.stop_requested()) {
+            finish(ImportStatus::Cancelled);
+            return;
+        }
+        storageRequest_ = QUuid::createUuid();
+        database_.insertGame(storageRequest_,
+                             std::make_shared<const pgn::PgnDocument>(std::move(*document)),
+                             source_);
+        emit savingGame(ordinal_);
+    } else if (const auto* failure = std::get_if<pgn::PgnFailure>(&outcome)) {
+        ordinal_ = failure->ordinal;
+        report_.items.push_back({ordinal_, *failure, failure->range});
+        emit progress(report_.items.back());
+        if (failure->unreadableTail) {
+            finish(ImportStatus::Failed);
+        } else {
+            next();
+        }
+    } else if (std::holds_alternative<pgn::Cancelled>(outcome)) {
+        finish(ImportStatus::Cancelled);
+    } else {
+        finish(parse_->stop.stop_requested() ? ImportStatus::Cancelled : ImportStatus::Completed);
+    }
+}
+void GameImportService::cancel() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (parse_) {
+        parse_->stop.request_stop();
+    }
+}
+void GameImportService::finish(ImportStatus status) {
+    report_.status = status;
+    active_ = false;
+    parse_.reset();
+    // A value snapshot permits slots to start another import without invalidating this report.
+    const auto report = std::move(report_);
+    emit finished(report);
+    if (closing_) {
+        finishClose();
+    }
+}
+void GameImportService::close() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (closing_) {
+        return;
+    }
+    closing_ = true;
+    cancel();
+    if (!active_) {
+        finishClose();
+    }
+}
+void GameImportService::finishClose() {
+    if (closed_ || active_) {
+        return;
+    }
+    // The posted parse result can precede worker return. Never join on the GUI thread.
+    if (!pool_.waitForDone(0)) {
+        QTimer::singleShot(5, this, &GameImportService::finishClose);
+        return;
+    }
+    closed_ = true;
+    QTimer::singleShot(0, this, &GameImportService::closed);
+}
+} // namespace chess_review::app
