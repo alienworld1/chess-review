@@ -348,3 +348,28 @@ visibility of wrapped moves in short panes, per-view accessible child ownership,
 visible focus on selected moves, inherited palette/font, hover invalidation after
 scrolling, and initial navigation boundaries. Its rendered fixtures use the same
 `CHESS_REVIEW_SCREENSHOT_DIR` option as the workspace fixtures.
+
+
+## Local PGN import and Games
+
+`ctest --preset dev -R '^(import|shell|startup|game_repository)$'` covers local
+acquisition, multi-file mixed outcomes, duplicates and provenance, empty input,
+strict Unicode, busy rejection, cancellation before parsing and after save
+submission, batch game/warning budgets, oversized files, pagination, stale/null
+callbacks, startup failure, paste confirmation, shortcut focus, copy-only drops,
+and error/truncation display. SQL fixtures remain in persistence; the presentation
+fixture injects typed repository responses for damaged metadata and read errors.
+The 10,000-game stress case uses an actual event loop so polling sleep does not
+artificially throttle each worker round trip. A GUI heartbeat checks that the
+loop remains responsive during the batch.
+
+The production-main exit probes also close during file acquisition and during an
+active multi-game import. They require normal process exit, saved Games
+navigation state, and orderly storage/session completion. No test driver is
+compiled into the production app.
+
+`import_tests layouts` accepts the existing `CHESS_REVIEW_SCREENSHOT_DIR` option.
+Run it with `QT_QPA_PLATFORM=offscreen` and `QT_SCALE_FACTOR=1`, `1.25`, `1.5`, or
+`2` to capture 1100×720, 1360×850, 1800×1000, and constrained layouts. These checks
+do not establish native file-picker, screen-reader, Windows, or physical monitor
+behavior; those remain manual platform QA.

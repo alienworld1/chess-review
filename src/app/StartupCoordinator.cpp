@@ -19,10 +19,16 @@ void StartupCoordinator::connectServices() {
         finishServices();
     });
     QCoreApplication::instance()->installEventFilter(this);
-    connect(&imports_, &GameImportService::closed, &database_, &persistence::Database::close);
+    connect(&localImports_, &ImportController::closed, &database_, &persistence::Database::close);
+    connect(&localImports_, &ImportController::committed, &library_,
+            &GameLibraryController::importedGame);
+    connect(&localImports_, &ImportController::finished, &library_,
+            [this] { library_.refresh(true); });
     connect(&database_, &persistence::Database::progress, this, &StartupCoordinator::progress);
     connect(&database_, &persistence::Database::ready, this, [this] {
         state_ = Lifecycle::Ready;
+        localImports_.setReady(true);
+        library_.setReady(true);
         emit ready();
     });
     connect(&database_, &persistence::Database::failed, this,
@@ -102,7 +108,8 @@ void StartupCoordinator::shutdown() {
     state_ = Lifecycle::Stopping;
     emit stopping();
     analysis_.close();
-    imports_.close();
+    library_.setReady(false);
+    localImports_.close();
     uiState_.saveAndClose(finalUiState_);
 }
 } // namespace chess_review::app

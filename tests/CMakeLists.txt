@@ -61,3 +61,7 @@ chess_review_add_qt_test(move_navigation_state_tests move_navigation_state
 chess_review_add_qt_test(move_navigation_adversarial_tests move_navigation_adversarial INTEGRATION WIDGETS
     SOURCES qt/MoveNavigationAdversarialTest.cpp
     LIBRARIES chess_review_ui)
+
+chess_review_add_qt_test(import_tests import INTEGRATION WIDGETS
+    SOURCES qt/ImportTest.cpp
+    LIBRARIES chess_review_ui)

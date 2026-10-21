@@ -5,15 +5,16 @@ Analyze now provides a playable board with legal move entry, branching history,
 promotion, a chosen-line timeline, collapsible PGN variations, keyboard controls,
 and annotations. Board orientation and the analysis split survive orderly exit.
 Analysis is session-only; an exit confirmation protects against accidental loss. Engine analysis and guided review
-are not implemented yet. Home, Games, Puzzles, and Settings remain placeholders.
+are not implemented yet. Home offers import actions; Puzzles and Settings remain placeholders.
 
 The shell includes navigation, saved window preferences, local SQLite storage,
 and diagnostics. A pure C++ chess core now provides validated positions, legal
 moves, notation, game trees, and history-aware identity. A pure C++ PGN reader
 parses single and multi-game input. An asynchronous application service imports
 owned PGN text into transactional SQLite snapshots with duplicate detection;
-games can be listed and reopened through the repository. Import/library widgets
-are not connected yet.
+Games now lists saved snapshots with pagination and imports local PGN files through
+file selection, paste confirmation, and drag-and-drop. Opening saved games on the
+board remains future work.
 
 ## Requirements
 
@@ -60,4 +61,5 @@ libraries separate. Automated tests use temporary storage.
 - [Diagnostics](docs/diagnostics.md): troubleshooting, local logs, and privacy
 - [Analyze board](docs/analysis-board.md): moves, navigation, annotations, and preferences
 - [Chess core](docs/chess-core.md): adapter API, FEN policy, moves, and identity
+- [Importing games](docs/import.md): local files, paste, drops, limits, and results
 - [PGN parsing](docs/pgn.md): documents, compatibility, recovery, limits, and cancellation

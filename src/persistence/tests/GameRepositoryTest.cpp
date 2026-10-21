@@ -1,12 +1,16 @@
 #include "TestEnvironment.h"
 #include "app/GameImportService.h"
+#include "app/ImportController.h"
 #include "persistence/private/GameCodec.h"
 #include "persistence/private/StorageSession.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEventLoop>
+#include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QSqlDatabase>
 #include <QSqlError>
@@ -424,6 +428,39 @@ void GameRepositoryTest::storageFailureStopsImport() {
     QCOMPARE(std::get<std::vector<GameSummary>>(qvariant_cast<ListGamesResult>(listed.at(0).at(1)))
                  .size(),
              std::size_t(1));
+    app::ImportController batch(storage.importer);
+    bool batchClosed = false;
+    connect(&batch, &app::ImportController::closed, &batch, [&] { batchClosed = true; });
+    const auto closeBatch = qScopeGuard([&] {
+        if (!batchClosed) {
+            QEventLoop loop;
+            QTimer deadline;
+            deadline.setSingleShot(true);
+            connect(&batch, &app::ImportController::closed, &loop, &QEventLoop::quit);
+            connect(&deadline, &QTimer::timeout, &loop, &QEventLoop::quit);
+            deadline.start(10'000);
+            batch.close();
+            if (!batchClosed) {
+                loop.exec();
+            }
+            if (!batchClosed) {
+                qFatal("Batch did not close after storage failure");
+            }
+        }
+    });
+    const auto source = directory.filePath(QStringLiteral("input.pgn"));
+    QFile input(source);
+    QVERIFY(input.open(QIODevice::WriteOnly));
+    QCOMPARE(input.write("1.Nf3 * 1.c4 *"), qint64(14));
+    input.close();
+    batch.setReady(true);
+    QVERIFY(batch.importFiles({QUrl::fromLocalFile(source), QUrl::fromLocalFile(source)}));
+    QTRY_VERIFY(!batch.busy());
+    QCOMPARE(batch.failures(), std::size_t(1));
+    QCOMPARE(batch.inserted(), std::size_t(0));
+    QCOMPARE(batch.files()[0].items.size(), std::size_t(1));
+    QVERIFY(std::holds_alternative<GameError>(batch.files()[0].items[0].outcome));
+    QCOMPARE(batch.files()[1].state, app::ImportFileState::Unprocessed);
 }
 void GameRepositoryTest::cancelWhileParsing() {
     QTemporaryDir directory;

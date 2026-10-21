@@ -1,14 +1,21 @@
 #include "ui/chess/ChessBoardWidget.h"
+#include "ui/games/GamesPage.h"
 #include "ui/shell/MainWindow.h"
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDir>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QFile>
 #include <QLabel>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QObject>
 #include <QString>
 #include <QTimer>
+#include <QUrl>
 #include <cstdio>
 
 namespace {
@@ -36,6 +43,55 @@ void installExitDriver() {
                 const bool ready = !status->isVisible();
                 if (mode != QStringLiteral("startup") && !ready && !failure) {
                     continue;
+                }
+                if (mode.startsWith(QStringLiteral("import-"))) {
+                    if (phase == 0) {
+                        QFile input(QDir::current().filePath(QStringLiteral("exit-import.pgn")));
+                        if (!input.open(QIODevice::WriteOnly)) {
+                            qFatal("Could not create import exit fixture");
+                        }
+                        QByteArray bytes;
+                        for (int i = 0; i < 10'000; ++i) {
+                            bytes += "1.e4 *\n";
+                        }
+                        if (input.write(bytes) != bytes.size()) {
+                            qFatal("Could not write import exit fixture");
+                        }
+                        if (mode == QStringLiteral("import-reading") &&
+                            !input.resize(64 * 1024 * 1024)) {
+                            qFatal("Could not resize import exit fixture");
+                        }
+                        input.close();
+                        window->findChild<QAction*>(QStringLiteral("gamesAction"))->trigger();
+                        auto* page = window->findChild<chess_review::ui::GamesPage*>();
+                        QMimeData mime;
+                        mime.setUrls({QUrl::fromLocalFile(input.fileName())});
+                        QDragEnterEvent drag(QPointF(5, 5), Qt::CopyAction, &mime, Qt::LeftButton,
+                                             Qt::NoModifier);
+                        QApplication::sendEvent(page, &drag);
+                        QDropEvent drop(QPointF(5, 5), Qt::CopyAction, &mime, Qt::LeftButton,
+                                        Qt::NoModifier);
+                        QApplication::sendEvent(page, &drop);
+                        if (!drop.isAccepted()) {
+                            qFatal("Import exit probe did not submit its batch");
+                        }
+                        std::fputs("import-started\n", stdout);
+                        std::fflush(stdout);
+                        ++phase;
+                        if (mode == QStringLiteral("import-reading")) {
+                            timer->stop();
+                            window->close();
+                        }
+                        return;
+                    }
+                    auto* progress = window->findChild<QLabel*>(QStringLiteral("importStatus"));
+                    if (!progress || !progress->text().startsWith(QStringLiteral("Importing")) ||
+                        progress->text().contains(QStringLiteral(" 0 imported"))) {
+                        return;
+                    }
+                    timer->stop();
+                    window->close();
+                    return;
                 }
                 if (mode.startsWith(QStringLiteral("analysis-"))) {
                     if (phase == 0) {

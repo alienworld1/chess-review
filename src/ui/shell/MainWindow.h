@@ -12,7 +12,9 @@ class QScreen;
 class QStackedWidget;
 namespace chess_review::app {
 class AnalysisController;
-}
+class ImportController;
+class GameLibraryController;
+} // namespace chess_review::app
 namespace chess_review::diagnostics {
 class Logger;
 }
@@ -31,6 +33,7 @@ class MainWindow final : public QMainWindow {
     // Both application-owned controllers must outlive this window.
     MainWindow(app::NavigationController& navigation, app::AnalysisController& analysis,
                QWidget* parent = nullptr);
+    void installImports(app::ImportController& imports, app::GameLibraryController& library);
     void showProgress(const QString& message);
     void showReady();
     void showFailure(const app::Diagnostic& diagnostic);
@@ -47,6 +50,7 @@ class MainWindow final : public QMainWindow {
     void invalidUiState();
 
   protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
     void showEvent(QShowEvent* event) override;
 
@@ -58,6 +62,9 @@ class MainWindow final : public QMainWindow {
     void watchScreen(QScreen* screen);
     app::NavigationController& navigation_;
     AnalysisPage* analysis_ = nullptr;
+    QAction* importFile_ = nullptr;
+    QAction* pastePgn_ = nullptr;
+    app::GameLibraryController* library_ = nullptr;
     StartupPanel* startup_;
     QStackedWidget* pages_;
     QLabel* preferencesNotice_;

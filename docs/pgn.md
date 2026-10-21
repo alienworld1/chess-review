@@ -4,7 +4,8 @@
 
 Include `pgn/Pgn.h` and link `chess_review_pgn`. This pure C++20 target links
 `chess_review_chess` and has no Qt, SQL, filesystem, network, or engine dependency.
-The desktop shell does not yet offer import controls or persist these documents.
+The desktop shell uses this parser through the asynchronous import service; see
+[importing games](import.md) for file, paste, and drop workflows.
 
 ## Reading games
 

@@ -1,25 +1,35 @@
 #include "ui/shell/MainWindow.h"
 #include "ui/analysis/AnalysisPage.h"
+#include "ui/games/GamesPage.h"
 #include "ui/shell/StartupPanel.h"
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QClipboard>
 #include <QCloseEvent>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFile>
+#include <QFileDialog>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
 #include <QShowEvent>
 #include <QStackedWidget>
+#include <QTextEdit>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -41,6 +51,7 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     : QMainWindow(parent), navigation_(navigation) {
     setWindowTitle(QStringLiteral("chess-review"));
     auto* file = menuBar()->addMenu(tr("&File"));
+    file->setObjectName(QStringLiteral("fileMenu"));
     auto* quit = file->addAction(tr("&Quit"));
     quit->setObjectName(QStringLiteral("quitAction"));
     quit->setShortcut(QKeySequence::Quit);
@@ -192,7 +203,175 @@ void MainWindow::installAnalysis(app::AnalysisController& controller) {
     flip->setEnabled(navigation_.current() == app::Destination::Analyze);
     selectDestination();
 }
+namespace {
+class ImportDropButton final : public QToolButton {
+  public:
+    ImportDropButton(app::ImportController& imports, QWidget* parent)
+        : QToolButton(parent), imports_(imports) {
+        setAcceptDrops(true);
+    }
+
+  protected:
+    void dragEnterEvent(QDragEnterEvent* event) override {
+        if (!imports_.available() || !event->possibleActions().testFlag(Qt::CopyAction) ||
+            !event->mimeData()->hasUrls()) {
+            return;
+        }
+        const auto urls = event->mimeData()->urls();
+        if (urls.isEmpty() || static_cast<std::size_t>(urls.size()) > app::maxBatchFiles) {
+            return;
+        }
+        for (const auto& url : urls) {
+            if (!url.isLocalFile() || url.toString().size() > 65'536 ||
+                !url.fileName().endsWith(QStringLiteral(".pgn"), Qt::CaseInsensitive)) {
+                return;
+            }
+        }
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    }
+    void dropEvent(QDropEvent* event) override {
+        if (imports_.available() && event->possibleActions().testFlag(Qt::CopyAction) &&
+            event->mimeData()->hasUrls() && imports_.importFiles(event->mimeData()->urls())) {
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+        }
+    }
+
+  private:
+    app::ImportController& imports_;
+};
+} // namespace
+void MainWindow::installImports(app::ImportController& imports,
+                                app::GameLibraryController& library) {
+    Q_ASSERT(!library_);
+    library_ = &library;
+    auto* file = findChild<QMenu*>(QStringLiteral("fileMenu"));
+    auto* before = findChild<QAction*>(QStringLiteral("quitAction"));
+    importFile_ = new QAction(tr("&Import PGN…"), this);
+    importFile_->setObjectName(QStringLiteral("importPgnAction"));
+    importFile_->setShortcut(QKeySequence::Open);
+    pastePgn_ = new QAction(tr("Paste PGN…"), this);
+    pastePgn_->setObjectName(QStringLiteral("pastePgnAction"));
+    pastePgn_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+V")));
+    file->insertAction(before, importFile_);
+    file->insertAction(before, pastePgn_);
+    file->insertSeparator(before);
+    auto* placeholder =
+        pages_->findChild<QWidget*>(QStringLiteral("gamesPage"), Qt::FindDirectChildrenOnly);
+    const int pageIndex = pages_->indexOf(placeholder);
+    pages_->removeWidget(placeholder);
+    delete placeholder;
+    pages_->insertWidget(pageIndex,
+                         new GamesPage(imports, library, *importFile_, *pastePgn_, pages_));
+    auto* home =
+        pages_->findChild<QWidget*>(QStringLiteral("homePage"), Qt::FindDirectChildrenOnly);
+    auto* homeLayout = qobject_cast<QVBoxLayout*>(home->layout());
+    auto* fileButton = new ImportDropButton(imports, home);
+    fileButton->setObjectName(QStringLiteral("homeImportButton"));
+    fileButton->setDefaultAction(importFile_);
+    fileButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    homeLayout->insertWidget(1, fileButton, 0, Qt::AlignLeft);
+    auto* pasteButton = new QToolButton(home);
+    pasteButton->setDefaultAction(pastePgn_);
+    pasteButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    homeLayout->insertWidget(2, pasteButton, 0, Qt::AlignLeft);
+    auto* scroll = qobject_cast<QScrollArea*>(centralWidget());
+    auto* notice = new QLabel(scroll->widget());
+    notice->setObjectName(QStringLiteral("importNotice"));
+    notice->setTextFormat(Qt::PlainText);
+    notice->setWordWrap(true);
+    notice->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    qobject_cast<QVBoxLayout*>(scroll->widget()->layout())->insertWidget(2, notice);
+    connect(&imports, &app::ImportController::rejected, notice, &QLabel::setText);
+    connect(&imports, &app::ImportController::submitted, this, [this, notice] {
+        notice->clear();
+        navigation_.navigate(app::Destination::Games);
+    });
+    const auto updateActions = [this, &imports] {
+        const bool available = imports.available() && !closing_;
+        importFile_->setEnabled(available);
+        pastePgn_->setEnabled(available);
+        const auto reason = available ? tr("Import local UTF-8 PGN files")
+                                      : tr("Import is unavailable while storage is loading, "
+                                           "closing, or an import is running.");
+        importFile_->setToolTip(reason);
+        pastePgn_->setToolTip(available ? tr("Edit clipboard PGN before importing") : reason);
+    };
+    connect(&imports, &app::ImportController::changed, this, updateActions);
+    updateActions();
+    connect(importFile_, &QAction::triggered, this, [this, &imports] {
+        auto* picker = new QFileDialog(this, tr("Import PGN files"));
+        picker->setAttribute(Qt::WA_DeleteOnClose);
+        picker->setObjectName(QStringLiteral("importFileDialog"));
+        picker->setFileMode(QFileDialog::ExistingFiles);
+        picker->setNameFilter(tr("PGN files (*.pgn *.pgN *.pGn *.pGN *.Pgn *.PgN *.PGn *.PGN)"));
+        picker->setWindowModality(Qt::WindowModal);
+        connect(picker, &QFileDialog::accepted, this,
+                [picker, &imports] { imports.importFiles(picker->selectedUrls()); });
+        picker->open();
+    });
+    connect(pastePgn_, &QAction::triggered, this, [this, &imports] {
+        auto* dialog = new QDialog(this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setObjectName(QStringLiteral("pastePgnDialog"));
+        dialog->setWindowTitle(tr("Paste PGN"));
+        dialog->setWindowModality(Qt::WindowModal);
+        auto* layout = new QVBoxLayout(dialog);
+        auto* editor = new QPlainTextEdit(dialog);
+        editor->setObjectName(QStringLiteral("pastePgnEditor"));
+        editor->setAccessibleName(tr("PGN text to import"));
+        // Clipboard access is explicit and happens only on this user action.
+        const auto text = QApplication::clipboard()->text();
+        auto* error = new QLabel(dialog);
+        error->setObjectName(QStringLiteral("pastePgnError"));
+        error->setTextFormat(Qt::PlainText);
+        error->setWordWrap(true);
+        if (static_cast<quint64>(text.size()) <= app::maxBatchBytes) {
+            editor->setPlainText(text);
+        } else {
+            error->setText(tr("Clipboard text exceeds the import limit. Paste a smaller PGN."));
+        }
+        layout->addWidget(editor, 1);
+        layout->addWidget(error);
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, dialog);
+        auto* submit = buttons->addButton(tr("Import"), QDialogButtonBox::AcceptRole);
+        submit->setObjectName(QStringLiteral("confirmPasteImport"));
+        connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+        connect(submit, &QPushButton::clicked, dialog, [dialog, editor, error, &imports] {
+            if (imports.importText(editor->toPlainText())) {
+                dialog->accept();
+            } else {
+                error->setText(
+                    tr("Import could not start. Check text size and storage availability."));
+            }
+        });
+        layout->addWidget(buttons);
+        dialog->resize(640, 420);
+        dialog->open();
+        editor->setFocus();
+    });
+    qApp->installEventFilter(this);
+    selectDestination();
+}
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (pastePgn_ && event->type() == QEvent::ShortcutOverride) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        auto* focus = QApplication::focusWidget();
+        if (key->key() == Qt::Key_V &&
+            key->modifiers() == (Qt::ControlModifier | Qt::ShiftModifier) && focus &&
+            (qobject_cast<QLineEdit*>(focus) || qobject_cast<QTextEdit*>(focus) ||
+             qobject_cast<QPlainTextEdit*>(focus))) {
+            event->accept();
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
 void MainWindow::selectDestination() {
+    if (library_ && navigation_.current() == app::Destination::Games && !closing_) {
+        library_->activate();
+    }
     // A previous signal subscriber may have synchronously redirected navigation.
     for (std::size_t i = 0; i < destinations_.size(); ++i) {
         auto* action = destinations_[i];

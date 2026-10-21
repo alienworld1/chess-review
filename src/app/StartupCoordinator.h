@@ -2,6 +2,8 @@
 #include "app/AnalysisController.h"
 #include "app/Diagnostic.h"
 #include "app/GameImportService.h"
+#include "app/GameLibraryController.h"
+#include "app/ImportController.h"
 #include "app/UiStateStore.h"
 #include "persistence/Database.h"
 #include <QObject>
@@ -29,6 +31,8 @@ class StartupCoordinator final : public QObject {
     // Production composition routes application Quit through the UI's discard gate.
     void requireQuitConfirmation() { confirmQuit_ = true; }
     GameImportService& gameImports() { return imports_; }
+    ImportController& localImports() { return localImports_; }
+    GameLibraryController& library() { return library_; }
     persistence::Database& gameRepository() { return database_; }
   signals:
     void initialUiState(const chess_review::app::UiState& state);
@@ -50,6 +54,8 @@ class StartupCoordinator final : public QObject {
     AnalysisController analysis_;
     persistence::Database database_;
     GameImportService imports_{database_};
+    ImportController localImports_{imports_};
+    GameLibraryController library_{database_};
     UiStateStore uiState_;
     std::optional<UiState> finalUiState_;
     Lifecycle state_ = Lifecycle::Loading;

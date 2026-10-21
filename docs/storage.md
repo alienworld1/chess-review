@@ -270,7 +270,7 @@ on total import duration or protection against external filesystem modification.
 `app::GameImportService` receives an explicitly injected `Database&` and accepts
 owned `std::string` PGN bytes plus optional source metadata. It performs no file,
 network, widget, or engine work. `StartupCoordinator` owns the production instance
-and exposes `gameImports()` and `gameRepository()` for future presentation code.
+and exposes `gameImports()` and `gameRepository()` for presentation code.
 
 One import may run per service; overlaps receive a separate `rejected(Busy)`
 signal. Input beyond the default 64 MiB parser limit is rejected before scheduling.
@@ -313,3 +313,29 @@ unknown-key preservation still apply. The analysis board share is stored as a
 validated integer percentage (1–99, default 60) under `analysis/v1/split`. Missing
 orientation defaults to White at bottom. Moves and annotations from the scratch
 Analyze session are not saved here or in SQLite.
+
+
+### Desktop import and library controllers
+
+`StartupCoordinator::localImports()` exposes the Widgets-free `ImportController`.
+It owns file/text acquisition on one private worker and coordinates the injected
+`GameImportService`; do not submit directly to that service while using the
+controller. File inspection and reads stay in `import/LocalPgnInput`, outside the
+widgets and parser. The controller keeps the latest batch report in memory only.
+
+`GameImportService::importText` additionally accepts `ImportBudget`: games must
+be 1–10,000, warnings 0–1,000. Defaults preserve the original API behavior.
+`ImportReport::attemptedGames` excludes the extra game-count boundary diagnostic;
+`gameLimitReached` distinguishes that boundary from ordinary PGN tail failures.
+The controller passes each file the remaining shared game/warning allowances.
+
+`StartupCoordinator::library()` exposes `GameLibraryController`. It requests
+51 summaries for a 50-row page through the existing typed repository API, with
+one request in flight and revision-based rejection of stale results. Committed
+imports schedule coalesced refreshes; completion resets to the newest page.
+No count query, SQL handle, new schema, or widget dependency was added.
+
+Production shutdown disables library reads, closes the import controller, joins
+its acquisition worker asynchronously, closes/drains the import service, then
+closes storage. The controller and its injected service must remain alive until
+`ImportController::closed()`. Window/page dependencies must outlive their widgets.

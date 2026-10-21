@@ -100,7 +100,7 @@ void ShellTest::processExitsAfterShutdown_data() {
     for (const auto* mode :
          {"window", "menu", "application", "startup", "failure", "diagnostics", "analysis-window",
           "analysis-menu", "analysis-application", "analysis-cancel-window", "analysis-cancel-menu",
-          "analysis-cancel-application"}) {
+          "analysis-cancel-application", "import-reading", "import-saving"}) {
         QTest::newRow(mode) << QString::fromLatin1(mode);
     }
 }
@@ -154,6 +154,9 @@ void ShellTest::processExitsAfterShutdown() {
     QVERIFY2(exited, "Services finished, but QApplication::exec() did not exit");
     const auto output = process.readAllStandardOutput();
     QVERIFY(output.contains("event-loop-quitting"));
+    if (mode.startsWith(QStringLiteral("import-"))) {
+        QVERIFY(output.contains("import-started"));
+    }
     if (mode.contains(QStringLiteral("cancel"))) {
         QVERIFY(output.contains("discard-cancelled"));
     }
@@ -166,6 +169,7 @@ void ShellTest::processExitsAfterShutdown() {
                     QSettings::IniFormat);
     QCOMPARE(saved.value(QStringLiteral("shell/v1/destination")).toString(),
              mode.startsWith(QStringLiteral("analysis-")) ? QStringLiteral("analyze")
+             : mode.startsWith(QStringLiteral("import-")) ? QStringLiteral("games")
                                                           : QStringLiteral("puzzles"));
 #endif
 }
