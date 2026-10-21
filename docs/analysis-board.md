@@ -44,7 +44,9 @@ existing continuation. Forward navigation follows the continuation last chosen
 at each fork; selecting a node also selects its complete path through earlier
 forks. Rapid history commands coalesce to the latest requested position, including
 repeated steps. Move entry and annotation editing wait until that position is
-displayed. History navigation never animates pieces.
+displayed. Single-move history steps animate when Animate Moves is enabled,
+including backward steps. Jumps across multiple moves remain instant; rapid
+commands cancel any active animation and resolve the latest requested position.
 
 The board and timeline sit left of a resizable PGN pane at wider widths. At narrow
 widths the PGN pane stacks below them; the shell retains its scrolling fallback.

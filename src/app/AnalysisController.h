@@ -63,6 +63,7 @@ class AnalysisController final : public QObject {
   signals:
     void changed();
     void moveAccepted(chess_review::chess::Move move);
+    void navigationAnimationRequested(chess_review::chess::Move move);
     void failed(const QString& message);
     void closed();
     void gameOpened();

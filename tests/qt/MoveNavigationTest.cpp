@@ -3,11 +3,13 @@
 #include "app/AnalysisController.h"
 #include "app/UiStateStore.h"
 #include "ui/analysis/AnalysisPage.h"
+#include "ui/chess/ChessBoardWidget.h"
 #include <QAbstractItemModelTester>
 #include <QAccessible>
 #include <QApplication>
 #include <QEventLoop>
 #include <QKeyEvent>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollBar>
 #include <QSettings>
@@ -36,6 +38,8 @@ class MoveNavigationTest final : public QObject {
     void init();
     void cleanup();
     void coalescedNavigation();
+    void historyAnimation_data();
+    void historyAnimation();
     void navigationDuringEdit();
     void staleSessionAndFailedReset();
     void resetSupersedesPendingNavigation();
@@ -78,6 +82,69 @@ void MoveNavigationTest::cleanup() {
 void MoveNavigationTest::play(chess::Move value) {
     controller_->attemptMove(value, controller_->board().revision);
     QTRY_VERIFY(!controller_->busy());
+}
+void MoveNavigationTest::historyAnimation_data() {
+    QTest::addColumn<bool>("enabled");
+    QTest::addColumn<bool>("mouse");
+    QTest::newRow("mouse-enabled") << true << true;
+    QTest::newRow("keyboard-enabled") << true << false;
+    QTest::newRow("mouse-disabled") << false << true;
+    QTest::newRow("keyboard-disabled") << false << false;
+}
+void MoveNavigationTest::historyAnimation() {
+    QFETCH(bool, enabled);
+    QFETCH(bool, mouse);
+    play(move("e2", "e4"));
+    play(move("e7", "e5"));
+    controller_->beginning();
+    QTRY_VERIFY(!controller_->busy());
+    ui::AnalysisPage page(*controller_);
+    page.resize(1100, 800);
+    auto preferences = page.preferences();
+    preferences.animation = enabled;
+    page.setPreferences(preferences);
+    page.show();
+    QTest::qWait(1);
+    auto* board = page.findChild<ui::ChessBoardWidget*>();
+    QVERIFY(board);
+    QPushButton* next = nullptr;
+    for (auto* button : page.findChildren<QPushButton*>()) {
+        if (button->text() == QStringLiteral("Next")) {
+            next = button;
+        }
+    }
+    QVERIFY(next);
+    QSignalSpy accepted(controller_.get(), &app::AnalysisController::moveAccepted);
+    QSignalSpy animations(controller_.get(),
+                          &app::AnalysisController::navigationAnimationRequested);
+    QImage firstFrame;
+    connect(controller_.get(), &app::AnalysisController::navigationAnimationRequested, &page,
+            [&](chess::Move) { firstFrame = board->grab().toImage(); });
+    if (mouse) {
+        QTest::mouseClick(next, Qt::LeftButton);
+    } else {
+        QTest::keyClick(board, Qt::Key_Right);
+    }
+    QTRY_COMPARE(animations.count(), 1);
+    QCOMPARE(qvariant_cast<chess::Move>(animations[0][0]), move("e2", "e4"));
+    QTest::qWait(220);
+    QCOMPARE(firstFrame != board->grab().toImage(), enabled);
+    QTest::keyClick(board, Qt::Key_Left);
+    QTRY_COMPARE(animations.count(), 2);
+    QCOMPARE(qvariant_cast<chess::Move>(animations[1][0]), move("e4", "e2"));
+    QTest::qWait(220);
+    QCOMPARE(firstFrame != board->grab().toImage(), enabled);
+    QCOMPARE(accepted.count(), 0); // Browsing is not entered-move acceptance.
+    animations.clear();
+    controller_->next();
+    controller_->next(); // Coalesced two-ply jump must not animate a bypassed move.
+    QTRY_VERIFY(!controller_->busy());
+    QTest::qWait(1);
+    QCOMPARE(animations.count(), 0);
+    controller_->beginning();
+    QTRY_VERIFY(!controller_->busy());
+    QTest::qWait(1);
+    QCOMPARE(animations.count(), 0);
 }
 void MoveNavigationTest::coalescedNavigation() {
     play(move("e2", "e4"));

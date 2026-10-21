@@ -156,6 +156,7 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
     if (closing_ || request != request_) {
         return;
     }
+    const bool wasNavigating = navigating_;
     busy_ = false;
     navigating_ = false;
     resetting_ = false;
@@ -207,6 +208,18 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
         rememberPath(requested_);
         updateChosenLine();
     }
+    std::optional<chess::Move> navigationMove;
+    if (wasNavigating && !snapshot.sessionReset && snapshot.error.isEmpty() && navigationTree_) {
+        const auto& destination = navigationTree_->nodes.at(snapshot.current);
+        if (destination.parent == current_) {
+            navigationMove = snapshot.board.lastMove;
+        } else if (const auto previous = navigationTree_->nodes.find(current_);
+                   previous != navigationTree_->nodes.end() &&
+                   previous->second.parent == snapshot.current && board_.lastMove) {
+            const auto& move = *board_.lastMove;
+            navigationMove = chess::Move{move.to, move.from, std::nullopt};
+        }
+    }
     const bool orientation = board_.blackAtBottom;
     gameId_ = snapshot.gameId;
     whitePlayer_ = std::move(snapshot.white);
@@ -227,7 +240,7 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
     // deletion cancels the callback; close or another request invalidates it.
     QMetaObject::invokeMethod(
         this,
-        [this, request, error = std::move(snapshot.error), animatedMove,
+        [this, request, error = std::move(snapshot.error), animatedMove, navigationMove,
          opened = snapshot.sessionReset && snapshot.gameId.has_value()] {
             if (closing_ || request != request_) {
                 return;
@@ -238,6 +251,8 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
                 emit gameOpened();
             } else if (animatedMove) {
                 emit moveAccepted(*animatedMove);
+            } else if (navigationMove) {
+                emit navigationAnimationRequested(*navigationMove);
             }
         },
         Qt::QueuedConnection);

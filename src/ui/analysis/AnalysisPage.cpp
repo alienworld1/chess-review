@@ -242,6 +242,8 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     connect(&controller_, &app::AnalysisController::failed, status_, &QLabel::setText);
     connect(&controller_, &app::AnalysisController::moveAccepted, board_,
             &ChessBoardWidget::animateMove);
+    connect(&controller_, &app::AnalysisController::navigationAnimationRequested, board_,
+            &ChessBoardWidget::animateMove);
     connect(board_, &ChessBoardWidget::squareSelected, &controller_,
             &app::AnalysisController::selectSquare);
     connect(board_, &ChessBoardWidget::selectionCleared, &controller_,
