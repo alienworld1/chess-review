@@ -1,9 +1,13 @@
 #include "ui/shell/MainWindow.h"
+#include "ui/analysis/AnalysisPage.h"
 #include "ui/shell/StartupPanel.h"
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFile>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeySequence>
@@ -11,6 +15,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QScreen>
 #include <QScrollArea>
 #include <QShowEvent>
@@ -42,6 +47,7 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     quit->setMenuRole(QAction::QuitRole);
     connect(quit, &QAction::triggered, this, &QWidget::close);
     auto* view = menuBar()->addMenu(tr("&View"));
+    view->setObjectName(QStringLiteral("viewMenu"));
     auto* central = new QWidget(this);
     auto* column = new QVBoxLayout(central);
     column->setContentsMargins(12, 12, 12, 12);
@@ -115,6 +121,32 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     auto* diagnostics = help->addAction(tr("&Diagnostics…"));
     diagnostics->setObjectName(QStringLiteral("diagnosticsAction"));
     connect(diagnostics, &QAction::triggered, startup_, &StartupPanel::showDiagnostics);
+    auto* artwork = help->addAction(tr("Chess Piece Artwork License…"));
+    connect(artwork, &QAction::triggered, this, [this] {
+        auto* dialog = new QDialog(this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle(tr("Chess piece artwork license"));
+        auto* layout = new QVBoxLayout(dialog);
+        auto* text = new QPlainTextEdit(dialog);
+        text->setReadOnly(true);
+        text->setAccessibleName(tr("Piece artwork license and provenance"));
+        QFile license(QStringLiteral(":/pieces/LICENSE.txt"));
+        QFile provenance(QStringLiteral(":/pieces/provenance.json"));
+        if (license.open(QIODevice::ReadOnly) && provenance.open(QIODevice::ReadOnly)) {
+            text->setPlainText(QString::fromUtf8(license.readAll()) + QLatin1Char('\n') +
+                               QString::fromUtf8(provenance.readAll()));
+        } else {
+            text->setPlainText(
+                tr("Cburnett pieces by Colin M. L. Burnett and contributors. "
+                   "See assets/pieces/cburnett/LICENSE.txt in the source distribution."));
+        }
+        layout->addWidget(text);
+        auto* licenseButtons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+        connect(licenseButtons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+        layout->addWidget(licenseButtons);
+        dialog->resize(640, 480);
+        dialog->show();
+    });
     auto* about = help->addAction(tr("&About chess-review…"));
     about->setMenuRole(QAction::AboutRole);
     connect(about, &QAction::triggered, this, [this] {
@@ -131,6 +163,35 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     connect(qApp, &QGuiApplication::screenRemoved, this,
             [this] { QTimer::singleShot(0, this, &MainWindow::fitToScreen); });
 }
+MainWindow::MainWindow(app::NavigationController& navigation, app::AnalysisController& analysis,
+                       QWidget* parent)
+    : MainWindow(navigation, parent) {
+    installAnalysis(analysis);
+}
+void MainWindow::installAnalysis(app::AnalysisController& controller) {
+    Q_ASSERT(!analysis_);
+    auto* placeholder =
+        pages_->findChild<QWidget*>(QStringLiteral("analyzePage"), Qt::FindDirectChildrenOnly);
+    Q_ASSERT(placeholder);
+    const int pageIndex = pages_->indexOf(placeholder);
+    pages_->removeWidget(placeholder);
+    delete placeholder;
+    analysis_ = new AnalysisPage(controller, pages_);
+    pages_->insertWidget(pageIndex, analysis_);
+    auto* flip = new QAction(tr("Flip Board"), this);
+    flip->setObjectName(QStringLiteral("flipBoardAction"));
+    flip->setShortcut(QKeySequence(QStringLiteral("Ctrl+F")));
+    connect(flip, &QAction::triggered, &controller, &app::AnalysisController::flip);
+    // Reuse the existing View menu without introducing a second command surface.
+    auto* view = findChild<QMenu*>(QStringLiteral("viewMenu"));
+    Q_ASSERT(view);
+    view->addAction(flip);
+    connect(&navigation_, &app::NavigationController::destinationChanged, flip, [this, flip] {
+        flip->setEnabled(!closing_ && navigation_.current() == app::Destination::Analyze);
+    });
+    flip->setEnabled(navigation_.current() == app::Destination::Analyze);
+    selectDestination();
+}
 void MainWindow::selectDestination() {
     // A previous signal subscriber may have synchronously redirected navigation.
     for (std::size_t i = 0; i < destinations_.size(); ++i) {
@@ -138,6 +199,9 @@ void MainWindow::selectDestination() {
         if (action->data().value<app::Destination>() == navigation_.current()) {
             action->setChecked(true);
             pages_->setCurrentIndex(static_cast<int>(i));
+            if (analysis_ && navigation_.current() == app::Destination::Analyze && !closing_) {
+                analysis_->controller().start();
+            }
             return;
         }
     }
@@ -239,6 +303,9 @@ void MainWindow::restoreUiState(const app::UiState& state) {
         return;
     }
     resetWindowGeometry();
+    if (analysis_) {
+        analysis_->setPreferences(state.board);
+    }
     if (!state.geometry.isEmpty() && !restoreGeometry(state.geometry)) {
         showUiStateFailure();
         emit invalidUiState();
@@ -257,13 +324,17 @@ void MainWindow::restoreUiState(const app::UiState& state) {
     });
 }
 app::UiState MainWindow::uiState() const {
-    return {saveGeometry(), windowState().testFlag(Qt::WindowMaximized), navigation_.current()};
+    return {saveGeometry(), windowState().testFlag(Qt::WindowMaximized), navigation_.current(),
+            analysis_ ? analysis_->preferences() : app::BoardPreferences{}};
 }
 void MainWindow::showClosing() {
     if (closing_) {
         return;
     }
     closing_ = true;
+    if (analysis_) {
+        analysis_->deactivate();
+    }
     for (auto* action : destinations_) {
         action->setEnabled(false);
     }
@@ -285,7 +356,11 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     }
     event->ignore();
     if (!closing_) {
-        emit closeRequested();
+        if (analysis_) {
+            analysis_->requestDiscard([this] { emit closeRequested(); });
+        } else {
+            emit closeRequested();
+        }
     }
 }
 } // namespace chess_review::ui

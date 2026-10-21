@@ -10,11 +10,15 @@ class QAction;
 class QLabel;
 class QScreen;
 class QStackedWidget;
+namespace chess_review::app {
+class AnalysisController;
+}
 namespace chess_review::diagnostics {
 class Logger;
 }
 namespace chess_review::ui {
 class StartupPanel;
+class AnalysisPage;
 
 // Pure geometry policy, also used to validate unavailable/removed monitor cases.
 QRect fittedWindowGeometry(const QRect& desired, const QRect& available);
@@ -24,6 +28,9 @@ class MainWindow final : public QMainWindow {
   public:
     // The application-owned navigation controller must outlive the window.
     explicit MainWindow(app::NavigationController& navigation, QWidget* parent = nullptr);
+    // Both application-owned controllers must outlive this window.
+    MainWindow(app::NavigationController& navigation, app::AnalysisController& analysis,
+               QWidget* parent = nullptr);
     void showProgress(const QString& message);
     void showReady();
     void showFailure(const app::Diagnostic& diagnostic);
@@ -44,11 +51,13 @@ class MainWindow final : public QMainWindow {
     void showEvent(QShowEvent* event) override;
 
   private:
+    void installAnalysis(app::AnalysisController& controller);
     void selectDestination();
     void resetWindowGeometry();
     void fitToScreen();
     void watchScreen(QScreen* screen);
     app::NavigationController& navigation_;
+    AnalysisPage* analysis_ = nullptr;
     StartupPanel* startup_;
     QStackedWidget* pages_;
     QLabel* preferencesNotice_;

@@ -98,7 +98,9 @@ void ShellTest::init() {
 void ShellTest::processExitsAfterShutdown_data() {
     QTest::addColumn<QString>("mode");
     for (const auto* mode :
-         {"window", "menu", "application", "startup", "failure", "diagnostics"}) {
+         {"window", "menu", "application", "startup", "failure", "diagnostics", "analysis-window",
+          "analysis-menu", "analysis-application", "analysis-cancel-window", "analysis-cancel-menu",
+          "analysis-cancel-application"}) {
         QTest::newRow(mode) << QString::fromLatin1(mode);
     }
 }
@@ -150,7 +152,11 @@ void ShellTest::processExitsAfterShutdown() {
         QVERIFY(records.contains("storage.ready"));
     }
     QVERIFY2(exited, "Services finished, but QApplication::exec() did not exit");
-    QVERIFY(process.readAllStandardOutput().contains("event-loop-quitting"));
+    const auto output = process.readAllStandardOutput();
+    QVERIFY(output.contains("event-loop-quitting"));
+    if (mode.contains(QStringLiteral("cancel"))) {
+        QVERIFY(output.contains("discard-cancelled"));
+    }
     QCOMPARE(process.exitStatus(), QProcess::NormalExit);
     QCOMPARE(process.exitCode(), 0);
     if (mode != QStringLiteral("startup")) {
@@ -159,7 +165,8 @@ void ShellTest::processExitsAfterShutdown() {
     QSettings saved(root.filePath(QStringLiteral("config/chess-review/ui-state.ini")),
                     QSettings::IniFormat);
     QCOMPARE(saved.value(QStringLiteral("shell/v1/destination")).toString(),
-             QStringLiteral("puzzles"));
+             mode.startsWith(QStringLiteral("analysis-")) ? QStringLiteral("analyze")
+                                                          : QStringLiteral("puzzles"));
 #endif
 }
 

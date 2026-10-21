@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(cmake/ProjectOptions.cmake)
 
-find_package(Qt6 6.12 REQUIRED COMPONENTS Widgets Sql)
+find_package(Qt6 6.12 REQUIRED COMPONENTS Widgets Sql Svg)
 qt_standard_project_setup(REQUIRES 6.12)
 
 add_library(chess_review_chess STATIC src/chess/Position.cpp src/chess/GameTree.cpp)
@@ -53,6 +53,7 @@ target_link_libraries(chess_review_app_paths PUBLIC Qt6::Core)
 chess_review_apply_options(chess_review_app_paths)
 
 add_library(chess_review_startup STATIC
+    src/app/AnalysisController.cpp
     src/app/GameImportService.cpp
     src/app/Diagnostic.cpp
     src/app/StartupCoordinator.cpp
@@ -63,11 +64,33 @@ target_link_libraries(chess_review_startup PUBLIC chess_review_persistence chess
 chess_review_apply_options(chess_review_startup)
 
 add_library(chess_review_ui STATIC
+    src/ui/chess/ChessBoardWidget.cpp
+    src/ui/chess/BoardAccessibility.cpp
+    src/ui/analysis/AnalysisPage.cpp
     src/ui/shell/MainWindow.cpp
     src/ui/shell/StartupPanel.cpp
     src/ui/shell/DiagnosticsDialog.cpp
 )
-target_link_libraries(chess_review_ui PUBLIC chess_review_startup Qt6::Widgets)
+target_link_libraries(chess_review_ui PUBLIC chess_review_startup Qt6::Widgets PRIVATE Qt6::Svg)
+qt_add_resources(chess_review_ui "pieces"
+    PREFIX "/pieces"
+    BASE "assets/pieces/cburnett"
+    FILES
+        assets/pieces/cburnett/Chess_plt45.svg
+        assets/pieces/cburnett/Chess_pdt45.svg
+        assets/pieces/cburnett/Chess_nlt45.svg
+        assets/pieces/cburnett/Chess_ndt45.svg
+        assets/pieces/cburnett/Chess_blt45.svg
+        assets/pieces/cburnett/Chess_bdt45.svg
+        assets/pieces/cburnett/Chess_rlt45.svg
+        assets/pieces/cburnett/Chess_rdt45.svg
+        assets/pieces/cburnett/Chess_qlt45.svg
+        assets/pieces/cburnett/Chess_qdt45.svg
+        assets/pieces/cburnett/Chess_klt45.svg
+        assets/pieces/cburnett/Chess_kdt45.svg
+        assets/pieces/cburnett/LICENSE.txt
+        assets/pieces/cburnett/provenance.json
+)
 chess_review_apply_options(chess_review_ui)
 
 qt_add_executable(chess_review_app src/main.cpp)

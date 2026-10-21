@@ -33,7 +33,7 @@ See [development setup](development.md) for Qt SDK selection and
 All test presets show failure output and fail if no tests match, including an
 accidentally empty label/regex selection. Every Qt suite has a 30-second CTest
 limit. Component labels are `diagnostics`, `persistence`, `startup`, `shell`, and
-`app_paths`; Qt suites have `qt`, and all except `app_paths` also have `integration`.
+`app_paths`, `game_repository`, and `analysis`; Qt suites have `qt`, and all except `app_paths` also have `integration`.
 Chess cases have `unit` and `chess` labels, assigned from their Catch2 tags.
 Run them with `ctest --preset dev -L chess` or `./build/dev/tests/chess_tests`.
 They cover established perft fixtures, strict FEN, legal moves, SAN/UCI,
@@ -70,7 +70,7 @@ QT_QPA_PLATFORM=offscreen ./build/dev/tests/startup_tests unusableDataDirectoryF
 ./build/dev/src/persistence/tests/persistence_tests closeDuringInitialization
 ```
 
-CTest sets the offscreen platform only for the startup and shell widget suites. Direct
+CTest sets the offscreen platform only for the startup, shell, and analysis widget suites. Direct
 widget invocation must supply it when there is no desktop display. Use absolute
 paths for Qt Test `-o` reports: temporary working directories are removed at exit.
 No global
@@ -91,7 +91,7 @@ platform override is needed for Qt Core suites.
   dependencies into production targets. Unknown options and missing keyword
   values fail configuration.
 
-All five Qt runners construct `TestEnvironment` before the Qt application, isolating
+All Qt runners construct `TestEnvironment` before the Qt application, isolating
 working directories and Linux HOME/XDG roots. Exit with failure if it is invalid.
 Declare it before the application
 so workers and Qt shut down before the root is removed. Internal diagnostics
@@ -291,3 +291,27 @@ field-level U+FEFF, preserved game IDs/import times/source bytes, mixed healthy
 and damaged records, and correct duplicate behavior after reopening. Injected
 row-transform errors and exceptions must roll back schema/data/ledger changes
 and retain the verified backup. Frozen v1/v2 identity digests guard wire changes.
+
+## Analyze board tests
+
+`ctest --preset dev -R '^(analysis|shell|startup)$'` covers controller move validation,
+branch preservation, per-node annotations and undo/redo, promotion cancellation,
+castling, en passant, underpromotion, stale input rejection, and worker shutdown.
+Widget tests exercise both orientations, boundary hit testing, drag/click entry,
+keyboard modes, annotations, hide cancellation, and accessible square actions.
+Preference tests round-trip board choices and reject malformed colors.
+
+The production process-exit probe also creates a live analysis and tests window,
+menu, and application Quit, both accepting discard and cancelling before a later
+confirmed exit. Cancellation must preserve the live position; confirmed exit must
+finish services and return normally from the real application event loop.
+
+For board screenshots, use the large offscreen screen configuration shown above
+and run `analysis_tests layout` with `CHESS_REVIEW_SCREENSHOT_DIR` set to an
+absolute output directory. Repeat with `QT_SCALE_FACTOR=1`, `1.25`, `1.5`, and `2`.
+The rows cover 1360×850, 1100×720 flipped, 800×600 constrained, and enlarged fonts.
+Window sizes clamp normally on smaller screens. Images support visual inspection,
+not pixel-identical golden comparisons. Offscreen popup tests permit exactly the
+backend's propagateSizeHints, raise, and keyboard-grab warnings; other warnings
+still fail. Native accessibility and mixed-monitor/Windows behavior remain
+separate release checks.

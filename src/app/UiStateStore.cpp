@@ -12,7 +12,7 @@
 
 namespace chess_review::app {
 namespace {
-// This file contains only a small geometry blob and a destination identifier.
+// Bounded UI preferences only; no moves, annotations, or product records.
 constexpr qint64 maxFileBytes = 64 * 1024;
 bool validFile(const QString& filename) {
     if (!QDir::isAbsolutePath(filename) || filename.contains(QChar::Null)) {
@@ -36,6 +36,25 @@ bool validFile(const QString& filename) {
         ancestor.setFile(parent);
     }
     return ancestor.isDir();
+}
+bool validBoardPreferences(const BoardPreferences& preferences) {
+    if (preferences.inputMode != BoardInputMode::Drag &&
+        preferences.inputMode != BoardInputMode::Click) {
+        return false;
+    }
+    for (const auto& color : preferences.annotationColors) {
+        if (color.size() != 7 || color.front() != QLatin1Char('#')) {
+            return false;
+        }
+        for (qsizetype i = 1; i < color.size(); ++i) {
+            const auto c = color[i].toLower();
+            if (!((c >= QLatin1Char('0') && c <= QLatin1Char('9')) ||
+                  (c >= QLatin1Char('a') && c <= QLatin1Char('f')))) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 UiState readState(const QString& filename, std::optional<UiStateError>& error) {
     if (!validFile(filename)) {
@@ -65,13 +84,35 @@ UiState readState(const QString& filename, std::optional<UiStateError>& error) {
         error = UiStateError::Invalid;
         return {};
     }
+    const auto mode =
+        settings.value(QStringLiteral("board/v1/input"), QStringLiteral("drag")).toString();
+    const auto coordinates =
+        settings.value(QStringLiteral("board/v1/coordinates"), true).toString();
+    const auto animation = settings.value(QStringLiteral("board/v1/animation"), true).toString();
+    state.board.inputMode =
+        mode == QStringLiteral("click") ? BoardInputMode::Click : BoardInputMode::Drag;
+    state.board.coordinates = coordinates == QStringLiteral("true");
+    state.board.animation = animation == QStringLiteral("true");
+    for (std::size_t i = 0; i < state.board.annotationColors.size(); ++i) {
+        state.board.annotationColors[i] =
+            settings
+                .value(QStringLiteral("board/v1/color%1").arg(i), state.board.annotationColors[i])
+                .toString();
+    }
+    if ((mode != QStringLiteral("drag") && mode != QStringLiteral("click")) ||
+        (coordinates != QStringLiteral("true") && coordinates != QStringLiteral("false")) ||
+        (animation != QStringLiteral("true") && animation != QStringLiteral("false")) ||
+        !validBoardPreferences(state.board)) {
+        error = UiStateError::Invalid;
+        state.board = {};
+    }
     state.maximized = maximized.toBool();
     state.destination = *destination;
     return state;
 }
 std::optional<UiStateError> writeState(const QString& filename, const UiState& state) {
     if (state.geometry.size() > 4096 || destinationId(state.destination).isEmpty() ||
-        !validFile(filename)) {
+        !validFile(filename) || !validBoardPreferences(state.board)) {
         return UiStateError::Invalid;
     }
     if (!QDir().mkpath(QFileInfo(filename).absolutePath())) {
@@ -131,6 +172,15 @@ std::optional<UiStateError> writeState(const QString& filename, const UiState& s
         settings.setValue(QStringLiteral("shell/v1/geometry"), state.geometry);
         settings.setValue(QStringLiteral("shell/v1/maximized"), state.maximized);
         settings.setValue(QStringLiteral("shell/v1/destination"), destinationId(state.destination));
+        settings.setValue(QStringLiteral("board/v1/input"),
+                          state.board.inputMode == BoardInputMode::Drag ? QStringLiteral("drag")
+                                                                        : QStringLiteral("click"));
+        settings.setValue(QStringLiteral("board/v1/coordinates"), state.board.coordinates);
+        settings.setValue(QStringLiteral("board/v1/animation"), state.board.animation);
+        for (std::size_t i = 0; i < state.board.annotationColors.size(); ++i) {
+            settings.setValue(QStringLiteral("board/v1/color%1").arg(i),
+                              state.board.annotationColors[i]);
+        }
         settings.sync();
         if (settings.status() != QSettings::NoError) {
             return settings.status() == QSettings::FormatError ? UiStateError::Invalid

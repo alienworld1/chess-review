@@ -1,4 +1,5 @@
 #pragma once
+#include "app/AnalysisController.h"
 #include "app/Diagnostic.h"
 #include "app/GameImportService.h"
 #include "app/UiStateStore.h"
@@ -24,6 +25,9 @@ class StartupCoordinator final : public QObject {
     // Called synchronously by the composition root on stopping(), before saving begins.
     void setFinalUiState(const UiState& state);
     Lifecycle state() const;
+    AnalysisController& analysis() { return analysis_; }
+    // Production composition routes application Quit through the UI's discard gate.
+    void requireQuitConfirmation() { confirmQuit_ = true; }
     GameImportService& gameImports() { return imports_; }
     persistence::Database& gameRepository() { return database_; }
   signals:
@@ -34,6 +38,7 @@ class StartupCoordinator final : public QObject {
     void uiStateFailed(chess_review::app::UiStateError error);
     void stopping();
     void finished();
+    void quitRequested();
 
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -42,11 +47,14 @@ class StartupCoordinator final : public QObject {
     void connectServices();
     void finishServices();
     diagnostics::Logger* logger_ = nullptr;
+    AnalysisController analysis_;
     persistence::Database database_;
     GameImportService imports_{database_};
     UiStateStore uiState_;
     std::optional<UiState> finalUiState_;
     Lifecycle state_ = Lifecycle::Loading;
+    bool confirmQuit_ = false;
+    bool analysisClosed_ = false;
     bool started_ = false;
     bool storageClosed_ = false;
     bool preferencesClosed_ = false;

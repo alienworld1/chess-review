@@ -45,3 +45,7 @@ set_target_properties(pgn_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 target_link_libraries(pgn_tests PRIVATE chess_review_pgn Catch2::Catch2WithMain)
 chess_review_apply_options(pgn_tests)
 catch_discover_tests(pgn_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)
+
+chess_review_add_qt_test(analysis_tests analysis INTEGRATION WIDGETS
+    SOURCES qt/AnalysisTest.cpp
+    LIBRARIES chess_review_ui)

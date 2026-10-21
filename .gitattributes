@@ -1,0 +1,2 @@
+# Preserve pinned upstream SVG bytes, including original CRLF line endings.
+assets/pieces/cburnett/*.svg -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

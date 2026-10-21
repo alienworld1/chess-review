@@ -1,8 +1,10 @@
 # chess-review
 
 A local-first desktop chess review app built with C++20 and Qt Widgets.
-Currently an application foundation: Home, Games, Puzzles, Analyze, and Settings
-are empty destinations. Chess analysis and review features are not implemented yet.
+Analyze now provides a playable board with legal move entry, branching history,
+promotion, keyboard controls, and annotations. Analysis is session-only; an exit
+confirmation protects against accidental loss. Engine analysis and guided review
+are not implemented yet. Home, Games, Puzzles, and Settings remain placeholders.
 
 The shell includes navigation, saved window preferences, local SQLite storage,
 and diagnostics. A pure C++ chess core now provides validated positions, legal
@@ -15,7 +17,7 @@ are not connected yet.
 ## Requirements
 
 - C++20 compiler (GCC or Clang on Linux)
-- Qt **6.12+** with Widgets, SQL, and the QSQLITE driver
+- Qt **6.12+** with Widgets, SVG, SQL, and the QSQLITE driver
 - CMake **3.24+**, Ninja, and GNU Make
 - Qt Test for tests (enabled by default); initial test configuration needs network
   access to fetch pinned Catch2
@@ -55,5 +57,6 @@ libraries separate. Automated tests use temporary storage.
 - [Testing](docs/testing.md): test selection, sanitizers, and CI
 - [Storage](docs/storage.md): paths, UI preferences, database lifecycle, and migrations
 - [Diagnostics](docs/diagnostics.md): troubleshooting, local logs, and privacy
+- [Analyze board](docs/analysis-board.md): moves, navigation, annotations, and preferences
 - [Chess core](docs/chess-core.md): adapter API, FEN policy, moves, and identity
 - [PGN parsing](docs/pgn.md): documents, compatibility, recovery, limits, and cancellation

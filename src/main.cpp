@@ -29,9 +29,12 @@ int main(int argc, char* argv[]) {
                       chess_review::diagnostics::Severity::Warning);
     }
     chess_review::app::NavigationController navigation;
-    chess_review::ui::MainWindow window(navigation);
-    window.setDiagnostics(logger);
     chess_review::app::StartupCoordinator startup(logger);
+    chess_review::ui::MainWindow window(navigation, startup.analysis());
+    window.setDiagnostics(logger);
+    startup.requireQuitConfirmation();
+    QObject::connect(&startup, &chess_review::app::StartupCoordinator::quitRequested, &window,
+                     [&window] { window.close(); });
     bool windowInitialized = false;
     QObject::connect(&startup, &chess_review::app::StartupCoordinator::initialUiState, &window,
                      [&](const chess_review::app::UiState& state) {

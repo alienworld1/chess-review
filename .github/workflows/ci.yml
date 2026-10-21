@@ -43,7 +43,7 @@ jobs:
           sudo apt-get install -y ninja-build clang-18 clang-format-18 clang-tidy-18 libgl1-mesa-dev libxkbcommon-x11-0 libxcb-cursor0 libegl1
           python3 -m venv "$RUNNER_TEMP/aqt"
           "$RUNNER_TEMP/aqt/bin/pip" install aqtinstall==3.3.0
-          "$RUNNER_TEMP/aqt/bin/aqt" install-qt linux desktop '${{ matrix.qt }}' linux_gcc_64 -O "$RUNNER_TEMP/Qt" --archives qtbase icu
+          "$RUNNER_TEMP/aqt/bin/aqt" install-qt linux desktop '${{ matrix.qt }}' linux_gcc_64 -O "$RUNNER_TEMP/Qt" --archives qtbase icu qtsvg
       - name: Configure
         run: >-
           cmake --preset '${{ matrix.preset }}'

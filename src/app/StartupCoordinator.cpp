@@ -14,6 +14,10 @@ StartupCoordinator::StartupCoordinator(diagnostics::Logger& logger, QObject* par
     });
 }
 void StartupCoordinator::connectServices() {
+    connect(&analysis_, &AnalysisController::closed, this, [this] {
+        analysisClosed_ = true;
+        finishServices();
+    });
     QCoreApplication::instance()->installEventFilter(this);
     connect(&imports_, &GameImportService::closed, &database_, &persistence::Database::close);
     connect(&database_, &persistence::Database::progress, this, &StartupCoordinator::progress);
@@ -45,7 +49,7 @@ void StartupCoordinator::connectServices() {
     });
 }
 void StartupCoordinator::finishServices() {
-    if (!storageClosed_ || !preferencesClosed_ || closingLogger_) {
+    if (!analysisClosed_ || !storageClosed_ || !preferencesClosed_ || closingLogger_) {
         return;
     }
     closingLogger_ = true;
@@ -59,7 +63,11 @@ void StartupCoordinator::finishServices() {
 bool StartupCoordinator::eventFilter(QObject* watched, QEvent* event) {
     if (watched == QCoreApplication::instance() && event->type() == QEvent::Quit &&
         state_ != Lifecycle::Stopped) {
-        shutdown();
+        if (confirmQuit_ && state_ != Lifecycle::Stopping) {
+            emit quitRequested();
+        } else {
+            shutdown();
+        }
         return true;
     }
     return QObject::eventFilter(watched, event);
@@ -93,6 +101,7 @@ void StartupCoordinator::shutdown() {
     }
     state_ = Lifecycle::Stopping;
     emit stopping();
+    analysis_.close();
     imports_.close();
     uiState_.saveAndClose(finalUiState_);
 }

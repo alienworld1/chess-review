@@ -11,7 +11,7 @@ support required):
 ```sh
 python3 -m venv .tools/aqt
 .tools/aqt/bin/pip install aqtinstall==3.3.0
-.tools/aqt/bin/aqt install-qt linux desktop 6.12.0 linux_gcc_64 -O .tools/Qt --archives qtbase icu
+.tools/aqt/bin/aqt install-qt linux desktop 6.12.0 linux_gcc_64 -O .tools/Qt --archives qtbase icu qtsvg
 ```
 
 The matching ICU package is a runtime dependency of Qt's prebuilt SDK.

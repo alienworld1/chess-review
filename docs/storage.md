@@ -301,3 +301,13 @@ logging drain. All waits are asynchronous; normal user callbacks perform no SQL.
 
 Reports and source metadata remain local, in memory or the game record. The
 service does not log PGN, players, comments, personal URLs, SQL, or native errors.
+
+### Board UI preferences
+
+The existing asynchronous `UiStateStore` additionally stores input mode, coordinate
+visibility, move animation, and four validated `#RRGGBB` annotation colors under
+`board/v1` in `ui-state.ini`. Missing keys retain defaults. Invalid board values
+reset only the board preference group and report an invalid-state notice. Existing
+shell validation, atomic publication, zero-wait lock contention handling, and
+unknown-key preservation still apply. Moves, annotations, and orientation from the
+scratch Analyze session are not saved here or in SQLite.

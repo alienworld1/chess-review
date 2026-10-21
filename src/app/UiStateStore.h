@@ -1,4 +1,5 @@
 #pragma once
+#include "app/BoardState.h"
 #include "app/NavigationController.h"
 #include <QByteArray>
 #include <QObject>
@@ -14,6 +15,7 @@ struct UiState {
     QByteArray geometry;
     bool maximized = false;
     Destination destination = Destination::Home;
+    BoardPreferences board{};
 };
 
 // Owning thread only. One load, then one saveAndClose; await closed() before destruction.
