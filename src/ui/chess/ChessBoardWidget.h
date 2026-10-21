@@ -52,7 +52,7 @@ class ChessBoardWidget final : public QWidget {
   private:
     void rebuildPieces();
     void cancelTransient();
-    void proposeMove(chess::Square from, chess::Square to);
+    void proposeMove(chess::Square from, chess::Square to, bool dropped = false);
     int gestureColor(Qt::KeyboardModifiers modifiers) const;
     app::BoardViewState state_;
     app::BoardPreferences preferences_;
@@ -72,6 +72,12 @@ class ChessBoardWidget final : public QWidget {
     QMenu* promotion_ = nullptr;
     QVariantAnimation animation_;
     std::optional<chess::Move> animatedMove_;
+    struct PendingDrop {
+        chess::Move move;
+        std::uint64_t revision;
+    };
+    std::optional<PendingDrop> pendingDrop_;
+    std::optional<chess::Move> settledDrop_;
 };
 void installBoardAccessibility();
 } // namespace chess_review::ui

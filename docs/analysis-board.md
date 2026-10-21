@@ -9,10 +9,18 @@ There is no save or recovery for this workspace yet.
 ## Moves and history
 
 Drag a piece to move, or choose **Click-click** in Move input. Illegal moves return
-the piece without changing history. Promotion offers queen, rook, bishop, and
+the piece without changing history. A dragged piece stays at the drop square during
+validation and settles immediately when accepted; click/keyboard moves use the
+optional animation. Promotion offers queen, rook, bishop, and
 knight; Escape cancels the chooser. White/Black labels, coordinates, last move,
 selection, legal destinations, capture shapes, and check highlight aid orientation.
 Flip Board is also in View (`Ctrl+F` while Analyze is active).
+
+Check is announced in the position status. Checkmate displays the winner and a
+`#` badge beside the mated king; stalemate displays a draw without a mate badge.
+Terminal positions remain available for history navigation and annotations.
+Board Options → Board Gestures and Keyboard Help opens a scrollable reference
+with separate sections for moves, history, annotations, and color modifiers.
 
 Beginning, Previous, Next, and End navigate the session. History selects an
 ancestor; Continue with selects an existing branch. A different move from an

@@ -5,6 +5,7 @@
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
@@ -12,6 +13,7 @@
 #include <QPushButton>
 #include <QShortcut>
 #include <QSignalBlocker>
+#include <QTextBrowser>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -78,14 +80,54 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     });
     auto* help = menu->addAction(tr("Board Gestures and Keyboard Help"));
     connect(help, &QAction::triggered, this, [this] {
-        auto* dialog = new QMessageBox(
-            QMessageBox::Information, tr("Board controls"),
-            board_->toolTip() + tr("\nLeft/Right: move history. Home/End: beginning/end. "
-                                   "Escape: cancel gesture, selection, then keyboard entry. "
-                                   "Annotation colors can also be selected in the toolbar. "
-                                   "Board Options provides annotation undo, redo, and clear."),
-            QMessageBox::Ok, this);
+        auto* dialog = new QDialog(this);
+        dialog->setObjectName(QStringLiteral("boardControlsDialog"));
+        dialog->setWindowTitle(tr("Board controls"));
         dialog->setAttribute(Qt::WA_DeleteOnClose);
+        auto* contents = new QVBoxLayout(dialog);
+        auto* reference = new QTextBrowser(dialog);
+        reference->setObjectName(QStringLiteral("boardControlsReference"));
+        reference->setAccessibleName(tr("Board controls reference"));
+        reference->setHtml(tr(
+            "<h3>Moving pieces</h3>"
+            "<table cellspacing='8' width='100%'>"
+            "<tr><td width='30%'><b>Drag</b></td><td>Drop a piece on its destination. "
+            "Illegal moves return to their starting square.</td></tr>"
+            "<tr><td><b>Click-click</b></td><td>Select this input mode in the toolbar, "
+            "then click the piece and its destination.</td></tr>"
+            "<tr><td><b>Enter / Space</b></td><td>Enter starts keyboard square navigation. "
+            "Use arrow keys to move focus, then Enter or Space to select a piece or play.</td></tr>"
+            "<tr><td><b>Escape</b></td><td>Cancel the active gesture or popup, "
+            "then selection, then keyboard square navigation.</td></tr></table>"
+            "<h3>Move history</h3>"
+            "<table cellspacing='8' width='100%'>"
+            "<tr><td width='30%'><b>Left / Right</b></td><td>Previous / next move, "
+            "when outside keyboard square navigation.</td></tr>"
+            "<tr><td><b>Home / End</b></td><td>Beginning / end of the chosen line.</td></tr>"
+            "<tr><td><b>Flip Board</b></td><td>Use the toolbar or View menu "
+            "(Ctrl+F).</td></tr></table>"
+            "<h3>Arrows and highlights</h3>"
+            "<table cellspacing='8' width='100%'>"
+            "<tr><td width='30%'><b>Right-click</b></td><td>Toggle a square highlight.</td></tr>"
+            "<tr><td><b>Right-drag</b></td><td>Toggle an arrow between squares.</td></tr>"
+            "<tr><td><b>H</b></td><td>Highlight the focused square in keyboard square "
+            "navigation.</td></tr>"
+            "<tr><td><b>A, then A</b></td><td>Mark the arrow start, navigate to its end, "
+            "then press A again.</td></tr></table>"
+            "<h3>Colors and board options</h3>"
+            "<table cellspacing='8' width='100%'>"
+            "<tr><td width='30%'><b>No modifier</b></td><td>Use the annotation color selected in "
+            "the toolbar.</td></tr>"
+            "<tr><td><b>Shift</b></td><td>Color 2 (red by default).</td></tr>"
+            "<tr><td><b>Ctrl</b></td><td>Color 3 (yellow by default).</td></tr>"
+            "<tr><td><b>Ctrl+Shift</b></td><td>Color 4 (blue by default).</td></tr>"
+            "<tr><td><b>Board Options</b></td><td>Undo, redo, or clear annotations; "
+            "customize colors; toggle coordinates and click-move animation.</td></tr></table>"));
+        contents->addWidget(reference);
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+        connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+        contents->addWidget(buttons);
+        dialog->resize(640, 560);
         dialog->open();
     });
     options->setMenu(menu);
@@ -244,8 +286,7 @@ void AnalysisPage::refresh() {
     topPlayer_->setText(controller_.board().blackAtBottom ? tr("White") : tr("Black"));
     bottomPlayer_->setText(controller_.board().blackAtBottom ? tr("Black") : tr("White"));
     status_->setText(controller_.busy() ? tr("Updating position…")
-                     : controller_.board().sideToMove == chess::Color::White ? tr("White to move")
-                                                                             : tr("Black to move"));
+                                        : controller_.board().positionDescription);
     QAccessibleEvent event(status_, QAccessible::NameChanged);
     QAccessible::updateAccessibility(&event);
 }

@@ -58,12 +58,31 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
                     const auto& position = std::get<chess::Position>(resolved);
                     snapshot.board.sideToMove = position.sideToMove();
                     snapshot.board.legalMoves = position.legalMoves();
+                    const bool inCheck = position.inCheck();
+                    const bool noMoves = snapshot.board.legalMoves.empty();
+                    const auto side =
+                        position.sideToMove() == chess::Color::White ? tr("White") : tr("Black");
+                    if (noMoves && inCheck) {
+                        snapshot.board.status = BoardStatus::Checkmate;
+                        snapshot.board.positionDescription =
+                            tr("Checkmate — %1 wins")
+                                .arg(position.sideToMove() == chess::Color::White ? tr("Black")
+                                                                                  : tr("White"));
+                    } else if (noMoves) {
+                        snapshot.board.status = BoardStatus::Stalemate;
+                        snapshot.board.positionDescription = tr("Stalemate — draw");
+                    } else if (inCheck) {
+                        snapshot.board.status = BoardStatus::Check;
+                        snapshot.board.positionDescription = tr("%1 to move — check").arg(side);
+                    } else {
+                        snapshot.board.positionDescription = tr("%1 to move").arg(side);
+                    }
                     for (int i = 0; i < 64; ++i) {
                         const auto square = *chess::Square::fromCoordinates(i % 8, i / 8);
                         const auto piece = position.pieceAt(square);
                         snapshot.board.pieces[static_cast<std::size_t>(i)] = piece;
                         if (piece && piece->type == chess::PieceType::King &&
-                            piece->color == position.sideToMove() && position.inCheck()) {
+                            piece->color == position.sideToMove() && inCheck) {
                             snapshot.board.checkedKing = square;
                         }
                     }
@@ -169,7 +188,7 @@ void AnalysisController::reset(const std::optional<std::string>& fen) {
         true);
 }
 void AnalysisController::selectSquare(chess::Square square) {
-    if (!board_.interactive || closing_) {
+    if (!board_.interactive || closing_ || board_.legalMoves.empty()) {
         return;
     }
     const auto piece = board_.pieces[static_cast<std::size_t>(square.index())];

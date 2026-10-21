@@ -9,6 +9,7 @@
 
 namespace chess_review::app {
 enum class BoardInputMode { Drag, Click };
+enum class BoardStatus { Playing, Check, Checkmate, Stalemate };
 struct BoardPreferences {
     BoardInputMode inputMode = BoardInputMode::Drag;
     bool coordinates = true;
@@ -26,6 +27,8 @@ struct BoardAnnotation {
 struct BoardViewState {
     std::array<std::optional<chess::Piece>, 64> pieces{};
     chess::Color sideToMove = chess::Color::White;
+    BoardStatus status = BoardStatus::Playing;
+    QString positionDescription;
     bool blackAtBottom = false;
     bool interactive = false;
     std::optional<chess::Square> selection;
@@ -45,3 +48,5 @@ struct HistoryEntry {
 Q_DECLARE_METATYPE(chess_review::chess::Square)
 Q_DECLARE_METATYPE(chess_review::chess::Move)
 Q_DECLARE_METATYPE(chess_review::app::BoardAnnotation)
+
+Q_DECLARE_METATYPE(chess_review::app::BoardStatus)

@@ -12,6 +12,7 @@
 #include <QPainterPath>
 #include <QResizeEvent>
 #include <QSvgRenderer>
+#include <QTimer>
 #include <algorithm>
 #include <cmath>
 
@@ -40,9 +41,8 @@ ChessBoardWidget::ChessBoardWidget(QWidget* parent) : QWidget(parent) {
     // and otherwise forces the board and controls to overflow laptop windows.
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     setMinimumSize(240, 240);
-    setToolTip(tr("Drag a piece to move. Enter: keyboard move entry. Right-click: highlight; "
-                  "right-drag: arrow. Shift: red, Ctrl: yellow, Ctrl+Shift: blue. "
-                  "In keyboard entry: H highlights; A sets an arrow start/end."));
+    setToolTip(tr("Use the selected input mode to move pieces. "
+                  "Board Options → Board Gestures and Keyboard Help lists all controls."));
     animation_.setStartValue(0.0);
     animation_.setEndValue(1.0);
     animation_.setDuration(170);
@@ -82,15 +82,24 @@ std::optional<chess::Square> ChessBoardWidget::squareAt(QPointF point) const {
 void ChessBoardWidget::setState(const app::BoardViewState& state) {
     const bool changedPosition =
         state.revision != state_.revision || state.blackAtBottom != state_.blackAtBottom;
+    const auto pending = pendingDrop_;
+    const bool sameOrientation = state.blackAtBottom == state_.blackAtBottom;
     if (changedPosition || !state.interactive) {
         cancelTransient();
+        if (pending && sameOrientation) {
+            if (state.revision == pending->revision) {
+                // Keep the visual drop in place while the controller validates it.
+                pendingDrop_ = pending;
+            } else if (state.lastMove == pending->move) {
+                settledDrop_ = pending->move;
+            }
+        }
     }
     const auto oldSelection = state_.selection;
     state_ = state;
     setAccessibleDescription(
-        tr("%1 at bottom. %2 to move. Enter enables keyboard square navigation.")
-            .arg(state_.blackAtBottom ? tr("Black") : tr("White"),
-                 state_.sideToMove == chess::Color::White ? tr("White") : tr("Black")));
+        tr("%1 at bottom. %2. Enter enables keyboard square navigation.")
+            .arg(state_.blackAtBottom ? tr("Black") : tr("White"), state_.positionDescription));
     if (oldSelection != state_.selection && state_.selection) {
         QAccessibleAnnouncementEvent announcement(this, squareDescription(*state_.selection));
         QAccessible::updateAccessibility(&announcement);
@@ -148,6 +157,7 @@ void ChessBoardWidget::paintEvent(QPaintEvent*) {
         return;
     }
     const qreal side = board.width() / 8;
+    const bool previewDrop = pendingDrop_ && pendingDrop_->revision == state_.revision;
     painter.setPen(QPen(QColor(QStringLiteral("#7d9085")), 2));
     painter.setBrush(Qt::NoBrush);
     painter.drawRect(board.adjusted(-1, -1, 1, 1));
@@ -217,10 +227,33 @@ void ChessBoardWidget::paintEvent(QPaintEvent*) {
             }
             const auto piece = state_.pieces[static_cast<std::size_t>(square.index())];
             if (piece && !(dragging_ && !rightGesture_ && pressedSquare_ == square) &&
-                !(animatedMove_ && animatedMove_->to == square)) {
+                !(animatedMove_ && animatedMove_->to == square) &&
+                !(previewDrop &&
+                  (pendingDrop_->move.from == square || pendingDrop_->move.to == square))) {
                 painter.drawPixmap(rect.topLeft(), pieces_[pieceIndex(*piece)]);
             }
         }
+    }
+    if (previewDrop) {
+        const auto piece = state_.pieces[static_cast<std::size_t>(pendingDrop_->move.from.index())];
+        if (piece) {
+            painter.drawPixmap(squareRect(pendingDrop_->move.to).topLeft(),
+                               pieces_[pieceIndex(*piece)]);
+        }
+    }
+    if (state_.status == app::BoardStatus::Checkmate && state_.checkedKing) {
+        const auto king = squareRect(*state_.checkedKing);
+        const qreal badgeSide = side * .34;
+        const QRectF badge(king.right() - badgeSide - 2, king.top() + 2, badgeSide, badgeSide);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(QStringLiteral("#8b1e2d")));
+        painter.drawEllipse(badge);
+        auto font = painter.font();
+        font.setBold(true);
+        font.setPixelSize(std::max(10, static_cast<int>(badgeSide * .80)));
+        painter.setFont(font);
+        painter.setPen(Qt::white);
+        painter.drawText(badge, Qt::AlignCenter, QStringLiteral("#"));
     }
     for (const auto& annotation : state_.annotations) {
         auto color =
@@ -304,6 +337,8 @@ void ChessBoardWidget::cancelTransient() {
     arrowStart_.reset();
     animation_.stop();
     animatedMove_.reset();
+    pendingDrop_.reset();
+    settledDrop_.reset();
     if (promotion_) {
         promotion_->close();
     }
@@ -315,7 +350,9 @@ void ChessBoardWidget::animateMove(chess::Move move) {
                   .arg(QString::fromStdString(move.from.name()),
                        QString::fromStdString(move.to.name()), accessibleDescription()));
     QAccessible::updateAccessibility(&announcement);
-    if (preferences_.animation && isVisible()) {
+    const bool dropped = settledDrop_ == move;
+    settledDrop_.reset();
+    if (!dropped && preferences_.animation && isVisible()) {
         animatedMove_ = move;
         animation_.start();
     }
@@ -387,7 +424,7 @@ void ChessBoardWidget::mouseReleaseEvent(QMouseEvent* event) {
             activateSquare(*to);
         }
     } else if (dragged && from != *to) {
-        proposeMove(from, *to);
+        proposeMove(from, *to, true);
     }
 }
 void ChessBoardWidget::activateSquare(chess::Square square) {
@@ -404,8 +441,12 @@ void ChessBoardWidget::activateSquare(chess::Square square) {
         emit squareSelected(square);
     }
 }
-void ChessBoardWidget::proposeMove(chess::Square from, chess::Square to) {
+void ChessBoardWidget::proposeMove(chess::Square from, chess::Square to, bool dropped) {
     const auto revision = state_.revision;
+    if (dropped) {
+        pendingDrop_ = PendingDrop{{from, to, std::nullopt}, revision};
+        update();
+    }
     const bool promotes = std::any_of(
         state_.legalMoves.begin(), state_.legalMoves.end(), [from, to](const auto& move) {
             return move.from == from && move.to == to && move.promotion;
@@ -426,8 +467,11 @@ void ChessBoardWidget::proposeMove(chess::Square from, chess::Square to) {
                              std::pair{chess::PieceType::Knight, tr("&Knight")}};
     for (const auto& [piece, label] : choices) {
         auto* action = promotion_->addAction(label);
-        connect(action, &QAction::triggered, this, [this, from, to, piece, revision] {
+        connect(action, &QAction::triggered, this, [this, from, to, piece, revision, dropped] {
             if (state_.interactive && state_.revision == revision) {
+                if (dropped) {
+                    pendingDrop_ = PendingDrop{{from, to, piece}, revision};
+                }
                 emit moveAttempted({from, to, piece}, revision);
             }
         });
@@ -436,6 +480,14 @@ void ChessBoardWidget::proposeMove(chess::Square from, chess::Square to) {
     connect(menu, &QMenu::aboutToHide, this, [this, menu] {
         promotion_ = nullptr;
         menu->deleteLater();
+        // QAction::triggered follows aboutToHide. Let an accepted choice submit
+        // first; a cancelled chooser restores the pawn without committing a move.
+        QTimer::singleShot(0, this, [this] {
+            if (pendingDrop_ && state_.interactive && !promotion_) {
+                pendingDrop_.reset();
+                update();
+            }
+        });
     });
     menu->popup(mapToGlobal(squareRect(to).bottomLeft().toPoint()));
     menu->setActiveAction(menu->actions().front());
@@ -557,7 +609,8 @@ QString ChessBoardWidget::squareDescription(chess::Square square) const {
         description += tr(", selected");
     }
     if (state_.checkedKing == square) {
-        description += tr(", in check");
+        description +=
+            state_.status == app::BoardStatus::Checkmate ? tr(", checkmated") : tr(", in check");
     }
     for (const auto& annotation : state_.annotations) {
         if (annotation.from == square) {

@@ -9,6 +9,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
+#include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
@@ -17,6 +18,8 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextBrowser>
+#include <QTextDocument>
 #include <QTimer>
 #include <QToolButton>
 #include <memory>
@@ -41,6 +44,11 @@ class AnalysisTest final : public QObject {
     void init();
     void cleanup();
     void legalMovesAndStaleInput();
+    void dropSettlement_data();
+    void dropSettlement();
+    void terminalStates_data();
+    void terminalStates();
+    void controlsReference();
     void branchesAndAnnotations();
     void specialMoves_data();
     void specialMoves();
@@ -103,6 +111,153 @@ void AnalysisTest::legalMovesAndStaleInput() {
     QCOMPARE(controller_->board().sideToMove, chess::Color::Black);
     QCOMPARE(controller_->history().size(), std::size_t{2});
     QVERIFY(controller_->hasContent());
+}
+void AnalysisTest::dropSettlement_data() {
+    QTest::addColumn<bool>("drag");
+    QTest::newRow("drag-settles") << true;
+    QTest::newRow("click-animates") << false;
+}
+void AnalysisTest::dropSettlement() {
+    const auto initial = controller_->board();
+    play(move("e2", "e4"));
+    const auto accepted = controller_->board();
+    ui::ChessBoardWidget board;
+    board.resize(500, 500);
+    board.show();
+    QTest::qWait(1); // Deliver initial show/resize/focus events before starting a gesture.
+    board.setState(initial);
+    QFETCH(bool, drag);
+    app::BoardPreferences preferences;
+    preferences.inputMode = drag ? app::BoardInputMode::Drag : app::BoardInputMode::Click;
+    board.setPreferences(preferences);
+    // Model the immutable snapshot consumer without relying on animation timing
+    // across worker scheduling: accepted input is delivered explicitly below.
+    connect(&board, &ui::ChessBoardWidget::squareSelected, &board, [&](chess::Square selected) {
+        auto state = initial;
+        state.selection = selected;
+        board.setState(state);
+    });
+    QSignalSpy attempted(&board, &ui::ChessBoardWidget::moveAttempted);
+    const auto from = board.squareRect(square("e2")).center().toPoint();
+    const auto to = board.squareRect(square("e4")).center().toPoint();
+    if (drag) {
+        QTest::mousePress(&board, Qt::LeftButton, Qt::NoModifier, from);
+        QTest::mouseMove(&board, to);
+        QTest::mouseRelease(&board, Qt::LeftButton, Qt::NoModifier, to);
+    } else {
+        QTest::mouseClick(&board, Qt::LeftButton, Qt::NoModifier, from);
+        QTest::mouseClick(&board, Qt::LeftButton, Qt::NoModifier, to);
+    }
+    QCOMPARE(attempted.count(), 1);
+    auto validating = initial;
+    validating.interactive = false;
+    board.setState(validating);
+    const auto pendingImage = board.grab().toImage();
+    board.setState(accepted);
+    board.animateMove(move("e2", "e4"));
+    const auto firstFrame = board.grab().toImage();
+    QTest::qWait(220);
+    const auto finalFrame = board.grab().toImage();
+    if (drag) {
+        QCOMPARE(firstFrame, finalFrame);
+        // The pending drop must also already show the piece at the destination.
+        QCOMPARE(pendingImage.pixelColor(to), finalFrame.pixelColor(to));
+        QVERIFY(pendingImage.pixelColor(to) != QColor(QStringLiteral("#e9e1d0")));
+    } else {
+        QVERIFY(firstFrame != finalFrame);
+    }
+    // A rejected drag clears the preview and restores the actual position.
+    board.setState(initial);
+    QTest::mousePress(&board, Qt::LeftButton, Qt::NoModifier, from);
+    QTest::mouseMove(&board, to);
+    QTest::mouseRelease(&board, Qt::LeftButton, Qt::NoModifier, to);
+    board.setState(validating);
+    auto rejected = initial;
+    rejected.revision = accepted.revision + 1;
+    board.setState(rejected);
+    const auto rejectedImage = board.grab().toImage();
+    board.setState(initial);
+    QCOMPARE(rejectedImage, board.grab().toImage());
+}
+void AnalysisTest::terminalStates_data() {
+    QTest::addColumn<QString>("fen");
+    QTest::addColumn<app::BoardStatus>("status");
+    QTest::addColumn<QString>("description");
+    QTest::newRow("check") << QStringLiteral("4r1k1/8/8/8/8/8/8/4K3 w - - 0 1")
+                           << app::BoardStatus::Check << QStringLiteral("White to move — check");
+    QTest::newRow("white-mated") << QStringLiteral("8/8/8/8/8/5k2/6q1/7K w - - 0 1")
+                                 << app::BoardStatus::Checkmate
+                                 << QStringLiteral("Checkmate — Black wins");
+    QTest::newRow("black-mated") << QStringLiteral("7k/6Q1/5K2/8/8/8/8/8 b - - 0 1")
+                                 << app::BoardStatus::Checkmate
+                                 << QStringLiteral("Checkmate — White wins");
+    QTest::newRow("stalemate") << QStringLiteral("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
+                               << app::BoardStatus::Stalemate << QStringLiteral("Stalemate — draw");
+}
+void AnalysisTest::terminalStates() {
+    QFETCH(QString, fen);
+    QFETCH(app::BoardStatus, status);
+    QFETCH(QString, description);
+    controller_->reset(fen.toStdString());
+    QTRY_VERIFY(!controller_->busy());
+    QCOMPARE(controller_->board().status, status);
+    ui::AnalysisPage page(*controller_);
+    page.resize(900, 850);
+    page.show();
+    auto* board = page.findChild<ui::ChessBoardWidget*>();
+    QCOMPARE(page.findChild<QLabel*>(QStringLiteral("analysisStatus"))->text(), description);
+    QVERIFY(board->accessibleDescription().contains(description));
+    if (status == app::BoardStatus::Checkmate) {
+        QVERIFY(controller_->board().legalMoves.empty());
+        QVERIFY(controller_->board().checkedKing);
+        const auto king = *controller_->board().checkedKing;
+        QVERIFY(board->squareDescription(king).contains(QStringLiteral("checkmated")));
+        const auto mateImage = board->grab().toImage();
+        auto checkState = controller_->board();
+        checkState.status = app::BoardStatus::Check;
+        board->setState(checkState);
+        QVERIFY(board->grab().toImage() != mateImage); // Mate adds a visible # badge.
+        board->setState(controller_->board());
+        controller_->selectSquare(king);
+        QVERIFY(!controller_->board().selection);
+        controller_->toggleAnnotation({king, king, 0});
+        QCOMPARE(controller_->board().annotations.size(), std::size_t{1});
+    } else if (status == app::BoardStatus::Check) {
+        QVERIFY(!controller_->board().legalMoves.empty());
+    } else {
+        QVERIFY(controller_->board().legalMoves.empty());
+        QVERIFY(!controller_->board().checkedKing);
+    }
+    if (qEnvironmentVariableIsSet("CHESS_REVIEW_SCREENSHOT_DIR")) {
+        QVERIFY(page.grab().save(qEnvironmentVariable("CHESS_REVIEW_SCREENSHOT_DIR") +
+                                 QLatin1Char('/') + QString::fromLatin1(QTest::currentDataTag()) +
+                                 QStringLiteral(".png")));
+    }
+}
+void AnalysisTest::controlsReference() {
+    ui::AnalysisPage page(*controller_);
+    page.resize(900, 850);
+    page.show();
+    auto* options = page.findChild<QToolButton*>(QStringLiteral("boardOptionsButton"));
+    QVERIFY(options);
+    options->menu()->actions().back()->trigger();
+    auto* dialog = page.findChild<QDialog*>(QStringLiteral("boardControlsDialog"));
+    QVERIFY(dialog && dialog->isVisible());
+    auto* reference = dialog->findChild<QTextBrowser*>();
+    QVERIFY(reference);
+    const auto text = reference->toPlainText();
+    for (const auto& section :
+         {QStringLiteral("Moving pieces"), QStringLiteral("Move history"),
+          QStringLiteral("Arrows and highlights"), QStringLiteral("Colors and board options")}) {
+        QVERIFY(text.contains(section));
+    }
+    QVERIFY(reference->document()->blockCount() > 15);
+    QVERIFY(reference->isReadOnly());
+    if (qEnvironmentVariableIsSet("CHESS_REVIEW_SCREENSHOT_DIR")) {
+        QVERIFY(dialog->grab().save(qEnvironmentVariable("CHESS_REVIEW_SCREENSHOT_DIR") +
+                                    QStringLiteral("/board-controls.png")));
+    }
+    dialog->close();
 }
 void AnalysisTest::branchesAndAnnotations() {
     play(move("e2", "e4"));
