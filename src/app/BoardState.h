@@ -35,7 +35,7 @@ struct BoardViewState {
     std::optional<chess::Square> checkedKing;
     std::optional<chess::Move> lastMove;
     std::vector<chess::Move> legalMoves;
-    std::vector<chess::Square> captureTargets;
+    std::vector<chess::Move> captureMoves;
     std::vector<BoardAnnotation> annotations;
     std::uint64_t revision = 0;
 };

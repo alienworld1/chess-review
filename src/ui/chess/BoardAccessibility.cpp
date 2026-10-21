@@ -34,7 +34,7 @@ class AccessibleSquare final : public QAccessibleInterface, public QAccessibleAc
         state.selected = board_.state().selection == square_;
         state.focused =
             board_.hasFocus() && board_.entryMode() && board_.focusedSquare() == square_;
-        state.disabled = !board_.state().interactive;
+        state.disabled = !board_.isEnabled() || !board_.state().interactive;
         state.invisible = !board_.isVisible();
         return state;
     }

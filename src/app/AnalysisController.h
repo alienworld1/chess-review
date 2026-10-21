@@ -3,9 +3,13 @@
 #include "app/BoardState.h"
 #include <QObject>
 #include <QThreadPool>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 namespace chess_review::app {
 // GUI-thread facade. Only its serial worker accesses Session and its chess values.

@@ -5,6 +5,7 @@
 #include <QVariantAnimation>
 #include <QWidget>
 #include <array>
+#include <cstdint>
 
 class QMenu;
 namespace chess_review::ui {
@@ -51,6 +52,7 @@ class ChessBoardWidget final : public QWidget {
 
   private:
     void rebuildPieces();
+    bool isCaptureDestination(chess::Square square) const;
     void cancelTransient();
     void proposeMove(chess::Square from, chess::Square to, bool dropped = false);
     int gestureColor(Qt::KeyboardModifiers modifiers) const;
@@ -70,6 +72,7 @@ class ChessBoardWidget final : public QWidget {
     int annotationColor_ = 0;
     int pressedColor_ = 0;
     QMenu* promotion_ = nullptr;
+    std::uint64_t gestureRevision_ = 0;
     QVariantAnimation animation_;
     std::optional<chess::Move> animatedMove_;
     struct PendingDrop {

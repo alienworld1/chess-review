@@ -180,9 +180,7 @@ void ChessBoardWidget::paintEvent(QPaintEvent*) {
                                     return move.from == *state_.selection && move.to == square;
                                 });
                 if (legal) {
-                    const bool capture =
-                        std::find(state_.captureTargets.begin(), state_.captureTargets.end(),
-                                  square) != state_.captureTargets.end();
+                    const bool capture = isCaptureDestination(square);
                     painter.fillRect(rect,
                                      capture ? QColor(180, 105, 65, 85) : QColor(39, 131, 75, 65));
                     // Shape redundancy distinguishes captures as well as color.
@@ -317,6 +315,9 @@ void ChessBoardWidget::resizeEvent(QResizeEvent* event) {
 }
 void ChessBoardWidget::changeEvent(QEvent* event) {
     QWidget::changeEvent(event);
+    if (event->type() == QEvent::EnabledChange && !isEnabled()) {
+        cancelTransient();
+    }
     if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
         cachedSize_ = {};
         rebuildPieces();
@@ -331,6 +332,7 @@ bool ChessBoardWidget::event(QEvent* event) {
     return QWidget::event(event);
 }
 void ChessBoardWidget::cancelTransient() {
+    ++gestureRevision_;
     pressedSquare_.reset();
     dragging_ = false;
     rightGesture_ = false;
@@ -405,7 +407,12 @@ void ChessBoardWidget::mouseReleaseEvent(QMouseEvent* event) {
     }
     const auto from = *pressedSquare_;
     const auto to = squareAt(event->position());
-    const bool dragged = dragging_;
+    const bool displaced =
+        (event->position() - pressPoint_).manhattanLength() >= QApplication::startDragDistance();
+    const bool dragged =
+        dragging_ ||
+        (displaced && (rightGesture_ || (preferences_.inputMode == app::BoardInputMode::Drag &&
+                                         state_.selection == pressedSquare_)));
     const bool right = rightGesture_;
     const int color = pressedColor_;
     pressedSquare_.reset();
@@ -428,7 +435,7 @@ void ChessBoardWidget::mouseReleaseEvent(QMouseEvent* event) {
     }
 }
 void ChessBoardWidget::activateSquare(chess::Square square) {
-    if (!state_.interactive) {
+    if (!state_.interactive || !isEnabled() || !isVisible()) {
         return;
     }
     const auto piece = state_.pieces[static_cast<std::size_t>(square.index())];
@@ -465,25 +472,30 @@ void ChessBoardWidget::proposeMove(chess::Square from, chess::Square to, bool dr
                              std::pair{chess::PieceType::Rook, tr("&Rook")},
                              std::pair{chess::PieceType::Bishop, tr("&Bishop")},
                              std::pair{chess::PieceType::Knight, tr("&Knight")}};
+    const auto gestureRevision = ++gestureRevision_;
     for (const auto& [piece, label] : choices) {
         auto* action = promotion_->addAction(label);
-        connect(action, &QAction::triggered, this, [this, from, to, piece, revision, dropped] {
-            if (state_.interactive && state_.revision == revision) {
-                if (dropped) {
-                    pendingDrop_ = PendingDrop{{from, to, piece}, revision};
-                }
-                emit moveAttempted({from, to, piece}, revision);
-            }
-        });
+        connect(action, &QAction::triggered, this,
+                [this, from, to, piece, revision, dropped, gestureRevision] {
+                    if (state_.interactive && state_.revision == revision &&
+                        gestureRevision_ == gestureRevision && isEnabled() && isVisible()) {
+                        ++gestureRevision_; // A chooser can submit at most once.
+                        if (dropped) {
+                            pendingDrop_ = PendingDrop{{from, to, piece}, revision};
+                        }
+                        emit moveAttempted({from, to, piece}, revision);
+                    }
+                });
     }
     auto* menu = promotion_;
-    connect(menu, &QMenu::aboutToHide, this, [this, menu] {
+    connect(menu, &QMenu::aboutToHide, this, [this, menu, gestureRevision] {
         promotion_ = nullptr;
         menu->deleteLater();
         // QAction::triggered follows aboutToHide. Let an accepted choice submit
         // first; a cancelled chooser restores the pawn without committing a move.
-        QTimer::singleShot(0, this, [this] {
-            if (pendingDrop_ && state_.interactive && !promotion_) {
+        QTimer::singleShot(0, this, [this, gestureRevision] {
+            if (gestureRevision_ == gestureRevision) {
+                ++gestureRevision_;
                 pendingDrop_.reset();
                 update();
             }
@@ -493,6 +505,9 @@ void ChessBoardWidget::proposeMove(chess::Square from, chess::Square to, bool dr
     menu->setActiveAction(menu->actions().front());
 }
 void ChessBoardWidget::focusSquare(chess::Square square) {
+    if (!isEnabled() || !isVisible()) {
+        return;
+    }
     focusedSquare_ = square;
     entryMode_ = true;
     setFocus(Qt::OtherFocusReason);
@@ -596,6 +611,13 @@ void ChessBoardWidget::focusOutEvent(QFocusEvent* event) {
     }
     QWidget::focusOutEvent(event);
 }
+bool ChessBoardWidget::isCaptureDestination(chess::Square square) const {
+    return state_.selection && std::any_of(state_.captureMoves.begin(), state_.captureMoves.end(),
+                                           [this, square](const auto& move) {
+                                               return move.from == *state_.selection &&
+                                                      move.to == square;
+                                           });
+}
 QString ChessBoardWidget::squareDescription(chess::Square square) const {
     const auto piece = state_.pieces[static_cast<std::size_t>(square.index())];
     QString description = QString::fromStdString(square.name());
@@ -607,6 +629,13 @@ QString ChessBoardWidget::squareDescription(chess::Square square) const {
               : tr(", empty");
     if (state_.selection == square) {
         description += tr(", selected");
+    }
+    if (state_.selection &&
+        std::any_of(state_.legalMoves.begin(), state_.legalMoves.end(), [this, square](auto move) {
+            return move.from == *state_.selection && move.to == square;
+        })) {
+        const bool capture = isCaptureDestination(square);
+        description += capture ? tr(", legal capture") : tr(", legal move destination");
     }
     if (state_.checkedKing == square) {
         description +=

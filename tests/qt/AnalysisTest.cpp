@@ -7,6 +7,7 @@
 #include <QAccessible>
 #include <QAction>
 #include <QApplication>
+#include <QColor>
 #include <QComboBox>
 #include <QDir>
 #include <QLabel>
@@ -22,6 +23,7 @@
 #include <QTextDocument>
 #include <QTimer>
 #include <QToolButton>
+#include <algorithm>
 #include <memory>
 
 using namespace chess_review;
@@ -50,15 +52,26 @@ class AnalysisTest final : public QObject {
     void terminalStates();
     void controlsReference();
     void branchesAndAnnotations();
+    void directBranchNavigation();
+    void releaseWithoutMoveEvent();
+    void cancelledPromotionCannotSubmit_data();
+    void cancelledPromotionCannotSubmit();
+    void unavailableBoardActions();
+    void numberedHistory();
+    void transposedAnnotationsAndReuse();
     void specialMoves_data();
     void specialMoves();
     void failedResetPreservesSession();
     void geometryAndAccessibility();
+    void accessibleMoveDestinations_data();
+    void accessibleMoveDestinations();
+    void annotationBounds();
     void clickDragAndKeyboard();
     void annotationsAndCancellation();
     void promotionChoiceAndCancellation();
     void positionChangeCancelsPromotion();
     void preferenceRoundTrip();
+    void customColorPresentation();
     void invalidPreferences();
     void discardGate();
     void closeDuringWork();
@@ -279,8 +292,8 @@ void AnalysisTest::branchesAndAnnotations() {
     controller_->previous();
     QTRY_VERIFY(!controller_->busy());
     QCOMPARE(controller_->continuations().size(), std::size_t{2});
-    QCOMPARE(controller_->continuations()[0].label, QStringLiteral("e5"));
-    QCOMPARE(controller_->continuations()[1].label, QStringLiteral("c5"));
+    QCOMPARE(controller_->continuations()[0].label, QStringLiteral("1... e5"));
+    QCOMPARE(controller_->continuations()[1].label, QStringLiteral("1... c5"));
     controller_->next();
     QTRY_VERIFY(!controller_->busy());
     QCOMPARE(controller_->currentNode(), c5);
@@ -299,6 +312,143 @@ void AnalysisTest::branchesAndAnnotations() {
     QTRY_VERIFY(!controller_->busy());
     QVERIFY(!controller_->hasContent());
     QVERIFY(!controller_->canUndoAnnotation());
+}
+void AnalysisTest::directBranchNavigation() {
+    play(move("e2", "e4"));
+    play(move("e7", "e5"));
+    play(move("g1", "f3"));
+    const auto firstLine = controller_->currentNode();
+    controller_->beginning();
+    QTRY_VERIFY(!controller_->busy());
+    play(move("d2", "d4"));
+    play(move("d7", "d5"));
+    controller_->navigate(firstLine);
+    QTRY_VERIFY(!controller_->busy());
+    controller_->beginning();
+    QTRY_VERIFY(!controller_->busy());
+    controller_->end();
+    QTRY_VERIFY(!controller_->busy());
+    QCOMPARE(controller_->currentNode(), firstLine);
+}
+void AnalysisTest::releaseWithoutMoveEvent() {
+    ui::AnalysisPage page(*controller_);
+    page.resize(900, 850);
+    page.show();
+    auto* board = page.findChild<ui::ChessBoardWidget*>();
+    const auto from = board->squareRect(square("e2")).center().toPoint();
+    const auto to = board->squareRect(square("e4")).center().toPoint();
+    // Platforms can coalesce pointer movement; the release still proves displacement.
+    QTest::mousePress(board, Qt::LeftButton, Qt::NoModifier, from);
+    QTest::mouseRelease(board, Qt::LeftButton, Qt::NoModifier, to);
+    QTRY_VERIFY(!controller_->busy());
+    QCOMPARE(controller_->history().size(), std::size_t{2});
+    QTest::mousePress(board, Qt::RightButton, Qt::NoModifier, from);
+    QTest::mouseRelease(board, Qt::RightButton, Qt::NoModifier, to);
+    QCOMPARE(controller_->board().annotations.size(), std::size_t{1});
+    QCOMPARE(controller_->board().annotations.front().to, square("e4"));
+}
+void AnalysisTest::cancelledPromotionCannotSubmit_data() {
+    QTest::addColumn<int>("cancellation");
+    QTest::newRow("flip") << 0;
+    QTest::newRow("hide") << 1;
+    QTest::newRow("disable") << 2;
+    QTest::newRow("preferences") << 3;
+}
+void AnalysisTest::cancelledPromotionCannotSubmit() {
+    controller_->reset(std::string("4k3/P7/8/8/8/8/8/4K3 w - - 0 1"));
+    QTRY_VERIFY(!controller_->busy());
+    ui::AnalysisPage page(*controller_);
+    page.resize(900, 850);
+    page.show();
+    auto* board = page.findChild<ui::ChessBoardWidget*>();
+    board->activateSquare(square("a7"));
+    board->activateSquare(square("a8"));
+    auto* popup = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+    QVERIFY(popup);
+    auto* choice = popup->actions().front();
+    QFETCH(int, cancellation);
+    switch (cancellation) {
+    case 0:
+        controller_->flip();
+        break;
+    case 1:
+        board->hide();
+        board->show();
+        break;
+    case 2:
+        board->setEnabled(false);
+        board->setEnabled(true);
+        break;
+    default:
+        board->setPreferences(page.preferences());
+        break;
+    }
+    QVERIFY(!QApplication::activePopupWidget());
+    choice->trigger(); // A late action must not resurrect the cancelled gesture.
+    QTRY_VERIFY(!controller_->busy());
+    QCOMPARE(controller_->history().size(), std::size_t{1});
+}
+void AnalysisTest::unavailableBoardActions() {
+    ui::ChessBoardWidget board;
+    board.setState(controller_->board());
+    board.resize(500, 500);
+    auto* accessible = QAccessible::queryAccessibleInterface(&board);
+    QVERIFY(accessible);
+    auto* action = accessible->child(square("e2").index())->actionInterface();
+    QSignalSpy selections(&board, &ui::ChessBoardWidget::squareSelected);
+    action->doAction(QAccessibleActionInterface::pressAction());
+    QCOMPARE(selections.count(), 0); // Hidden squares are unavailable.
+    board.show();
+    board.setEnabled(false);
+    action->doAction(QAccessibleActionInterface::pressAction());
+    QCOMPARE(selections.count(), 0);
+    QVERIFY(accessible->child(square("e2").index())->state().disabled);
+}
+void AnalysisTest::numberedHistory() {
+    controller_->reset(std::string("4k3/8/8/8/8/8/8/4K3 b - - 0 42"));
+    QTRY_VERIFY(!controller_->busy());
+    play(move("e8", "d8"));
+    QCOMPARE(controller_->history().back().label, QStringLiteral("42... Kd8"));
+    play(move("e1", "d1"));
+    QCOMPARE(controller_->history().back().label, QStringLiteral("43. Kd1"));
+    controller_->previous();
+    QTRY_VERIFY(!controller_->busy());
+    QCOMPARE(controller_->continuations().front().label, QStringLiteral("43. Kd1"));
+}
+void AnalysisTest::transposedAnnotationsAndReuse() {
+    play(move("g1", "f3"));
+    play(move("g8", "f6"));
+    play(move("g2", "g3"));
+    play(move("g7", "g6"));
+    const auto first = controller_->currentNode();
+    const auto position = controller_->board().pieces;
+    controller_->toggleAnnotation({square("f3"), square("g5"), 0});
+    controller_->beginning();
+    QTRY_VERIFY(!controller_->busy());
+    play(move("g2", "g3"));
+    play(move("g7", "g6"));
+    play(move("g1", "f3"));
+    play(move("g8", "f6"));
+    const auto second = controller_->currentNode();
+    QVERIFY(first != second);
+    QCOMPARE(controller_->board().pieces, position);
+    QVERIFY(controller_->board().annotations.empty());
+    QVERIFY(!controller_->canUndoAnnotation());
+    controller_->toggleAnnotation({square("f6"), square("g4"), 1});
+    controller_->previous();
+    QTRY_VERIFY(!controller_->busy());
+    play(move("g8", "f6"));
+    QCOMPARE(controller_->currentNode(), second); // Reuses the existing continuation.
+    QCOMPARE(controller_->board().annotations.front().color, 1);
+    controller_->navigate(first);
+    QTRY_VERIFY(!controller_->busy());
+    QCOMPARE(controller_->board().annotations.size(), std::size_t{1});
+    QCOMPARE(controller_->board().annotations.front().color, 0);
+    controller_->undoAnnotation();
+    QVERIFY(controller_->board().annotations.empty());
+    controller_->navigate(second);
+    QTRY_VERIFY(!controller_->busy());
+    QCOMPARE(controller_->board().annotations.size(), std::size_t{1});
 }
 void AnalysisTest::specialMoves_data() {
     QTest::addColumn<QString>("fen");
@@ -371,6 +521,73 @@ void AnalysisTest::geometryAndAccessibility() {
     a1->actionInterface()->doAction(QAccessibleActionInterface::setFocusAction());
     QCOMPARE(board.focusedSquare(), square("a1"));
     QVERIFY(board.entryMode());
+}
+void AnalysisTest::accessibleMoveDestinations_data() {
+    QTest::addColumn<QString>("fen");
+    QTest::addColumn<QString>("source");
+    QTest::addColumn<QString>("destination");
+    QTest::addColumn<QString>("description");
+    QTest::newRow("quiet") << QStringLiteral("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1")
+                           << QStringLiteral("e2") << QStringLiteral("e4")
+                           << QStringLiteral("legal move destination");
+    QTest::newRow("capture") << QStringLiteral("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 2")
+                             << QStringLiteral("e4") << QStringLiteral("d5")
+                             << QStringLiteral("legal capture");
+    QTest::newRow("quiet-to-en-passant-square")
+        << QStringLiteral("4k3/8/8/3pPN2/8/8/8/4K3 w - d6 0 2") << QStringLiteral("f5")
+        << QStringLiteral("d6") << QStringLiteral("legal move destination");
+    QTest::newRow("en-passant") << QStringLiteral("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2")
+                                << QStringLiteral("e5") << QStringLiteral("d6")
+                                << QStringLiteral("legal capture");
+}
+void AnalysisTest::accessibleMoveDestinations() {
+    QFETCH(QString, fen);
+    QFETCH(QString, source);
+    QFETCH(QString, destination);
+    QFETCH(QString, description);
+    controller_->reset(fen.toStdString());
+    QTRY_VERIFY(!controller_->busy());
+    controller_->selectSquare(*chess::Square::fromName(source.toStdString()));
+    ui::ChessBoardWidget board;
+    board.setState(controller_->board());
+    auto* accessible = QAccessible::queryAccessibleInterface(&board);
+    const auto target = *chess::Square::fromName(destination.toStdString());
+    const auto selected = *controller_->board().selection;
+    const bool capture = std::any_of(
+        controller_->board().captureMoves.begin(), controller_->board().captureMoves.end(),
+        [&](const auto& move) { return move.from == selected && move.to == target; });
+    QCOMPARE(capture, description == QStringLiteral("legal capture"));
+    QVERIFY(accessible->child(target.index())->text(QAccessible::Name).contains(description));
+    controller_->clearSelection();
+    board.setState(controller_->board());
+    QVERIFY(!accessible->child(target.index())->text(QAccessible::Name).contains(description));
+}
+void AnalysisTest::annotationBounds() {
+    QSignalSpy failures(controller_.get(), &app::AnalysisController::failed);
+    for (int i = 0; i < 260; ++i) {
+        controller_->toggleAnnotation({*chess::Square::fromCoordinates(i % 8, i / 8 % 8),
+                                       *chess::Square::fromCoordinates(i / 64, 7), 0});
+    }
+    QCOMPARE(controller_->board().annotations.size(), std::size_t{256});
+    QCOMPARE(failures.count(), 4);
+    int undos = 0;
+    while (controller_->canUndoAnnotation()) {
+        controller_->undoAnnotation();
+        ++undos;
+    }
+    QCOMPARE(undos, 64);
+    QCOMPARE(controller_->board().annotations.size(), std::size_t{192});
+    int redos = 0;
+    while (controller_->canRedoAnnotation()) {
+        controller_->redoAnnotation();
+        ++redos;
+    }
+    QCOMPARE(redos, 64);
+    QCOMPARE(controller_->board().annotations.size(), std::size_t{256});
+    controller_->clearAnnotations();
+    QVERIFY(controller_->board().annotations.empty());
+    controller_->undoAnnotation();
+    QCOMPARE(controller_->board().annotations.size(), std::size_t{256});
 }
 void AnalysisTest::clickDragAndKeyboard() {
     ui::AnalysisPage page(*controller_);
@@ -507,6 +724,18 @@ void AnalysisTest::preferenceRoundTrip() {
     QCOMPARE(qvariant_cast<app::UiState>(restored.front().front()).board, state.board);
     reader.saveAndClose();
     QTRY_COMPARE(readerClosed.count(), 1);
+}
+void AnalysisTest::customColorPresentation() {
+    ui::AnalysisPage page(*controller_);
+    auto preferences = page.preferences();
+    preferences.annotationColors[0] = QStringLiteral("#aa22cc");
+    page.setPreferences(preferences);
+    const auto* colors = page.findChild<QComboBox*>(QStringLiteral("annotationColor"));
+    QVERIFY(colors);
+    QVERIFY(!colors->itemIcon(0).isNull());
+    QCOMPARE(colors->itemIcon(0).pixmap(16, 16).toImage().pixelColor(8, 8), QColor("#aa22cc"));
+    QCOMPARE(colors->itemData(0, Qt::ToolTipRole).toString(), QStringLiteral("#aa22cc"));
+    QCOMPARE(colors->itemText(0), QStringLiteral("Color 1"));
 }
 void AnalysisTest::invalidPreferences() {
     QTemporaryDir directory;

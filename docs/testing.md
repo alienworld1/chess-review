@@ -299,6 +299,13 @@ branch preservation, per-node annotations and undo/redo, promotion cancellation,
 castling, en passant, underpromotion, stale input rejection, and worker shutdown.
 Widget tests exercise both orientations, boundary hit testing, drag/click entry,
 keyboard modes, annotations, hide cancellation, and accessible square actions.
+Regressions also cover direct jumps across forks, numbered histories from a
+Black-to-move FEN root, separate annotations at transpositions, existing-node
+reuse, annotation/undo limits, and releases without intermediate pointer events.
+Cancelled promotion actions cannot submit after flipping, hiding, disabling, or
+changing preferences. Accessibility checks include unavailable square actions and
+legal quiet/capture/en-passant descriptions, including a quiet knight move to an
+en-passant target without inheriting the pawn’s capture marker.
 Preference tests round-trip board choices and reject malformed colors.
 
 The production process-exit probe also creates a live analysis and tests window,

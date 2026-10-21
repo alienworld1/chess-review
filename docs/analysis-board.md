@@ -25,7 +25,9 @@ with separate sections for moves, history, annotations, and color modifiers.
 Beginning, Previous, Next, and End navigate the session. History selects an
 ancestor; Continue with selects an existing branch. A different move from an
 older position adds a variation without deleting the existing continuation.
-Forward navigation follows the continuation last chosen at each fork.
+History and continuation labels include move numbers and side-to-move punctuation.
+Forward navigation follows the continuation last chosen at each fork; selecting a
+node also selects its complete path through earlier forks.
 
 When the board or history buttons have focus, Left/Right navigate history and
 Home/End go to its beginning/end. On the board, Enter enables square navigation:
@@ -36,7 +38,8 @@ Tab reaches ordinary controls; shortcuts do not take arrows from their editors.
 ## Annotations
 
 Right-click a square to toggle its highlight; right-drag between squares to toggle
-an arrow. The toolbar selects the default color. Shift uses color 2 (red by
+an arrow. The toolbar selects the default color using numbered slots and current-color
+swatches. Shift uses color 2 (red by
 default), Ctrl color 3 (yellow), and Ctrl+Shift color 4 (blue). Color 1 is green.
 Board Options customizes the selected color and provides help, clear-current,
 annotation undo, and redo. Undo/redo apply to annotations, not moves.
@@ -63,4 +66,6 @@ License displays the bundled notices and provenance. The app never downloads art
 at runtime.
 
 Native screen-reader behavior and mixed-monitor rendering require platform QA;
-the automated suite verifies the accessible square interfaces and actions.
+the automated suite verifies the accessible square interfaces and actions,
+including selected pieces, legal destinations, captures, check, and mate. Hidden
+or disabled boards cannot be activated through square actions.

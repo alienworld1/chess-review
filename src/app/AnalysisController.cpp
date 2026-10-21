@@ -6,6 +6,13 @@
 #include <exception>
 
 namespace chess_review::app {
+namespace {
+QString moveLabel(std::uint32_t number, chess::Color side, const std::string& san) {
+    return QStringLiteral("%1%2 %3").arg(number).arg(
+        side == chess::Color::White ? QStringLiteral(".") : QStringLiteral("..."),
+        QString::fromStdString(san));
+}
+} // namespace
 struct AnalysisController::Session {
     std::optional<chess::GameTree> tree;
     chess::NodeId current{0};
@@ -92,24 +99,35 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
                         if (position.pieceAt(move.to) ||
                             (piece && piece->type == chess::PieceType::Pawn &&
                              move.from.file() != move.to.file())) {
-                            snapshot.board.captureTargets.push_back(move.to);
+                            snapshot.board.captureMoves.push_back(move);
                         }
                     }
                     snapshot.board.lastMove = node->move;
                     snapshot.parent = node->parent;
                     snapshot.hasMoves = tree.size() > 1;
                     auto cursor = node;
+                    auto number = position.fullmoveNumber();
+                    auto movedSide = position.sideToMove();
                     while (cursor) {
-                        snapshot.history.push_back(
-                            {cursor->id, cursor->san ? QString::fromStdString(*cursor->san)
-                                                     : tr("Initial position")});
+                        if (cursor->san) {
+                            movedSide = movedSide == chess::Color::White ? chess::Color::Black
+                                                                         : chess::Color::White;
+                            if (movedSide == chess::Color::Black) {
+                                --number;
+                            }
+                            snapshot.history.push_back(
+                                {cursor->id, moveLabel(number, movedSide, *cursor->san)});
+                        } else {
+                            snapshot.history.push_back({cursor->id, tr("Starting position")});
+                        }
                         cursor = cursor->parent ? tree.node(*cursor->parent) : std::nullopt;
                     }
                     std::reverse(snapshot.history.begin(), snapshot.history.end());
                     for (auto child : node->children) {
                         const auto continuation = tree.node(child);
                         snapshot.continuations.push_back(
-                            {child, QString::fromStdString(*continuation->san)});
+                            {child, moveLabel(position.fullmoveNumber(), position.sideToMove(),
+                                              *continuation->san)});
                     }
                     snapshot.board.interactive = true;
                 } else {
@@ -222,12 +240,17 @@ void AnalysisController::attemptMove(chess::Move move, std::uint64_t revision) {
 }
 void AnalysisController::navigate(chess::NodeId node) {
     submit([node](Session& session) {
-        if (!session.tree || !session.tree->node(node)) {
+        if (!session.tree) {
             return tr("Move is unavailable.");
         }
-        const auto target = session.tree->node(node);
-        if (target->parent) {
-            session.chosen.insert_or_assign(*target->parent, node);
+        auto target = session.tree->node(node);
+        if (!target) {
+            return tr("Move is unavailable.");
+        }
+        // A direct jump selects the entire path, including forks above its parent.
+        while (target->parent) {
+            session.chosen.insert_or_assign(*target->parent, target->id);
+            target = session.tree->node(*target->parent);
         }
         session.current = node;
         return QString{};

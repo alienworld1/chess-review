@@ -2,14 +2,17 @@
 #include "ui/chess/ChessBoardWidget.h"
 #include <QAccessible>
 #include <QAction>
+#include <QColor>
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPixmap>
 #include <QPushButton>
 #include <QShortcut>
 #include <QSignalBlocker>
@@ -74,7 +77,7 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
         const auto index = static_cast<std::size_t>(color_->currentIndex());
         connect(dialog, &QColorDialog::colorSelected, this, [this, index](const QColor& color) {
             preferences_.annotationColors[index] = color.name();
-            board_->setPreferences(preferences_);
+            setPreferences(preferences_);
         });
         dialog->open();
     });
@@ -145,8 +148,7 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     auto* colorLabel = new QLabel(tr("Annotation:"), this);
     color_ = new QComboBox(this);
     color_->setObjectName(QStringLiteral("annotationColor"));
-    color_->addItems(
-        {tr("Green / color 1"), tr("Red / color 2"), tr("Yellow / color 3"), tr("Blue / color 4")});
+    color_->addItems({tr("Color 1"), tr("Color 2"), tr("Color 3"), tr("Color 4")});
     colorLabel->setBuddy(color_);
     preferences->addWidget(colorLabel);
     preferences->addWidget(color_);
@@ -260,6 +262,13 @@ void AnalysisPage::setPreferences(const app::BoardPreferences& preferences) {
     input_->setCurrentIndex(preferences.inputMode == app::BoardInputMode::Drag ? 0 : 1);
     coordinates_->setChecked(preferences.coordinates);
     animation_->setChecked(preferences.animation);
+    for (std::size_t i = 0; i < preferences.annotationColors.size(); ++i) {
+        const auto index = static_cast<int>(i);
+        QPixmap swatch(16, 16);
+        swatch.fill(QColor(preferences.annotationColors[i]));
+        color_->setItemIcon(index, QIcon(swatch));
+        color_->setItemData(index, preferences.annotationColors[i], Qt::ToolTipRole);
+    }
     board_->setPreferences(preferences);
 }
 void AnalysisPage::refresh() {
