@@ -69,6 +69,7 @@ add_library(chess_review_ui STATIC
     src/ui/chess/BoardAccessibility.cpp
     src/ui/analysis/AnalysisPage.cpp
     src/ui/analysis/MoveNavigation.cpp
+    src/ui/analysis/MoveNavigationAccessibility.cpp
     src/ui/shell/MainWindow.cpp
     src/ui/shell/StartupPanel.cpp
     src/ui/shell/DiagnosticsDialog.cpp

@@ -33,9 +33,9 @@ See [development setup](development.md) for Qt SDK selection and
 All test presets show failure output and fail if no tests match, including an
 accidentally empty label/regex selection. Every Qt suite has a 30-second CTest
 limit. Component labels are `diagnostics`, `persistence`, `startup`, `shell`, and
-`app_paths`, `game_repository`, `analysis`, `move_navigation`, and
-`move_navigation_state`; Qt suites have `qt`, and all except `app_paths` and
-`move_navigation_state` also have `integration`.
+`app_paths`, `game_repository`, `analysis`, `move_navigation`,
+`move_navigation_adversarial`, and `move_navigation_state`; Qt suites have `qt`.
+All except `app_paths` and `move_navigation_state` also have `integration`.
 Chess cases have `unit` and `chess` labels, assigned from their Catch2 tags.
 Run them with `ctest --preset dev -L chess` or `./build/dev/tests/chess_tests`.
 They cover established perft fixtures, strict FEN, legal moves, SAN/UCI,
@@ -327,7 +327,7 @@ separate release checks.
 
 ## Move timeline and variation navigation
 
-`ctest --preset dev -R '^(move_navigation(_state)?|analysis|shell|startup)$'` covers the
+`ctest --preset dev -R '^(move_navigation(_state|_adversarial)?|analysis|shell|startup)$'` covers the
 chosen-line timeline, numbered FEN roots, PGN token hit testing and per-move
 accessibility, branch expansion, remembered choices, snapshot reuse, orientation,
 and validated UI preferences. Queued navigation tests issue multiple intents
@@ -341,3 +341,10 @@ the line. These are correctness/responsiveness checks, not portable timing claim
 PGN and layout screenshots can be captured with `CHESS_REVIEW_SCREENSHOT_DIR` set
 to an existing absolute directory. Native screen readers, actual monitor changes,
 and Windows still need platform QA.
+
+The `move_navigation_adversarial` suite additionally verifies explicit fork choices
+during validation, timeline accessibility selection after external navigation,
+visibility of wrapped moves in short panes, per-view accessible child ownership,
+visible focus on selected moves, inherited palette/font, hover invalidation after
+scrolling, and initial navigation boundaries. Its rendered fixtures use the same
+`CHESS_REVIEW_SCREENSHOT_DIR` option as the workspace fixtures.

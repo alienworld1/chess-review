@@ -57,3 +57,7 @@ chess_review_add_qt_test(move_navigation_tests move_navigation INTEGRATION WIDGE
 chess_review_add_qt_test(move_navigation_state_tests move_navigation_state
     SOURCES qt/MoveNavigationStateTest.cpp
     LIBRARIES chess_review_startup)
+
+chess_review_add_qt_test(move_navigation_adversarial_tests move_navigation_adversarial INTEGRATION WIDGETS
+    SOURCES qt/MoveNavigationAdversarialTest.cpp
+    LIBRARIES chess_review_ui)

@@ -51,10 +51,12 @@ class GameTreeView final : public QTreeView {
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void leaveEvent(QEvent* event) override;
-    void resizeEvent(QResizeEvent* event) override;
+    bool viewportEvent(QEvent* event) override;
 
   private:
     void refresh();
+    void revealMove(app::NavigationTarget target);
+    void clearHover();
     app::AnalysisController& controller_;
     VariationModel* moves_;
     std::optional<chess::NodeId> displayed_;

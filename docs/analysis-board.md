@@ -32,7 +32,9 @@ navigation target has a distinct outline/underline.
 The PGN pane displays bold mainline moves and indented, collapsible variations.
 Long lines wrap in bounded segments. Disclosure controls and plus/minus expand or
 collapse variations. Up/Down browse lines; Ctrl+Left/Right focus individual moves
-within a line and Enter selects. Left/Right and Home/End navigate chess history
+within a line and Enter selects. An outline marks keyboard focus independently
+of the current-position fill. Wrapped lines can scroll within a short pane to
+keep the focused move visible. Left/Right and Home/End navigate chess history
 when the board, navigation controls, timeline, or PGN pane has focus. Ordinary
 editors retain their keys. Wheel input scrolls the hovered view.
 

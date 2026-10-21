@@ -193,11 +193,13 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
                                                                     auto method) {
         auto* button = new QPushButton(text, navigationWidget);
         connect(button, &QPushButton::clicked, &controller_, method);
-        connect(&controller_, &app::AnalysisController::changed, button, [this, button, method] {
+        const auto refreshButton = [this, button, method] {
             const bool backward = method == &app::AnalysisController::previous ||
                                   method == &app::AnalysisController::beginning;
             button->setEnabled(backward ? controller_.canPrevious() : controller_.canNext());
-        });
+        };
+        connect(&controller_, &app::AnalysisController::changed, button, refreshButton);
+        refreshButton();
         navigation->addWidget(button);
     };
     addNavigation(tr("Beginning"), &app::AnalysisController::beginning);

@@ -166,13 +166,13 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
     if (!snapshot.error.isEmpty()) {
         pendingNavigation_.reset();
     }
-    if (animatedMove && snapshot.error.isEmpty() && navigationTree_) {
-        rememberPath(snapshot.current);
-        if (pendingNavigation_) {
-            rememberPath(*pendingNavigation_);
-        }
+    if (animatedMove && snapshot.error.isEmpty() && navigationTree_ && pendingMoveChoice_) {
+        // Ancestor navigation preserves choices. Only the move's own edge is new;
+        // an explicit choice of that edge during validation has already won.
+        chosen_.insert_or_assign(*pendingMoveChoice_, snapshot.current);
         updateChosenLine();
     }
+    pendingMoveChoice_.reset();
     if (pendingNavigation_ && *pendingNavigation_ != snapshot.current) {
         // A newer intent owns the display. Only topology from this result is retained.
         dispatchNavigation();
@@ -226,6 +226,7 @@ void AnalysisController::reset(const std::optional<std::string>& fen) {
     }
     ++sessionGeneration_;
     pendingNavigation_.reset();
+    pendingMoveChoice_.reset();
     requested_ = current_;
     if (busy_) {
         pendingReset_ = ResetRequest{fen};
@@ -267,6 +268,7 @@ void AnalysisController::attemptMove(chess::Move move, std::uint64_t revision) {
     if (!board_.interactive || revision != board_.revision) {
         return;
     }
+    pendingMoveChoice_ = current_;
     submit(
         [move](Session& session) {
             if (!session.tree) {
@@ -285,6 +287,9 @@ void AnalysisController::attemptMove(chess::Move move, std::uint64_t revision) {
 void AnalysisController::rememberPath(chess::NodeId node) {
     while (navigationTree_->nodes.at(node).parent) {
         const auto parent = *navigationTree_->nodes.at(node).parent;
+        if (pendingMoveChoice_ == parent) {
+            pendingMoveChoice_.reset();
+        }
         chosen_.insert_or_assign(parent, node);
         node = parent;
     }
@@ -451,6 +456,7 @@ void AnalysisController::close() {
     }
     closing_ = true;
     pendingNavigation_.reset();
+    pendingMoveChoice_.reset();
     pendingReset_.reset();
     ++sessionGeneration_;
     ++request_;

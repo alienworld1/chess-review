@@ -1,7 +1,6 @@
 #include "ui/analysis/MoveNavigation.h"
 #include <QAbstractTableModel>
-#include <QAccessibleWidget>
-#include <QApplication>
+#include <QAccessible>
 #include <QFontMetrics>
 #include <QHeaderView>
 #include <QItemSelectionModel>
@@ -19,7 +18,15 @@
 #include <memory>
 
 namespace chess_review::ui {
+void installMoveNavigationAccessibility();
 namespace {
+constexpr int currentPositionRole = Qt::UserRole;
+constexpr int pendingPositionRole = Qt::UserRole + 1;
+
+QString navigationHelp() {
+    return GameTreeView::tr("Click a move to navigate. Ctrl+Left/Right focuses moves in a line; "
+                            "Enter selects. Plus/minus expands/collapses variations.");
+}
 bool historyKey(QKeyEvent* event, app::AnalysisController& controller) {
     if (event->modifiers() != Qt::NoModifier) {
         return false;
@@ -57,16 +64,11 @@ QVariant moveData(const app::AnalysisController& controller, chess::NodeId node,
                    ? QObject::tr("Pending position")
                    : QObject::tr("Go to position");
     }
-    if (role == Qt::BackgroundRole && controller.currentNode() == node) {
-        return QApplication::palette().highlight();
+    if (role == currentPositionRole) {
+        return controller.currentNode() == node;
     }
-    if (role == Qt::ForegroundRole && controller.currentNode() == node) {
-        return QApplication::palette().highlightedText();
-    }
-    if (role == Qt::FontRole && controller.busy() && controller.requestedNode() == node) {
-        auto font = QApplication::font();
-        font.setUnderline(true);
-        return font;
+    if (role == pendingPositionRole) {
+        return controller.busy() && controller.requestedNode() == node;
     }
     return {};
 }
@@ -160,13 +162,16 @@ namespace {
 class TimelineDelegate final : public QStyledItemDelegate {
   public:
     explicit TimelineDelegate(QObject* parent) : QStyledItemDelegate(parent) {}
-    void paint(QPainter* painter, const QStyleOptionViewItem& option,
-               const QModelIndex& index) const override {
-        auto state = option;
-        // Selection is keyboard/accessibility focus. Only the published position
-        // gets a filled background; pending intent remains separately underlined.
-        state.state &= ~QStyle::State_Selected;
-        QStyledItemDelegate::paint(painter, state, index);
+    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
+        QStyledItemDelegate::initStyleOption(option, index);
+        option->state &= ~QStyle::State_Selected;
+        if (index.data(currentPositionRole).toBool()) {
+            option->backgroundBrush = option->palette.highlight();
+            option->palette.setBrush(QPalette::Text, option->palette.highlightedText());
+        }
+        if (index.data(pendingPositionRole).toBool()) {
+            option->font.setUnderline(true);
+        }
     }
 };
 } // namespace
@@ -196,6 +201,7 @@ MoveTimelineView::MoveTimelineView(app::AnalysisController& controller, QWidget*
                         return;
                     }
                 }
+                refresh(); // A current board position cannot be deselected.
             });
     connect(this, &QTableView::clicked, this, [this](const QModelIndex& index) {
         if (const auto node = moves_->node(index)) {
@@ -218,6 +224,12 @@ void MoveTimelineView::refresh() {
     setEnabled(controller_.canNavigate());
     if (focused && currentIndex() != moves_->indexFor(*focused)) {
         setCurrentIndex(moves_->indexFor(*focused));
+    }
+    const auto published = moves_->indexFor(controller_.currentNode());
+    if (published.isValid()) {
+        selectionModel()->select(published, QItemSelectionModel::ClearAndSelect);
+    } else {
+        selectionModel()->clearSelection();
     }
     if (displayed_ != controller_.currentNode()) {
         displayed_ = controller_.currentNode();
@@ -386,8 +398,9 @@ class VariationDelegate final : public QStyledItemDelegate {
                                     : option.palette.text().color());
             painter->drawText(token.rect.adjusted(8, 0, -8, 0), Qt::AlignVCenter, token.text);
             if (pending || focused) {
-                QPen pen(option.palette.highlight().color(), pending ? 2 : 1,
-                         pending ? Qt::DashLine : Qt::DotLine);
+                QPen pen(current ? option.palette.highlightedText().color()
+                                 : option.palette.highlight().color(),
+                         pending ? 2 : 1, pending ? Qt::DashLine : Qt::DotLine);
                 painter->setPen(pen);
                 painter->drawRect(token.rect.adjusted(1, 1, -2, -2));
             }
@@ -401,168 +414,11 @@ class VariationDelegate final : public QStyledItemDelegate {
     VariationModel& model_;
 };
 
-class AccessibleMove final : public QAccessibleInterface, public QAccessibleActionInterface {
-  public:
-    AccessibleMove(GameTreeView& view, app::NavigationTarget target)
-        : view_(view), target_(target) {}
-    app::NavigationTarget target() const { return target_; }
-    bool isValid() const override { return view_.validTarget(target_); }
-    QObject* object() const override { return nullptr; }
-    QWindow* window() const override { return parent()->window(); }
-    QAccessibleInterface* childAt(int, int) const override { return nullptr; }
-    QAccessibleInterface* parent() const override {
-        return QAccessible::queryAccessibleInterface(&view_);
-    }
-    QAccessibleInterface* child(int) const override { return nullptr; }
-    int childCount() const override { return 0; }
-    int indexOfChild(const QAccessibleInterface*) const override { return -1; }
-    QString text(QAccessible::Text type) const override {
-        if (type == QAccessible::Name) {
-            return view_.moveDescription(target_);
-        }
-        if (type == QAccessible::Description) {
-            return view_.isPending(target_)   ? QObject::tr("Pending position")
-                   : view_.isCurrent(target_) ? QObject::tr("Current position")
-                                              : QObject::tr("Go to position");
-        }
-        return {};
-    }
-    void setText(QAccessible::Text, const QString&) override {}
-    QRect rect() const override {
-        const auto local = view_.moveRect(target_);
-        return local.isEmpty()
-                   ? QRect{}
-                   : QRect(view_.viewport()->mapToGlobal(local.topLeft()), local.size());
-    }
-    QAccessible::Role role() const override { return QAccessible::ListItem; }
-    QAccessible::State state() const override {
-        QAccessible::State state;
-        state.invalid = !isValid();
-        state.focusable = true;
-        state.selectable = true;
-        state.selected = view_.isCurrent(target_);
-        state.focused = view_.isMoveFocused(target_);
-        state.busy = view_.isPending(target_);
-        state.disabled = !view_.isEnabled();
-        state.invisible = !view_.isVisible() || rect().isEmpty();
-        state.offscreen = !view_.viewport()->rect().intersects(view_.moveRect(target_));
-        state.expandable = view_.canExpand(target_);
-        state.expanded = state.expandable && view_.expanded(target_);
-        state.collapsed = state.expandable && !state.expanded;
-        return state;
-    }
-    void* interface_cast(QAccessible::InterfaceType type) override {
-        return type == QAccessible::ActionInterface ? static_cast<QAccessibleActionInterface*>(this)
-                                                    : nullptr;
-    }
-    QStringList actionNames() const override {
-        auto actions = QStringList{pressAction(), setFocusAction()};
-        if (view_.canExpand(target_)) {
-            actions.push_back(toggleAction());
-        }
-        return actions;
-    }
-    void doAction(const QString& action) override {
-        if (!view_.isVisible() || !view_.isEnabled() || !isValid()) {
-            return;
-        }
-        if (action == pressAction()) {
-            view_.activateMove(target_);
-        }
-        if (action == setFocusAction()) {
-            view_.focusMove(target_);
-        }
-        if (action == toggleAction()) {
-            view_.toggleExpanded(target_);
-        }
-    }
-    QStringList keyBindingsForAction(const QString& action) const override {
-        return action == pressAction() ? QStringList{QStringLiteral("Enter")} : QStringList{};
-    }
-
-  private:
-    GameTreeView& view_;
-    app::NavigationTarget target_;
-};
-class AccessibleGameTree final : public QAccessibleWidget {
-  public:
-    explicit AccessibleGameTree(GameTreeView& view)
-        : QAccessibleWidget(&view, QAccessible::List), view_(view) {}
-    ~AccessibleGameTree() override {
-        for (const auto& [key, id] : children_) {
-            static_cast<void>(key);
-            QAccessible::deleteAccessibleInterface(id);
-        }
-    }
-    int childCount() const override {
-        synchronize();
-        return view_.moveCount();
-    }
-    QAccessibleInterface* child(int index) const override {
-        synchronize();
-        const auto target = view_.moveAt(index);
-        if (!target) {
-            return nullptr;
-        }
-        const auto key = std::pair{target->session, target->node};
-        // Allocate the registry slot first: a throwing map insertion must not strand
-        // an interface whose ownership has already transferred to Qt.
-        const auto found = children_.try_emplace(key, 0).first;
-        if (found->second == 0) {
-            auto move = std::make_unique<AccessibleMove>(view_, *target);
-            found->second = QAccessible::registerAccessibleInterface(move.get());
-            if (found->second != 0) {
-                return move.release(); // Qt's accessibility registry now owns the interface.
-            }
-            return nullptr;
-        }
-        return QAccessible::accessibleInterface(found->second);
-    }
-    int indexOfChild(const QAccessibleInterface* candidate) const override {
-        const auto* move = dynamic_cast<const AccessibleMove*>(candidate);
-        return move ? view_.moveIndex(move->target()) : -1;
-    }
-    QAccessibleInterface* childAt(int x, int y) const override {
-        const auto target = view_.targetAt(view_.viewport()->mapFromGlobal(QPoint(x, y)));
-        return target ? child(view_.moveIndex(*target)) : nullptr;
-    }
-    QAccessibleInterface* focusChild() const override {
-        const auto target = view_.focusedTarget();
-        return view_.hasFocus() && target ? child(view_.moveIndex(*target)) : nullptr;
-    }
-
-  private:
-    void synchronize() const {
-        const auto root = view_.moveAt(0);
-        if (root && session_ == root->session) {
-            return;
-        }
-        for (const auto& [key, id] : children_) {
-            static_cast<void>(key);
-            QAccessible::deleteAccessibleInterface(id);
-        }
-        children_.clear();
-        session_ = root ? std::optional{root->session} : std::nullopt;
-    }
-    GameTreeView& view_;
-    mutable std::optional<std::uint64_t> session_;
-    mutable std::map<std::pair<std::uint64_t, chess::NodeId>, QAccessible::Id> children_;
-};
-QAccessibleInterface* navigationFactory(const QString&, QObject* object) {
-    if (auto* view = qobject_cast<GameTreeView*>(object)) {
-        return new AccessibleGameTree(*view);
-    }
-    return nullptr;
-}
 } // namespace
 
 GameTreeView::GameTreeView(app::AnalysisController& controller, QWidget* parent)
     : QTreeView(parent), controller_(controller), moves_(new VariationModel(controller, this)) {
-    static const bool installed = [] {
-        QAccessible::installFactory(navigationFactory);
-        return true;
-    }();
-    static_cast<void>(installed);
+    installMoveNavigationAccessibility();
     setObjectName(QStringLiteral("gameTree"));
     setAccessibleName(tr("PGN variations"));
     setModel(moves_);
@@ -574,10 +430,12 @@ GameTreeView::GameTreeView(app::AnalysisController& controller, QWidget* parent)
     setIndentation(0);
     setRootIsDecorated(false);
     setItemsExpandable(false);
+    setVerticalScrollMode(ScrollPerPixel);
     setMouseTracking(true);
     setMinimumSize(200, 80);
-    setToolTip(tr("Click a move to navigate. Ctrl+Left/Right focuses moves in a line; Enter "
-                  "selects. Plus/minus expands/collapses variations."));
+    setToolTip(navigationHelp());
+    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { clearHover(); });
+    connect(horizontalScrollBar(), &QScrollBar::valueChanged, this, [this] { clearHover(); });
     connect(&controller_, &app::AnalysisController::changed, this, &GameTreeView::refresh);
     refresh();
 }
@@ -659,17 +517,35 @@ void GameTreeView::focusMove(app::NavigationTarget target) {
     }
     focused_ = target;
     const auto index = moves_->indexFor(target.node);
-    for (auto ancestor = index.parent(); ancestor.isValid(); ancestor = ancestor.parent()) {
-        expand(ancestor);
-    }
     setCurrentIndex(index);
-    scrollTo(index, EnsureVisible);
     setFocus(Qt::OtherFocusReason);
+    revealMove(target);
     viewport()->update();
     QAccessibleEvent event(this, QAccessible::Focus);
     QAccessible::updateAccessibility(&event);
 }
+void GameTreeView::revealMove(app::NavigationTarget target) {
+    if (!validTarget(target)) {
+        return;
+    }
+    const auto index = moves_->indexFor(target.node);
+    for (auto ancestor = index.parent(); ancestor.isValid(); ancestor = ancestor.parent()) {
+        expand(ancestor);
+    }
+    scrollTo(index, EnsureVisible);
+    const auto rect = moveRect(target);
+    const auto visible = viewport()->rect();
+    if (rect.bottom() > visible.bottom()) {
+        verticalScrollBar()->setValue(verticalScrollBar()->value() + rect.bottom() -
+                                      visible.bottom());
+    } else if (rect.top() < visible.top()) {
+        verticalScrollBar()->setValue(verticalScrollBar()->value() + rect.top() - visible.top());
+    }
+}
 std::optional<app::NavigationTarget> GameTreeView::targetAt(const QPoint& point) const {
+    if (!viewport()->rect().contains(point)) {
+        return std::nullopt;
+    }
     const auto index = indexAt(point);
     if (!index.isValid()) {
         return std::nullopt;
@@ -708,20 +584,39 @@ void GameTreeView::mousePressEvent(QMouseEvent* event) {
     }
 }
 void GameTreeView::mouseMoveEvent(QMouseEvent* event) {
-    hovered_ = targetAt(event->position().toPoint());
-    viewport()->setCursor(hovered_ ? Qt::PointingHandCursor : Qt::ArrowCursor);
-    setToolTip(hovered_ ? moveDescription(*hovered_) : tr("Click a move to navigate"));
+    const auto target = targetAt(event->position().toPoint());
+    if (target) {
+        hovered_ = target;
+        viewport()->setCursor(Qt::PointingHandCursor);
+        setToolTip(moveDescription(*hovered_));
+    } else {
+        clearHover();
+    }
     viewport()->update();
     QTreeView::mouseMoveEvent(event);
 }
 void GameTreeView::leaveEvent(QEvent* event) {
-    hovered_.reset();
-    viewport()->update();
+    clearHover();
     QTreeView::leaveEvent(event);
 }
-void GameTreeView::resizeEvent(QResizeEvent* event) {
-    QTreeView::resizeEvent(event);
-    scheduleDelayedItemsLayout();
+void GameTreeView::clearHover() {
+    if (!hovered_) {
+        return;
+    }
+    hovered_.reset();
+    viewport()->unsetCursor();
+    setToolTip(navigationHelp());
+    viewport()->update();
+}
+bool GameTreeView::viewportEvent(QEvent* event) {
+    if (event->type() == QEvent::Leave || event->type() == QEvent::Resize ||
+        event->type() == QEvent::Hide) {
+        clearHover();
+    }
+    if (event->type() == QEvent::Resize) {
+        scheduleDelayedItemsLayout();
+    }
+    return QTreeView::viewportEvent(event);
 }
 void GameTreeView::keyPressEvent(QKeyEvent* event) {
     const auto index = currentIndex();
@@ -776,10 +671,12 @@ void GameTreeView::refresh() {
     static_cast<VariationDelegate*>(itemDelegate())->session = modelSession_;
     setEnabled(controller_.canNavigate());
     if (newSession) {
+        clearHover();
         focused_.reset();
         displayed_.reset();
     }
     if (rebuilt) {
+        clearHover();
         for (auto node : expandedNodes) {
             expand(moves_->indexFor(node));
         }
@@ -789,11 +686,7 @@ void GameTreeView::refresh() {
     }
     if (displayed_ != controller_.currentNode()) {
         displayed_ = controller_.currentNode();
-        const auto index = moves_->indexFor(*displayed_);
-        for (auto ancestor = index.parent(); ancestor.isValid(); ancestor = ancestor.parent()) {
-            expand(ancestor);
-        }
-        scrollTo(index, EnsureVisible);
+        revealMove({modelSession_, *displayed_});
     } else {
         verticalScrollBar()->setValue(scroll);
     }

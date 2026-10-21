@@ -88,6 +88,7 @@ class AnalysisController final : public QObject {
     std::map<chess::NodeId, chess::NodeId> chosen_;
     chess::NodeId requested_{0};
     std::optional<chess::NodeId> pendingNavigation_;
+    std::optional<chess::NodeId> pendingMoveChoice_;
     std::optional<ResetRequest> pendingReset_;
     std::uint64_t sessionGeneration_ = 0;
     bool resetting_ = false;
