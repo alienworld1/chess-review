@@ -4,8 +4,11 @@ A local-first desktop chess review app built with C++20 and Qt Widgets.
 Analyze now provides a playable board with legal move entry, branching history,
 promotion, a chosen-line timeline, collapsible PGN variations, keyboard controls,
 and annotations. Board orientation and the analysis split survive orderly exit.
-Analysis is session-only; an exit confirmation protects against accidental loss. Engine analysis and guided review
-are not implemented yet. Home offers import actions; Puzzles and Settings remain placeholders.
+Saved games open in Analyze with their full history, variations, comments, and NAGs.
+The last opened game and selected stored move resume after orderly exit.
+Exploratory moves and new board annotations are session-only; a discard confirmation
+protects against accidental loss. Engine analysis and guided review are not implemented
+yet. Home offers import actions; Puzzles and Settings remain placeholders.
 
 The shell includes navigation, saved window preferences, local SQLite storage,
 and diagnostics. A pure C++ chess core now provides validated positions, legal
@@ -13,8 +16,8 @@ moves, notation, game trees, and history-aware identity. A pure C++ PGN reader
 parses single and multi-game input. An asynchronous application service imports
 owned PGN text into transactional SQLite snapshots with duplicate detection;
 Games now lists saved snapshots with pagination and imports local PGN files through
-file selection, paste confirmation, and drag-and-drop. Opening saved games on the
-board remains future work.
+file selection, paste confirmation, and drag-and-drop. Select a game and choose
+**Open in Analyze**, double-click its row, or press Enter to explore it without an engine.
 
 ## Requirements
 

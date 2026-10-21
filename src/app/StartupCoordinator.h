@@ -58,6 +58,7 @@ class StartupCoordinator final : public QObject {
     GameLibraryController library_{database_};
     UiStateStore uiState_;
     std::optional<UiState> finalUiState_;
+    std::optional<GameResume> resume_;
     Lifecycle state_ = Lifecycle::Loading;
     bool confirmQuit_ = false;
     bool analysisClosed_ = false;

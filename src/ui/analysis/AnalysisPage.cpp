@@ -14,6 +14,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QShortcut>
@@ -30,11 +31,11 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     : QWidget(parent), controller_(controller) {
     setObjectName(QStringLiteral("analyzePage"));
     auto* layout = new QVBoxLayout(this);
-    auto* notice = new QLabel(
-        tr("Analysis — session only. Moves and annotations are discarded on exit."), this);
-    notice->setTextFormat(Qt::PlainText);
-    notice->setWordWrap(true);
-    layout->addWidget(notice);
+    notice_ = new QLabel(this);
+    notice_->setObjectName(QStringLiteral("analysisGameInfo"));
+    notice_->setTextFormat(Qt::PlainText);
+    notice_->setWordWrap(true);
+    layout->addWidget(notice_);
     auto* commands = new QHBoxLayout;
     auto* reset = new QPushButton(tr("New Analysis"), this);
     reset->setObjectName(QStringLiteral("newAnalysisButton"));
@@ -172,12 +173,14 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     boardLayout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(splitter_, 1);
     topPlayer_ = new QLabel(boardPane);
+    topPlayer_->setTextFormat(Qt::PlainText);
     topPlayer_->setAlignment(Qt::AlignHCenter);
     boardLayout->addWidget(topPlayer_);
     board_ = new ChessBoardWidget(boardPane);
     board_->setMinimumSize(248, 248);
     boardLayout->addWidget(board_, 1);
     bottomPlayer_ = new QLabel(this);
+    bottomPlayer_->setTextFormat(Qt::PlainText);
     bottomPlayer_->setAlignment(Qt::AlignHCenter);
     boardLayout->addWidget(bottomPlayer_);
     status_ = new QLabel(this);
@@ -220,6 +223,12 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     timeline_ = new MoveTimelineView(controller_, boardPane);
     boardLayout->addWidget(timeline_);
     tree_ = new GameTreeView(controller_, splitter_);
+    notes_ = new QPlainTextEdit(this);
+    notes_->setObjectName(QStringLiteral("positionNotes"));
+    notes_->setAccessibleName(tr("PGN comments and numeric annotation glyphs"));
+    notes_->setReadOnly(true);
+    notes_->setMaximumHeight(100);
+    layout->addWidget(notes_);
     splitter_->setStretchFactor(0, 1);
     splitter_->setStretchFactor(1, 1);
     connect(splitter_, &QSplitter::splitterMoved, this, [this] {
@@ -314,8 +323,21 @@ void AnalysisPage::refresh() {
     preferences_.blackAtBottom = controller_.board().blackAtBottom;
     undo_->setEnabled(controller_.board().interactive && controller_.canUndoAnnotation());
     redo_->setEnabled(controller_.board().interactive && controller_.canRedoAnnotation());
-    topPlayer_->setText(controller_.board().blackAtBottom ? tr("White") : tr("Black"));
-    bottomPlayer_->setText(controller_.board().blackAtBottom ? tr("Black") : tr("White"));
+    const auto white =
+        controller_.whitePlayer().isEmpty() ? tr("White") : controller_.whitePlayer();
+    const auto black =
+        controller_.blackPlayer().isEmpty() ? tr("Black") : controller_.blackPlayer();
+    topPlayer_->setText(controller_.board().blackAtBottom ? white : black);
+    bottomPlayer_->setText(controller_.board().blackAtBottom ? black : white);
+    notice_->setText(
+        controller_.gameId()
+            ? tr("%1\nSaved game. Exploration and new annotations are session-only.")
+                  .arg(controller_.gameDescription())
+            : tr("Analysis — session only. Moves and annotations are discarded on exit."));
+    if (notes_->toPlainText() != controller_.positionNotes()) {
+        notes_->setPlainText(controller_.positionNotes());
+    }
+    notes_->setVisible(!controller_.positionNotes().isEmpty());
     status_->setText(controller_.busy() ? tr("Updating position…")
                                         : controller_.board().positionDescription);
     QAccessibleEvent event(status_, QAccessible::NameChanged);
@@ -330,10 +352,10 @@ void AnalysisPage::requestDiscard(std::function<void()> onDiscard) {
         return;
     }
     confirming_ = true;
-    auto* dialog =
-        new QMessageBox(QMessageBox::Question, tr("Discard analysis?"),
-                        tr("This analysis is session-only. Discard its moves and annotations?"),
-                        QMessageBox::Discard | QMessageBox::Cancel, this);
+    auto* dialog = new QMessageBox(
+        QMessageBox::Question, tr("Discard analysis?"),
+        tr("Discard session-only moves and annotations? Imported games remain saved in Games."),
+        QMessageBox::Discard | QMessageBox::Cancel, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setObjectName(QStringLiteral("discardAnalysisDialog"));
     dialog->setDefaultButton(QMessageBox::Cancel);

@@ -202,6 +202,11 @@ void MainWindow::installAnalysis(app::AnalysisController& controller) {
         flip->setEnabled(!closing_ && navigation_.current() == app::Destination::Analyze);
     });
     flip->setEnabled(navigation_.current() == app::Destination::Analyze);
+    connect(&controller, &app::AnalysisController::gameOpened, this, [this] {
+        if (!closing_) {
+            navigation_.navigate(app::Destination::Analyze);
+        }
+    });
     selectDestination();
 }
 namespace {
@@ -256,8 +261,22 @@ void MainWindow::installImports(app::ImportController& imports,
     const int pageIndex = pages_->indexOf(placeholder);
     pages_->removeWidget(placeholder);
     delete placeholder;
-    pages_->insertWidget(pageIndex,
-                         new GamesPage(imports, library, *importFile_, *pastePgn_, pages_));
+    auto* games = new GamesPage(imports, library, *importFile_, *pastePgn_, pages_);
+    pages_->insertWidget(pageIndex, games);
+    connect(games, &GamesPage::openRequested, this, [this, &library](persistence::GameId id) {
+        if (!closing_ && analysis_ && !library.opening()) {
+            analysis_->requestDiscard([this, &library, id] {
+                if (!closing_) {
+                    library.open(id);
+                }
+            });
+        }
+    });
+    connect(&library, &app::GameLibraryController::changed, this, [this, &library] {
+        if (analysis_ && !closing_) {
+            analysis_->setEnabled(!library.opening());
+        }
+    });
     auto* home =
         pages_->findChild<QWidget*>(QStringLiteral("homePage"), Qt::FindDirectChildrenOnly);
     auto* homeLayout = qobject_cast<QVBoxLayout*>(home->layout());
@@ -278,6 +297,19 @@ void MainWindow::installImports(app::ImportController& imports,
     notice->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     qobject_cast<QVBoxLayout*>(scroll->widget()->layout())->insertWidget(2, notice);
     connect(&imports, &app::ImportController::rejected, notice, &QLabel::setText);
+    connect(&library, &app::GameLibraryController::openFailed, this,
+            [this, notice](const QString& message) {
+                notice->setText(message);
+                if (!closing_) {
+                    navigation_.navigate(app::Destination::Games);
+                }
+            });
+    if (analysis_) {
+        connect(&analysis_->controller(), &app::AnalysisController::failed, notice,
+                &QLabel::setText);
+        connect(&analysis_->controller(), &app::AnalysisController::gameOpened, notice,
+                &QLabel::clear);
+    }
     connect(&imports, &app::ImportController::submitted, this, [this, notice] {
         notice->clear();
         navigation_.navigate(app::Destination::Games);

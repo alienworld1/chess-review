@@ -5,17 +5,24 @@
 #include <QObject>
 #include <QString>
 #include <QThreadPool>
+#include <cstdint>
 #include <optional>
 
 namespace chess_review::app {
 // Stable privacy-safe diagnostic identifiers.
 enum class UiStateError { Read = 0, Invalid = 1, Write = 2, Busy = 3 };
 
+struct GameResume {
+    std::int64_t id;
+    std::uint64_t node;
+    bool operator==(const GameResume&) const = default;
+};
 struct UiState {
     QByteArray geometry;
     bool maximized = false;
     Destination destination = Destination::Home;
     BoardPreferences board{};
+    std::optional<GameResume> game = std::nullopt;
 };
 
 // Owning thread only. One load, then one saveAndClose; await closed() before destruction.

@@ -25,12 +25,50 @@ std::shared_ptr<const NavigationTree> makeNavigationTree(const chess::GameTree& 
         remaining.pop_back();
         const auto item = *tree.node(visit.id);
         navigation->nodes.emplace(
-            item.id, NavigationEntry{item.id, item.parent, item.children,
+            item.id, NavigationEntry{item.id,
+                                     item.parent,
+                                     item.children,
                                      item.san ? QString::fromStdString(*item.san) : QString{},
                                      item.san ? moveLabel(visit.number, visit.side, *item.san)
                                               : QCoreApplication::translate("AnalysisController",
                                                                             "Starting position"),
-                                     visit.number, visit.side});
+                                     visit.number,
+                                     visit.side,
+                                     0,
+                                     {}});
+        auto& notes = navigation->nodes.at(item.id).notes;
+        constexpr qsizetype maxNoteCharacters = 4096;
+        bool truncated = false;
+        const auto appendNote = [&](const QString& text) {
+            if (text.isEmpty() || truncated) {
+                return;
+            }
+            if (!notes.isEmpty()) {
+                notes += QLatin1Char('\n');
+            }
+            notes += text;
+            if (notes.size() > maxNoteCharacters) {
+                auto length = maxNoteCharacters;
+                if (notes.at(length - 1).isHighSurrogate()) {
+                    --length;
+                }
+                notes.truncate(length);
+                truncated = true;
+            }
+        };
+        appendNote(QString::fromStdString(item.annotations.commentBefore));
+        for (const auto nag : item.annotations.nags) {
+            if (truncated) {
+                break;
+            }
+            appendNote(QStringLiteral("$%1").arg(nag));
+        }
+        appendNote(QString::fromStdString(item.annotations.commentAfter));
+        if (truncated) {
+            notes += QCoreApplication::translate(
+                "AnalysisController",
+                "\n[Notes truncated for display; complete text remains saved.]");
+        }
         const auto nextSide =
             item.parent
                 ? (visit.side == chess::Color::White ? chess::Color::Black : chess::Color::White)

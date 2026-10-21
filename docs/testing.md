@@ -333,6 +333,8 @@ accessibility, branch expansion, remembered choices, snapshot reuse, orientation
 and validated UI preferences. Queued navigation tests issue multiple intents
 before delivering worker results and verify only the latest target is displayed.
 The worker retains one in-flight operation plus one replaceable navigation target.
+The 512-ply construction driver uses event-loop deliveries with a 15-second
+deadline, avoiding polling sleeps that artificially throttle worker round trips.
 
 The Widgets-free `move_navigation_state` suite reaches the supported 16,384-ply depth without
 recursive construction. UI fixtures exercise a 512-ply line, all 20 initial move
@@ -390,3 +392,19 @@ selection/focus and viewport position during updates. `visibleReportStress`
 presents 2,000 failed-game results with a UI heartbeat and reports local duration /
 maximum heartbeat gap; these measurements are observations, not portable latency
 budgets. No SQL fixture or query was moved outside persistence.
+
+## Phase 2 exit gate
+
+`ctest --preset dev -R '^game_opening$'` imports a multi-game PGN containing the
+complete Opera Game, an en passant setup, and an underpromotion. It opens each
+through the Games UI, walks all nodes/variations, checks mate, FEN numbering and
+plain-text comments/NAGs, and reopens the same stored game and variation after
+deleting the source. Replacement/discard, unrelated replies, failed loads and
+readiness invalidation have focused regressions.
+
+A second regression launches the production `main.cpp` twice with the existing
+test-only UI driver: import by drop, select/open an annotated variation, close,
+delete the source, restart, and verify the same game/node and orderly process
+exit. Drivers are never linked into the production binary. Linux XDG profiles are
+temporary. The test supports `CHESS_REVIEW_SCREENSHOT_DIR` for a rendered imported
+game workspace. Offscreen checks do not certify native desktop accessibility.

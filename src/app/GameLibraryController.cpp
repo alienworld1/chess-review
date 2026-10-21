@@ -6,6 +6,25 @@
 namespace chess_review::app {
 GameLibraryController::GameLibraryController(persistence::Database& database, QObject* parent)
     : QObject(parent), database_(database) {
+    connect(&database_, &persistence::Database::gameLoaded, this,
+            [this](persistence::RequestId request, const persistence::LoadGameResult& result) {
+                if (pendingOpen_.isNull() || request != pendingOpen_) {
+                    return;
+                }
+                pendingOpen_ = {};
+                if (!ready_ || requestedOpenGeneration_ != openGeneration_) {
+                    emit changed();
+                    return;
+                }
+                if (const auto* game = std::get_if<persistence::StoredGame>(&result)) {
+                    openError_.clear();
+                    emit opened(*game);
+                } else {
+                    openError_ = std::get<persistence::GameError>(result).message;
+                    emit openFailed(openError_);
+                }
+                emit changed();
+            });
     refreshTimer_.setSingleShot(true);
     refreshTimer_.setInterval(250);
     connect(&refreshTimer_, &QTimer::timeout, this, [this] { refresh(); });
@@ -46,6 +65,7 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
 void GameLibraryController::setReady(bool ready) {
     ready_ = ready;
     ++revision_;
+    ++openGeneration_;
     if (!ready) {
         refreshTimer_.stop();
         rows_.clear();
@@ -53,6 +73,16 @@ void GameLibraryController::setReady(bool ready) {
     } else if (active_) {
         requestPage();
     }
+    emit changed();
+}
+void GameLibraryController::open(persistence::GameId id) {
+    if (!ready_ || opening() || id <= 0) {
+        return;
+    }
+    pendingOpen_ = QUuid::createUuid();
+    requestedOpenGeneration_ = openGeneration_;
+    openError_.clear();
+    database_.loadGame(pendingOpen_, id);
     emit changed();
 }
 void GameLibraryController::activate() {

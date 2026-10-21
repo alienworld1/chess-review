@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/BoardState.h"
+#include "persistence/GameRepository.h"
 #include <QObject>
 #include <QThreadPool>
 #include <cstdint>
@@ -35,6 +36,12 @@ class AnalysisController final : public QObject {
     bool canUndoAnnotation() const;
     bool canRedoAnnotation() const;
     void start();
+    void openGame(const persistence::StoredGame& game);
+    std::optional<persistence::GameId> gameId() const { return gameId_; }
+    const QString& whitePlayer() const { return whitePlayer_; }
+    const QString& blackPlayer() const { return blackPlayer_; }
+    const QString& gameDescription() const { return gameDescription_; }
+    const QString& positionNotes() const { return positionNotes_; }
     // Optional FEN is also useful to embedded consumers; validation stays in chess.
     void reset(const std::optional<std::string>& fen = std::nullopt);
     void selectSquare(chess::Square square);
@@ -58,12 +65,14 @@ class AnalysisController final : public QObject {
     void moveAccepted(chess_review::chess::Move move);
     void failed(const QString& message);
     void closed();
+    void gameOpened();
 
   private:
     struct Session;
     struct Snapshot;
     struct ResetRequest {
         std::optional<std::string> fen;
+        std::optional<persistence::StoredGame> game;
     };
     struct AnnotationHistory {
         std::vector<std::vector<BoardAnnotation>> undo;
@@ -72,7 +81,8 @@ class AnalysisController final : public QObject {
     void submit(std::function<QString(Session&)> operation, bool resetSession = false,
                 std::optional<chess::Move> animatedMove = std::nullopt);
     void publish(Snapshot snapshot, std::uint64_t request, std::optional<chess::Move> animatedMove);
-    void startReset(std::optional<std::string> fen);
+    void startReset(ResetRequest reset);
+    void requestReset(ResetRequest reset);
     void dispatchNavigation();
     void rememberPath(chess::NodeId node);
     void updateChosenLine();
@@ -100,5 +110,10 @@ class AnalysisController final : public QObject {
     bool busy_ = false;
     bool closing_ = false;
     bool hasMoves_ = false;
+    std::optional<persistence::GameId> gameId_;
+    QString whitePlayer_;
+    QString blackPlayer_;
+    QString gameDescription_;
+    QString positionNotes_;
 };
 } // namespace chess_review::app

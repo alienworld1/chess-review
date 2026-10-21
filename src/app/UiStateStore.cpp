@@ -116,13 +116,26 @@ UiState readState(const QString& filename, std::optional<UiStateError>& error) {
         error = UiStateError::Invalid;
         state.board = {};
     }
+    if (settings.contains(QStringLiteral("workspace/v1/gameId"))) {
+        bool validId = false;
+        bool validNode = false;
+        const auto id = settings.value(QStringLiteral("workspace/v1/gameId")).toLongLong(&validId);
+        const auto nodeText = settings.value(QStringLiteral("workspace/v1/node")).toString();
+        const auto node = nodeText.toULongLong(&validNode);
+        if (!validId || id <= 0 || !validNode || nodeText.startsWith(u'-')) {
+            error = UiStateError::Invalid;
+        } else {
+            state.game = GameResume{id, node};
+        }
+    }
     state.maximized = maximized.toBool();
     state.destination = *destination;
     return state;
 }
 std::optional<UiStateError> writeState(const QString& filename, const UiState& state) {
     if (state.geometry.size() > 4096 || destinationId(state.destination).isEmpty() ||
-        !validFile(filename) || !validBoardPreferences(state.board)) {
+        !validFile(filename) || !validBoardPreferences(state.board) ||
+        (state.game && state.game->id <= 0)) {
         return UiStateError::Invalid;
     }
     if (!QDir().mkpath(QFileInfo(filename).absolutePath())) {
@@ -189,6 +202,13 @@ std::optional<UiStateError> writeState(const QString& filename, const UiState& s
         settings.setValue(QStringLiteral("board/v1/animation"), state.board.animation);
         settings.setValue(QStringLiteral("board/v1/blackAtBottom"), state.board.blackAtBottom);
         settings.setValue(QStringLiteral("analysis/v1/split"), state.board.analysisSplit);
+        settings.remove(QStringLiteral("workspace/v1"));
+        if (state.game) {
+            settings.setValue(QStringLiteral("workspace/v1/gameId"),
+                              QVariant::fromValue<qlonglong>(state.game->id));
+            settings.setValue(QStringLiteral("workspace/v1/node"),
+                              QVariant::fromValue<qulonglong>(state.game->node));
+        }
         for (std::size_t i = 0; i < state.board.annotationColors.size(); ++i) {
             settings.setValue(QStringLiteral("board/v1/color%1").arg(i),
                               state.board.annotationColors[i]);

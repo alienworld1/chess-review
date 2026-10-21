@@ -4,7 +4,8 @@ Open **Analyze** to explore standard chess from the initial position. The board
 works without an engine. Moves, branches, and annotations last only until the app
 closes; leaving Analyze for another page keeps the session. New Analysis and all
 normal quit routes ask before discarding content. Cancel preserves the session.
-There is no save or recovery for this workspace yet.
+Imported games can also be opened here and resume from their saved snapshots;
+see [Imported games](#imported-games).
 
 ## Moves and history
 
@@ -90,3 +91,26 @@ Native screen-reader behavior and mixed-monitor rendering require platform QA;
 the automated suite verifies the accessible square interfaces and actions,
 including selected pieces, legal destinations, captures, check, and mate. Hidden
 or disabled boards cannot be activated through square actions.
+
+## Imported games
+
+In Games, select a row and choose **Open in Analyze**, double-click the row, or
+press Enter. Loading and chess-tree preparation run off the GUI thread. The board
+shows the players and game result; the timeline and PGN tree expose every stored
+move and variation. Comments and numeric annotation glyphs (`$n`) for the selected
+move appear in a read-only plain-text pane and in move descriptions. Notes above
+4,096 characters are marked and clipped for responsive display; complete imported
+text remains in the saved snapshot. Comments before the first move appear when
+that move is selected. Game result metadata
+and current-board check/mate/stalemate status are displayed separately.
+
+Navigation does not change the saved snapshot or require an engine. Playing an
+existing continuation reuses it; new branches and visual annotations are temporary.
+Reset, replacement, and quit ask before discarding temporary content. The saved
+original stays available in Games. Saving edited analysis is a later feature.
+
+After orderly exit, the last opened saved game and selected stored node resume
+from SQLite, even if its source PGN has been moved or deleted. A temporary branch
+resumes at the saved game's starting position. New Analysis clears the saved-game
+resume pointer on the next orderly exit. Damaged or missing games show a load
+error and leave the previous workspace intact; select another game to continue.

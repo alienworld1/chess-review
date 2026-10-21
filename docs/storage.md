@@ -351,3 +351,19 @@ per-file `CompletedWithErrors` state distinguish completion, cancellation,
 terminal failure and game-budget exhaustion without inferring success from a
 zero inserted count. Library readiness changes invalidate displayed rows but
 retain the accepted request until its completion, preserving one-read backpressure.
+
+### Saved-game workspace recovery
+
+The `workspace/v1` UI-state group holds only a positive saved game ID and unsigned
+node ID. It contains no PGN, player names, moves, or annotations. After storage is
+ready, the library loads and validates that game through its existing worker API;
+the analysis worker copies the tree and builds its presentation. The remembered
+node is selected only if it exists in the recovered tree; otherwise the root is
+shown. The library never overwrites a saved snapshot during exploration. Missing,
+unsupported, or damaged records produce a visible error and remain untouched.
+These pointers are saved on orderly exit and cleared after New Analysis.
+
+There is at most one open request in flight, independent of the paged list request.
+Readiness generations reject obsolete responses without releasing admission until
+the accepted response arrives. Library refreshes do not erase game-opening errors.
+Service shutdown disables admission and invalidates loading before draining storage.

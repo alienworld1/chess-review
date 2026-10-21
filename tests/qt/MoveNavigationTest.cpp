@@ -6,6 +6,7 @@
 #include <QAbstractItemModelTester>
 #include <QAccessible>
 #include <QApplication>
+#include <QEventLoop>
 #include <QKeyEvent>
 #include <QRegularExpression>
 #include <QScrollBar>
@@ -449,6 +450,10 @@ void MoveNavigationTest::longAndBroadTree() {
     connect(&heartbeat, &QTimer::timeout, this, [&] { ++beats; });
     heartbeat.start(1);
     QObject driver;
+    QEventLoop loop;
+    QTimer deadline;
+    deadline.setSingleShot(true);
+    connect(&deadline, &QTimer::timeout, &loop, &QEventLoop::quit);
     const auto chain = connect(
         controller_.get(), &app::AnalysisController::changed, &driver,
         [&] {
@@ -456,11 +461,16 @@ void MoveNavigationTest::longAndBroadTree() {
                 const auto value = moves[static_cast<std::size_t>(submitted % 4)];
                 ++submitted;
                 controller_->attemptMove(value, controller_->board().revision);
+            } else if (submitted == plies && !controller_->busy()) {
+                loop.quit();
             }
         },
         Qt::QueuedConnection);
+    deadline.start(15000);
     controller_->clearSelection(); // Starts the queued driver without a production-only batch API.
-    QTRY_VERIFY_WITH_TIMEOUT(submitted == plies && !controller_->busy(), 15000);
+    // Let worker deliveries drive the chain directly instead of QTRY polling sleeps.
+    loop.exec();
+    QVERIFY(submitted == plies && !controller_->busy());
     disconnect(chain);
     QVERIFY(beats > 0);
     QCOMPARE(controller_->navigationTree()->nodes.size(), std::size_t{plies + 1});

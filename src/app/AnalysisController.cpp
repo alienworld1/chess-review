@@ -10,6 +10,11 @@ struct AnalysisController::Session {
     std::optional<chess::GameTree> tree;
     chess::NodeId current{0};
     std::shared_ptr<const NavigationTree> navigation;
+    std::size_t savedNodes = 1;
+    std::optional<persistence::GameId> gameId;
+    QString white;
+    QString black;
+    QString description;
 };
 struct AnalysisController::Snapshot {
     BoardViewState board;
@@ -20,6 +25,11 @@ struct AnalysisController::Snapshot {
     bool hasMoves = false;
     bool sessionReset = false;
     QString error;
+    QString notes;
+    std::optional<persistence::GameId> gameId;
+    QString white;
+    QString black;
+    QString description;
 };
 AnalysisController::AnalysisController(QObject* parent)
     : QObject(parent), session_(std::make_unique<Session>()) {
@@ -50,6 +60,10 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
             snapshot.error = operation(*session_);
             snapshot.sessionReset = resetSession && snapshot.error.isEmpty();
             if (session_->tree) {
+                snapshot.gameId = session_->gameId;
+                snapshot.white = session_->white;
+                snapshot.black = session_->black;
+                snapshot.description = session_->description;
                 auto& tree = *session_->tree;
                 snapshot.current = session_->current;
                 // Scratch edits only append/reuse nodes; reset explicitly clears this cache.
@@ -101,7 +115,8 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
                         }
                     }
                     snapshot.board.lastMove = node->move;
-                    snapshot.hasMoves = tree.size() > 1;
+                    snapshot.hasMoves = tree.size() > session_->savedNodes;
+                    snapshot.notes = session_->navigation->nodes.at(session_->current).notes;
                     auto cursor = node;
                     while (cursor) {
                         snapshot.history.push_back(
@@ -121,7 +136,7 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
         } catch (const std::exception&) {
             // An edit may have completed before snapshot allocation failed. Preserve
             // the discard guard even when presenting the result must fail closed.
-            snapshot.hasMoves = session_->tree && session_->tree->size() > 1;
+            snapshot.hasMoves = session_->tree && session_->tree->size() > session_->savedNodes;
             snapshot.current = session_->current;
             snapshot.error = tr("Analysis could not complete. The position was not displayed.");
             snapshot.board.interactive = false;
@@ -154,9 +169,9 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
     }
     if (pendingReset_) {
         hasMoves_ = snapshot.hasMoves;
-        auto fen = std::move(pendingReset_->fen);
+        auto reset = std::move(*pendingReset_);
         pendingReset_.reset();
-        startReset(std::move(fen));
+        startReset(std::move(reset));
         return;
     }
     if (snapshot.navigation) {
@@ -193,6 +208,11 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
         updateChosenLine();
     }
     const bool orientation = board_.blackAtBottom;
+    gameId_ = snapshot.gameId;
+    whitePlayer_ = std::move(snapshot.white);
+    blackPlayer_ = std::move(snapshot.black);
+    gameDescription_ = std::move(snapshot.description);
+    positionNotes_ = std::move(snapshot.notes);
     board_ = std::move(snapshot.board);
     board_.blackAtBottom = orientation;
     board_.revision = request;
@@ -207,12 +227,15 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
     // deletion cancels the callback; close or another request invalidates it.
     QMetaObject::invokeMethod(
         this,
-        [this, request, error = std::move(snapshot.error), animatedMove] {
+        [this, request, error = std::move(snapshot.error), animatedMove,
+         opened = snapshot.sessionReset && snapshot.gameId.has_value()] {
             if (closing_ || request != request_) {
                 return;
             }
             if (!error.isEmpty()) {
                 emit failed(error);
+            } else if (opened) {
+                emit gameOpened();
             } else if (animatedMove) {
                 emit moveAccepted(*animatedMove);
             }
@@ -220,7 +243,17 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
         Qt::QueuedConnection);
     emit changed();
 }
+void AnalysisController::openGame(const persistence::StoredGame& game) {
+    if (!game.document || game.summary.id <= 0) {
+        emit failed(tr("The stored game is unavailable."));
+        return;
+    }
+    requestReset({std::nullopt, game});
+}
 void AnalysisController::reset(const std::optional<std::string>& fen) {
+    requestReset({fen, std::nullopt});
+}
+void AnalysisController::requestReset(ResetRequest reset) {
     if (closing_) {
         return;
     }
@@ -229,24 +262,49 @@ void AnalysisController::reset(const std::optional<std::string>& fen) {
     pendingMoveChoice_.reset();
     requested_ = current_;
     if (busy_) {
-        pendingReset_ = ResetRequest{fen};
+        pendingReset_ = std::move(reset);
         resetting_ = true;
         emit changed();
         return;
     }
-    startReset(fen);
+    startReset(std::move(reset));
 }
-void AnalysisController::startReset(std::optional<std::string> fen) {
+void AnalysisController::startReset(ResetRequest reset) {
     resetting_ = true;
     submit(
-        [fen = std::move(fen)](Session& session) {
-            auto result = fen ? chess::GameTree::fromFen(*fen) : chess::GameTree::initial();
-            if (auto* error = std::get_if<chess::GameTreeError>(&result)) {
-                return QString::fromStdString(error->message);
+        [reset = std::move(reset)](Session& session) {
+            // Build the replacement fully on the worker before retiring the old session.
+            Session replacement;
+            if (reset.game) {
+                const auto& game = *reset.game;
+                replacement.tree = game.document->tree;
+                replacement.savedNodes = replacement.tree->size();
+                replacement.gameId = game.summary.id;
+                const auto playerName = [](const QString& value) {
+                    auto name = value.left(256);
+                    if (name.size() < value.size()) {
+                        if (name.back().isHighSurrogate()) {
+                            name.chop(1);
+                        }
+                        name += QChar(0x2026);
+                    }
+                    return name;
+                };
+                replacement.white = playerName(game.summary.white);
+                replacement.black = playerName(game.summary.black);
+                replacement.description =
+                    tr("%1 — %2 | Result: %3")
+                        .arg(replacement.white, replacement.black, game.summary.result);
+            } else {
+                auto result =
+                    reset.fen ? chess::GameTree::fromFen(*reset.fen) : chess::GameTree::initial();
+                if (auto* error = std::get_if<chess::GameTreeError>(&result)) {
+                    return QString::fromStdString(error->message);
+                }
+                replacement.tree = std::move(std::get<chess::GameTree>(result));
             }
-            session.tree = std::move(std::get<chess::GameTree>(result));
-            session.current = chess::NodeId{0};
-            session.navigation.reset();
+            replacement.navigation = makeNavigationTree(*replacement.tree);
+            session = std::move(replacement);
             return QString{};
         },
         true);

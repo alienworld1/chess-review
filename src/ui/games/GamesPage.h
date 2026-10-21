@@ -20,12 +20,17 @@ class GamesPage final : public QWidget {
     GamesPage(app::ImportController& imports, app::GameLibraryController& library,
               QAction& fileAction, QAction& pasteAction, QWidget* parent = nullptr);
 
+  signals:
+    void openRequested(chess_review::persistence::GameId id);
+
   protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
 
   private:
     void updateLibrary();
+    void requestOpen();
+    void updateOpenAction();
     void updateImport();
     void showResultDetails();
     app::ImportController& imports_;
@@ -39,6 +44,7 @@ class GamesPage final : public QWidget {
     QPushButton* previous_;
     QPushButton* next_;
     QPushButton* refresh_;
+    QPushButton* open_;
     QPushButton* cancel_;
     QPlainTextEdit* details_;
     QString detailText_;

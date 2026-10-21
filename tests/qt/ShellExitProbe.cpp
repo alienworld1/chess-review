@@ -1,3 +1,4 @@
+#include "ui/analysis/AnalysisPage.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include "ui/games/GamesPage.h"
 #include "ui/shell/MainWindow.h"
@@ -13,7 +14,9 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QObject>
+#include <QPushButton>
 #include <QString>
+#include <QTableView>
 #include <QTimer>
 #include <QUrl>
 #include <cstdio>
@@ -43,6 +46,66 @@ void installExitDriver() {
                 const bool ready = !status->isVisible();
                 if (mode != QStringLiteral("startup") && !ready && !failure) {
                     continue;
+                }
+                if (mode.startsWith(QStringLiteral("game-"))) {
+                    auto* page = window->findChild<chess_review::ui::AnalysisPage*>();
+                    auto& analysis = page->controller();
+                    if (mode == QStringLiteral("game-import") && phase == 0) {
+                        window->findChild<QAction*>(QStringLiteral("gamesAction"))->trigger();
+                        auto* games = window->findChild<chess_review::ui::GamesPage*>();
+                        QMimeData mime;
+                        mime.setUrls({QUrl::fromLocalFile(
+                            QDir::current().filePath(QStringLiteral("phase2-games.pgn")))});
+                        QDragEnterEvent drag(QPointF(5, 5), Qt::CopyAction, &mime, Qt::LeftButton,
+                                             Qt::NoModifier);
+                        QApplication::sendEvent(games, &drag);
+                        QDropEvent drop(QPointF(5, 5), Qt::CopyAction, &mime, Qt::LeftButton,
+                                        Qt::NoModifier);
+                        QApplication::sendEvent(games, &drop);
+                        if (!drop.isAccepted()) {
+                            qFatal("Game probe could not import PGN");
+                        }
+                        ++phase;
+                        return;
+                    }
+                    if (mode == QStringLiteral("game-import") && phase == 1) {
+                        auto* table = window->findChild<QTableView*>(QStringLiteral("gamesTable"));
+                        auto* open =
+                            window->findChild<QPushButton*>(QStringLiteral("openGameButton"));
+                        if (table->model()->rowCount() != 3) {
+                            return;
+                        }
+                        table->setCurrentIndex(table->model()->index(2, 0));
+                        if (!open->isEnabled()) {
+                            return;
+                        }
+                        open->click();
+                        ++phase;
+                        return;
+                    }
+                    if (analysis.busy() || !analysis.gameId() || !analysis.board().interactive) {
+                        return;
+                    }
+                    if (mode == QStringLiteral("game-import") && phase == 2) {
+                        for (const auto& [id, entry] : analysis.navigationTree()->nodes) {
+                            if (entry.notes.contains(QStringLiteral("$5"))) {
+                                analysis.navigate(id);
+                                ++phase;
+                                return;
+                            }
+                        }
+                        qFatal("Game probe lost the annotated variation");
+                    }
+                    if (!analysis.positionNotes().contains(QStringLiteral("$5"))) {
+                        return;
+                    }
+                    std::fprintf(stdout, "restored-game:%lld,node:%llu\n",
+                                 static_cast<long long>(*analysis.gameId()),
+                                 static_cast<unsigned long long>(analysis.currentNode().value));
+                    std::fflush(stdout);
+                    timer->stop();
+                    window->close();
+                    return;
                 }
                 if (mode.startsWith(QStringLiteral("import-"))) {
                     if (phase == 0) {

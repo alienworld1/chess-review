@@ -65,3 +65,10 @@ chess_review_add_qt_test(move_navigation_adversarial_tests move_navigation_adver
 chess_review_add_qt_test(import_tests import INTEGRATION WIDGETS
     SOURCES qt/ImportTest.cpp
     LIBRARIES chess_review_ui)
+
+chess_review_add_qt_test(game_opening_tests game_opening INTEGRATION WIDGETS
+    SOURCES qt/GameOpeningTest.cpp
+    LIBRARIES chess_review_ui)
+add_dependencies(game_opening_tests shell_exit_probe)
+target_compile_definitions(game_opening_tests PRIVATE
+    CHESS_REVIEW_EXIT_PROBE="$<TARGET_FILE:shell_exit_probe>")

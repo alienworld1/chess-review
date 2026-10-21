@@ -56,7 +56,9 @@ QVariant moveData(const app::AnalysisController& controller, chess::NodeId node,
         return entry.parent ? entry.san : entry.label;
     }
     if (role == Qt::ToolTipRole || role == Qt::AccessibleTextRole) {
-        return entry.label;
+        const auto description =
+            entry.notes.isEmpty() ? entry.label : entry.label + QLatin1Char('\n') + entry.notes;
+        return role == Qt::ToolTipRole ? description.toHtmlEscaped() : description;
     }
     if (role == Qt::AccessibleDescriptionRole) {
         return controller.currentNode() == node ? QObject::tr("Current position")
@@ -462,7 +464,11 @@ bool GameTreeView::validTarget(app::NavigationTarget target) const {
            moves_->tree()->nodes.contains(target.node);
 }
 QString GameTreeView::moveDescription(app::NavigationTarget target) const {
-    return validTarget(target) ? moves_->tree()->nodes.at(target.node).label : QString{};
+    if (!validTarget(target)) {
+        return {};
+    }
+    const auto& entry = moves_->tree()->nodes.at(target.node);
+    return entry.notes.isEmpty() ? entry.label : entry.label + QLatin1Char('\n') + entry.notes;
 }
 QRect GameTreeView::moveRect(app::NavigationTarget target) const {
     if (!validTarget(target)) {
@@ -588,7 +594,7 @@ void GameTreeView::mouseMoveEvent(QMouseEvent* event) {
     if (target) {
         hovered_ = target;
         viewport()->setCursor(Qt::PointingHandCursor);
-        setToolTip(moveDescription(*hovered_));
+        setToolTip(moveDescription(*hovered_).toHtmlEscaped());
     } else {
         clearHover();
     }

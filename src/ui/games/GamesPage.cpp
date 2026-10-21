@@ -292,6 +292,11 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     refresh_ = new QPushButton(tr("Refresh"), this);
     refresh_->setObjectName(QStringLiteral("refreshGames"));
     toolbar->addWidget(refresh_);
+    open_ = new QPushButton(tr("Open in Analyze"), this);
+    open_->setObjectName(QStringLiteral("openGameButton"));
+    open_->setToolTip(tr("Select a saved game, then open its moves and variations."));
+    toolbar->addWidget(open_);
+    connect(open_, &QPushButton::clicked, this, &GamesPage::requestOpen);
     toolbar->addStretch();
     layout->addLayout(toolbar);
     libraryStatus_ = new QLabel(this);
@@ -307,6 +312,9 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     games_->setAccessibleName(tr("Saved games"));
     games_->setModel(libraryModel_);
     configureTable(*games_);
+    connect(games_, &QTableView::activated, this, &GamesPage::requestOpen);
+    connect(games_->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
+            &GamesPage::updateOpenAction);
     games_->setColumnWidth(0, 180);
     games_->setColumnWidth(1, 180);
     games_->setColumnWidth(2, 80);
@@ -378,6 +386,16 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     updateLibrary();
     updateImport();
 }
+void GamesPage::requestOpen() {
+    const auto id = libraryModel_->gameId(games_->currentIndex().row());
+    if (library_.ready() && !library_.opening() && !library_.busy() && id) {
+        emit openRequested(*id);
+    }
+}
+void GamesPage::updateOpenAction() {
+    open_->setEnabled(library_.ready() && !library_.opening() && !library_.busy() &&
+                      libraryModel_->gameId(games_->currentIndex().row()).has_value());
+}
 void GamesPage::updateLibrary() {
     const auto selected = libraryModel_->gameId(games_->currentIndex().row());
     libraryModel_->reload();
@@ -389,7 +407,9 @@ void GamesPage::updateLibrary() {
             }
         }
     }
-    libraryStatus_->setText(!library_.ready()             ? tr("Local storage is unavailable.")
+    updateOpenAction();
+    libraryStatus_->setText(library_.opening()            ? tr("Opening saved game…")
+                            : !library_.ready()           ? tr("Local storage is unavailable.")
                             : library_.busy()             ? tr("Loading games…")
                             : !library_.error().isEmpty() ? library_.error()
                             : library_.rows().empty()

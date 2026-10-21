@@ -14,6 +14,7 @@ class MoveNavigationStateTest final : public QObject {
     Q_OBJECT
   private slots:
     void maximumDepthSnapshot();
+    void boundedNotes();
 };
 void MoveNavigationStateTest::maximumDepthSnapshot() {
     const std::array moves{move("g1", "f3"), move("g8", "f6"), move("f3", "g1"), move("f6", "g8")};
@@ -33,6 +34,28 @@ void MoveNavigationStateTest::maximumDepthSnapshot() {
         QVERIFY(line.moves.size() <= 8);
         QVERIFY(!line.parent); // A long mainline never becomes a recursively owned hierarchy.
     }
+}
+void MoveNavigationStateTest::boundedNotes() {
+    auto tree = std::get<chess::GameTree>(chess::GameTree::initial());
+    chess::NodeAnnotations annotations;
+    annotations.commentBefore = std::string(4095, 'a') + "\xf0\x9f\x98\x80";
+    annotations.commentAfter = "tail";
+    annotations.nags.assign(1'000'000, 255);
+    QVERIFY(
+        std::holds_alternative<std::monostate>(tree.setAnnotations(tree.rootId(), annotations)));
+    const auto navigation = app::makeNavigationTree(tree);
+    const auto& notes = navigation->nodes.at(tree.rootId()).notes;
+    QVERIFY(notes.size() < 4200);
+    QVERIFY(notes.isValidUtf16());
+    QVERIFY(notes.contains(QStringLiteral("truncated")));
+    QCOMPARE(tree.node(tree.rootId())->annotations, annotations);
+    annotations.commentBefore.clear();
+    QVERIFY(
+        std::holds_alternative<std::monostate>(tree.setAnnotations(tree.rootId(), annotations)));
+    const auto nags = app::makeNavigationTree(tree)->nodes.at(tree.rootId()).notes;
+    QVERIFY(nags.size() < 4200);
+    QVERIFY(nags.startsWith(QStringLiteral("$255")));
+    QVERIFY(nags.contains(QStringLiteral("truncated")));
 }
 int main(int argc, char* argv[]) {
     const TestEnvironment environment;

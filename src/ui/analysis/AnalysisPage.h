@@ -6,6 +6,7 @@ class QAction;
 class QComboBox;
 class QLabel;
 class QSplitter;
+class QPlainTextEdit;
 namespace chess_review::ui {
 class ChessBoardWidget;
 class MoveTimelineView;
@@ -30,6 +31,8 @@ class AnalysisPage final : public QWidget {
     app::AnalysisController& controller_;
     ChessBoardWidget* board_;
     QLabel* status_;
+    QLabel* notice_;
+    QPlainTextEdit* notes_;
     QLabel* topPlayer_;
     QLabel* bottomPlayer_;
     QSplitter* splitter_;

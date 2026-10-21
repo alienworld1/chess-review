@@ -2,6 +2,7 @@
 #include "diagnostics/Logger.h"
 #include <QCoreApplication>
 #include <QEvent>
+#include <utility>
 
 namespace chess_review::app {
 StartupCoordinator::StartupCoordinator(QObject* parent) : QObject(parent) { connectServices(); }
@@ -14,6 +15,14 @@ StartupCoordinator::StartupCoordinator(diagnostics::Logger& logger, QObject* par
     });
 }
 void StartupCoordinator::connectServices() {
+    connect(&library_, &GameLibraryController::opened, &analysis_, &AnalysisController::openGame);
+    connect(&library_, &GameLibraryController::openFailed, this, [this] { resume_.reset(); });
+    connect(&analysis_, &AnalysisController::gameOpened, this, [this] {
+        const auto resume = std::exchange(resume_, std::nullopt);
+        if (resume && analysis_.gameId() == resume->id) {
+            analysis_.navigate(chess::NodeId{resume->node});
+        }
+    });
     connect(&analysis_, &AnalysisController::closed, this, [this] {
         analysisClosed_ = true;
         finishServices();
@@ -29,6 +38,14 @@ void StartupCoordinator::connectServices() {
         state_ = Lifecycle::Ready;
         localImports_.setReady(true);
         library_.setReady(true);
+        // A user may start exploring while storage is still initializing. Do not
+        // replace that work when a delayed automatic recovery becomes available.
+        if (analysis_.hasContent() || (analysis_.busy() && !analysis_.history().empty())) {
+            resume_.reset();
+        }
+        if (resume_) {
+            library_.open(resume_->id);
+        }
         emit ready();
     });
     connect(&database_, &persistence::Database::failed, this,
@@ -92,6 +109,7 @@ void StartupCoordinator::start(const QString& databasePath,
         return;
     }
     connect(&uiState_, &UiStateStore::loaded, this, [this, databasePath](const UiState& state) {
+        resume_ = state.game;
         emit initialUiState(state);
         if (state_ != Lifecycle::Stopping) {
             database_.initialize(databasePath);
@@ -99,7 +117,15 @@ void StartupCoordinator::start(const QString& databasePath,
     });
     uiState_.load(*uiStateFilename);
 }
-void StartupCoordinator::setFinalUiState(const UiState& state) { finalUiState_ = state; }
+void StartupCoordinator::setFinalUiState(const UiState& state) {
+    finalUiState_ = state;
+    finalUiState_->game.reset();
+    if (const auto id = analysis_.gameId()) {
+        // Session-only branches are absent from the stored tree; reopening falls back
+        // to its root when the remembered node does not exist.
+        finalUiState_->game = GameResume{*id, analysis_.currentNode().value};
+    }
+}
 Lifecycle StartupCoordinator::state() const { return state_; }
 void StartupCoordinator::shutdown() {
     if (state_ == Lifecycle::Stopping || state_ == Lifecycle::Stopped) {

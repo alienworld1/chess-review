@@ -72,9 +72,18 @@ analysis automatically.
 Games shows a newest-first table with 50 rows per page, Previous/Next, and
 Refresh. Import completion returns the table to its newest page. Damaged metadata
 rows remain identifiable, and truncated fields are marked. Search, selectable
-sorting, previews, and opening saved games on the board are not implemented yet.
+sorting and previews are not implemented yet. Saved games open on the board using
+**Open in Analyze**, double-click, or Enter.
 
 Imported snapshots are independent of their source files. Local-file provenance
 stores the full absolute file URI; pasted games store only the source kind.
 These paths, player names, comments, and PGN content are not written to logs.
 The source file is never reread to reopen a snapshot through the repository.
+
+## Opening saved games
+
+Select a saved row and choose **Open in Analyze**, double-click, or press Enter.
+The complete validated snapshot opens with all moves and variations. The players,
+result, and selected move's comments and NAGs remain visible. Loading errors are
+shown without replacing the current workspace. No engine is required or started.
+See [Analyze board](analysis-board.md#imported-games) for exploration and recovery.
