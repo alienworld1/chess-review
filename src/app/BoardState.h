@@ -1,6 +1,6 @@
 #pragma once
 
-#include "chess/GameTree.h"
+#include "app/MoveNavigationState.h"
 #include <QMetaType>
 #include <QString>
 #include <array>
@@ -14,6 +14,8 @@ struct BoardPreferences {
     BoardInputMode inputMode = BoardInputMode::Drag;
     bool coordinates = true;
     bool animation = true;
+    bool blackAtBottom = false;
+    int analysisSplit = 60; // Board percentage, independent of splitter orientation.
     std::array<QString, 4> annotationColors{QStringLiteral("#27834b"), QStringLiteral("#c53d49"),
                                             QStringLiteral("#d2a620"), QStringLiteral("#2476ca")};
     bool operator==(const BoardPreferences&) const = default;

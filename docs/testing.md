@@ -33,7 +33,9 @@ See [development setup](development.md) for Qt SDK selection and
 All test presets show failure output and fail if no tests match, including an
 accidentally empty label/regex selection. Every Qt suite has a 30-second CTest
 limit. Component labels are `diagnostics`, `persistence`, `startup`, `shell`, and
-`app_paths`, `game_repository`, and `analysis`; Qt suites have `qt`, and all except `app_paths` also have `integration`.
+`app_paths`, `game_repository`, `analysis`, `move_navigation`, and
+`move_navigation_state`; Qt suites have `qt`, and all except `app_paths` and
+`move_navigation_state` also have `integration`.
 Chess cases have `unit` and `chess` labels, assigned from their Catch2 tags.
 Run them with `ctest --preset dev -L chess` or `./build/dev/tests/chess_tests`.
 They cover established perft fixtures, strict FEN, legal moves, SAN/UCI,
@@ -70,7 +72,7 @@ QT_QPA_PLATFORM=offscreen ./build/dev/tests/startup_tests unusableDataDirectoryF
 ./build/dev/src/persistence/tests/persistence_tests closeDuringInitialization
 ```
 
-CTest sets the offscreen platform only for the startup, shell, and analysis widget suites. Direct
+CTest sets the offscreen platform only for the startup, shell, analysis, and move-navigation widget suites. Direct
 widget invocation must supply it when there is no desktop display. Use absolute
 paths for Qt Test `-o` reports: temporary working directories are removed at exit.
 No global
@@ -322,3 +324,20 @@ not pixel-identical golden comparisons. Offscreen popup tests permit exactly the
 backend's propagateSizeHints, raise, and keyboard-grab warnings; other warnings
 still fail. Native accessibility and mixed-monitor/Windows behavior remain
 separate release checks.
+
+## Move timeline and variation navigation
+
+`ctest --preset dev -R '^(move_navigation(_state)?|analysis|shell|startup)$'` covers the
+chosen-line timeline, numbered FEN roots, PGN token hit testing and per-move
+accessibility, branch expansion, remembered choices, snapshot reuse, orientation,
+and validated UI preferences. Queued navigation tests issue multiple intents
+before delivering worker results and verify only the latest target is displayed.
+The worker retains one in-flight operation plus one replaceable navigation target.
+
+The Widgets-free `move_navigation_state` suite reaches the supported 16,384-ply depth without
+recursive construction. UI fixtures exercise a 512-ply line, all 20 initial move
+branches, and 96 nested variations, with an event-loop heartbeat while building
+the line. These are correctness/responsiveness checks, not portable timing claims.
+PGN and layout screenshots can be captured with `CHESS_REVIEW_SCREENSHOT_DIR` set
+to an existing absolute directory. Native screen readers, actual monitor changes,
+and Windows still need platform QA.

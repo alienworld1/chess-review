@@ -49,3 +49,11 @@ catch_discover_tests(pgn_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)
 chess_review_add_qt_test(analysis_tests analysis INTEGRATION WIDGETS
     SOURCES qt/AnalysisTest.cpp
     LIBRARIES chess_review_ui)
+
+chess_review_add_qt_test(move_navigation_tests move_navigation INTEGRATION WIDGETS
+    SOURCES qt/MoveNavigationTest.cpp
+    LIBRARIES chess_review_ui)
+
+chess_review_add_qt_test(move_navigation_state_tests move_navigation_state
+    SOURCES qt/MoveNavigationStateTest.cpp
+    LIBRARIES chess_review_startup)

@@ -305,9 +305,11 @@ service does not log PGN, players, comments, personal URLs, SQL, or native error
 ### Board UI preferences
 
 The existing asynchronous `UiStateStore` additionally stores input mode, coordinate
-visibility, move animation, and four validated `#RRGGBB` annotation colors under
-`board/v1` in `ui-state.ini`. Missing keys retain defaults. Invalid board values
+visibility, move animation, manual board orientation, and four validated
+`#RRGGBB` annotation colors under `board/v1` in `ui-state.ini`. Missing keys retain defaults. Invalid board values
 reset only the board preference group and report an invalid-state notice. Existing
 shell validation, atomic publication, zero-wait lock contention handling, and
-unknown-key preservation still apply. Moves, annotations, and orientation from the
-scratch Analyze session are not saved here or in SQLite.
+unknown-key preservation still apply. The analysis board share is stored as a
+validated integer percentage (1–99, default 60) under `analysis/v1/split`. Missing
+orientation defaults to White at bottom. Moves and annotations from the scratch
+Analyze session are not saved here or in SQLite.

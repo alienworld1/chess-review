@@ -2,6 +2,7 @@
 #include "app/AnalysisController.h"
 #include "app/UiStateStore.h"
 #include "ui/analysis/AnalysisPage.h"
+#include "ui/analysis/MoveNavigation.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include "ui/shell/MainWindow.h"
 #include <QAccessible>
@@ -708,6 +709,8 @@ void AnalysisTest::preferenceRoundTrip() {
     state.board.inputMode = app::BoardInputMode::Click;
     state.board.coordinates = false;
     state.board.animation = false;
+    state.board.blackAtBottom = true;
+    state.board.analysisSplit = 88;
     state.board.annotationColors[0] = QStringLiteral("#123abc");
     app::UiStateStore writer;
     QSignalSpy loaded(&writer, &app::UiStateStore::loaded);
@@ -842,23 +845,27 @@ void AnalysisTest::layout() {
     auto* board = window.findChild<ui::ChessBoardWidget*>();
     QVERIFY(board);
     QTest::qWait(180);
-    QVERIFY(window.width() <= size.width());
-    QVERIFY(window.height() <= size.height());
-    QCOMPARE(board->boardRect().width(), board->boardRect().height());
-    QVERIFY(board->boardRect().width() >= 240);
-    // At supported desktop sizes essential commands remain on screen, not merely
-    // reachable by scrolling past a board that retained its preferred height.
-    const auto* history = window.findChild<QComboBox*>(QStringLiteral("analysisHistory"));
-    const auto* options = window.findChild<QToolButton*>(QStringLiteral("boardOptionsButton"));
-    QVERIFY(history && options);
-    QVERIFY(window.rect().contains(QRect(history->mapTo(&window, QPoint{}), history->size())));
-    QVERIFY(window.rect().contains(QRect(options->mapTo(&window, QPoint{}), options->size())));
     if (qEnvironmentVariableIsSet("CHESS_REVIEW_SCREENSHOT_DIR")) {
         const auto filename = qEnvironmentVariable("CHESS_REVIEW_SCREENSHOT_DIR") +
                               QLatin1Char('/') + QString::fromLatin1(QTest::currentDataTag()) +
                               QStringLiteral(".png");
         QVERIFY(window.grab().save(filename));
     }
+    QVERIFY(window.width() <= size.width());
+    QVERIFY(window.height() <= size.height());
+    QCOMPARE(board->boardRect().width(), board->boardRect().height());
+    QVERIFY2(board->boardRect().width() >= 240,
+             qPrintable(QStringLiteral("Board widget %1 x %2, board side %3")
+                            .arg(board->width())
+                            .arg(board->height())
+                            .arg(board->boardRect().width())));
+    // At supported desktop sizes essential commands remain on screen, not merely
+    // reachable by scrolling past a board that retained its preferred height.
+    const auto* history = window.findChild<ui::MoveTimelineView*>();
+    const auto* options = window.findChild<QToolButton*>(QStringLiteral("boardOptionsButton"));
+    QVERIFY(history && options);
+    QVERIFY(window.rect().contains(QRect(history->mapTo(&window, QPoint{}), history->size())));
+    QVERIFY(window.rect().contains(QRect(options->mapTo(&window, QPoint{}), options->size())));
     window.completeShutdown();
 }
 int main(int argc, char* argv[]) {

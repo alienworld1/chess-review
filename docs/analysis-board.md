@@ -22,15 +22,33 @@ Terminal positions remain available for history navigation and annotations.
 Board Options → Board Gestures and Keyboard Help opens a scrollable reference
 with separate sections for moves, history, annotations, and color modifiers.
 
-Beginning, Previous, Next, and End navigate the session. History selects an
-ancestor; Continue with selects an existing branch. A different move from an
-older position adds a variation without deleting the existing continuation.
-History and continuation labels include move numbers and side-to-move punctuation.
-Forward navigation follows the continuation last chosen at each fork; selecting a
-node also selects its complete path through earlier forks.
+Beginning, Previous, Next, and End navigate the session. The timeline beneath the
+board shows the entire chosen line in numbered White/Black cells, including moves
+after the current position. Starting position is selectable, including for FEN
+roots. Click any move in the timeline or PGN variation pane to navigate; hovering
+shows details without changing the board. The current move is filled; a pending
+navigation target has a distinct outline/underline.
 
-When the board or history buttons have focus, Left/Right navigate history and
-Home/End go to its beginning/end. On the board, Enter enables square navigation:
+The PGN pane displays bold mainline moves and indented, collapsible variations.
+Long lines wrap in bounded segments. Disclosure controls and plus/minus expand or
+collapse variations. Up/Down browse lines; Ctrl+Left/Right focus individual moves
+within a line and Enter selects. Left/Right and Home/End navigate chess history
+when the board, navigation controls, timeline, or PGN pane has focus. Ordinary
+editors retain their keys. Wheel input scrolls the hovered view.
+
+A different move from an older position adds a variation without deleting the
+existing continuation. Forward navigation follows the continuation last chosen
+at each fork; selecting a node also selects its complete path through earlier
+forks. Rapid history commands coalesce to the latest requested position, including
+repeated steps. Move entry and annotation editing wait until that position is
+displayed. History navigation never animates pieces.
+
+The board and timeline sit left of a resizable PGN pane at wider widths. At narrow
+widths the PGN pane stacks below them; the shell retains its scrolling fallback.
+The split preference survives orderly exit. Neither view changes chess data merely
+by focusing, hovering, scrolling, or expanding a branch.
+
+On the board, Enter enables square navigation:
 arrows move focus in the displayed orientation and Enter or Space selects a piece
 or attempts its move. Escape cancels a gesture, then selection, then square entry.
 Tab reaches ordinary controls; shortcuts do not take arrows from their editors.
@@ -53,10 +71,11 @@ and their annotation histories.
 
 ## Preferences and artwork
 
-Input mode, coordinates, move animation, and four annotation colors are saved on
-orderly exit in the existing UI preference file. Orientation belongs to the live
-workspace. Invalid board preferences use the documented defaults with a nonmodal
-notice. No chess records or annotations enter the UI preference file.
+Input mode, coordinates, move animation, four annotation colors, manual board
+orientation, and the analysis split are saved on orderly exit in the existing UI
+preference file. Orientation stays fixed while navigating or starting New Analysis;
+it defaults to White at bottom when no saved preference exists. Invalid board
+preferences use the documented defaults with a nonmodal notice. No chess records or annotations enter the UI preference file.
 
 Pieces are the twelve transparent Cburnett SVGs from Wikimedia Commons, bundled
 under their per-file BSD license option. Sources, description revisions, file

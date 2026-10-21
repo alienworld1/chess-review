@@ -42,6 +42,9 @@ bool validBoardPreferences(const BoardPreferences& preferences) {
         preferences.inputMode != BoardInputMode::Click) {
         return false;
     }
+    if (preferences.analysisSplit < 1 || preferences.analysisSplit > 99) {
+        return false;
+    }
     for (const auto& color : preferences.annotationColors) {
         if (color.size() != 7 || color.front() != QLatin1Char('#')) {
             return false;
@@ -89,6 +92,12 @@ UiState readState(const QString& filename, std::optional<UiStateError>& error) {
     const auto coordinates =
         settings.value(QStringLiteral("board/v1/coordinates"), true).toString();
     const auto animation = settings.value(QStringLiteral("board/v1/animation"), true).toString();
+    const auto orientation =
+        settings.value(QStringLiteral("board/v1/blackAtBottom"), false).toString();
+    bool splitValid = false;
+    state.board.analysisSplit =
+        settings.value(QStringLiteral("analysis/v1/split"), 60).toInt(&splitValid);
+    state.board.blackAtBottom = orientation == QStringLiteral("true");
     state.board.inputMode =
         mode == QStringLiteral("click") ? BoardInputMode::Click : BoardInputMode::Drag;
     state.board.coordinates = coordinates == QStringLiteral("true");
@@ -102,7 +111,8 @@ UiState readState(const QString& filename, std::optional<UiStateError>& error) {
     if ((mode != QStringLiteral("drag") && mode != QStringLiteral("click")) ||
         (coordinates != QStringLiteral("true") && coordinates != QStringLiteral("false")) ||
         (animation != QStringLiteral("true") && animation != QStringLiteral("false")) ||
-        !validBoardPreferences(state.board)) {
+        (orientation != QStringLiteral("true") && orientation != QStringLiteral("false")) ||
+        !splitValid || !validBoardPreferences(state.board)) {
         error = UiStateError::Invalid;
         state.board = {};
     }
@@ -177,6 +187,8 @@ std::optional<UiStateError> writeState(const QString& filename, const UiState& s
                                                                         : QStringLiteral("click"));
         settings.setValue(QStringLiteral("board/v1/coordinates"), state.board.coordinates);
         settings.setValue(QStringLiteral("board/v1/animation"), state.board.animation);
+        settings.setValue(QStringLiteral("board/v1/blackAtBottom"), state.board.blackAtBottom);
+        settings.setValue(QStringLiteral("analysis/v1/split"), state.board.analysisSplit);
         for (std::size_t i = 0; i < state.board.annotationColors.size(); ++i) {
             settings.setValue(QStringLiteral("board/v1/color%1").arg(i),
                               state.board.annotationColors[i]);

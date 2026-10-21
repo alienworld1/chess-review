@@ -24,6 +24,13 @@ class AnalysisController final : public QObject {
     const std::vector<HistoryEntry>& continuations() const { return continuations_; }
     chess::NodeId currentNode() const { return current_; }
     bool busy() const { return busy_; }
+    const std::shared_ptr<const NavigationTree>& navigationTree() const { return navigationTree_; }
+    const std::vector<chess::NodeId>& chosenLine() const { return chosenLine_; }
+    chess::NodeId requestedNode() const { return requested_; }
+    NavigationTarget target(chess::NodeId node) const { return {sessionGeneration_, node}; }
+    bool canNavigate() const { return navigationTree_ && !closing_ && !resetting_; }
+    bool canPrevious() const;
+    bool canNext() const;
     bool hasContent() const { return hasMoves_ || !annotations_.empty(); }
     bool canUndoAnnotation() const;
     bool canRedoAnnotation() const;
@@ -34,6 +41,8 @@ class AnalysisController final : public QObject {
     void clearSelection();
     void attemptMove(chess::Move move, std::uint64_t revision);
     void navigate(chess::NodeId node);
+    void navigate(NavigationTarget target);
+    void setOrientation(bool blackAtBottom);
     void previous();
     void next();
     void beginning();
@@ -53,6 +62,9 @@ class AnalysisController final : public QObject {
   private:
     struct Session;
     struct Snapshot;
+    struct ResetRequest {
+        std::optional<std::string> fen;
+    };
     struct AnnotationHistory {
         std::vector<std::vector<BoardAnnotation>> undo;
         std::vector<std::vector<BoardAnnotation>> redo;
@@ -60,6 +72,10 @@ class AnalysisController final : public QObject {
     void submit(std::function<QString(Session&)> operation, bool resetSession = false,
                 std::optional<chess::Move> animatedMove = std::nullopt);
     void publish(Snapshot snapshot, std::uint64_t request, std::optional<chess::Move> animatedMove);
+    void startReset(std::optional<std::string> fen);
+    void dispatchNavigation();
+    void rememberPath(chess::NodeId node);
+    void updateChosenLine();
     void replaceAnnotations(std::vector<BoardAnnotation> annotations);
     void finishClose();
     QThreadPool pool_;
@@ -67,8 +83,16 @@ class AnalysisController final : public QObject {
     BoardViewState board_;
     std::vector<HistoryEntry> history_;
     std::vector<HistoryEntry> continuations_;
+    std::shared_ptr<const NavigationTree> navigationTree_;
+    std::vector<chess::NodeId> chosenLine_;
+    std::map<chess::NodeId, chess::NodeId> chosen_;
+    chess::NodeId requested_{0};
+    std::optional<chess::NodeId> pendingNavigation_;
+    std::optional<ResetRequest> pendingReset_;
+    std::uint64_t sessionGeneration_ = 0;
+    bool resetting_ = false;
+    bool navigating_ = false;
     chess::NodeId current_{0};
-    std::optional<chess::NodeId> parent_;
     std::map<chess::NodeId, std::vector<BoardAnnotation>> annotations_;
     std::map<chess::NodeId, AnnotationHistory> annotationHistory_;
     std::uint64_t request_ = 0;

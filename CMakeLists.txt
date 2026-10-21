@@ -54,6 +54,7 @@ chess_review_apply_options(chess_review_app_paths)
 
 add_library(chess_review_startup STATIC
     src/app/AnalysisController.cpp
+    src/app/MoveNavigationState.cpp
     src/app/GameImportService.cpp
     src/app/Diagnostic.cpp
     src/app/StartupCoordinator.cpp
@@ -67,6 +68,7 @@ add_library(chess_review_ui STATIC
     src/ui/chess/ChessBoardWidget.cpp
     src/ui/chess/BoardAccessibility.cpp
     src/ui/analysis/AnalysisPage.cpp
+    src/ui/analysis/MoveNavigation.cpp
     src/ui/shell/MainWindow.cpp
     src/ui/shell/StartupPanel.cpp
     src/ui/shell/DiagnosticsDialog.cpp

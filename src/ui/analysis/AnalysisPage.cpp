@@ -1,4 +1,5 @@
 #include "ui/analysis/AnalysisPage.h"
+#include "ui/analysis/MoveNavigation.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include <QAccessible>
 #include <QAction>
@@ -14,11 +15,15 @@
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QShortcut>
+#include <QShowEvent>
 #include <QSignalBlocker>
+#include <QSplitter>
 #include <QTextBrowser>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <algorithm>
 
 namespace chess_review::ui {
 AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
@@ -107,6 +112,11 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
             "<tr><td width='30%'><b>Left / Right</b></td><td>Previous / next move, "
             "when outside keyboard square navigation.</td></tr>"
             "<tr><td><b>Home / End</b></td><td>Beginning / end of the chosen line.</td></tr>"
+            "<tr><td><b>Timeline / PGN tree</b></td><td>Click any move to navigate. "
+            "Hover shows details without changing the board.</td></tr>"
+            "<tr><td><b>PGN keyboard</b></td><td>Up/Down browse lines; Ctrl+Left/Right "
+            "focus moves within a line; Enter selects. Plus/minus expands/collapses "
+            "variations. Left/Right navigate history.</td></tr>"
             "<tr><td><b>Flip Board</b></td><td>Use the toolbar or View menu "
             "(Ctrl+F).</td></tr></table>"
             "<h3>Arrows and highlights</h3>"
@@ -154,36 +164,48 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     preferences->addWidget(color_);
     preferences->addStretch();
     layout->addLayout(preferences);
-    topPlayer_ = new QLabel(this);
+    splitter_ = new QSplitter(Qt::Horizontal, this);
+    splitter_->setObjectName(QStringLiteral("analysisSplitter"));
+    splitter_->setChildrenCollapsible(false);
+    auto* boardPane = new QWidget(splitter_);
+    auto* boardLayout = new QVBoxLayout(boardPane);
+    boardLayout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(splitter_, 1);
+    topPlayer_ = new QLabel(boardPane);
     topPlayer_->setAlignment(Qt::AlignHCenter);
-    layout->addWidget(topPlayer_);
-    board_ = new ChessBoardWidget(this);
-    layout->addWidget(board_, 1);
+    boardLayout->addWidget(topPlayer_);
+    board_ = new ChessBoardWidget(boardPane);
+    board_->setMinimumSize(248, 248);
+    boardLayout->addWidget(board_, 1);
     bottomPlayer_ = new QLabel(this);
     bottomPlayer_->setAlignment(Qt::AlignHCenter);
-    layout->addWidget(bottomPlayer_);
+    boardLayout->addWidget(bottomPlayer_);
     status_ = new QLabel(this);
     status_->setObjectName(QStringLiteral("analysisStatus"));
     status_->setTextFormat(Qt::PlainText);
     status_->setWordWrap(true);
     status_->setAccessibleName(tr("Analysis status"));
-    layout->addWidget(status_);
-    auto* navigationWidget = new QWidget(this);
+    boardLayout->addWidget(status_);
+    auto* navigationWidget = new QWidget(boardPane);
     auto* navigation = new QHBoxLayout(navigationWidget);
     navigation->setContentsMargins(0, 0, 0, 0);
     const auto addNavigation = [this, navigation, navigationWidget](const QString& text,
                                                                     auto method) {
         auto* button = new QPushButton(text, navigationWidget);
         connect(button, &QPushButton::clicked, &controller_, method);
+        connect(&controller_, &app::AnalysisController::changed, button, [this, button, method] {
+            const bool backward = method == &app::AnalysisController::previous ||
+                                  method == &app::AnalysisController::beginning;
+            button->setEnabled(backward ? controller_.canPrevious() : controller_.canNext());
+        });
         navigation->addWidget(button);
     };
     addNavigation(tr("Beginning"), &app::AnalysisController::beginning);
     addNavigation(tr("Previous"), &app::AnalysisController::previous);
     addNavigation(tr("Next"), &app::AnalysisController::next);
     addNavigation(tr("End"), &app::AnalysisController::end);
-    layout->addWidget(navigationWidget);
-    connect(&controller_, &app::AnalysisController::changed, navigationWidget,
-            [this, navigationWidget] { navigationWidget->setEnabled(!controller_.busy()); });
+    boardLayout->addWidget(navigationWidget);
+
     const auto addShortcut = [this, navigationWidget](Qt::Key key, auto method) {
         auto* shortcut = new QShortcut(QKeySequence(key), navigationWidget);
         shortcut->setContext(Qt::WidgetWithChildrenShortcut);
@@ -193,30 +215,16 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     addShortcut(Qt::Key_Right, &app::AnalysisController::next);
     addShortcut(Qt::Key_Home, &app::AnalysisController::beginning);
     addShortcut(Qt::Key_End, &app::AnalysisController::end);
-    auto* historyLabel = new QLabel(tr("History:"), this);
-    history_ = new QComboBox(this);
-    history_->setObjectName(QStringLiteral("analysisHistory"));
-    historyLabel->setBuddy(history_);
-    auto* continuationLabel = new QLabel(tr("Continue with:"), this);
-    continuations_ = new QComboBox(this);
-    continuations_->setObjectName(QStringLiteral("analysisContinuations"));
-    continuationLabel->setBuddy(continuations_);
-    auto* moves = new QHBoxLayout;
-    moves->addWidget(historyLabel);
-    moves->addWidget(history_, 1);
-    moves->addWidget(continuationLabel);
-    moves->addWidget(continuations_, 1);
-    layout->addLayout(moves);
-    connect(history_, &QComboBox::activated, this, [this](int index) {
-        const auto& history = controller_.history();
-        if (index >= 0 && static_cast<std::size_t>(index) < history.size()) {
-            controller_.navigate(history[static_cast<std::size_t>(index)].id);
-        }
-    });
-    connect(continuations_, &QComboBox::activated, this, [this](int index) {
-        const auto& continuations = controller_.continuations();
-        if (index > 0 && static_cast<std::size_t>(index - 1) < continuations.size()) {
-            controller_.navigate(continuations[static_cast<std::size_t>(index - 1)].id);
+    timeline_ = new MoveTimelineView(controller_, boardPane);
+    boardLayout->addWidget(timeline_);
+    tree_ = new GameTreeView(controller_, splitter_);
+    splitter_->setStretchFactor(0, 1);
+    splitter_->setStretchFactor(1, 1);
+    connect(splitter_, &QSplitter::splitterMoved, this, [this] {
+        const auto sizes = splitter_->sizes();
+        const auto total = sizes[0] + sizes[1];
+        if (total > 0) {
+            preferences_.analysisSplit = std::clamp(sizes[0] * 100 / total, 1, 99);
         }
     });
     connect(&controller_, &app::AnalysisController::changed, this, &AnalysisPage::refresh);
@@ -251,6 +259,7 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
         preferences_.animation = enabled;
         board_->setPreferences(preferences_);
     });
+    preferences_.blackAtBottom = controller_.board().blackAtBottom;
     setPreferences(preferences_);
     refresh();
 }
@@ -270,26 +279,37 @@ void AnalysisPage::setPreferences(const app::BoardPreferences& preferences) {
         color_->setItemData(index, preferences.annotationColors[i], Qt::ToolTipRole);
     }
     board_->setPreferences(preferences);
+    controller_.setOrientation(preferences.blackAtBottom);
+    applySplit();
+}
+app::BoardPreferences AnalysisPage::preferences() const {
+    auto result = preferences_;
+    result.blackAtBottom = controller_.board().blackAtBottom;
+    return result;
+}
+void AnalysisPage::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    const auto orientation = width() < 800 ? Qt::Vertical : Qt::Horizontal;
+    if (orientation != splitter_->orientation()) {
+        const QSignalBlocker block(splitter_);
+        splitter_->setOrientation(orientation);
+        applySplit();
+    }
+}
+void AnalysisPage::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    applySplit();
+}
+void AnalysisPage::applySplit() {
+    const QSignalBlocker block(splitter_);
+    const int extent =
+        splitter_->orientation() == Qt::Horizontal ? splitter_->width() : splitter_->height();
+    const int board = extent * preferences_.analysisSplit / 100;
+    splitter_->setSizes({board, extent - board});
 }
 void AnalysisPage::refresh() {
     board_->setState(controller_.board());
-    const QSignalBlocker historyBlock(history_);
-    const QSignalBlocker continuationBlock(continuations_);
-    if (displayedRevision_ != controller_.board().revision) {
-        displayedRevision_ = controller_.board().revision;
-        history_->clear();
-        for (const auto& entry : controller_.history()) {
-            history_->addItem(entry.label);
-        }
-        history_->setCurrentIndex(history_->count() - 1);
-        continuations_->clear();
-        continuations_->addItem(tr("Choose continuation"));
-        for (const auto& entry : controller_.continuations()) {
-            continuations_->addItem(entry.label);
-        }
-    }
-    history_->setEnabled(!controller_.busy());
-    continuations_->setEnabled(!controller_.busy() && !controller_.continuations().empty());
+    preferences_.blackAtBottom = controller_.board().blackAtBottom;
     undo_->setEnabled(controller_.board().interactive && controller_.canUndoAnnotation());
     redo_->setEnabled(controller_.board().interactive && controller_.canRedoAnnotation());
     topPlayer_->setText(controller_.board().blackAtBottom ? tr("White") : tr("Black"));

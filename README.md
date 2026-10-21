@@ -2,8 +2,9 @@
 
 A local-first desktop chess review app built with C++20 and Qt Widgets.
 Analyze now provides a playable board with legal move entry, branching history,
-promotion, keyboard controls, and annotations. Analysis is session-only; an exit
-confirmation protects against accidental loss. Engine analysis and guided review
+promotion, a chosen-line timeline, collapsible PGN variations, keyboard controls,
+and annotations. Board orientation and the analysis split survive orderly exit.
+Analysis is session-only; an exit confirmation protects against accidental loss. Engine analysis and guided review
 are not implemented yet. Home, Games, Puzzles, and Settings remain placeholders.
 
 The shell includes navigation, saved window preferences, local SQLite storage,
