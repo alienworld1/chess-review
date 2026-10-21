@@ -42,8 +42,9 @@ class GameImportService final : public QObject {
     void close();
   signals:
     // Emitted after submission, before the asynchronous durable outcome.
-    void savingGame(std::size_t ordinal);
-    void progress(const chess_review::app::ImportItem& item);
+    void savingGame(chess_review::persistence::RequestId request, std::size_t ordinal);
+    void progress(chess_review::persistence::RequestId request,
+                  const chess_review::app::ImportItem& item);
     void finished(const chess_review::app::ImportReport& report);
     void rejected(chess_review::persistence::RequestId request,
                   const chess_review::persistence::GameError& error);

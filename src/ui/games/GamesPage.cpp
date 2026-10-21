@@ -9,6 +9,8 @@
 #include <QMimeData>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollBar>
+#include <QSignalBlocker>
 #include <QTableView>
 #include <QTimer>
 #include <QToolButton>
@@ -30,12 +32,31 @@ QString fileState(app::ImportFileState state) {
         return QObject::tr("Importing");
     case app::ImportFileState::Completed:
         return QObject::tr("Completed");
+    case app::ImportFileState::CompletedWithErrors:
+        return QObject::tr("Completed with errors");
     case app::ImportFileState::Failed:
         return QObject::tr("Failed");
     case app::ImportFileState::Cancelled:
         return QObject::tr("Cancelled");
     case app::ImportFileState::Unprocessed:
         return QObject::tr("Not processed");
+    }
+    return {};
+}
+QString completionText(app::ImportBatchStatus status, bool hasErrors) {
+    switch (status) {
+    case app::ImportBatchStatus::Completed:
+        return hasErrors ? QObject::tr("Import completed with errors.")
+                         : QObject::tr("Import completed.");
+    case app::ImportBatchStatus::Cancelled:
+        return QObject::tr("Import cancelled.");
+    case app::ImportBatchStatus::Failed:
+        return QObject::tr("Import stopped after a failure.");
+    case app::ImportBatchStatus::GameLimitReached:
+        return QObject::tr("Import stopped: batch game limit reached.");
+    case app::ImportBatchStatus::Idle:
+    case app::ImportBatchStatus::Running:
+        return {};
     }
     return {};
 }
@@ -66,17 +87,7 @@ bool supportedDrop(const QMimeData& mime) {
     if (!mime.hasUrls()) {
         return false;
     }
-    const auto urls = mime.urls();
-    if (urls.isEmpty() || static_cast<std::size_t>(urls.size()) > app::maxBatchFiles) {
-        return false;
-    }
-    for (const auto& url : urls) {
-        if (!url.isLocalFile() || url.toString().size() > 65'536 ||
-            !url.fileName().endsWith(QStringLiteral(".pgn"), Qt::CaseInsensitive)) {
-            return false;
-        }
-    }
-    return true;
+    return app::ImportController::acceptsFiles(mime.urls());
 }
 void configureTable(QTableView& table) {
     table.setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -194,7 +205,9 @@ class ImportTableModel final : public QAbstractTableModel {
         case 1:
             return item ? QString::number(item->ordinal) : QString{};
         case 2:
-            return item ? outcomeText(*item) : fileState(file.state);
+            return item                     ? outcomeText(*item)
+                   : file.message.isEmpty() ? fileState(file.state)
+                                            : tr("%1: %2").arg(fileState(file.state), file.message);
         case 3:
             return item ? QString::number(item->warnings.size() + item->suppressedWarnings)
                         : QString{};
@@ -348,6 +361,9 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     });
     connect(&imports_, &app::ImportController::submitted, this, [this] {
         results_->setCurrentIndex(QModelIndex{});
+        results_->scrollToTop();
+        results_->horizontalScrollBar()->setValue(0);
+        detailText_.clear();
         details_->clear();
         updateImport();
     });
@@ -385,24 +401,35 @@ void GamesPage::updateLibrary() {
 }
 void GamesPage::updateImport() {
     const auto selected = importModel_->rowKey(results_->currentIndex().row());
-    importModel_->reload();
-    if (selected) {
-        results_->setCurrentIndex(importModel_->indexForKey(*selected));
-    } else if (importModel_->rowCount() > 0) {
-        results_->setCurrentIndex(importModel_->index(0, 0));
+    const auto top = importModel_->rowKey(results_->rowAt(0));
+    const auto horizontal = results_->horizontalScrollBar()->value();
+    {
+        const QSignalBlocker selectionSignals(results_->selectionModel());
+        importModel_->reload();
+        if (selected) {
+            results_->setCurrentIndex(importModel_->indexForKey(*selected));
+        } else if (importModel_->rowCount() > 0) {
+            results_->setCurrentIndex(importModel_->index(0, 0));
+        }
+        if (top) {
+            results_->scrollTo(importModel_->indexForKey(*top), QAbstractItemView::PositionAtTop);
+        }
+        results_->horizontalScrollBar()->setValue(horizontal);
     }
+    showResultDetails();
     const bool hasResults = !imports_.files().empty();
     results_->setVisible(hasResults);
     details_->setVisible(hasResults);
     cancel_->setVisible(imports_.busy());
     cancel_->setEnabled(imports_.busy() && !imports_.cancelling());
-    auto status = imports_.busy()
-                      ? (imports_.cancelling() ? tr("Cancelling; any submitted save will finish…")
-                                               : tr("Importing file %1 of %2, game %3…")
-                                                     .arg(imports_.currentFile() + 1)
-                                                     .arg(imports_.files().size())
-                                                     .arg(imports_.currentGame()))
-                      : tr("Latest import finished.");
+    auto status = completionText(imports_.status(), imports_.failures() > 0);
+    if (imports_.busy()) {
+        status = imports_.cancelling() ? tr("Cancelling; any submitted save will finish…")
+                                       : tr("Importing file %1 of %2, game %3…")
+                                             .arg(imports_.currentFile() + 1)
+                                             .arg(imports_.files().size())
+                                             .arg(imports_.currentGame());
+    }
     if (imports_.busy() && imports_.currentFile() < imports_.files().size()) {
         status += QLatin1Char(' ') + imports_.files()[imports_.currentFile()].name.left(256);
     }
@@ -419,7 +446,11 @@ void GamesPage::updateImport() {
     importStatus_->setText(status);
 }
 void GamesPage::showResultDetails() {
-    details_->setPlainText(importModel_->details(results_->currentIndex().row()));
+    const auto text = importModel_->details(results_->currentIndex().row());
+    if (text != detailText_) {
+        detailText_ = text;
+        details_->setPlainText(text);
+    }
 }
 void GamesPage::dragEnterEvent(QDragEnterEvent* event) {
     if (imports_.available() && event->possibleActions().testFlag(Qt::CopyAction) &&

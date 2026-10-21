@@ -4,6 +4,7 @@
 #include "app/StartupCoordinator.h"
 #include "import/LocalPgnInput.h"
 #include "ui/games/GamesPage.h"
+#include "ui/games/PgnTextEdit.h"
 #include "ui/shell/MainWindow.h"
 #include <QAbstractItemModelTester>
 #include <QAction>
@@ -20,12 +21,16 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QTableView>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextCursor>
+#include <QTextDocument>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <algorithm>
 #ifdef Q_OS_UNIX
 #include <sys/stat.h>
 #endif
@@ -87,6 +92,17 @@ class ImportTest final : public QObject {
             QStringLiteral("^(?!This plugin does not support propagateSizeHints\\(\\)$).*")));
     }
     void acquisition();
+    void hostileFileUrls();
+    void progressRequestIdentity();
+    void readinessKeepsOneRead();
+    void boundedPaste();
+    void largePastePreview();
+    void pastePreservesUnicode_data();
+    void pastePreservesUnicode();
+    void progressPreservesReading();
+    void visibleReportStress();
+    void completionAdmission();
+    void completionCloseOrdering();
     void mixedFilesAndProvenance();
     void cancellationAndClosing();
     void sharedBudgets();
@@ -98,6 +114,310 @@ class ImportTest final : public QObject {
     void layouts_data();
     void layouts();
 };
+void ImportTest::progressRequestIdentity() {
+    Fixture fixture;
+    auto& imports = fixture.startup.localImports();
+    auto& service = fixture.startup.gameImports();
+    QTRY_VERIFY(imports.available());
+    bool injected = false;
+    QObject observer;
+    connect(&service, &app::GameImportService::savingGame, &observer,
+            [&](persistence::RequestId, std::size_t ordinal) {
+                if (injected) {
+                    return;
+                }
+                injected = true;
+                const auto foreign = QUuid::createUuid();
+                emit service.progress(foreign, {999, persistence::Inserted{999}});
+                emit service.savingGame(foreign, 999);
+                QCOMPARE(imports.currentGame(), ordinal);
+            });
+    QVERIFY(imports.importText(QStringLiteral("1.e4 *")));
+    QVERIFY(waitForBatch(imports));
+    QVERIFY(injected);
+    QCOMPARE(imports.inserted(), std::size_t(1));
+    QCOMPARE(imports.files()[0].items.size(), std::size_t(1));
+}
+void ImportTest::readinessKeepsOneRead() {
+    Fixture fixture;
+    QTRY_VERIFY(fixture.startup.localImports().available());
+    auto& library = fixture.startup.library();
+    QSignalSpy results(&fixture.startup.gameRepository(), &persistence::Database::gamesListed);
+    library.activate();
+    QVERIFY(library.busy());
+    for (int i = 0; i < 8; ++i) {
+        library.setReady(false);
+        library.setReady(true);
+    }
+    QTRY_VERIFY(!library.busy());
+    QCOMPARE(results.count(), 2); // One stale accepted read, then one refresh for the latest state.
+}
+void ImportTest::boundedPaste() {
+    ui::PgnTextEdit editor;
+    editor.setPgnText(QStringLiteral("1.e4 *"));
+    QSignalSpy rejected(&editor, &ui::PgnTextEdit::inputRejected);
+    QApplication::clipboard()->setText(
+        QString(static_cast<qsizetype>(app::maxBatchBytes) + 1, QLatin1Char('x')));
+    editor.paste();
+    QCOMPARE(rejected.count(), 1);
+    QCOMPARE(editor.pgnText(), QStringLiteral("1.e4 *"));
+    QApplication::clipboard()->setText(QString(QChar(0xd800)));
+    editor.paste();
+    QCOMPARE(rejected.count(), 2);
+    QCOMPARE(editor.pgnText(), QStringLiteral("1.e4 *"));
+    QApplication::clipboard()->setText(QStringLiteral("[White \"A\u00a0B\"]\n1.e4 *"));
+    editor.selectAll();
+    editor.paste();
+    QCOMPARE(editor.pgnText(), QApplication::clipboard()->text());
+    editor.undo();
+    QCOMPARE(editor.pgnText(), QStringLiteral("1.e4 *"));
+    QApplication::clipboard()->clear();
+}
+void ImportTest::largePastePreview() {
+    Fixture fixture;
+    app::NavigationController navigation;
+    ui::MainWindow window(navigation);
+    window.installImports(fixture.startup.localImports(), fixture.startup.library());
+    window.show();
+    QTRY_VERIFY(fixture.startup.localImports().available());
+    // A surrogate pair crosses the preview boundary; the retained input stays exact.
+    QString source(4095, QLatin1Char(' '));
+    source.replace(0, 6, QStringLiteral("1.e4 *"));
+    source += QString::fromUcs4(U"\U0001f600");
+    source += QString(4 * 1024 * 1024, QLatin1Char(' '));
+    source += QStringLiteral("1.e4 *");
+    QApplication::clipboard()->setText(source);
+    window.findChild<QAction*>(QStringLiteral("pastePgnAction"))->trigger();
+    auto* dialog = window.findChild<QDialog*>(QStringLiteral("pastePgnDialog"));
+    QVERIFY(dialog);
+    auto* editor = dialog->findChild<ui::PgnTextEdit*>();
+    QVERIFY(editor->previewOnly());
+    QVERIFY(editor->isReadOnly());
+    QVERIFY(editor->toPlainText().size() <= 4096);
+    QVERIFY(editor->toPlainText().isValidUtf16());
+    QCOMPARE(editor->pgnText(), source);
+    QVERIFY(dialog->findChild<QLabel*>(QStringLiteral("pastePgnPreviewInfo"))->isVisible());
+    auto* confirm = dialog->findChild<QPushButton*>(QStringLiteral("confirmPasteImport"));
+    QCOMPARE(confirm->text(), QStringLiteral("Import full text"));
+    QVERIFY(!fixture.startup.localImports().busy());
+    const auto screenshotDirectory = qEnvironmentVariable("CHESS_REVIEW_SCREENSHOT_DIR");
+    if (!screenshotDirectory.isEmpty()) {
+        QVERIFY(dialog->grab().save(screenshotDirectory + QStringLiteral("/paste-preview.png")));
+    }
+    // Replace with valid oversized whitespace input and verify explicit full-source submission.
+    source = QString(4 * 1024 * 1024, QLatin1Char(' ')) + QStringLiteral("1.e4 *");
+    editor->setPgnText(source);
+    confirm->click();
+    QVERIFY(waitForBatch(fixture.startup.localImports()));
+    QCOMPARE(fixture.startup.localImports().inserted(), std::size_t(1));
+    ui::PgnTextEdit draft;
+    draft.setPgnText(QStringLiteral("1.e4 *\r\nreplace"));
+    auto cursor = draft.textCursor();
+    cursor.setPosition(7);
+    cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+    draft.setTextCursor(cursor);
+    QApplication::clipboard()->setText(source);
+    draft.paste();
+    QVERIFY(draft.previewOnly());
+    QVERIFY(draft.document()->characterCount() <= 4097);
+    QCOMPARE(draft.pgnText(), QStringLiteral("1.e4 *\n") + source);
+    draft.setPgnText(QStringLiteral("1.d4 *"));
+    QVERIFY(!draft.previewOnly());
+    QVERIFY(!draft.isReadOnly());
+    QApplication::clipboard()->clear();
+    window.completeShutdown();
+}
+void ImportTest::hostileFileUrls() {
+    Fixture fixture;
+    auto& imports = fixture.startup.localImports();
+    QTRY_VERIFY(imports.available());
+    for (const auto& url : QList<QUrl>{
+             QUrl(QStringLiteral("file://untrusted.example/share/game.pgn")),
+             QUrl(QStringLiteral("file:relative.pgn")),
+             QUrl(QStringLiteral("file:////untrusted.example/share/game.pgn")),
+             QUrl::fromEncoded("file:///tmp/%FF.pgn"), QUrl::fromEncoded("file:///tmp/a%00.pgn"),
+             QUrl(QStringLiteral("file:///tmp/game.pgn?query")),
+             QUrl(QStringLiteral("file:///tmp/game.pgn#fragment"))}) {
+        QVERIFY2(!imports.importFiles({url}), qPrintable(url.toString()));
+        QVERIFY(imports.files().empty());
+        const auto input = input::readLocalPgn(url, 10, {});
+        QVERIFY(!input.error.isEmpty());
+        QCOMPARE(input.bytesRead, std::size_t(0));
+    }
+}
+void ImportTest::pastePreservesUnicode_data() {
+    QTest::addColumn<QString>("event");
+    QTest::newRow("no-break-space") << QStringLiteral("ordinary");
+    QTest::newRow("unicode-line-separator") << QStringLiteral("one\u2028two");
+    QTest::newRow("field-bom") << QStringLiteral("\ufeffEvent");
+}
+void ImportTest::pastePreservesUnicode() {
+    QFETCH(QString, event);
+    Fixture fixture;
+    app::NavigationController navigation;
+    ui::MainWindow window(navigation);
+    window.installImports(fixture.startup.localImports(), fixture.startup.library());
+    window.show();
+    QTRY_VERIFY(fixture.startup.localImports().available());
+    const auto original =
+        QStringLiteral("[White \"A\u00a0B\"]\r\n[Event \"%1\"]\r\n1.e4 *").arg(event);
+    auto ordinary = original;
+    ordinary.replace(QChar(0x00a0), QLatin1Char(' '));
+    QVERIFY(fixture.startup.localImports().importText(ordinary));
+    QVERIFY(waitForBatch(fixture.startup.localImports()));
+    QApplication::clipboard()->setText(original);
+    window.findChild<QAction*>(QStringLiteral("pastePgnAction"))->trigger();
+    auto* dialog = window.findChild<QDialog*>(QStringLiteral("pastePgnDialog"));
+    QVERIFY(dialog);
+    dialog->findChild<QPushButton*>(QStringLiteral("confirmPasteImport"))->click();
+    QTRY_VERIFY(!fixture.startup.localImports().busy());
+    QCOMPARE(fixture.startup.localImports().inserted(), std::size_t(1));
+    auto& library = fixture.startup.library();
+    QTRY_VERIFY(!library.busy());
+    QCOMPARE(library.rows().size(), std::size_t(2));
+    QCOMPARE(library.rows()[0].white, QStringLiteral("A\u00a0B"));
+    QSignalSpy loaded(&fixture.startup.gameRepository(), &persistence::Database::gameLoaded);
+    fixture.startup.gameRepository().loadGame(QUuid::createUuid(), library.rows()[0].id);
+    QTRY_COMPARE(loaded.count(), 1);
+    const auto result = qvariant_cast<persistence::LoadGameResult>(loaded.at(0).at(1));
+    QVERIFY(std::holds_alternative<persistence::StoredGame>(result));
+    QCOMPARE(std::get<persistence::StoredGame>(result).document->originalText,
+             original.toStdString());
+    // Ordinary edits must not replace a no-break space elsewhere in the source.
+    QApplication::clipboard()->setText(original);
+    window.findChild<QAction*>(QStringLiteral("pastePgnAction"))->trigger();
+    dialog = window.findChild<QDialog*>(QStringLiteral("pastePgnDialog"));
+    auto* editor = dialog->findChild<QPlainTextEdit*>(QStringLiteral("pastePgnEditor"));
+    auto cursor = editor->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(QStringLiteral(" {edited}"));
+    dialog->findChild<QPushButton*>(QStringLiteral("confirmPasteImport"))->click();
+    QTRY_VERIFY(!fixture.startup.localImports().busy());
+    QCOMPARE(fixture.startup.localImports().duplicates(), std::size_t(1));
+    window.completeShutdown();
+}
+void ImportTest::progressPreservesReading() {
+    Fixture fixture;
+    QAction fileAction(QStringLiteral("Import"));
+    QAction pasteAction(QStringLiteral("Paste"));
+    ui::GamesPage page(fixture.startup.localImports(), fixture.startup.library(), fileAction,
+                       pasteAction);
+    page.resize(1100, 720);
+    page.show();
+    QTRY_VERIFY(fixture.startup.localImports().available());
+    QString text;
+    for (int i = 0; i < 40; ++i) {
+        text += QStringLiteral("1.e5 *\n");
+    }
+    QVERIFY(fixture.startup.localImports().importText(text));
+    QVERIFY(waitForBatch(fixture.startup.localImports()));
+    auto* results = page.findChild<QTableView*>(QStringLiteral("importResults"));
+    auto* details = page.findChild<QPlainTextEdit*>(QStringLiteral("importDetails"));
+    QTRY_COMPARE(results->model()->rowCount(), 41);
+    results->setCurrentIndex(results->model()->index(1, 0));
+    auto cursor = details->textCursor();
+    cursor.select(QTextCursor::Document);
+    details->setTextCursor(cursor);
+    details->setFocus();
+    const auto selected = cursor.selectedText();
+    QVERIFY(!selected.isEmpty());
+    results->verticalScrollBar()->setValue(15);
+    const auto scroll = results->verticalScrollBar()->value();
+    QVERIFY(scroll > 0);
+    emit fixture.startup.localImports().changed();
+    QTest::qWait(150);
+    QVERIFY(details->hasFocus());
+    QCOMPARE(details->textCursor().selectedText(), selected);
+    QCOMPARE(results->verticalScrollBar()->value(), scroll);
+    QVERIFY(page.findChild<QLabel*>(QStringLiteral("importStatus"))
+                ->text()
+                .startsWith(QStringLiteral("Import completed with errors")));
+    QCOMPARE(results->model()->data(results->model()->index(0, 2)).toString(),
+             QStringLiteral("Completed with errors"));
+    QVERIFY(fixture.startup.localImports().importText(QStringLiteral("1.d4 *")));
+    fixture.startup.localImports().cancel();
+    QVERIFY(waitForBatch(fixture.startup.localImports()));
+    QVERIFY(page.findChild<QLabel*>(QStringLiteral("importStatus"))
+                ->text()
+                .startsWith(QStringLiteral("Import cancelled")));
+}
+void ImportTest::visibleReportStress() {
+    Fixture fixture;
+    QAction fileAction(QStringLiteral("Import"));
+    QAction pasteAction(QStringLiteral("Paste"));
+    ui::GamesPage page(fixture.startup.localImports(), fixture.startup.library(), fileAction,
+                       pasteAction);
+    page.resize(1100, 720);
+    page.show();
+    QTRY_VERIFY(fixture.startup.localImports().available());
+    constexpr int games = 2000;
+    QString source;
+    for (int i = 0; i < games; ++i) {
+        source += QStringLiteral("1.e5 *\n");
+    }
+    int beats = 0;
+    qint64 largestGap = 0;
+    QElapsedTimer elapsed;
+    QElapsedTimer gap;
+    QTimer heartbeat;
+    connect(&heartbeat, &QTimer::timeout, &heartbeat, [&] {
+        largestGap = std::max(largestGap, gap.restart());
+        ++beats;
+    });
+    elapsed.start();
+    gap.start();
+    heartbeat.start(5);
+    QVERIFY(fixture.startup.localImports().importText(source));
+    QVERIFY(waitForBatch(fixture.startup.localImports()));
+    largestGap = std::max(largestGap, gap.elapsed());
+    heartbeat.stop();
+    auto* table = page.findChild<QTableView*>(QStringLiteral("importResults"));
+    QCOMPARE(table->model()->rowCount(), games + 1);
+    QVERIFY(beats > 0);
+    qInfo("visible import report: %d games, %lld ms, largest heartbeat gap %lld ms", games,
+          static_cast<long long>(elapsed.elapsed()), static_cast<long long>(largestGap));
+}
+void ImportTest::completionAdmission() {
+    Fixture fixture;
+    auto& imports = fixture.startup.localImports();
+    QTRY_VERIFY(imports.available());
+    bool tried = false;
+    bool admitted = false;
+    const auto connection = connect(&imports, &app::ImportController::changed, &imports, [&] {
+        if (!imports.busy() && !tried) {
+            tried = true;
+            admitted = imports.importText(QStringLiteral("1.d4 *"));
+        }
+    });
+    QSignalSpy finished(&imports, &app::ImportController::finished);
+    QVERIFY(imports.importText(QStringLiteral("1.e4 *")));
+    QTRY_VERIFY(tried);
+    QVERIFY(
+        !admitted); // Terminal notifications must finish before another batch replaces its state.
+    disconnect(connection);
+    QTRY_COMPARE(finished.count(), 1);
+    QVERIFY(imports.importText(QStringLiteral("1.d4 *")));
+    QVERIFY(waitForBatch(imports));
+}
+void ImportTest::completionCloseOrdering() {
+    Fixture fixture;
+    auto& imports = fixture.startup.localImports();
+    QTRY_VERIFY(imports.available());
+    bool closed = false;
+    QObject observer;
+    connect(&imports, &app::ImportController::closed, &observer, [&] { closed = true; });
+    connect(&imports, &app::ImportController::finished, &observer, [&] {
+        QVERIFY(!imports.importText(QStringLiteral("1.d4 *")));
+        imports.close();
+        // Nested event delivery must not publish closed() while finished() observers still run.
+        QTest::qWait(10);
+        QVERIFY(!closed);
+    });
+    QVERIFY(imports.importText(QStringLiteral("1.e4 *")));
+    QTRY_VERIFY(closed);
+    QCOMPARE(imports.files().size(), std::size_t(1));
+    QCOMPARE(imports.inserted(), std::size_t(1));
+}
 void ImportTest::acquisition() {
     Fixture fixture;
     const auto good = fixture.file(QStringLiteral("UPPER.PGN"), "1.e4 *");
@@ -192,6 +512,7 @@ void ImportTest::cancellationAndClosing() {
     controller.cancel();
     QTRY_VERIFY(!controller.busy());
     QCOMPARE(controller.inserted(), std::size_t(0));
+    QCOMPARE(controller.status(), app::ImportBatchStatus::Cancelled);
     QCOMPARE(controller.files()[0].state, app::ImportFileState::Cancelled);
     QCOMPARE(controller.files()[1].state, app::ImportFileState::Unprocessed);
     QSignalSpy commits(&controller, &app::ImportController::committed);
@@ -224,11 +545,13 @@ void ImportTest::sharedBudgets() {
     QCOMPARE(controller.failures(), std::size_t(1));
     QCOMPARE(controller.inserted(), std::size_t(1));
     QByteArray games;
-    for (std::size_t i = 0; i < app::maxBatchGames + 1; ++i) {
+    for (std::size_t i = 0; i < app::maxBatchGames; ++i) {
         games += "1.e5 *\n";
     }
-    const auto tooMany = fixture.file(QStringLiteral("many.pgn"), games);
-    QVERIFY(controller.importFiles({tooMany, good}));
+    const auto firstHalf = fixture.file(QStringLiteral("part1.pgn"), games.first(games.size() / 2));
+    const auto secondHalf =
+        fixture.file(QStringLiteral("part2.pgn"), games.sliced(games.size() / 2));
+    QVERIFY(controller.importFiles({firstHalf, secondHalf, good}));
     int ticks = 0;
     QTimer heartbeat;
     connect(&heartbeat, &QTimer::timeout, &heartbeat, [&] { ++ticks; });
@@ -236,8 +559,12 @@ void ImportTest::sharedBudgets() {
     QVERIFY(waitForBatch(controller));
     QVERIFY(ticks > 0);
     heartbeat.stop();
-    QCOMPARE(controller.files()[0].items.size(), app::maxBatchGames + 1);
-    QCOMPARE(controller.files()[1].state, app::ImportFileState::Unprocessed);
+    QCOMPARE(controller.status(), app::ImportBatchStatus::GameLimitReached);
+    QCOMPARE(controller.files()[0].items.size() + controller.files()[1].items.size(),
+             app::maxBatchGames);
+    QCOMPARE(controller.files()[0].state, app::ImportFileState::CompletedWithErrors);
+    QCOMPARE(controller.files()[2].state, app::ImportFileState::Unprocessed);
+    QVERIFY(controller.files()[2].message.contains(QStringLiteral("game limit")));
     // Each missing move number warning consumes the same shared warning budget across files.
     QByteArray warnings;
     for (int i = 0; i < 101; ++i) {

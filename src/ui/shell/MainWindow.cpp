@@ -1,6 +1,7 @@
 #include "ui/shell/MainWindow.h"
 #include "ui/analysis/AnalysisPage.h"
 #include "ui/games/GamesPage.h"
+#include "ui/games/PgnTextEdit.h"
 #include "ui/shell/StartupPanel.h"
 #include <QAction>
 #include <QActionGroup>
@@ -217,15 +218,8 @@ class ImportDropButton final : public QToolButton {
             !event->mimeData()->hasUrls()) {
             return;
         }
-        const auto urls = event->mimeData()->urls();
-        if (urls.isEmpty() || static_cast<std::size_t>(urls.size()) > app::maxBatchFiles) {
+        if (!app::ImportController::acceptsFiles(event->mimeData()->urls())) {
             return;
-        }
-        for (const auto& url : urls) {
-            if (!url.isLocalFile() || url.toString().size() > 65'536 ||
-                !url.fileName().endsWith(QStringLiteral(".pgn"), Qt::CaseInsensitive)) {
-                return;
-            }
         }
         event->setDropAction(Qt::CopyAction);
         event->accept();
@@ -318,7 +312,7 @@ void MainWindow::installImports(app::ImportController& imports,
         dialog->setWindowTitle(tr("Paste PGN"));
         dialog->setWindowModality(Qt::WindowModal);
         auto* layout = new QVBoxLayout(dialog);
-        auto* editor = new QPlainTextEdit(dialog);
+        auto* editor = new PgnTextEdit(dialog);
         editor->setObjectName(QStringLiteral("pastePgnEditor"));
         editor->setAccessibleName(tr("PGN text to import"));
         // Clipboard access is explicit and happens only on this user action.
@@ -327,19 +321,29 @@ void MainWindow::installImports(app::ImportController& imports,
         error->setObjectName(QStringLiteral("pastePgnError"));
         error->setTextFormat(Qt::PlainText);
         error->setWordWrap(true);
-        if (static_cast<quint64>(text.size()) <= app::maxBatchBytes) {
-            editor->setPlainText(text);
-        } else {
-            error->setText(tr("Clipboard text exceeds the import limit. Paste a smaller PGN."));
-        }
+        connect(editor, &PgnTextEdit::inputRejected, error, &QLabel::setText);
+        connect(editor, &QPlainTextEdit::textChanged, error, &QLabel::clear);
+        auto* previewInfo = new QLabel(dialog);
+        previewInfo->setObjectName(QStringLiteral("pastePgnPreviewInfo"));
+        previewInfo->setTextFormat(Qt::PlainText);
+        previewInfo->setWordWrap(true);
+        previewInfo->setText(tr("Large PGN: read-only preview of the beginning. Import full text "
+                                "imports all supplied text. To edit it, use a UTF-8 PGN file."));
+        previewInfo->hide();
+        layout->addWidget(previewInfo);
         layout->addWidget(editor, 1);
         layout->addWidget(error);
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, dialog);
         auto* submit = buttons->addButton(tr("Import"), QDialogButtonBox::AcceptRole);
         submit->setObjectName(QStringLiteral("confirmPasteImport"));
+        connect(editor, &PgnTextEdit::previewChanged, dialog, [previewInfo, submit](bool preview) {
+            previewInfo->setVisible(preview);
+            submit->setText(preview ? tr("Import full text") : tr("Import"));
+        });
+        editor->setPgnText(text);
         connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
         connect(submit, &QPushButton::clicked, dialog, [dialog, editor, error, &imports] {
-            if (imports.importText(editor->toPlainText())) {
+            if (imports.importText(editor->pgnText())) {
                 dialog->accept();
             } else {
                 error->setText(

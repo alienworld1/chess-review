@@ -2,6 +2,7 @@
 
 #include "app/GameLibraryController.h"
 #include "app/ImportController.h"
+#include <QString>
 #include <QWidget>
 
 class QAction;
@@ -40,6 +41,7 @@ class GamesPage final : public QWidget {
     QPushButton* refresh_;
     QPushButton* cancel_;
     QPlainTextEdit* details_;
+    QString detailText_;
     QTimer* updateTimer_;
 };
 } // namespace chess_review::ui

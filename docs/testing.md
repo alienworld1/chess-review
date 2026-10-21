@@ -368,8 +368,25 @@ active multi-game import. They require normal process exit, saved Games
 navigation state, and orderly storage/session completion. No test driver is
 compiled into the production app.
 
+Large paste regressions verify bounded read-only previews, surrogate clipping,
+explicit full-input confirmation and unchanged source submission; small pastes
+retain native editing and undo.
+
 `import_tests layouts` accepts the existing `CHESS_REVIEW_SCREENSHOT_DIR` option.
 Run it with `QT_QPA_PLATFORM=offscreen` and `QT_SCALE_FACTOR=1`, `1.25`, `1.5`, or
 `2` to capture 1100×720, 1360×850, 1800×1000, and constrained layouts. These checks
 do not establish native file-picker, screen-reader, Windows, or physical monitor
 behavior; those remain manual platform QA.
+
+
+The import adversarial regressions additionally reject host/UNC/relative and
+malformed encoded file URLs before acquisition, compare stored pasted Unicode
+identities against distinct ordinary-space games, preserve unchanged source
+bytes and edited NBSP/line-separator content, reject oversized or invalid Unicode
+clipboard insertions, and verify terminal notification/admission/closure ordering.
+They inject unrelated request-scoped progress and flap readiness while a read is
+pending, verify exact cross-file game-budget exhaustion, and preserve diagnostic
+selection/focus and viewport position during updates. `visibleReportStress`
+presents 2,000 failed-game results with a UI heartbeat and reports local duration /
+maximum heartbeat gap; these measurements are observations, not portable latency
+budgets. No SQL fixture or query was moved outside persistence.

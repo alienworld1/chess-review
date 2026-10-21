@@ -8,6 +8,7 @@
 #include <vector>
 
 namespace chess_review::app {
+// GUI-thread presentation facade. The injected Database must outlive this controller.
 class GameLibraryController final : public QObject {
     Q_OBJECT
   public:

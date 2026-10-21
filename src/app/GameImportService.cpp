@@ -4,6 +4,7 @@
 #include <QTimer>
 #include <algorithm>
 #include <exception>
+#include <utility>
 
 namespace chess_review::app {
 using namespace persistence;
@@ -29,7 +30,7 @@ GameImportService::GameImportService(Database& database, QObject* parent)
                     std::visit([](const auto& value) -> ImportOutcome { return value; }, result);
                 report_.items.push_back({ordinal_, std::move(outcome), range_, std::move(warnings_),
                                          suppressedWarnings_});
-                emit progress(report_.items.back());
+                emit progress(report_.request, report_.items.back());
                 if (std::holds_alternative<GameError>(result)) {
                     finish(ImportStatus::Failed);
                 } else {
@@ -78,9 +79,11 @@ void GameImportService::next() {
                 state->reader = std::make_unique<pgn::PgnReader>(state->bytes, state->limits,
                                                                  state->stop.get_token());
             }
-            auto outcome = std::make_shared<pgn::PgnOutcome>(state->reader->next());
+            auto outcome = state->reader->next();
             QMetaObject::invokeMethod(
-                this, [this, outcome] { parsed(std::move(*outcome)); }, Qt::QueuedConnection);
+                this,
+                [this, outcome = std::move(outcome)]() mutable { parsed(std::move(outcome)); },
+                Qt::QueuedConnection);
         } catch (const std::exception&) {
             QMetaObject::invokeMethod(
                 this,
@@ -116,13 +119,13 @@ void GameImportService::parsed(pgn::PgnOutcome outcome) {
         database_.insertGame(storageRequest_,
                              std::make_shared<const pgn::PgnDocument>(std::move(*document)),
                              source_);
-        emit savingGame(ordinal_);
+        emit savingGame(report_.request, ordinal_);
     } else if (const auto* failure = std::get_if<pgn::PgnFailure>(&outcome)) {
         ordinal_ = failure->ordinal;
         report_.attemptedGames = std::min(ordinal_, budget_.games);
         report_.gameLimitReached = ordinal_ > budget_.games;
         report_.items.push_back({ordinal_, *failure, failure->range});
-        emit progress(report_.items.back());
+        emit progress(report_.request, report_.items.back());
         if (failure->unreadableTail) {
             finish(ImportStatus::Failed);
         } else {

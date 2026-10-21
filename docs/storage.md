@@ -280,10 +280,11 @@ bounded input and report, not a queue of parsed trees. Source type is limited to
 128 UTF-16 code units and URI to 65,536, with valid UTF-16 and no embedded NUL.
 These fields are opaque provenance, not instructions to fetch anything.
 
-`savingGame(ordinal)` identifies submission for persistence; it does not promise
-success. `progress(item)` reports completed per-game outcomes and retains source
-ordinal/range, parser warnings, and suppressed-warning count. Reports retain at
-most 1,000 warnings across the entire import, with additional warnings reflected
+`savingGame(request, ordinal)` identifies submission for persistence; it does not promise
+success. `progress(request, item)` reports completed per-game outcomes and retains source
+ordinal/range, parser warnings, and suppressed-warning count. Progress consumers
+must correlate the request ID, just as they do for finished/rejected outcomes.
+Reports retain at most 1,000 warnings across the entire import, with additional warnings reflected
 in each game's suppression count. This bounds retained capacity as well as logical
 warning count; per-game parser failures and all per-game outcomes remain present.
 `finished(report)` returns the complete report with `Completed`, `Cancelled`, or `Failed` status.
@@ -339,3 +340,14 @@ Production shutdown disables library reads, closes the import controller, joins
 its acquisition worker asynchronously, closes/drains the import service, then
 closes storage. The controller and its injected service must remain alive until
 `ImportController::closed()`. Window/page dependencies must outlive their widgets.
+
+Import controller admission stays closed through terminal `changed`/`finished`
+notification delivery so observers see one stable completed report. Queue any
+new submission requested by a `finished()` slot to the next event-loop turn;
+ordinary UI actions become available after terminal delivery. Closing from a
+terminal observer does not emit `closed()` until all those observers have
+returned and acquisition/parsing have drained. `ImportBatchStatus` and the
+per-file `CompletedWithErrors` state distinguish completion, cancellation,
+terminal failure and game-budget exhaustion without inferring success from a
+zero inserted count. Library readiness changes invalidate displayed rows but
+retain the accepted request until its completion, preserving one-read backpressure.

@@ -15,8 +15,11 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                     return;
                 }
                 pending_ = {};
-                if (requestedRevision_ != revision_) {
+                if (requestedRevision_ != revision_ || !ready_) {
                     requestPage();
+                    if (!busy()) {
+                        emit changed();
+                    }
                     return;
                 }
                 rows_.clear();
@@ -45,7 +48,6 @@ void GameLibraryController::setReady(bool ready) {
     ++revision_;
     if (!ready) {
         refreshTimer_.stop();
-        pending_ = {};
         rows_.clear();
         hasNext_ = false;
     } else if (active_) {

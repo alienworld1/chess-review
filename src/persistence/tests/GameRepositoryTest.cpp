@@ -619,7 +619,9 @@ void GameRepositoryTest::reportWarningBudget() {
     QSignalSpy finished(&storage.importer, &app::GameImportService::finished);
     std::size_t retainedCapacity = 0;
     connect(&storage.importer, &app::GameImportService::progress, &storage.importer,
-            [&](const app::ImportItem& item) { retainedCapacity += item.warnings.capacity(); });
+            [&](RequestId, const app::ImportItem& item) {
+                retainedCapacity += item.warnings.capacity();
+            });
     std::string source;
     for (int index = 0; index < 11; ++index) {
         for (int tagIndex = 0; tagIndex < 101; ++tagIndex) {

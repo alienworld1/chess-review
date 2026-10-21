@@ -15,6 +15,8 @@ struct InputResult {
     std::size_t bytesRead = 0;
     bool cancelled = false;
 };
+// Pure URL/path validation; performs no filesystem or network access.
+bool isLocalPgnUrl(const QUrl& url);
 // Blocking acquisition: call only on a worker. Errors contain no native/source text.
 InputResult readLocalPgn(const QUrl& url, std::size_t byteBudget, std::stop_token stop);
 InputResult encodePgnText(const QString& text, std::size_t byteBudget, std::stop_token stop);

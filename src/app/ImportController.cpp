@@ -2,42 +2,44 @@
 #include <QMetaObject>
 #include <QThread>
 #include <QTimer>
+#include <algorithm>
 #include <exception>
-#include <memory>
 #include <utility>
 
 namespace chess_review::app {
 ImportController::ImportController(GameImportService& service, QObject* parent)
     : QObject(parent), service_(service) {
     pool_.setMaxThreadCount(1);
-    connect(&service_, &GameImportService::savingGame, this, [this](std::size_t ordinal) {
-        if (request_.isNull()) {
-            return;
-        }
-        currentGame_ = ordinal;
-        emit changed();
-    });
-    connect(&service_, &GameImportService::progress, this, [this](const ImportItem& item) {
-        if (request_.isNull()) {
-            return;
-        }
-        currentGame_ = item.ordinal;
-        results_[index_].items.push_back(item);
-        retainedWarnings_ += item.warnings.size();
-        warnings_ += item.warnings.size() + item.suppressedWarnings;
-        const bool inserted = std::holds_alternative<persistence::Inserted>(item.outcome);
-        if (inserted) {
-            ++inserted_;
-        } else if (std::holds_alternative<persistence::Duplicate>(item.outcome)) {
-            ++duplicates_;
-        } else {
-            ++failures_;
-        }
-        emit changed();
-        if (inserted) {
-            emit committed();
-        }
-    });
+    connect(&service_, &GameImportService::savingGame, this,
+            [this](persistence::RequestId request, std::size_t ordinal) {
+                if (request_.isNull() || request != request_) {
+                    return;
+                }
+                currentGame_ = ordinal;
+                emit changed();
+            });
+    connect(&service_, &GameImportService::progress, this,
+            [this](persistence::RequestId request, const ImportItem& item) {
+                if (request_.isNull() || request != request_) {
+                    return;
+                }
+                currentGame_ = item.ordinal;
+                results_[index_].items.push_back(item);
+                retainedWarnings_ += item.warnings.size();
+                warnings_ += item.warnings.size() + item.suppressedWarnings;
+                const bool inserted = std::holds_alternative<persistence::Inserted>(item.outcome);
+                if (inserted) {
+                    ++inserted_;
+                } else if (std::holds_alternative<persistence::Duplicate>(item.outcome)) {
+                    ++duplicates_;
+                } else {
+                    ++failures_;
+                }
+                emit changed();
+                if (inserted) {
+                    emit committed();
+                }
+            });
     connect(&service_, &GameImportService::finished, this, &ImportController::completeFile);
     connect(&service_, &GameImportService::rejected, this,
             [this](persistence::RequestId request, const persistence::GameError& error) {
@@ -48,7 +50,7 @@ ImportController::ImportController(GameImportService& service, QObject* parent)
                 results_[index_].state = ImportFileState::Failed;
                 results_[index_].message = error.message;
                 ++failures_;
-                finish();
+                finish(ImportBatchStatus::Failed);
             });
     connect(&service_, &GameImportService::closed, this, &ImportController::closed);
 }
@@ -69,20 +71,21 @@ bool ImportController::begin() {
     index_ = currentGame_ = bytesRead_ = attempted_ = retainedWarnings_ = 0;
     inserted_ = duplicates_ = failures_ = warnings_ = 0;
     busy_ = true;
+    status_ = ImportBatchStatus::Running;
     return true;
+}
+bool ImportController::acceptsFiles(const QList<QUrl>& files) {
+    return !files.isEmpty() && static_cast<std::size_t>(files.size()) <= maxBatchFiles &&
+           std::all_of(files.begin(), files.end(), input::isLocalPgnUrl);
 }
 bool ImportController::importFiles(const QList<QUrl>& files) {
     if (files.isEmpty() || static_cast<std::size_t>(files.size()) > maxBatchFiles) {
         emit rejected(tr("Choose between 1 and 32 PGN files."));
         return false;
     }
-    // Bound path copies too. Filesystem inspection remains on the worker.
-    for (const auto& url : files) {
-        if (!url.isLocalFile() || url.toString().size() > 65'536 ||
-            !url.fileName().endsWith(QStringLiteral(".pgn"), Qt::CaseInsensitive)) {
-            emit rejected(tr("Only local .pgn files can be imported."));
-            return false;
-        }
+    if (!acceptsFiles(files)) {
+        emit rejected(tr("Only absolute local .pgn files without remote hosts can be imported."));
+        return false;
     }
     if (!begin()) {
         return false;
@@ -112,8 +115,16 @@ bool ImportController::importText(QString text) {
     return true;
 }
 void ImportController::next() {
-    if (stop_.stop_requested() || index_ == results_.size() || attempted_ >= maxBatchGames) {
-        finish();
+    if (stop_.stop_requested()) {
+        finish(ImportBatchStatus::Cancelled);
+        return;
+    }
+    if (index_ == results_.size()) {
+        finish(ImportBatchStatus::Completed);
+        return;
+    }
+    if (attempted_ >= maxBatchGames) {
+        finish(ImportBatchStatus::GameLimitReached);
         return;
     }
     results_[index_].state = ImportFileState::Reading;
@@ -125,18 +136,19 @@ void ImportController::next() {
     auto text = std::exchange(text_, {});
     const bool paste = urls_.isEmpty();
     pool_.start([this, url, text = std::move(text), remaining, token, paste] {
-        auto result = std::make_shared<input::InputResult>();
+        input::InputResult result;
         try {
-            *result = paste ? input::encodePgnText(text, remaining, token)
-                            : input::readLocalPgn(url, remaining, token);
+            result = paste ? input::encodePgnText(text, remaining, token)
+                           : input::readLocalPgn(url, remaining, token);
         } catch (const std::exception&) {
-            result->error = QStringLiteral("PGN input could not be acquired.");
+            result.error = QStringLiteral("PGN input could not be acquired.");
             // The failed acquisition cannot report its partial read count. Spend its entire
             // allowance conservatively so later files cannot exceed the batch byte budget.
-            result->bytesRead = remaining;
+            result.bytesRead = remaining;
         }
         QMetaObject::invokeMethod(
-            this, [this, result] { acquired(std::move(*result)); }, Qt::QueuedConnection);
+            this, [this, result = std::move(result)]() mutable { acquired(std::move(result)); },
+            Qt::QueuedConnection);
     });
     emit changed();
 }
@@ -145,7 +157,7 @@ void ImportController::acquired(input::InputResult result) {
     bytesRead_ += result.bytesRead;
     if (stop_.stop_requested() || result.cancelled) {
         results_[index_].state = ImportFileState::Cancelled;
-        finish();
+        finish(ImportBatchStatus::Cancelled);
         return;
     }
     if (!result.error.isEmpty()) {
@@ -181,28 +193,47 @@ void ImportController::completeFile(const ImportReport& report) {
         file.message = tr("No games found.");
     }
     bool storageFailure = false;
+    bool parseFailure = false;
     for (const auto& item : file.items) {
         storageFailure |= std::holds_alternative<persistence::GameError>(item.outcome);
+        parseFailure |= std::holds_alternative<pgn::PgnFailure>(item.outcome);
+    }
+    if (parseFailure && file.state == ImportFileState::Completed) {
+        file.state = ImportFileState::CompletedWithErrors;
     }
     ++index_;
-    if (storageFailure || report.gameLimitReached || report.status == ImportStatus::Cancelled) {
-        finish();
+    if (storageFailure) {
+        finish(ImportBatchStatus::Failed);
+    } else if (report.gameLimitReached) {
+        finish(ImportBatchStatus::GameLimitReached);
+    } else if (report.status == ImportStatus::Cancelled) {
+        finish(ImportBatchStatus::Cancelled);
     } else {
         next();
     }
 }
-void ImportController::finish() {
+void ImportController::finish(ImportBatchStatus status) {
+    status_ = status;
+    finishing_ = true;
     for (auto& file : results_) {
         if (file.state == ImportFileState::Pending) {
             file.state = ImportFileState::Unprocessed;
-            file.message = tr("Not processed: the batch was stopped or reached its game limit.");
+            file.message = status == ImportBatchStatus::Cancelled
+                               ? tr("Not processed: import cancelled.")
+                           : status == ImportBatchStatus::GameLimitReached
+                               ? tr("Not processed: batch game limit reached.")
+                               : tr("Not processed: import stopped after a failure.");
         }
     }
     busy_ = false;
     urls_.clear();
     text_.clear();
+    // Do not admit a replacement batch halfway through the terminal state notification.
     emit changed();
     emit finished();
+    finishing_ = false;
+    // Terminal observers have finished reading the report; admission can resume now.
+    emit changed();
     if (closing_) {
         finishClose();
     }
@@ -227,7 +258,7 @@ void ImportController::close() {
     }
 }
 void ImportController::finishClose() {
-    if (reading_ || busy_ || closingService_) {
+    if (reading_ || busy_ || finishing_ || closingService_) {
         return;
     }
     if (!pool_.waitForDone(0)) {

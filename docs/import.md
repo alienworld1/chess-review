@@ -7,12 +7,28 @@ one or more files. You can also drop PGN files on Games or the Home import
 button. Drops copy their content into the library; they never move source files.
 Files must have a `.pgn` extension (any letter case) and be regular local files.
 Links to regular files are supported. Folders, special files, and remote URLs
-are rejected. Public game URL import is not implemented yet.
+are rejected. File URLs must be absolute and have no hostname, query, fragment,
+or invalid UTF-8 path bytes; remote-share/UNC URLs are rejected before filesystem
+inspection. Public game URL import is not implemented yet.
 
 **File → Paste PGN…** (`Ctrl+Shift+V`, outside text editors) opens an editable
-plain-text dialog containing the current clipboard text. Nothing is imported
+plain-text dialog containing the current clipboard text. Inputs above 1 MiB of
+UTF-8 use a read-only preview of at most 4,096 characters; **Import full text**
+explicitly imports all supplied text, including the undisplayed portion. Smaller
+inputs remain editable. Use a UTF-8 PGN file to edit large inputs externally.
+Nothing is imported
 until you press **Import**. Normal `Ctrl+V` continues to paste into text editors.
-Clipboard text is read only when you invoke Paste PGN.
+Clipboard text is read only when you invoke Paste PGN. The unchanged clipboard
+text is passed to the parser exactly as supplied by Qt. After editing, document
+paragraph breaks use LF; no-break spaces and Unicode line separators within
+blocks remain intact. File import preserves the original UTF-8 bytes. The editor
+rejects oversized/invalid-Unicode clipboard insertions before inserting them;
+the worker still enforces the 64 MiB UTF-8 import limit.
+
+Earlier builds could change no-break spaces and Unicode separators during paste,
+causing incorrect duplicate matches or rejecting otherwise valid PGN. Reimport
+the original UTF-8 source if affected; discarded clipboard content cannot be
+recovered or inferred from existing snapshots.
 
 PGNs must use UTF-8, optionally with a leading BOM. Other encodings must be
 converted explicitly before import; the app does not guess or replace invalid
@@ -37,7 +53,10 @@ The results table lists each source and its per-game outcomes. Select a row for
 copyable diagnostic details, including source byte ranges, line/byte-column
 locations, warnings, and suppression counts. The latest batch's report remains
 available while navigating, until another batch is submitted or the app exits.
-Reports are not saved to the database.
+Reports are not saved to the database. Progress updates preserve the selected
+diagnostic text and the results viewport. Completion, completion with errors,
+cancellation, game-limit stops, and terminal failures have distinct feedback;
+unprocessed files identify why they were skipped.
 
 **Cancel import** stops future reading/parsing and further saves. An already
 submitted save finishes and its result remains in the report. Previously saved

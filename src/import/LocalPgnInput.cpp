@@ -1,19 +1,37 @@
 #include "import/LocalPgnInput.h"
+#include <QByteArray>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <algorithm>
 #include <array>
 
 namespace chess_review::input {
+bool isLocalPgnUrl(const QUrl& url) {
+    // isLocalFile() checks the scheme, including host/SMB URLs. Reject those before stat/open.
+    if (!url.isValid() || !url.isLocalFile() || !url.authority().isEmpty() || url.hasQuery() ||
+        url.hasFragment() || url.toEncoded().size() > 65'536) {
+        return false;
+    }
+    // Validate encoded path bytes before toLocalFile(), whose non-UTF-8 behavior is unspecified.
+    const auto bytes = QByteArray::fromPercentEncoding(url.path(QUrl::FullyEncoded).toLatin1());
+    if (!bytes.isValidUtf8() || bytes.contains('\0')) {
+        return false;
+    }
+    const auto path = QDir::fromNativeSeparators(url.toLocalFile());
+    return QDir::isAbsolutePath(path) && !path.startsWith(QStringLiteral("//")) &&
+           !path.startsWith(QLatin1Char(':')) &&
+           path.endsWith(QStringLiteral(".pgn"), Qt::CaseInsensitive);
+}
 InputResult readLocalPgn(const QUrl& url, std::size_t byteBudget, std::stop_token stop) {
     InputResult result;
     if (stop.stop_requested()) {
         result.cancelled = true;
         return result;
     }
-    if (!url.isLocalFile() || url.hasQuery() || url.hasFragment() ||
-        url.toLocalFile().contains(QChar::Null)) {
-        result.error = QStringLiteral("Choose a local PGN file.");
+    if (!isLocalPgnUrl(url)) {
+        result.error =
+            QStringLiteral("Choose an absolute local PGN file path, without a remote host.");
         return result;
     }
     const QFileInfo info(url.toLocalFile());
