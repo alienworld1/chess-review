@@ -116,6 +116,22 @@ RegisterEngineResult StorageSession::registerEngine(const engine::ValidatedEngin
         return storage();
     }
     QSqlQuery query(database_);
+    // Check the registry invariant before either the duplicate or insertion path.
+    // Count valid defaults instead of summing untrusted integer values.
+    if (!query.exec(QStringLiteral(
+            "SELECT count(*), count(CASE WHEN is_default=1 THEN 1 END), "
+            "count(CASE WHEN typeof(is_default)!='integer' OR is_default NOT IN (0,1) "
+            "THEN 1 END) FROM engines")) ||
+        !query.next()) {
+        return storage();
+    }
+    const auto count = query.value(0).toLongLong();
+    const auto defaults = query.value(1).toLongLong();
+    if (count < 0 || query.value(2).toLongLong() != 0 ||
+        (count == 0 ? defaults != 0 : defaults != 1)) {
+        return invalid();
+    }
+    query.finish();
     if (!query.prepare(projection +
                        QStringLiteral("WHERE executable_sha256=? OR executable_path=CAST(? AS "
                                       "TEXT) ORDER BY id LIMIT 2"))) {
@@ -156,16 +172,6 @@ RegisterEngineResult StorageSession::registerEngine(const engine::ValidatedEngin
         }
         return RegisteredEngine{*duplicate, true};
     }
-    if (!query.exec(QStringLiteral("SELECT count(*), coalesce(sum(is_default),0) FROM engines")) ||
-        !query.next()) {
-        return storage();
-    }
-    const auto count = query.value(0).toLongLong();
-    const auto defaults = query.value(1).toLongLong();
-    if (count < 0 || (count == 0 ? defaults != 0 : defaults != 1)) {
-        return invalid();
-    }
-    query.finish();
     const auto now = QDateTime::currentDateTimeUtc();
     if (!query.prepare(QStringLiteral(
             "INSERT INTO "
@@ -190,10 +196,27 @@ RegisterEngineResult StorageSession::registerEngine(const engine::ValidatedEngin
         return storage();
     }
     const auto id = query.lastInsertId().toLongLong();
-    if (id <= 0 || !transaction.commit()) {
+    query.finish();
+    const engine::EngineProfile expected{id, engine.reportedName, engine, count == 0, now};
+    if (id <= 0 || !query.prepare(projection + QStringLiteral("WHERE id=?"))) {
         return storage();
     }
-    return RegisteredEngine{{id, engine.reportedName, engine, count == 0, now}, false};
+    query.addBindValue(id);
+    if (!query.exec()) {
+        return storage();
+    }
+    if (!query.next()) {
+        return invalid();
+    }
+    const auto stored = readProfile(query);
+    if (!stored || *stored != expected) {
+        return invalid();
+    }
+    query.finish();
+    if (!transaction.commit()) {
+        return storage();
+    }
+    return RegisteredEngine{*stored, false};
 }
 ListEnginesResult StorageSession::listEngines(std::int64_t offset, int limit) {
     if (!usable_) {

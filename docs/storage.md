@@ -126,7 +126,8 @@ registry and runner are private to the module. Version 1 creates only the
 002 creates `games` and its import-order index. Migration 003 upgrades healthy
 games to snapshot/identity v2 while preserving IDs, original PGN, source metadata,
 and import times. Damaged records are copied unchanged and remain individually
-unreadable. Engine, review, and puzzle tables remain future work.
+unreadable. Migration 004 adds engine profiles. Review and puzzle tables remain
+future work.
 
 To add a migration:
 
@@ -378,13 +379,18 @@ limits must be 1–200, with a nonnegative offset.
 
 Registration returns a saved profile plus a duplicate flag, or a typed engine
 error. One transaction covers identity checks, first-engine default assignment,
-and insertion. Executable SHA-256 and resolved paths are unique; a partial unique
+and insertion. Duplicate registration also checks that a nonempty registry has
+exactly one default. Before commit, insertion reads back and validates the saved
+profile against the requested values; it does not confirm missing or altered rows.
+Executable SHA-256 and resolved paths are unique; a partial unique
 index permits at most one default. Failed insertion/commit rolls back, and failed
 rollback disables further product operations for that storage session. Existing
 records are never silently replaced or relocated.
 
 Capabilities use a bounded version-1 JSON document containing typed options.
-Capability flags are derived again on read. Option overrides are explicitly empty
+Capability flags are derived again on read, and registration rejects values whose
+flags disagree with their options. Numeric option-type identifiers are stable
+within that format version. Option overrides are explicitly empty
 and detected version is absent in this increment. Invalid types, encodings,
 versions, oversized metadata, and invalid option definitions fail closed without
 repairing records. Reads bound bytes before Qt materializes values. A damaged page

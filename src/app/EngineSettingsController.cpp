@@ -9,7 +9,8 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
     : QObject(parent), database_(database), logger_(logger) {
     connect(&validator_, &engine::ExecutableValidator::inspected, this,
             [this](QUuid request, const engine::PathResult& result) {
-                if (closing_ || request != selection_) {
+                if (closing_ || request != selection_ ||
+                    state_.registration != EngineRegistrationState::Inspecting) {
                     return;
                 }
                 if (const auto* error = std::get_if<engine::Error>(&result)) {
@@ -26,7 +27,8 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
             });
     connect(&validator_, &engine::ExecutableValidator::progress, this,
             [this](QUuid request, const QString& message) {
-                if (!closing_ && request == registration_) {
+                if (!closing_ && !cancelRequested_ && request == registration_ &&
+                    state_.registration == EngineRegistrationState::Validating) {
                     state_.message = message;
                     emit changed();
                 }
@@ -34,7 +36,8 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
     connect(
         &validator_, &engine::ExecutableValidator::completed, this,
         [this](QUuid request, const engine::ValidationResult& result) {
-            if (request != registration_) {
+            if (request != registration_ ||
+                state_.registration != EngineRegistrationState::Validating) {
                 return;
             }
             if (logger_) {
@@ -115,6 +118,7 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                         profiles.pop_back();
                     }
                     state_.profiles = std::move(profiles);
+                    ++state_.profilesRevision;
                     state_.offset = requestedOffset_;
                     state_.listError.clear();
                 }

@@ -12,7 +12,9 @@ Linux is verified; Windows release verification remains pending.
 
 Validation hashes the file with SHA-256, requests its UCI identity and options,
 requires `uciok` and `readyok`, and asks the process to quit. It then hashes the
-file again and rejects observed changes. There is no search probe yet: a successful
+file again and rejects observed changes in content, size, modification time, or
+access. Hashing reads a fixed observed length in cancellable chunks; a growing
+file cannot extend the read indefinitely. There is no search probe yet: a successful
 registration establishes handshake compatibility, not analysis correctness.
 The engine name is retained as reported; no version is inferred from it.
 
@@ -32,7 +34,10 @@ default, option editing, and analysis scheduling are later increments.
 Saved profiles live in the application SQLite database, never `ui-state.ini`.
 Opening Settings or restarting the application reads those records without
 launching software. **Last validated** is historical, not a current readiness
-claim. Engine text is displayed literally, with bounded previews in the list.
+claim. Select a list row to inspect and copy its full name and executable path.
+The list uses bounded plain-text previews. Invisible control and formatting
+characters are shown as `\uXXXX` escapes to prevent misleading path/name display;
+the original reported identity is saved unchanged.
 Paths with spaces, Unicode, and shell punctuation are passed as paths, never shell
 commands.
 

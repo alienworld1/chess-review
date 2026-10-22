@@ -6,6 +6,7 @@
 #include <QRegularExpression>
 #include <QThread>
 #include <QTimer>
+#include <algorithm>
 #include <utility>
 
 namespace chess_review::engine {
@@ -89,6 +90,7 @@ class ValidationWorker final : public QObject {
         }
         request_ = request;
         failure_.reset();
+        snapshot_.reset();
         profile_ = {};
         output_.clear();
         outputBytes_ = 0;
@@ -146,8 +148,6 @@ class ValidationWorker final : public QObject {
     };
     void beginHash(bool after) {
         stage_ = after ? Stage::HashAfter : Stage::HashBefore;
-        emit progress(request_, after ? QStringLiteral("Checking executable is unchanged…")
-                                      : QStringLiteral("Hashing executable…"));
         const auto path = resolve(profile_.executablePath);
         if (!std::holds_alternative<QString>(path) ||
             std::get<QString>(path) != profile_.executablePath) {
@@ -160,19 +160,48 @@ class ValidationWorker final : public QObject {
             fail({ErrorCode::Read, QStringLiteral("Cannot read the selected executable.")});
             return;
         }
+        const QFileInfo current(profile_.executablePath);
+        if (!snapshot_) {
+            snapshot_ = current;
+        }
+        if (current.size() != snapshot_->size() ||
+            current.lastModified() != snapshot_->lastModified()) {
+            fail({ErrorCode::Changed, QStringLiteral("The executable changed during validation. "
+                                                     "Select it again.")});
+            return;
+        }
+        remaining_ = snapshot_->size();
+        emit progress(request_, after ? QStringLiteral("Checking executable is unchanged…")
+                                      : QStringLiteral("Hashing executable…"));
         hash_.reset();
         chunks_.start(0);
     }
     void hashChunk() {
-        const auto bytes = file_.read(65536);
-        if (bytes.isEmpty() && file_.error() != QFileDevice::NoError) {
+        if (stage_ != Stage::HashBefore && stage_ != Stage::HashAfter) {
+            return;
+        }
+        // Read the observed length, so a growing regular file cannot extend hashing forever.
+        const auto bytes = file_.read(std::min<qint64>(65536, remaining_));
+        if (file_.error() != QFileDevice::NoError) {
             fail({ErrorCode::Read,
                   QStringLiteral("Cannot finish reading the selected executable.")});
             return;
         }
         hash_.addData(bytes);
-        if (!file_.atEnd()) {
+        remaining_ -= bytes.size();
+        if (remaining_ > 0 && !bytes.isEmpty()) {
             chunks_.start(0);
+            return;
+        }
+        const QFileInfo current(profile_.executablePath);
+        const auto resolved = resolve(profile_.executablePath);
+        if (remaining_ != 0 || file_.size() != snapshot_->size() ||
+            current.size() != snapshot_->size() ||
+            current.lastModified() != snapshot_->lastModified() ||
+            !std::holds_alternative<QString>(resolved) ||
+            std::get<QString>(resolved) != profile_.executablePath) {
+            fail({ErrorCode::Changed, QStringLiteral("The executable changed while being read. "
+                                                     "Select it again.")});
             return;
         }
         file_.close();
@@ -213,10 +242,10 @@ class ValidationWorker final : public QObject {
             if (bytes.isEmpty()) {
                 break;
             }
-            outputBytes_ += bytes.size();
             if (failure_) {
                 continue;
             }
+            outputBytes_ += bytes.size();
             if (outputBytes_ > outputLimit_) {
                 fail({ErrorCode::OutputLimit,
                       QStringLiteral("The engine exceeded the validation output limit.")});
@@ -225,6 +254,7 @@ class ValidationWorker final : public QObject {
             if (errors) {
                 continue;
             }
+            const auto receivedStage = stage_;
             for (const auto byte : bytes) {
                 if (failure_) {
                     break;
@@ -232,7 +262,7 @@ class ValidationWorker final : public QObject {
                 if (byte == '\n' || byte == '\r') {
                     if (!output_.isEmpty()) {
                         const auto line = std::exchange(output_, {});
-                        handleLine(line);
+                        handleLine(line, receivedStage);
                     }
                 } else {
                     output_.append(byte);
@@ -244,7 +274,7 @@ class ValidationWorker final : public QObject {
             }
         }
     }
-    void handleLine(const QByteArray& bytes) {
+    void handleLine(const QByteArray& bytes, Stage receivedStage) {
         if (!bytes.isValidUtf8() || bytes.contains('\0')) {
             protocolFailure();
             return;
@@ -270,7 +300,9 @@ class ValidationWorker final : public QObject {
             return;
         }
         if (normalized == QStringLiteral("readyok")) {
-            if (stage_ != Stage::Ready) {
+            // Bytes already read with uciok cannot answer the isready command it triggers.
+            if (stage_ != Stage::Ready || receivedStage != Stage::Ready ||
+                process_.bytesToWrite() != 0) {
                 protocolFailure();
                 return;
             }
@@ -391,6 +423,8 @@ class ValidationWorker final : public QObject {
     QTimer timer_;
     QTimer chunks_;
     QFile file_;
+    std::optional<QFileInfo> snapshot_;
+    qint64 remaining_ = 0;
     QCryptographicHash hash_{QCryptographicHash::Sha256};
     Stage stage_ = Stage::Idle;
     QUuid request_;

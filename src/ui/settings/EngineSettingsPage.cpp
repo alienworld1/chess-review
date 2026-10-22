@@ -3,7 +3,9 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QTableWidget>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -15,6 +17,20 @@ QLabel* plainLabel(QWidget* parent, const QString& text = {}) {
     label->setTextFormat(Qt::PlainText);
     label->setWordWrap(true);
     return label;
+}
+QString presented(const QString& text) {
+    QString result;
+    for (const auto character : text) {
+        const auto category = character.category();
+        if (category == QChar::Other_Control || category == QChar::Other_Format ||
+            category == QChar::Separator_Line || category == QChar::Separator_Paragraph) {
+            result += QStringLiteral("\\u%1").arg(static_cast<uint>(character.unicode()), 4, 16,
+                                                  QLatin1Char('0'));
+        } else {
+            result += character;
+        }
+    }
+    return result;
 }
 QString clipped(const QString& text) {
     if (text.size() <= 256) {
@@ -47,6 +63,16 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     profiles_->setColumnWidth(1, 300);
     profiles_->setMinimumHeight(180);
     layout->addWidget(profiles_);
+    details_ = new QPlainTextEdit(this);
+    details_->setObjectName(QStringLiteral("engineProfileDetails"));
+    details_->setAccessibleName(tr("Selected engine details"));
+    details_->setReadOnly(true);
+    details_->setMaximumHeight(100);
+    details_->setPlaceholderText(
+        tr("Select an engine to inspect and copy its full name and path."));
+    layout->addWidget(details_);
+    connect(profiles_, &QTableWidget::itemSelectionChanged, this,
+            &EngineSettingsPage::updateDetails);
     auto* pagination = new QHBoxLayout;
     previous_ = new QPushButton(tr("Previous"), this);
     next_ = new QPushButton(tr("Next"), this);
@@ -80,13 +106,23 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     layout->addLayout(actions);
     layout->addStretch();
     connect(browse_, &QPushButton::clicked, this, [this] {
+        if (picking_) {
+            return;
+        }
         // Nonblocking native picker; cancellation never launches software.
-        auto* picker = new QFileDialog(this, tr("Choose UCI engine executable"));
-        picker->setAttribute(Qt::WA_DeleteOnClose);
-        picker->setFileMode(QFileDialog::ExistingFile);
-        connect(picker, &QFileDialog::fileSelected, &controller_,
-                &app::EngineSettingsController::selectExecutable);
-        picker->open();
+        if (!picker_) {
+            picker_ = new QFileDialog(this, tr("Choose UCI engine executable"));
+            picker_->setFileMode(QFileDialog::ExistingFile);
+            connect(picker_, &QFileDialog::fileSelected, &controller_,
+                    &app::EngineSettingsController::selectExecutable);
+            connect(picker_, &QFileDialog::finished, this, [this] {
+                picking_ = false;
+                updateState();
+            });
+        }
+        picking_ = true;
+        picker_->open();
+        updateState();
     });
     connect(add_, &QPushButton::clicked, &controller_,
             &app::EngineSettingsController::registerSelected);
@@ -108,12 +144,16 @@ void EngineSettingsPage::updateState() {
     const bool busy = state.registration == EngineRegistrationState::Validating ||
                       state.registration == EngineRegistrationState::Saving ||
                       state.registration == EngineRegistrationState::Closing;
-    browse_->setEnabled(state.ready && !busy);
+    browse_->setEnabled(state.ready && !busy && !picking_ &&
+                        state.registration != EngineRegistrationState::Inspecting);
+    if (!state.ready && picking_) {
+        picker_->reject();
+    }
     add_->setEnabled(state.ready && state.registration == EngineRegistrationState::Selected);
     cancel_->setEnabled(state.ready && state.registration != EngineRegistrationState::Idle &&
                         state.registration != EngineRegistrationState::Saving);
     path_->setText(state.selectedPath.isEmpty() ? tr("No executable selected.")
-                                                : state.selectedPath);
+                                                : presented(state.selectedPath));
     message_->setText(state.message);
     listError_->setText(
         state.listError.isEmpty() && state.profiles.empty()
@@ -124,17 +164,47 @@ void EngineSettingsPage::updateState() {
     previous_->setEnabled(state.ready && !state.listing && state.offset > 0);
     next_->setEnabled(state.ready && !state.listing && state.hasNext);
     refresh_->setEnabled(state.ready && !state.listing);
+    if (profilesRevision_ == state.profilesRevision) {
+        return;
+    }
+    profilesRevision_ = state.profilesRevision;
+    const auto selected = profiles_->currentRow() >= 0
+                              ? profiles_->item(profiles_->currentRow(), 0)->data(Qt::UserRole)
+                              : QVariant();
+    const QSignalBlocker blocker(profiles_);
+    profiles_->clearContents();
+    profiles_->clearSelection();
+    profiles_->setCurrentCell(-1, -1);
     profiles_->setRowCount(static_cast<int>(state.profiles.size()));
     int row = 0;
     for (const auto& profile : state.profiles) {
         const QStringList values{
-            clipped(profile.displayName), clipped(profile.engine.executablePath),
+            clipped(presented(profile.displayName)),
+            clipped(presented(profile.engine.executablePath)),
             profile.isDefault ? tr("Yes") : QString(),
             profile.engine.lastValidatedAt.toUTC().toString(Qt::ISODateWithMs)};
         for (int column = 0; column < values.size(); ++column) {
             profiles_->setItem(row, column, new QTableWidgetItem(values[column]));
         }
+        profiles_->item(row, 0)->setData(Qt::UserRole, static_cast<qlonglong>(profile.id));
+        if (selected.isValid() && selected.toLongLong() == profile.id) {
+            profiles_->selectRow(row);
+        }
         ++row;
     }
+    updateDetails();
+}
+void EngineSettingsPage::updateDetails() {
+    const auto& profiles = controller_.state().profiles;
+    const auto row = profiles_->currentRow();
+    if (row < 0 || static_cast<std::size_t>(row) >= profiles.size() ||
+        profiles_->selectedItems().isEmpty()) {
+        details_->clear();
+        return;
+    }
+    const auto& profile = profiles[static_cast<std::size_t>(row)];
+    details_->setPlainText(
+        tr("Engine: %1\nExecutable: %2")
+            .arg(presented(profile.displayName), presented(profile.engine.executablePath)));
 }
 } // namespace chess_review::ui

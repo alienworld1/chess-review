@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QEventLoop>
 #include <QLabel>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalSpy>
@@ -83,14 +84,43 @@ class EngineSettingsTest final : public QObject {
             auto* add =
                 application.window.findChild<QPushButton*>(QStringLiteral("registerEngine"));
             QVERIFY(add && add->isEnabled());
+            int savingUpdates = 0;
+            bool replayed = false;
+            QObject registrationObserver;
+            connect(
+                &controller, &app::EngineSettingsController::changed, &registrationObserver, [&] {
+                    if (controller.state().registration == app::EngineRegistrationState::Saving) {
+                        ++savingUpdates;
+                    }
+                });
+            auto& validator = app::EngineControllerTestAccess::validator(controller);
+            connect(&validator, &engine::ExecutableValidator::completed, &registrationObserver,
+                    [&](QUuid request, const engine::ValidationResult& result) {
+                        if (!replayed && std::holds_alternative<engine::ValidatedEngine>(result)) {
+                            replayed = true;
+                            emit validator.completed(request, result);
+                        }
+                    });
             add->click();
             QTRY_COMPARE(controller.state().profiles.size(), std::size_t(1));
+            QCOMPARE(savingUpdates, 1);
             QCOMPARE(controller.state().profiles[0].displayName, QStringLiteral("<b>Engine</b>"));
             auto* table =
                 application.window.findChild<QTableWidget*>(QStringLiteral("engineProfiles"));
             QCOMPARE(table->item(0, 0)->text(), QStringLiteral("<b>Engine</b>"));
+            table->selectRow(0);
+            auto* details = application.window.findChild<QPlainTextEdit*>(
+                QStringLiteral("engineProfileDetails"));
+            QVERIFY(details);
+            QVERIFY(details->toPlainText().contains(QStringLiteral("<b>Engine</b>")));
+            QVERIFY(details->toPlainText().contains(
+                controller.state().profiles[0].engine.executablePath));
+            QSignalSpy tableChanges(table->model(), &QAbstractItemModel::dataChanged);
             controller.selectExecutable(QString::fromUtf8(FAKE_UCI_ENGINE));
             QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Selected);
+            QCOMPARE(table->currentRow(), 0);
+            QVERIFY(!table->selectedItems().isEmpty());
+            QCOMPARE(tableChanges.size(), 0);
             controller.registerSelected();
             QTRY_VERIFY(controller.state().message.contains(QStringLiteral("already registered")));
             QCOMPARE(controller.state().profiles.size(), std::size_t(1));
@@ -115,6 +145,31 @@ class EngineSettingsTest final : public QObject {
             QCOMPARE(progress.size(), 0);
         }
     }
+    void invisibleEngineTextIsVisibleAndFullDetailsAreAvailable() {
+        QTemporaryDir directory;
+        Application application;
+        auto& controller = application.startup.engines();
+        const auto name = QString(300, u'x') + QStringLiteral("\u202E.exe");
+        engine::ValidatorTestAccess::configure(
+            app::EngineControllerTestAccess::validator(controller),
+            engine_test::scenario(directory.filePath(QStringLiteral("engine.json")),
+                                  engine_test::handshake(QStringLiteral("id name ") + name +
+                                                         QStringLiteral("\nuciok\n"))));
+        application.startup.start(directory.filePath(QStringLiteral("library.sqlite3")));
+        QTRY_VERIFY(controller.state().ready);
+        controller.selectExecutable(QString::fromUtf8(FAKE_UCI_ENGINE));
+        QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Selected);
+        controller.registerSelected();
+        QTRY_COMPARE(controller.state().profiles.size(), std::size_t(1));
+        QCOMPARE(controller.state().profiles[0].engine.reportedName, name);
+        auto* table = application.window.findChild<QTableWidget*>(QStringLiteral("engineProfiles"));
+        table->selectRow(0);
+        auto* details =
+            application.window.findChild<QPlainTextEdit*>(QStringLiteral("engineProfileDetails"));
+        QVERIFY(details->toPlainText().contains(QString(300, u'x')));
+        QVERIFY(details->toPlainText().contains(QStringLiteral("\\u202e.exe")));
+        QVERIFY(!details->toPlainText().contains(QChar(0x202e)));
+    }
     void cancelBeforeQueuedSuccess() {
         QTemporaryDir directory;
         Application application;
@@ -132,6 +187,15 @@ class EngineSettingsTest final : public QObject {
                 controller.cancel();
             }
         });
+        auto& validator = app::EngineControllerTestAccess::validator(controller);
+        connect(&validator, &engine::ExecutableValidator::progress, this,
+                [&](QUuid request, const QString& message) {
+                    if (message == QStringLiteral("Checking executable is unchanged…")) {
+                        emit validator.progress(request, QStringLiteral("stale progress"));
+                        QCOMPARE(controller.state().message,
+                                 QStringLiteral("Cancelling and closing engine…"));
+                    }
+                });
         controller.registerSelected();
         QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Selected);
         QVERIFY(controller.state().profiles.empty());

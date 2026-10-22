@@ -50,8 +50,21 @@ std::variant<UciOption, Error> parseOption(const QString& line) {
     if (!text(line, 65536)) {
         return malformed();
     }
-    const QRegularExpression whitespace(QStringLiteral("\\s+"));
-    const auto tokens = line.split(whitespace, Qt::SkipEmptyParts);
+    static const QRegularExpression tokenPattern(QStringLiteral("\\S+"));
+    QStringList tokens;
+    QList<qsizetype> starts;
+    QList<qsizetype> ends;
+    auto matches = tokenPattern.globalMatch(line);
+    while (matches.hasNext()) {
+        const auto match = matches.next();
+        tokens.append(match.captured());
+        starts.append(match.capturedStart());
+        ends.append(match.capturedEnd());
+    }
+    // Slice by token offsets to retain internal whitespace without rescanning the line per choice.
+    const auto span = [&](qsizetype begin, qsizetype end) {
+        return begin < end ? line.mid(starts[begin], ends[end - 1] - starts[begin]) : QString();
+    };
     if (tokens.size() < 5 || tokens[0] != QStringLiteral("option") ||
         tokens[1] != QStringLiteral("name")) {
         return malformed();
@@ -86,8 +99,7 @@ std::variant<UciOption, Error> parseOption(const QString& line) {
             return malformed();
         }
         if (option.type == OptionType::String) {
-            option.defaultValue =
-                line.section(whitespace, index, -1, QString::SectionSkipEmpty).trimmed();
+            option.defaultValue = span(index, tokens.size());
             if (option.defaultValue == QStringLiteral("<empty>")) {
                 option.defaultValue.clear();
             }
@@ -96,15 +108,16 @@ std::variant<UciOption, Error> parseOption(const QString& line) {
             if (firstVar < 0) {
                 return malformed();
             }
-            option.defaultValue =
-                line.section(whitespace, index, firstVar - 1, QString::SectionSkipEmpty).trimmed();
+            option.defaultValue = span(index, firstVar);
             index = firstVar;
             while (index < tokens.size()) {
                 ++index;
                 const auto next = tokens.indexOf(QStringLiteral("var"), index);
                 const auto end = next < 0 ? tokens.size() : next;
-                option.choices.append(
-                    line.section(whitespace, index, end - 1, QString::SectionSkipEmpty).trimmed());
+                if (option.choices.size() >= 1024 || index == end) {
+                    return malformed();
+                }
+                option.choices.append(span(index, end));
                 index = end;
             }
         } else {
@@ -258,10 +271,15 @@ bool validEngine(const ValidatedEngine& engine) {
             return false;
         }
     }
-    return text(engine.executablePath, 4096) && QDir::isAbsolutePath(engine.executablePath) &&
-           engine.executableSha256.size() == 32 && text(engine.reportedName, 4096) &&
-           (!engine.reportedAuthor || text(*engine.reportedAuthor, 4096)) &&
-           !engine.detectedVersion && engine.lastValidatedAt.isValid() &&
-           decodeCapabilities(encodeCapabilities(engine.capabilities)).has_value();
+    if (!text(engine.executablePath, 4096) || !QDir::isAbsolutePath(engine.executablePath) ||
+        engine.executableSha256.size() != 32 || !text(engine.reportedName, 4096) ||
+        engine.reportedName.trimmed().isEmpty() ||
+        (engine.reportedAuthor &&
+         (!text(*engine.reportedAuthor, 4096) || engine.reportedAuthor->trimmed().isEmpty())) ||
+        engine.detectedVersion || !engine.lastValidatedAt.isValid()) {
+        return false;
+    }
+    const auto decoded = decodeCapabilities(encodeCapabilities(engine.capabilities));
+    return decoded && *decoded == engine.capabilities;
 }
 } // namespace chess_review::engine

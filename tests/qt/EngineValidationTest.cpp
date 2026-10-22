@@ -50,6 +50,60 @@ class EngineValidationTest final : public QObject {
         QVERIFY(std::holds_alternative<Error>(
             parseOption(QStringLiteral("option name X type spin default 2 min 3 max 4"))));
     }
+    void profileConsistency() {
+        ValidatedEngine value;
+        value.executablePath = QStringLiteral("/engine");
+        value.executableSha256 = QByteArray(32, 'x');
+        value.reportedName = QStringLiteral("Engine");
+        value.lastValidatedAt = QDateTime::currentDateTimeUtc();
+        QVERIFY(validEngine(value));
+        value.capabilities.supportsMultiPv = true;
+        QVERIFY(!validEngine(value));
+        value.capabilities.supportsMultiPv = false;
+        value.reportedName = QStringLiteral(" \t ");
+        QVERIFY(!validEngine(value));
+    }
+    void unsolicitedReadyInUciResponse() {
+        QTemporaryDir directory;
+        auto steps = engine_test::handshake(QStringLiteral("id name Test\nuciok\nreadyok\n"));
+        steps[1] = engine_test::step(QStringLiteral("isready"),
+                                     {engine_test::write(QStringLiteral("info ignored\n"))});
+        engine_test::Validator validator;
+        ValidatorTestAccess::configure(
+            validator.service,
+            engine_test::scenario(directory.filePath(QStringLiteral("script.json")), steps));
+        QSignalSpy done(&validator.service, &ExecutableValidator::completed);
+        validator.service.validate(
+            QUuid::createUuid(), QFileInfo(QString::fromUtf8(FAKE_UCI_ENGINE)).canonicalFilePath());
+        QTRY_COMPARE(done.size(), 1);
+        const auto result = qvariant_cast<ValidationResult>(done.front()[1]);
+        QVERIFY(std::holds_alternative<Error>(result));
+        QCOMPARE(std::get<Error>(result).code, ErrorCode::Protocol);
+        // A rejected process must be fully reaped and its protocol state discarded before reuse.
+        ValidatorTestAccess::configure(
+            validator.service,
+            engine_test::scenario(directory.filePath(QStringLiteral("retry.json")),
+                                  engine_test::handshake()));
+        validator.service.validate(
+            QUuid::createUuid(), QFileInfo(QString::fromUtf8(FAKE_UCI_ENGINE)).canonicalFilePath());
+        QTRY_COMPARE(done.size(), 2);
+        QVERIFY(std::holds_alternative<ValidatedEngine>(
+            qvariant_cast<ValidationResult>(done.back()[1])));
+    }
+    void maximumComboChoices() {
+        QString line = QStringLiteral("option name Style type combo default Choice  0");
+        for (int index = 0; index < 1024; ++index) {
+            line += QStringLiteral(" var Choice  %1").arg(index);
+        }
+        const auto parsed = parseOption(line);
+        QVERIFY(std::holds_alternative<UciOption>(parsed));
+        const auto option = std::get<UciOption>(parsed);
+        QCOMPARE(option.choices.size(), 1024);
+        QCOMPARE(option.choices.back(), QStringLiteral("Choice  1023"));
+        QVERIFY(std::holds_alternative<Error>(parseOption(line + QStringLiteral(" var Overflow"))));
+        QVERIFY(std::holds_alternative<Error>(parseOption(
+            QStringLiteral("option name Style type combo default Normal var Normal var"))));
+    }
     void handshake() {
         QTemporaryDir directory;
         auto steps = engine_test::handshake(
@@ -207,6 +261,39 @@ class EngineValidationTest final : public QObject {
                 ? ErrorCode::Cleanup
                 : ErrorCode::Timeout;
         QCOMPARE(std::get<Error>(result).code, expected);
+    }
+    void growingExecutableIsRejectedDuringHashing() {
+        QTemporaryDir directory;
+        const auto executable = directory.filePath(QStringLiteral("engine"));
+        QVERIFY(QFile::copy(QString::fromUtf8(FAKE_UCI_ENGINE), executable));
+        QFile file(executable);
+        QVERIFY(file.open(QIODevice::Append));
+        const QByteArray padding(1024 * 1024, '\0');
+        for (int index = 0; index < 128; ++index) {
+            QCOMPARE(file.write(padding), qint64(padding.size()));
+        }
+        file.close();
+        engine_test::Validator validator;
+        ValidatorTestAccess::configure(
+            validator.service,
+            engine_test::scenario(directory.filePath(QStringLiteral("script.json")),
+                                  engine_test::handshake()),
+            1000);
+        bool appended = false;
+        connect(&validator.service, &ExecutableValidator::progress, this,
+                [&](QUuid, const QString& message) {
+                    if (message == QStringLiteral("Hashing executable…")) {
+                        appended = file.open(QIODevice::Append) && file.write("changed") == 7;
+                        file.close();
+                    }
+                });
+        QSignalSpy done(&validator.service, &ExecutableValidator::completed);
+        validator.service.validate(QUuid::createUuid(), executable);
+        QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 5000);
+        QVERIFY(appended);
+        const auto result = qvariant_cast<ValidationResult>(done.front()[1]);
+        QVERIFY(std::holds_alternative<Error>(result));
+        QCOMPARE(std::get<Error>(result).code, ErrorCode::Changed);
     }
     void replacementDuringHandshake() {
         QTemporaryDir directory;

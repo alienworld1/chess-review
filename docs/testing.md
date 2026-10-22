@@ -581,3 +581,11 @@ The fake fixture also supports a terminal `stubbornHang` action. Like `hang`, it
 ignores protocol commands and observes stdin EOF, but it additionally ignores
 SIGTERM. This exercises the production validator's terminate-to-kill escalation;
 native signal handling remains confined to the fixture's pipe transport module.
+
+Adversarial registration regressions cover unsolicited readiness bundled with the
+UCI response, reuse after protocol rejection, inconsistent capability flags,
+maximum-size combo declarations, growth during hashing, missing registry defaults,
+and inserts that fail their readback postcondition. Settings checks full details,
+visible escapes for invisible engine text, and no table data changes during
+selection/progress. These tests supplement the original cancellation, shutdown,
+output-limit, persistence, and application-exit coverage.

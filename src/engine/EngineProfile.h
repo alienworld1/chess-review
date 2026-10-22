@@ -12,7 +12,8 @@
 #include <variant>
 
 namespace chess_review::engine {
-enum class OptionType { Check, Spin, Combo, Button, String };
+// Values are part of the version 1 persistence format.
+enum class OptionType { Check = 0, Spin = 1, Combo = 2, Button = 3, String = 4 };
 struct UciOption {
     QString name;
     OptionType type = OptionType::String;
@@ -20,6 +21,7 @@ struct UciOption {
     std::optional<qint64> minimum;
     std::optional<qint64> maximum;
     QStringList choices;
+    bool operator==(const UciOption&) const = default;
 };
 struct Capabilities {
     QList<UciOption> options;
@@ -27,6 +29,7 @@ struct Capabilities {
     bool supportsWdl = false;
     bool supportsThreads = false;
     bool supportsHash = false;
+    bool operator==(const Capabilities&) const = default;
 };
 struct ValidatedEngine {
     QString executablePath;
@@ -36,6 +39,7 @@ struct ValidatedEngine {
     std::optional<QString> detectedVersion;
     Capabilities capabilities;
     QDateTime lastValidatedAt;
+    bool operator==(const ValidatedEngine&) const = default;
 };
 struct EngineProfile {
     std::int64_t id = 0;
@@ -44,6 +48,7 @@ struct EngineProfile {
     bool isDefault = false;
     QDateTime createdAt;
     QMap<QString, QString> optionOverrides = {}; // Empty until option editing is implemented.
+    bool operator==(const EngineProfile&) const = default;
 };
 enum class ErrorCode {
     Path,

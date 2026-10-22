@@ -16,6 +16,7 @@ struct EngineSettingsState {
     QString message;
     QString listError;
     std::vector<engine::EngineProfile> profiles;
+    std::uint64_t profilesRevision = 0;
     std::int64_t offset = 0;
     bool ready = false;
     bool listing = false;

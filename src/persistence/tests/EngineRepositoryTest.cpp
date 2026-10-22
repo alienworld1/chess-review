@@ -140,6 +140,30 @@ class EngineRepositoryTest final : public QObject {
         QVERIFY(
             std::holds_alternative<std::vector<engine::EngineProfile>>(session.listEngines(1, 1)));
     }
+    void damagedDefaultRejectsDuplicates() {
+        QTemporaryDir directory;
+        const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
+        StorageSession session;
+        QVERIFY(!session.initialize(path, migrations(), ignore));
+        const auto value = candidate(QStringLiteral("/first"));
+        QVERIFY(std::holds_alternative<RegisteredEngine>(session.registerEngine(value)));
+        Fixture fixture(path);
+        QVERIFY(fixture.exec(QStringLiteral("UPDATE engines SET is_default=0")));
+        QVERIFY(std::holds_alternative<engine::Error>(session.registerEngine(value)));
+        QCOMPARE(fixture.scalar(QStringLiteral("SELECT count(*) FROM engines")).toInt(), 1);
+    }
+    void insertMustProduceTheConfirmedProfile() {
+        QTemporaryDir directory;
+        const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
+        StorageSession session;
+        QVERIFY(!session.initialize(path, migrations(), ignore));
+        Fixture fixture(path);
+        QVERIFY(fixture.exec(QStringLiteral("CREATE TRIGGER lose_engine AFTER INSERT ON engines "
+                                            "BEGIN DELETE FROM engines WHERE id=new.id; END")));
+        QVERIFY(std::holds_alternative<engine::Error>(
+            session.registerEngine(candidate(QStringLiteral("/first")))));
+        QCOMPARE(fixture.scalar(QStringLiteral("SELECT count(*) FROM engines")).toInt(), 0);
+    }
     void upgradeAndBackup() {
         QTemporaryDir directory;
         const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
