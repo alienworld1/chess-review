@@ -14,7 +14,8 @@
     },
     {
       "expect": "go infinite",
-      "actions": []
+      "actions": [],
+      "allowEof": true
     },
     {
       "expect": "stop",

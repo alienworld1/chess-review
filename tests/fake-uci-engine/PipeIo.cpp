@@ -5,6 +5,7 @@
 #include <csignal>
 #include <fcntl.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace fake_uci {
@@ -34,10 +35,21 @@ bool PipeIo::start() {
     if (::setrlimit(RLIMIT_CORE, &noCore) != 0) {
         return false;
     }
+    // Status flags belong to open file descriptions, shared with the parent after fork.
+    // Only exclusively owned pipe ends are supported. Reject terminals/files before mutation
+    // and snapshot every flag first so merged stdout/stderr restore the same original state.
+    std::array<int, 3> flags{};
     for (int fd = 0; fd < 3; ++fd) {
-        auto& flags = originalFlags_[static_cast<std::size_t>(fd)];
-        flags = ::fcntl(fd, F_GETFL);
-        if (flags == -1 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        struct stat status {};
+        auto& saved = flags[static_cast<std::size_t>(fd)];
+        saved = ::fcntl(fd, F_GETFL);
+        if (::fstat(fd, &status) != 0 || !S_ISFIFO(status.st_mode) || saved == -1) {
+            return false;
+        }
+    }
+    originalFlags_ = flags;
+    for (int fd = 0; fd < 3; ++fd) {
+        if (::fcntl(fd, F_SETFL, flags[static_cast<std::size_t>(fd)] | O_NONBLOCK) == -1) {
             return false;
         }
     }

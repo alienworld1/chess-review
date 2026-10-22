@@ -20,6 +20,7 @@ struct Action {
 struct Step {
     QByteArray expect;
     QVector<Action> actions;
+    bool allowEof{};
 };
 struct Scenario {
     QVector<Step> steps;

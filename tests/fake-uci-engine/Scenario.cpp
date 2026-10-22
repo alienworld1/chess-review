@@ -1,6 +1,7 @@
 #include "Scenario.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -58,6 +59,12 @@ QByteArray normalizedCommand(const QByteArray& command) {
 
 std::optional<Scenario> readScenario(const QString& path, QString& error) {
     error = QStringLiteral("invalid scenario");
+    // This is a fixture file, not a stream: opening a FIFO could hang before the event loop.
+    // Concurrent replacement by another process with the same user is outside this boundary.
+    if (!QFileInfo(path).isFile()) {
+        error = QStringLiteral("scenario must be a regular file");
+        return std::nullopt;
+    }
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         error = QStringLiteral("cannot open scenario");
@@ -74,6 +81,7 @@ std::optional<Scenario> readScenario(const QString& path, QString& error) {
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
         return std::nullopt;
     }
+    error = QStringLiteral("invalid root: expected version 1 and a nonempty steps array");
     const auto root = document.object();
     int version = 0;
     if (!keysAre(root, {u"version", u"steps"}) || !unsignedInt(root.value(u"version"), version) ||
@@ -88,21 +96,35 @@ std::optional<Scenario> readScenario(const QString& path, QString& error) {
     qsizetype totalActions = 0;
     bool hasTerminal = false;
     for (const auto& value : steps) {
+        error = QStringLiteral("invalid step %1").arg(scenario.steps.size() + 1);
         if (!value.isObject()) {
             return std::nullopt;
         }
         const auto object = value.toObject();
-        if (!keysAre(object, {u"expect", u"actions"}) || !object.value(u"expect").isString() ||
-            !object.value(u"actions").isArray()) {
+        if (!keysAre(object, {u"expect", u"actions", u"allowEof"}) ||
+            !object.value(u"expect").isString() || !object.value(u"actions").isArray()) {
             return std::nullopt;
         }
-        const auto expected = object.value(u"expect").toString().toUtf8();
+        if (object.contains(u"allowEof") && !object.value(u"allowEof").isBool()) {
+            return std::nullopt;
+        }
+        const auto expectedText = object.value(u"expect").toString();
+        if (!expectedText.isValidUtf16()) {
+            return std::nullopt;
+        }
+        const auto expected = expectedText.toUtf8();
         if (expected.size() > kMaxLineBytes || expected.contains('\n') || expected.contains('\r') ||
             normalizedCommand(expected).isEmpty()) {
             return std::nullopt;
         }
-        Step step{normalizedCommand(expected), {}};
+        Step step{normalizedCommand(expected), {}, object.value(u"allowEof").toBool()};
+        if (step.allowEof && !object.value(u"actions").toArray().isEmpty()) {
+            return std::nullopt;
+        }
         for (const auto& actionValue : object.value(u"actions").toArray()) {
+            error = QStringLiteral("invalid step %1 action %2")
+                        .arg(scenario.steps.size() + 1)
+                        .arg(step.actions.size() + 1);
             if (++totalActions > kMaxActions || !actionValue.isObject()) {
                 return std::nullopt;
             }
@@ -128,7 +150,11 @@ std::optional<Scenario> readScenario(const QString& path, QString& error) {
                 }
                 action.type = ActionType::Write;
                 action.stderrStream = stream == u"stderr";
-                action.data = actionObject.value(u"data").toString().toUtf8();
+                const auto data = actionObject.value(u"data").toString();
+                if (!data.isValidUtf16()) {
+                    return std::nullopt;
+                }
+                action.data = data.toUtf8();
             } else {
                 if (!keysAre(actionObject, {u"type", u"afterMs"})) {
                     return std::nullopt;

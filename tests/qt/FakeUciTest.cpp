@@ -7,7 +7,11 @@
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QTest>
+#include <cerrno>
 #include <csignal>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 // Own the real child even when a QVERIFY returns early. No process survives fixture cleanup.
@@ -41,6 +45,65 @@ class Child final {
     QProcess process;
     QByteArray output;
     QByteArray errors;
+};
+// Deliberately bypass QProcess stdout buffering to exercise an actually full/broken pipe.
+class OutputPipe final {
+  public:
+    OutputPipe() {
+        valid_ = ::pipe(fds_) == 0;
+        if (valid_) {
+            const auto flags = ::fcntl(fds_[0], F_GETFL);
+            valid_ = flags != -1 && ::fcntl(fds_[0], F_SETFL, flags | O_NONBLOCK) != -1;
+        }
+    }
+    ~OutputPipe() {
+        for (int fd : fds_) {
+            if (fd != -1) {
+                (void)::close(fd);
+            }
+        }
+    }
+    OutputPipe(const OutputPipe&) = delete;
+    OutputPipe& operator=(const OutputPipe&) = delete;
+    bool valid() const { return valid_; }
+    void redirect(Child& child) const {
+        const auto readFd = fds_[0];
+        const auto writeFd = fds_[1];
+        child.process.setChildProcessModifier([readFd, writeFd] {
+            if (::dup2(writeFd, STDOUT_FILENO) == -1) {
+                ::_exit(120);
+            }
+            if (readFd != -1) {
+                (void)::close(readFd);
+            }
+            (void)::close(writeFd);
+        });
+    }
+    void closeReader() {
+        if (fds_[0] != -1) {
+            (void)::close(fds_[0]);
+            fds_[0] = -1;
+        }
+    }
+    void closeWriter() {
+        if (fds_[1] != -1) {
+            (void)::close(fds_[1]);
+            fds_[1] = -1;
+        }
+    }
+    bool drain(QByteArray& bytes) const {
+        char buffer[65536];
+        const auto count = ::read(fds_[0], buffer, sizeof(buffer));
+        if (count > 0) {
+            bytes.append(buffer, static_cast<qsizetype>(count));
+            return true;
+        }
+        return count == 0 || errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+    }
+
+  private:
+    int fds_[2]{-1, -1};
+    bool valid_{};
 };
 QJsonObject writeAction(const QString& data, int afterMs = 0) {
     return {{"type", "write"}, {"stream", "stdout"}, {"data", data}, {"afterMs", afterMs}};
@@ -85,6 +148,13 @@ class FakeUciTest final : public QObject {
     void pendingInputAndEof();
     void independentProcesses();
     void outputFailure();
+    void ordinarySilenceCannotCompleteConversation();
+    void sharedFileFlags();
+    void nonregularScenario();
+    void actualBackpressure();
+    void mergedPipes();
+    void supplementaryUnicode();
+    void maximumPendingActions();
 };
 
 void FakeUciTest::invocation() {
@@ -112,6 +182,10 @@ void FakeUciTest::invalidScenario_data() {
     QTest::newRow("syntax") << QByteArray("{");
     QTest::newRow("non-object") << QByteArray("[]");
     QTest::newRow("invalid-utf8") << QByteArray("\xff");
+    QTest::newRow("unpaired-output-surrogate") << QByteArray(
+        R"({"version":1,"steps":[{"expect":"quit","actions":[{"type":"write","stream":"stdout","data":"\ud800"},{"type":"exit"}]}]})");
+    QTest::newRow("unpaired-command-surrogate") << QByteArray(
+        R"({"version":1,"steps":[{"expect":"\udc00quit","actions":[{"type":"exit"}]}]})");
     QTest::newRow("oversized") << QByteArray(1024 * 1024 + 1, ' ');
     auto changed = valid;
     changed["version"] = 2;
@@ -122,6 +196,12 @@ void FakeUciTest::invalidScenario_data() {
     changed["unknown"] = 1;
     add("root-key", changed);
     add("empty", scenario({}));
+    add("nonboolean-eof",
+        scenario({QJsonObject{{"expect", "go"}, {"actions", QJsonArray{}}, {"allowEof", "yes"}},
+                  step("quit", {exitAction()})}));
+    add("eof-with-actions",
+        scenario({QJsonObject{
+            {"expect", "quit"}, {"actions", QJsonArray{exitAction()}}, {"allowEof", true}}}));
     add("missing-actions", scenario({QJsonObject{{"expect", "quit"}}}));
     add("empty-command", scenario({step(" \t", {exitAction()})}));
     add("newline-command", scenario({step("quit\n", {exitAction()})}));
@@ -447,20 +527,146 @@ void FakeUciTest::independentProcesses() {
 }
 
 void FakeUciTest::outputFailure() {
-#ifndef Q_OS_LINUX
-    QSKIP("Deterministic ENOSPC pipe-output probe uses Linux /dev/full");
-#else
+    OutputPipe pipe;
+    QVERIFY(pipe.valid());
+    pipe.closeReader();
     Child child;
-    child.process.setStandardOutputFile(QStringLiteral("/dev/full"));
+    pipe.redirect(child);
     child.fixture("analysis");
     QTRY_COMPARE(child.process.state(), QProcess::Running);
+    pipe.closeWriter();
     QVERIFY(child.send("uci\n"));
     QTRY_COMPARE(child.process.state(), QProcess::NotRunning);
     QCOMPARE(child.process.exitStatus(), QProcess::NormalExit);
     QCOMPARE(child.process.exitCode(), 5);
-    QVERIFY(child.errors.contains("output write failed"));
+    QVERIFY(child.errors.contains("step 1: output write failed"));
     QVERIFY(cleanDiagnostics(child.errors));
-#endif
+}
+void FakeUciTest::ordinarySilenceCannotCompleteConversation() {
+    Child child;
+    child.fixture("analysis");
+    QTRY_COMPARE(child.process.state(), QProcess::Running);
+    QVERIFY(child.send("uci\nsetoption name MultiPV value 2\n"));
+    child.process.closeWriteChannel();
+    QTRY_COMPARE(child.process.state(), QProcess::NotRunning);
+    QCOMPARE(child.process.exitCode(), 4);
+    QVERIFY(child.errors.contains("step 3"));
+}
+void FakeUciTest::sharedFileFlags() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QFile output(root.filePath("shared.log"));
+    QVERIFY(output.open(QIODevice::WriteOnly));
+    const auto fd = output.handle();
+    const auto flags = ::fcntl(fd, F_GETFL);
+    QVERIFY(flags != -1);
+    Child child;
+    child.process.setChildProcessModifier([fd] {
+        if (::dup2(fd, STDOUT_FILENO) == -1 || ::dup2(fd, STDERR_FILENO) == -1) {
+            ::_exit(120);
+        }
+    });
+    child.fixture("missing-wdl");
+    // Unsupported shared files must be rejected before changing inherited file flags.
+    QTRY_COMPARE(child.process.state(), QProcess::NotRunning);
+    QCOMPARE(::fcntl(fd, F_GETFL), flags);
+    QCOMPARE(child.process.exitCode(), 5);
+}
+void FakeUciTest::nonregularScenario() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const auto path = root.filePath("scenario.fifo");
+    QVERIFY(::mkfifo(QFile::encodeName(path).constData(), 0600) == 0);
+    Child child;
+    child.start({"--scenario", path});
+    QTRY_COMPARE(child.process.state(), QProcess::NotRunning);
+    QCOMPARE(child.process.exitCode(), 2);
+    QVERIFY(child.errors.contains("regular file"));
+}
+void FakeUciTest::actualBackpressure() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const auto path = root.filePath("blocked.json");
+    const QString payload(512 * 1024, u'x');
+    auto ready = writeAction("ready despite full stdout\n");
+    ready["stream"] = "stderr";
+    QVERIFY(save(
+        path, scenario({step("go", {writeAction(payload), writeAction("must be cancelled", 60000)}),
+                        step("isready", {QJsonObject{{"type", "cancelPending"}}, ready}),
+                        step("quit", {exitAction()})})));
+    OutputPipe pipe;
+    QVERIFY(pipe.valid());
+    Child child;
+    pipe.redirect(child);
+    child.start({"--scenario", path});
+    QTRY_COMPARE(child.process.state(), QProcess::Running);
+    pipe.closeWriter();
+    QVERIFY(child.send("go\nisready\n"));
+    // No reads from stdout until stderr proves the next command was processed.
+    QTRY_VERIFY(child.errors.contains("ready despite full stdout"));
+    QCOMPARE(child.process.state(), QProcess::Running);
+    QVERIFY(child.send("quit\n"));
+    QByteArray received;
+    QTRY_VERIFY(pipe.drain(received) && received.size() == payload.size());
+    QTRY_COMPARE(child.process.state(), QProcess::NotRunning);
+    QCOMPARE(child.process.exitCode(), 0);
+    QCOMPARE(received, payload.toUtf8());
+    QCOMPARE(child.errors, QByteArray("ready despite full stdout\n"));
+}
+
+void FakeUciTest::mergedPipes() {
+    Child child;
+    child.process.setProcessChannelMode(QProcess::MergedChannels);
+    child.fixture("malformed");
+    QTRY_COMPARE(child.process.state(), QProcess::Running);
+    QVERIFY(child.send("uci\nisready\nposition startpos\ngo nodes 100\nquit\n"));
+    QTRY_COMPARE(child.process.state(), QProcess::NotRunning);
+    QCOMPARE(child.process.exitCode(), 0);
+    QVERIFY(child.output.contains("private test stderr\n"));
+    QVERIFY(child.output.contains("bestmove z9z9"));
+    QVERIFY(child.errors.isEmpty());
+}
+void FakeUciTest::supplementaryUnicode() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const auto path = root.filePath("unicode.json");
+    const auto text = QString::fromUcs4(U"horse 🐴");
+    QVERIFY(save(path, scenario({step(text, {writeAction(text), exitAction()})})));
+    Child child;
+    child.start({"--scenario", path});
+    QTRY_COMPARE(child.process.state(), QProcess::Running);
+    QVERIFY(child.send(text.toUtf8() + '\n'));
+    QTRY_COMPARE(child.process.state(), QProcess::NotRunning);
+    QCOMPARE(child.process.exitCode(), 0);
+    QCOMPARE(child.output, text.toUtf8());
+    QVERIFY(child.errors.isEmpty());
+}
+
+void FakeUciTest::maximumPendingActions() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const auto path = root.filePath("pending.json");
+    QJsonArray actions;
+    for (int i = 0; i < 4095; ++i) {
+        actions.append(writeAction("must not emit", 60000));
+    }
+    QJsonArray steps{step("go", actions)};
+    QByteArray input("go\n");
+    for (int i = 0; i < 4094; ++i) {
+        steps.append(step("next"));
+        input += "next\n";
+    }
+    steps.append(step("quit", {exitAction()}));
+    input += "quit\n";
+    QVERIFY(save(path, scenario(steps)));
+    Child child;
+    child.start({"--scenario", path});
+    QTRY_COMPARE(child.process.state(), QProcess::Running);
+    QVERIFY(child.send(input));
+    QTRY_COMPARE(child.process.state(), QProcess::NotRunning);
+    QCOMPARE(child.process.exitCode(), 0);
+    QVERIFY(child.output.isEmpty());
+    QVERIFY(child.errors.isEmpty());
 }
 
 int main(int argc, char** argv) {

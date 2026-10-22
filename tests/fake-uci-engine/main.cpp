@@ -4,10 +4,14 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QTimer>
-#include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
+#include <queue>
+#include <tuple>
 #include <utility>
+#include <vector>
 
 namespace fake_uci {
 namespace {
@@ -16,6 +20,13 @@ enum class ExitCode { Success = 0, Configuration = 2, Mismatch = 3, Incomplete =
 struct Pending {
     qint64 dueMs{};
     Action action;
+    qsizetype stepNumber{};
+    qsizetype order{};
+};
+struct Later {
+    bool operator()(const Pending& a, const Pending& b) const {
+        return std::tie(a.dueMs, a.order) > std::tie(b.dueMs, b.order);
+    }
 };
 class Runner final : public QObject {
   public:
@@ -25,7 +36,7 @@ class Runner final : public QObject {
         connect(&timer_, &QTimer::timeout, this, [this] { dispatch(); });
         io_.received = [this](const QByteArray& bytes) { consume(bytes); };
         io_.eof = [this] {
-            if (hanging_ || (silent_ && line_.isEmpty())) {
+            if (hanging_ || (allowEof_ && line_.isEmpty())) {
                 finish(ExitCode::Success, false);
             } else {
                 fail(ExitCode::Incomplete, "stdin EOF before explicit termination");
@@ -51,7 +62,7 @@ class Runner final : public QObject {
   private:
     void clearPending() {
         timer_.stop();
-        pending_.clear();
+        pending_ = {};
         scheduledBytes_ = 0;
     }
     void complete() const {
@@ -70,11 +81,13 @@ class Runner final : public QObject {
             complete();
         }
     }
-    void fail(ExitCode code, const QByteArray& reason) {
+    void fail(ExitCode code, const QByteArray& reason,
+              std::optional<qsizetype> stepNumber = std::nullopt) {
         clearPending();
         io_.clearOutput();
-        const auto message =
-            "fake-uci: step " + QByteArray::number(step_ + 1) + ": " + reason + '\n';
+        const auto message = "fake-uci: step " +
+                             QByteArray::number(stepNumber.value_or(step_ + 1)) + ": " + reason +
+                             '\n';
         if (!io_.write(true, message)) {
             finish(ExitCode::IoFailure, false);
             return;
@@ -116,41 +129,39 @@ class Runner final : public QObject {
             return;
         }
         const auto& actions = scenario_.steps[step_++].actions;
-        silent_ = actions.isEmpty();
+        allowEof_ = scenario_.steps[step_ - 1].allowEof;
         const auto acceptedMs = clock_.elapsed();
         for (const auto& action : actions) {
             if (action.type == ActionType::CancelPending) {
                 clearPending();
                 continue;
             }
-            if (pending_.size() == kMaxActions ||
+            if (pending_.size() == static_cast<std::size_t>(kMaxActions) ||
                 action.data.size() > kMaxBytes - scheduledBytes_ - io_.pendingBytes()) {
-                fail(ExitCode::IoFailure, "queued output exceeds fixture limits");
+                fail(ExitCode::IoFailure, "queued output exceeds fixture limits", step_);
                 return;
             }
             scheduledBytes_ += action.data.size();
-            pending_.push_back({acceptedMs + action.afterMs, action});
+            pending_.push({acceptedMs + action.afterMs, action, step_, nextOrder_++});
         }
-        // Stable ordering also preserves acceptance order across commands with equal deadlines.
-        std::stable_sort(pending_.begin(), pending_.end(),
-                         [](const Pending& a, const Pending& b) { return a.dueMs < b.dueMs; });
         dispatch();
     }
     void dispatch() {
         timer_.stop();
-        while (!pending_.isEmpty()) {
-            const auto remainingMs = pending_.front().dueMs - clock_.elapsed();
+        while (!pending_.empty()) {
+            const auto remainingMs = pending_.top().dueMs - clock_.elapsed();
             if (remainingMs > 0) {
                 timer_.start(static_cast<int>(remainingMs));
                 return;
             }
-            auto action = std::move(pending_.front().action);
-            pending_.removeFirst();
+            auto pending = pending_.top();
+            auto& action = pending.action;
+            pending_.pop();
             scheduledBytes_ -= action.data.size();
             switch (action.type) {
             case ActionType::Write:
                 if (!io_.write(action.stderrStream, action.data)) {
-                    fail(ExitCode::IoFailure, "output write failed");
+                    fail(ExitCode::IoFailure, "output write failed", pending.stepNumber);
                     return;
                 }
                 break;
@@ -177,12 +188,14 @@ class Runner final : public QObject {
     PipeIo io_;
     QTimer timer_;
     QElapsedTimer clock_;
-    QVector<Pending> pending_;
+    // Sequence breaks equal-deadline ties without re-sorting the backlog for each command.
+    std::priority_queue<Pending, std::vector<Pending>, Later> pending_;
     QByteArray line_;
     qsizetype step_{};
     qsizetype scheduledBytes_{};
+    qsizetype nextOrder_{}; // At most 4,096 actions can be accepted in a scenario.
     ExitCode exitCode_{};
-    bool silent_{};
+    bool allowEof_{};
     bool hanging_{};
     bool finishing_{};
     bool crashing_{};
@@ -211,7 +224,8 @@ int main(int argc, char** argv) {
     }
     fake_uci::Runner runner(std::move(*scenario));
     if (!runner.start()) {
-        (void)std::fputs("fake-uci: cannot initialize Unix pipe transport\n", stderr);
+        (void)std::fputs("fake-uci: transport requires exclusive stdin/stdout/stderr pipes\n",
+                         stderr);
         return static_cast<int>(fake_uci::ExitCode::IoFailure);
     }
     return QCoreApplication::exec();
