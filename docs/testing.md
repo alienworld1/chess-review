@@ -619,3 +619,19 @@ formatting characters while preserving ordinary supplementary text, and constrai
 long unbroken names to the viewport. The same screenshot option also writes
 `hostile-1100.png` for long/invisible engine identity. No SQL fixture is introduced
 outside persistence.
+
+## Engine process worker lifecycle
+
+`engine_process_worker` tests the private worker and coordinator, alongside the
+existing public engine suites. Run all engine checks with
+`ctest --preset dev -R '^engine_'`.
+
+The suite checks allowed/rejected transitions and real registration ordering;
+synchronous internal state hooks exercise repeated cancellation/close at executable
+checking, startup, UCI/readiness waits, integrity rechecking, Ready and cleanup.
+It also verifies failed launch, buffered exit-output drainage, first-error retention
+through forced cleanup, admission held until worker destruction, fresh workers,
+reconnect after cancellation/protocol failure/forced cleanup, and one-shot terminal
+and service-close notifications. Boundary checks use explicit state synchronization;
+production cleanup deadlines are unchanged. Unix missing-interpreter and signal
+fixtures retain the platform limits described above. No SQL fixtures live here.
