@@ -10,6 +10,10 @@
 namespace chess_review::engine {
 class ValidatorTestAccess {
   public:
+    static void configureSearch(EngineSupervisor& supervisor, int idleMs = 10000,
+                                int responseMs = 300) {
+        supervisor.setTestSearchDeadlines(idleMs, responseMs);
+    }
     static void configure(EngineSupervisor& validator, const QString& scenario, int deadline = 300,
                           qsizetype outputLimit = 1024 * 1024) {
         validator.setTestArguments({QStringLiteral("--scenario"), scenario}, deadline, deadline,
@@ -50,7 +54,14 @@ inline QJsonArray handshake(
 // Ensure even a failed assertion closes the real process and joins its owner thread.
 class Validator final {
   public:
+    Validator() {
+        QObject::connect(&service, &chess_review::engine::EngineSupervisor::closed, &service,
+                         [this] { closed_ = true; });
+    }
     ~Validator() {
+        if (closed_) {
+            return;
+        }
         QEventLoop loop;
         QObject::connect(&service, &chess_review::engine::EngineSupervisor::closed, &loop,
                          &QEventLoop::quit);
@@ -65,5 +76,8 @@ class Validator final {
         }
     }
     chess_review::engine::EngineSupervisor service;
+
+  private:
+    bool closed_ = false;
 };
 } // namespace engine_test

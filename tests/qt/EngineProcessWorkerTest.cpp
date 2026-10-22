@@ -86,14 +86,34 @@ class EngineProcessWorkerTest final : public QObject {
                                    std::pair{Stage::AwaitingReadyOk, Stage::Quitting},
                                    std::pair{Stage::CheckingIntegrity, Stage::Quitting},
                                    std::pair{Stage::Ready, Stage::Quitting},
+                                   std::pair{Stage::Ready, Stage::ConfiguringSearch},
+                                   std::pair{Stage::ConfiguringSearch, Stage::Analyzing},
+                                   std::pair{Stage::ConfiguringSearch, Stage::SynchronizingSearch},
+                                   std::pair{Stage::Analyzing, Stage::Stopping},
+                                   std::pair{Stage::Analyzing, Stage::SynchronizingSearch},
+                                   std::pair{Stage::Stopping, Stage::SynchronizingSearch},
+                                   std::pair{Stage::SynchronizingSearch, Stage::Ready},
+                                   std::pair{Stage::ConfiguringSearch, Stage::Quitting},
+                                   std::pair{Stage::Analyzing, Stage::Quitting},
+                                   std::pair{Stage::Stopping, Stage::Quitting},
+                                   std::pair{Stage::SynchronizingSearch, Stage::Quitting},
                                    std::pair{Stage::Quitting, Stage::Terminating},
                                    std::pair{Stage::Quitting, Stage::CheckingIntegrity},
                                    std::pair{Stage::Terminating, Stage::Killing}};
-        constexpr std::array all{Stage::Created,         Stage::CheckingExecutable,
-                                 Stage::Starting,        Stage::AwaitingUciOk,
-                                 Stage::AwaitingReadyOk, Stage::CheckingIntegrity,
-                                 Stage::Ready,           Stage::Quitting,
-                                 Stage::Terminating,     Stage::Killing,
+        constexpr std::array all{Stage::Created,
+                                 Stage::CheckingExecutable,
+                                 Stage::Starting,
+                                 Stage::AwaitingUciOk,
+                                 Stage::AwaitingReadyOk,
+                                 Stage::CheckingIntegrity,
+                                 Stage::Ready,
+                                 Stage::ConfiguringSearch,
+                                 Stage::Analyzing,
+                                 Stage::Stopping,
+                                 Stage::SynchronizingSearch,
+                                 Stage::Quitting,
+                                 Stage::Terminating,
+                                 Stage::Killing,
                                  Stage::Finished};
         for (const auto current : all) {
             for (const auto next : all) {
@@ -103,6 +123,59 @@ class EngineProcessWorkerTest final : public QObject {
                 QCOMPARE(canTransition(current, next), expected);
             }
         }
+    }
+
+    void directSearchCancellation_data() {
+        QTest::addColumn<bool>("configuring");
+        QTest::newRow("before-go") << true;
+        QTest::newRow("after-go") << false;
+    }
+    void directSearchCancellation() {
+        QFETCH(bool, configuring);
+        QTemporaryDir directory;
+        engine_test::Validator registration;
+        const auto profile =
+            profileFor(registration.service,
+                       engine_test::scenario(directory.filePath(QStringLiteral("register.json")),
+                                             engine_test::handshake()));
+        auto steps = engine_test::handshake();
+        const auto quitStep = steps.takeAt(steps.size() - 1);
+        steps.append(engine_test::step(QStringLiteral("ucinewgame"), {}));
+        steps.append(engine_test::step(QStringLiteral("isready"),
+                                       {engine_test::write(QStringLiteral("readyok\n"))}));
+        if (!configuring) {
+            steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+            steps.append(engine_test::step(QStringLiteral("go infinite"), {}));
+            steps.append(engine_test::step(
+                QStringLiteral("stop"), {engine_test::write(QStringLiteral("bestmove e2e4\n"))}));
+            steps.append(engine_test::step(QStringLiteral("isready"),
+                                           {engine_test::write(QStringLiteral("readyok\n"))}));
+        }
+        steps.append(quitStep);
+        Attempt attempt(
+            AttemptMode::Runtime,
+            engine_test::scenario(directory.filePath(QStringLiteral("search.json")), steps));
+        QSignalSpy runtime(&attempt.worker, &EngineProcessWorker::runtimeChanged);
+        QSignalSpy done(&attempt.worker, &EngineProcessWorker::analysisFinished);
+        const auto session = QUuid::createUuid();
+        attempt.worker.connectEngine(session, profile);
+        QTRY_VERIFY(!runtime.empty() &&
+                    qvariant_cast<RuntimeState>(runtime.back()[0]).phase == RuntimePhase::Ready);
+        connect(&attempt.worker, &EngineProcessWorker::searchChanged, &attempt.worker,
+                [&attempt, configuring](const SearchState& state) {
+                    if (state.phase ==
+                        (configuring ? SearchPhase::Configuring : SearchPhase::Analyzing)) {
+                        attempt.worker.close();
+                    }
+                });
+        AnalysisRequest search;
+        search.id = QUuid::createUuid();
+        search.limit = InfiniteLimit{};
+        attempt.worker.analyze(session, search);
+        QTRY_VERIFY(attempt.finished);
+        QCOMPARE(done.size(), 1);
+        QCOMPARE(qvariant_cast<AnalysisResult>(done.front()[0]).outcome, AnalysisOutcome::Stopped);
+        QCOMPARE(qvariant_cast<RuntimeState>(runtime.back()[0]).phase, RuntimePhase::Disconnected);
     }
 
     void registrationSequence() {
@@ -548,7 +621,13 @@ class EngineProcessWorkerTest final : public QObject {
         }
     }
 
+    void exitStopsProcessDeadline_data() {
+        QTest::addColumn<bool>("analyzing");
+        QTest::newRow("idle") << false;
+        QTest::newRow("analyzing") << true;
+    }
     void exitStopsProcessDeadline() {
+        QFETCH(bool, analyzing);
         QTemporaryDir directory;
         engine_test::Validator service;
         const auto registration = engine_test::scenario(
@@ -560,6 +639,16 @@ class EngineProcessWorkerTest final : public QObject {
         steps[2] = engine_test::step(
             QStringLiteral("quit"),
             {output, QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")}}});
+        if (analyzing) {
+            steps.removeAt(2);
+            steps.append(engine_test::step(QStringLiteral("ucinewgame"), {}));
+            steps.append(engine_test::step(QStringLiteral("isready"),
+                                           {engine_test::write(QStringLiteral("readyok\n"))}));
+            steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+            steps.append(engine_test::step(
+                QStringLiteral("go infinite"),
+                {output, QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")}}}));
+        }
         const auto script =
             engine_test::scenario(directory.filePath(QStringLiteral("worker.json")), steps);
         Attempt attempt(AttemptMode::Runtime, script);
@@ -569,6 +658,7 @@ class EngineProcessWorkerTest final : public QObject {
         QSignalSpy finished(&attempt.worker, &EngineProcessWorker::finished);
         bool deadlineStoppedAtExit = false;
         bool exitHadBufferedData = false;
+        const auto session = QUuid::createUuid();
         connect(&attempt.worker, &EngineProcessWorker::runtimeChanged, &attempt.worker,
                 [&](const RuntimeState& state) {
                     if (state.phase == RuntimePhase::Ready) {
@@ -576,7 +666,14 @@ class EngineProcessWorkerTest final : public QObject {
                         // turns.
                         disconnect(process, &QProcess::readyReadStandardError, &attempt.worker,
                                    nullptr);
-                        attempt.worker.close();
+                        if (analyzing) {
+                            AnalysisRequest request;
+                            request.id = QUuid::createUuid();
+                            request.limit = InfiniteLimit{};
+                            attempt.worker.analyze(session, request);
+                        } else {
+                            attempt.worker.close();
+                        }
                     }
                 });
         connect(process, &QProcess::finished, &attempt.worker, [&](int, QProcess::ExitStatus) {
@@ -586,13 +683,18 @@ class EngineProcessWorkerTest final : public QObject {
             deadlineStoppedAtExit = std::none_of(timers.begin(), timers.end(),
                                                  [](QTimer* timer) { return timer->isActive(); });
         });
-        attempt.worker.connectEngine(QUuid::createUuid(), profile);
+        attempt.worker.connectEngine(session, profile);
         QTRY_COMPARE(finished.size(), 1);
         QVERIFY(exitHadBufferedData);
         QVERIFY(deadlineStoppedAtExit);
         const auto terminal = qvariant_cast<RuntimeState>(events.back()[0]);
-        QCOMPARE(terminal.phase, RuntimePhase::Disconnected);
-        QVERIFY(!terminal.error);
+        QCOMPARE(terminal.phase, analyzing ? RuntimePhase::Failed : RuntimePhase::Disconnected);
+        if (analyzing) {
+            QVERIFY(terminal.error);
+            QCOMPARE(terminal.error->code, ErrorCode::Crash);
+        } else {
+            QVERIFY(!terminal.error);
+        }
     }
 
     void supervisorThreadResponsiveness() {

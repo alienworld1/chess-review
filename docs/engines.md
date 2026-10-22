@@ -77,13 +77,97 @@ time. Disconnect before validating or connecting another engine. The active
 engine remains identified even when another row is selected or another list page
 is loaded.
 
-The application monitors process exit and protocol violations but does not send
-periodic readiness probes. A crash, timeout or invalid response triggers cleanup
+Idle connections monitor process exit and protocol violations without periodic
+readiness probes. Active searches use the readiness checks described below. A crash, timeout or invalid response triggers cleanup
 and a visible failure; reconnect requires another explicit **Connect**. Cleanup
-uses the same quit/terminate/kill deadlines as registration. Output limits apply
-to the whole connected session, including idle stdout and stderr. Failed or
+uses the same quit/terminate/kill deadlines as registration. After connection readiness, the combined stdout/stderr limit is 1 MiB per
+monotonic one-second window, including idle and cleanup output. The 64 KiB stdout
+line limit remains. Handshake/registration retain their 1 MiB total limit. Failed or
 forcibly disconnected sessions are never reused. Opening Settings or restarting
 the application never restores a live connection automatically. Saved validation
 timestamps and profiles are not updated by connecting. During explicit Disconnect,
 late handshake replies and incomplete idle lines are discarded; combined output
 limits, exit-status validation and forced-cleanup failures still apply.
+
+
+## Position-search infrastructure
+
+The C++ `engine::EngineSupervisor` now supports searches on an explicitly connected
+Ready session. This API is not yet wired to the Analyze board or a Settings test
+button. Connecting in Settings still performs only the handshake/integrity check.
+No search is launched automatically, and no evidence is saved to the database.
+
+```cpp
+engine::AnalysisRequest request;
+request.id = QUuid::createUuid();
+request.position = position; // Independent chess::Position, including its root/history.
+request.limit = engine::NodeLimit{200000};
+request.multiPv = 3;
+request.wantWdl = true;
+supervisor.analyze(session, request);
+// Later, if needed:
+supervisor.stopAnalysis(session, request.id);
+```
+
+Limits are exactly one of `NodeLimit`, `DepthLimit`, `TimeLimit` (milliseconds), or
+`InfiniteLimit`. Numeric limits must be positive. Nodes fit signed 64-bit UCI
+values; depth fits a signed int; time fits `INT_MAX - 5000` milliseconds.
+`searchMoves` optionally restricts legal root moves; an empty list, illegal move,
+or duplicate is rejected. Requests use fresh non-null UUIDs. Accepted IDs cannot
+be reused within the connection; reconnect after 65,536 accepted searches. Invalid
+requests are rejected without invalidating the healthy engine. Competing requests
+are rejected Busy rather than queued, and stale session/request IDs cannot stop
+another search.
+
+Before every request the worker sets advertised Threads to one, configures
+MultiPV and optional `UCI_ShowWDL`, sends `ucinewgame`, and waits for `readyok`
+after `isready`. Hash retains the advertised default. There are no profile
+option overrides. If Threads cannot represent one, the request is rejected.
+The position command retains the original start position/FEN and complete move
+history; it is never reduced to the current FEN alone. Commands are bounded to
+64 KiB and oversized histories are rejected without truncation.
+
+MultiPV is reduced explicitly to the advertised maximum, the number of legal
+restricted/unrestricted candidates, and a local maximum of 256. Engines without
+MultiPV use one. The UCI configuration stays at least one even on terminal
+positions, where achieved candidate width is zero. Results retain both requested
+and effective width. WDL is optional: the worker enables it when advertised and
+requested, and disables it for subsequent requests that do not request it.
+Unsupported/missing WDL stays absent rather than being fabricated.
+
+`searchChanged` reports Configuring, Analyzing, Stopping, and Synchronizing with
+session/request identity. `analysisUpdated` publishes coalesced evidence at most
+ten times per second, plus an immediate final snapshot. `analysisFinished`
+provides Rejected, Completed, Stopped, or Failed. Await that terminal signal
+before submitting another search. Completed means natural UCI completion and
+successful final synchronization; it does not prove the requested node budget,
+width, or evidence depth was achieved. Check actual statistics and coverage.
+Stopped results retain partial evidence and any validated bestmove.
+
+Raw centipawn/mate scores, bounds, and WDL use the root side-to-move perspective.
+Each rank retains its latest evidence-bearing info line independently, with its
+own depth and statistics. Missing fields remain absent; unrelated partial updates
+never manufacture a score/PV pair. Global statistics accept partial updates, including depth-only progress, without
+changing the depth attached to an older PV.
+`achievedWidth` counts contiguous ranks with both score and PV; `commonDepth` is
+present only when the entire effective width has that depth. Mixed-depth ranks
+remain visible without implying a coherent set. WDL values use the 0–1000 scale
+and sum to 1000. PVs are limited to 1,024 legal plies; bestmove and ponder are also
+validated, including root restrictions. `0000`/`(none)` is accepted only when
+there are no legal moves.
+
+Stop sends `stop` once and waits up to five seconds for `bestmove`. If stopped
+during setup, no `go` is sent and no bestmove is required. Every completed search
+requires a subsequent `isready`/`readyok` barrier before reuse. After ten seconds
+without meaningful search activity, a readiness probe must be answered within
+five seconds. A probe does not finish the search. Node/depth/infinite searches
+have no total elapsed-time cap; timed searches allow five seconds after their
+budget for bestmove. Configuration and final readiness also have five seconds.
+
+Malformed recognized evidence, illegal moves, missing required replies, process
+exit, or output violations fail the search and retire the connection. Reconnect
+explicitly after cleanup; failed sessions are never reused. Disconnect/application
+shutdown stops an active search, drains completion, then quits/reaps the child
+using existing escalation. Failure results preserve the first error and are
+published after worker retirement. Evidence is raw engine output validated for
+structure and legality, not proof that the engine's evaluation is correct.

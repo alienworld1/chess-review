@@ -15,6 +15,7 @@ class EngineExitTest final : public QObject {
         QTest::newRow("during-save") << QStringLiteral("saving");
         QTest::newRow("after-add") << QStringLiteral("add");
         QTest::newRow("connected-ready") << QStringLiteral("connected");
+        QTest::newRow("during-analysis") << QStringLiteral("analyzing");
     }
     void actualExit() {
 #ifndef Q_OS_LINUX
@@ -29,6 +30,24 @@ class EngineExitTest final : public QObject {
         }
         const auto script =
             engine_test::scenario(directory.filePath(QStringLiteral("scenario.json")), steps);
+        const auto searchScript = engine_test::scenario(
+            directory.filePath(QStringLiteral("search.json")),
+            {engine_test::step(QStringLiteral("uci"),
+                               {engine_test::write(QStringLiteral(
+                                   "id name Test engine\nid author Tests\nuciok\n"))}),
+             engine_test::step(QStringLiteral("isready"),
+                               {engine_test::write(QStringLiteral("readyok\n"))}),
+             engine_test::step(QStringLiteral("ucinewgame"), {}),
+             engine_test::step(QStringLiteral("isready"),
+                               {engine_test::write(QStringLiteral("readyok\n"))}),
+             engine_test::step(QStringLiteral("position startpos"), {}),
+             engine_test::step(QStringLiteral("go infinite"), {}),
+             engine_test::step(QStringLiteral("stop"),
+                               {engine_test::write(QStringLiteral("bestmove e2e4\n"))}),
+             engine_test::step(QStringLiteral("isready"),
+                               {engine_test::write(QStringLiteral("readyok\n"))}),
+             engine_test::step(QStringLiteral("quit"),
+                               {QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")}}})});
         auto environment = QProcessEnvironment::systemEnvironment();
         environment.insert(QStringLiteral("HOME"), directory.path());
         environment.insert(QStringLiteral("XDG_DATA_HOME"),
@@ -40,6 +59,8 @@ class EngineExitTest final : public QObject {
         environment.insert(QStringLiteral("QT_QPA_PLATFORM"), QStringLiteral("offscreen"));
         environment.insert(QStringLiteral("CHESS_REVIEW_ENGINE_PROBE_MODE"), mode);
         environment.insert(QStringLiteral("CHESS_REVIEW_ENGINE_PROBE_SCENARIO"), script);
+        environment.insert(QStringLiteral("CHESS_REVIEW_ENGINE_PROBE_SEARCH_SCENARIO"),
+                           searchScript);
         environment.insert(QStringLiteral("CHESS_REVIEW_ENGINE_PROBE_BINARY"),
                            QString::fromUtf8(FAKE_UCI_ENGINE));
         auto run = [&](const QProcessEnvironment& env) {

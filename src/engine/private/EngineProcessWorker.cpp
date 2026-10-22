@@ -51,9 +51,21 @@ PathResult resolve(const QString& path) {
 PathResult inspectExecutable(const QString& path) { return resolve(path); }
 EngineProcessWorker::EngineProcessWorker(AttemptMode mode, ProcessConfiguration configuration,
                                          QObject* parent)
-    : QObject(parent), process_(this), timer_(this), chunks_(this), file_(this), mode_(mode),
+    : QObject(parent), process_(this), timer_(this), chunks_(this), file_(this), searchWatch_(this),
+      searchProgress_(this), searchIdleMs_(configuration.searchIdleMs),
+      searchResponseMs_(configuration.searchResponseMs), mode_(mode),
       arguments_(std::move(configuration.arguments)), outputLimit_(configuration.outputLimit),
       startMs_(configuration.startMs), handshakeMs_(configuration.handshakeMs) {
+    searchWatch_.setInterval(50);
+    searchProgress_.setInterval(100);
+    searchProgress_.setTimerType(Qt::PreciseTimer);
+    connect(&searchWatch_, &QTimer::timeout, this, &EngineProcessWorker::watchSearch);
+    connect(&searchProgress_, &QTimer::timeout, this, [this] {
+        if (search_ && std::exchange(progressDirty_, false)) {
+            const auto snapshot = search_->snapshot;
+            emit analysisUpdated(snapshot);
+        }
+    });
     timer_.setSingleShot(true);
     timer_.setTimerType(Qt::PreciseTimer);
     chunks_.setSingleShot(true);
@@ -90,6 +102,8 @@ EngineProcessWorker::EngineProcessWorker(AttemptMode mode, ProcessConfiguration 
     connect(&process_, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
         // Deadlines control the child, not the time spent draining its final buffered output.
         timer_.stop();
+        searchWatch_.stop();
+        searchProgress_.stop();
         awaitingExit_ = false;
         pendingExit_ = std::pair{code, status};
         drain(false);
@@ -110,17 +124,22 @@ void EngineProcessWorker::disconnectEngine(QUuid session) {
         return;
     }
     disconnecting_ = true;
-    // No discovery claim survives explicit cancellation. Late replies and partial
-    // lines are irrelevant, but output accounting and exit checks still apply.
-    output_.clear();
     publish(RuntimePhase::Disconnecting);
     chunks_.stop();
     file_.close();
+    if (search_ && !failure_) {
+        stopAnalysis(session, search_->request.id);
+        return;
+    }
+    quitRuntime();
+}
+
+void EngineProcessWorker::quitRuntime() {
+    output_.clear();
     if (process_.state() == QProcess::NotRunning) {
-        if (awaitingExit_ || pendingExit_) {
-            return;
+        if (!awaitingExit_ && !pendingExit_) {
+            finishRuntime();
         }
-        finishRuntime();
         return;
     }
     if (stage_ != Stage::Quitting && stage_ != Stage::Terminating && stage_ != Stage::Killing) {
@@ -130,6 +149,13 @@ void EngineProcessWorker::disconnectEngine(QUuid session) {
         timer_.start(1000);
         send("quit\n");
     }
+}
+
+void EngineProcessWorker::advanceEpoch() {
+    process_.setReadChannel(QProcess::StandardOutput);
+    bufferedEpoch_ = epoch_;
+    preReadyBytes_ = process_.bytesAvailable();
+    ++epoch_;
 }
 
 void EngineProcessWorker::validate(QUuid request, const QString& path) {
@@ -264,6 +290,9 @@ void EngineProcessWorker::hashChunk() {
                 return;
             }
             timer_.stop();
+            runtimeOutput_ = true;
+            outputBytes_ = 0;
+            outputWindow_.start();
             runtime_->discovery = profile_;
             publish(RuntimePhase::Ready);
         } else {
@@ -322,15 +351,21 @@ void EngineProcessWorker::drain(bool errors) {
         if (failure_) {
             continue;
         }
+        if (runtimeOutput_ && outputWindow_.elapsed() >= 1000) {
+            outputBytes_ = 0;
+            outputWindow_.restart();
+        }
         outputBytes_ += bytes.size();
         if (outputBytes_ > outputLimit_) {
             fail({ErrorCode::OutputLimit, QStringLiteral("The engine exceeded the output limit.")});
             continue;
         }
-        if (errors || disconnecting_) {
+        if (errors ||
+            (disconnecting_ && (!search_ || stage_ == Stage::Quitting ||
+                                stage_ == Stage::Terminating || stage_ == Stage::Killing))) {
             continue;
         }
-        const auto receivedStage = beforeReady ? Stage::AwaitingUciOk : stage_;
+        const auto receivedEpoch = beforeReady ? bufferedEpoch_ : epoch_;
         for (const auto byte : bytes) {
             if (failure_) {
                 break;
@@ -338,11 +373,11 @@ void EngineProcessWorker::drain(bool errors) {
             if (byte == '\n' || byte == '\r') {
                 if (!output_.isEmpty()) {
                     const auto line = std::exchange(output_, {});
-                    handleLine(line, lineStage_);
+                    handleLine(line, lineEpoch_);
                 }
             } else {
                 if (output_.isEmpty()) {
-                    lineStage_ = receivedStage;
+                    lineEpoch_ = receivedEpoch;
                 }
                 output_.append(byte);
                 if (output_.size() > 65536) {
@@ -392,16 +427,20 @@ void EngineProcessWorker::completeExit() {
     }
 }
 
-void EngineProcessWorker::handleLine(const QByteArray& bytes, Stage receivedStage) {
+void EngineProcessWorker::handleLine(const QByteArray& bytes, std::uint64_t receivedEpoch) {
     if (!bytes.isValidUtf8() || bytes.contains('\0')) {
         protocolFailure();
         return;
     }
     const auto line = QString::fromUtf8(bytes);
     const auto normalized = line.simplified();
-    if (normalized == QStringLiteral("bestmove") ||
-        normalized.startsWith(QStringLiteral("bestmove ")) ||
-        normalized.startsWith(QStringLiteral("uciok ")) ||
+    if (normalized == QStringLiteral("info") || normalized.startsWith(QStringLiteral("info ")) ||
+        normalized == QStringLiteral("bestmove") ||
+        normalized.startsWith(QStringLiteral("bestmove "))) {
+        searchLine(normalized.split(u' '), receivedEpoch);
+        return;
+    }
+    if (normalized.startsWith(QStringLiteral("uciok ")) ||
         normalized.startsWith(QStringLiteral("readyok "))) {
         protocolFailure();
         return;
@@ -422,7 +461,7 @@ void EngineProcessWorker::handleLine(const QByteArray& bytes, Stage receivedStag
         if (!transition(Stage::AwaitingReadyOk)) {
             return;
         }
-        preReadyBytes_ = process_.bytesAvailable();
+        advanceEpoch();
         timer_.start(handshakeMs_);
         emit progress(request_, QStringLiteral("Waiting for engine readiness…"));
         if (stage_ != Stage::AwaitingReadyOk) {
@@ -432,8 +471,12 @@ void EngineProcessWorker::handleLine(const QByteArray& bytes, Stage receivedStag
         return;
     }
     if (normalized == QStringLiteral("readyok")) {
-        // Bytes already read with uciok cannot answer the isready command it triggers.
-        if (stage_ != Stage::AwaitingReadyOk || receivedStage != Stage::AwaitingReadyOk ||
+        if (search_) {
+            searchReady(receivedEpoch);
+            return;
+        }
+        // Bytes already received cannot answer a command sent later.
+        if (stage_ != Stage::AwaitingReadyOk || receivedEpoch != epoch_ ||
             process_.bytesToWrite() != 0) {
             protocolFailure();
             return;
@@ -502,8 +545,11 @@ void EngineProcessWorker::handleLine(const QByteArray& bytes, Stage receivedStag
 }
 
 void EngineProcessWorker::protocolFailure() {
-    fail({ErrorCode::Protocol, QStringLiteral("The executable returned an invalid UCI "
-                                              "handshake. Choose a compatible UCI engine.")});
+    fail({ErrorCode::Protocol,
+          search_ ? QStringLiteral("The engine returned an invalid search protocol response. "
+                                   "Reconnect a compatible engine.")
+                  : QStringLiteral("The executable returned an invalid UCI handshake. Choose a "
+                                   "compatible UCI engine.")});
 }
 
 void EngineProcessWorker::timeout() {
@@ -536,6 +582,11 @@ void EngineProcessWorker::timeout() {
         timer_.start(1000);
         return;
     }
+    if (search_) {
+        fail({ErrorCode::Timeout, QStringLiteral("The engine did not finish a search or readiness "
+                                                 "request within the allowed time.")});
+        return;
+    }
     fail({ErrorCode::Timeout, QStringLiteral("The engine did not start or complete the UCI "
                                              "handshake within the allowed time.")});
 }
@@ -551,6 +602,8 @@ void EngineProcessWorker::fail(Error error) {
         publish(RuntimePhase::Disconnecting);
     }
     chunks_.stop();
+    searchWatch_.stop();
+    searchProgress_.stop();
     file_.close();
     if (process_.state() == QProcess::NotRunning) {
         if (awaitingExit_ || pendingExit_) {
@@ -614,6 +667,9 @@ void EngineProcessWorker::finishRuntime() {
     file_.close();
     if (!transition(Stage::Finished)) {
         return;
+    }
+    if (search_) {
+        finishAnalysis(failure_ ? AnalysisOutcome::Failed : AnalysisOutcome::Stopped, failure_);
     }
     runtime_->discovery.reset();
     runtime_->error = failure_;

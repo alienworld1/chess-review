@@ -43,6 +43,31 @@ void SupervisorCoordinator::disconnectEngine(QUuid session) {
     }
 }
 
+void SupervisorCoordinator::analyze(QUuid session, const AnalysisRequest& request) {
+    if (closing_ || !worker_ || retiring_) {
+        AnalysisSnapshot snapshot;
+        snapshot.session = session;
+        snapshot.request = request.id;
+        snapshot.limit = request.limit;
+        snapshot.requestedMultiPv = request.multiPv;
+        snapshot.wdlRequested = request.wantWdl;
+        emit analysisFinished({snapshot, AnalysisOutcome::Rejected, unavailable()});
+        return;
+    }
+    worker_->analyze(session, request);
+}
+void SupervisorCoordinator::stopAnalysis(QUuid session, QUuid requestId) {
+    if (worker_ && !retiring_) {
+        worker_->stopAnalysis(session, requestId);
+    }
+}
+void SupervisorCoordinator::configureSearch(int idleMs, int responseMs) {
+    if (!worker_ && !closing_) {
+        configuration_.searchIdleMs = idleMs;
+        configuration_.searchResponseMs = responseMs;
+    }
+}
+
 void SupervisorCoordinator::cancel() {
     if (worker_) {
         worker_->cancel();
@@ -63,7 +88,10 @@ void SupervisorCoordinator::close() {
 void SupervisorCoordinator::configure(QStringList arguments, int startMs, int handshakeMs,
                                       qsizetype outputLimit) {
     if (!worker_ && !closing_) {
-        configuration_ = {std::move(arguments), startMs, handshakeMs, outputLimit};
+        configuration_.arguments = std::move(arguments);
+        configuration_.startMs = startMs;
+        configuration_.handshakeMs = handshakeMs;
+        configuration_.outputLimit = outputLimit;
     }
 }
 
@@ -102,6 +130,29 @@ void SupervisorCoordinator::createWorker(AttemptMode mode, QUuid request) {
                     result_ = state;
                 }
             });
+    connect(attempt, &EngineProcessWorker::searchChanged, this,
+            [this, attempt](const SearchState& state) {
+                if (worker_ == attempt && !retiring_) {
+                    emit searchChanged(state);
+                }
+            });
+    connect(attempt, &EngineProcessWorker::analysisUpdated, this,
+            [this, attempt](const AnalysisSnapshot& snapshot) {
+                if (worker_ == attempt && !retiring_) {
+                    emit analysisUpdated(snapshot);
+                }
+            });
+    connect(attempt, &EngineProcessWorker::analysisFinished, this,
+            [this, attempt](const AnalysisResult& result) {
+                if (worker_ != attempt || retiring_) {
+                    return;
+                }
+                if (result.outcome == AnalysisOutcome::Failed) {
+                    failedSearch_ = result;
+                } else {
+                    emit analysisFinished(result);
+                }
+            });
     connect(attempt, &EngineProcessWorker::finished, this, [this, attempt] {
         if (worker_ == attempt && !std::exchange(retiring_, true)) {
             attempt->deleteLater();
@@ -114,6 +165,9 @@ void SupervisorCoordinator::createWorker(AttemptMode mode, QUuid request) {
         worker_ = nullptr;
         retiring_ = false;
         const auto result = std::exchange(result_, std::monostate{});
+        if (failedSearch_) {
+            emit analysisFinished(*std::exchange(failedSearch_, std::nullopt));
+        }
         if (const auto* validation = std::get_if<ValidationResult>(&result)) {
             emit completed(request, *validation);
         } else if (const auto* runtime = std::get_if<RuntimeState>(&result)) {

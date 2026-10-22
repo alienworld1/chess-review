@@ -1,5 +1,5 @@
 #pragma once
-#include "engine/EngineProfile.h"
+#include "engine/Analysis.h"
 #include <QObject>
 #include <QUuid>
 #include <cstdint>
@@ -38,15 +38,23 @@ class EngineSupervisor final : public QObject {
     void validate(QUuid request, const QString& resolvedPath);
     void cancel(); // Validation only; disconnectEngine() cancels runtime startup.
     // Use a fresh non-null session ID per attempt. Accepted sessions last until disconnect,
-    // failure or close; Failed/Disconnected arrive after child cleanup. No searches or overrides.
+    // failure or close; Failed/Disconnected arrive after child cleanup. No profile overrides.
     void connectEngine(QUuid session, const EngineProfile& profile);
     void disconnectEngine(QUuid session);
+    // One search at a time. Fresh non-null request IDs; rejections do not change the session.
+    // Completed means natural protocol completion, not proof of requested strength/width.
+    // Use the evidence statistics/achievedWidth/commonDepth to assess actual coverage.
+    void analyze(QUuid session, const AnalysisRequest& request);
+    void stopAnalysis(QUuid session, QUuid requestId);
     void close();
   signals:
     void inspected(QUuid request, const chess_review::engine::PathResult& result);
     void progress(QUuid request, const QString& message);
     void completed(QUuid request, const chess_review::engine::ValidationResult& result);
     void runtimeChanged(const chess_review::engine::RuntimeState& state);
+    void searchChanged(const chess_review::engine::SearchState& state);
+    void analysisUpdated(const chess_review::engine::AnalysisSnapshot& snapshot);
+    void analysisFinished(const chess_review::engine::AnalysisResult& result);
     void closed();
 
   private:
@@ -54,6 +62,7 @@ class EngineSupervisor final : public QObject {
     struct Impl;
     std::unique_ptr<Impl> impl_;
     friend class ValidatorTestAccess;
+    void setTestSearchDeadlines(int idleMs, int responseMs);
     void setTestArguments(QStringList arguments, int startMs, int handshakeMs,
                           qsizetype outputLimit);
 };

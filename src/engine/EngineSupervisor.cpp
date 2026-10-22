@@ -15,6 +15,9 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
     qRegisterMetaType<PathResult>();
     qRegisterMetaType<ValidationResult>();
     qRegisterMetaType<RuntimeState>();
+    qRegisterMetaType<SearchState>();
+    qRegisterMetaType<AnalysisSnapshot>();
+    qRegisterMetaType<AnalysisResult>();
     auto coordinator = std::make_unique<SupervisorCoordinator>();
     impl_->coordinator = coordinator.get();
     impl_->coordinator->moveToThread(&impl_->thread);
@@ -30,6 +33,12 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
             &EngineSupervisor::completed, Qt::QueuedConnection);
     connect(impl_->coordinator, &SupervisorCoordinator::runtimeChanged, this,
             &EngineSupervisor::runtimeChanged, Qt::QueuedConnection);
+    connect(impl_->coordinator, &SupervisorCoordinator::searchChanged, this,
+            &EngineSupervisor::searchChanged, Qt::QueuedConnection);
+    connect(impl_->coordinator, &SupervisorCoordinator::analysisUpdated, this,
+            &EngineSupervisor::analysisUpdated, Qt::QueuedConnection);
+    connect(impl_->coordinator, &SupervisorCoordinator::analysisFinished, this,
+            &EngineSupervisor::analysisFinished, Qt::QueuedConnection);
     // QThread::finished owns deletion on the engine thread.
     coordinator.release();
     impl_->thread.start();
@@ -99,6 +108,48 @@ void EngineSupervisor::disconnectEngine(QUuid session) {
             [coordinator = impl_->coordinator, session] { coordinator->disconnectEngine(session); },
             Qt::QueuedConnection);
     }
+}
+void EngineSupervisor::analyze(QUuid session, const AnalysisRequest& request) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (impl_->closing) {
+        AnalysisSnapshot snapshot;
+        snapshot.session = session;
+        snapshot.request = request.id;
+        snapshot.limit = request.limit;
+        snapshot.requestedMultiPv = request.multiPv;
+        snapshot.wdlRequested = request.wantWdl;
+        QTimer::singleShot(0, this, [this, snapshot] {
+            emit analysisFinished(
+                {snapshot, AnalysisOutcome::Rejected,
+                 Error{ErrorCode::Closing, QStringLiteral("Engine supervision is closing.")}});
+        });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->coordinator,
+        [coordinator = impl_->coordinator, session, request] {
+            coordinator->analyze(session, request);
+        },
+        Qt::QueuedConnection);
+}
+void EngineSupervisor::stopAnalysis(QUuid session, QUuid requestId) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!impl_->closing) {
+        QMetaObject::invokeMethod(
+            impl_->coordinator,
+            [coordinator = impl_->coordinator, session, requestId] {
+                coordinator->stopAnalysis(session, requestId);
+            },
+            Qt::QueuedConnection);
+    }
+}
+void EngineSupervisor::setTestSearchDeadlines(int idleMs, int responseMs) {
+    QMetaObject::invokeMethod(
+        impl_->coordinator,
+        [coordinator = impl_->coordinator, idleMs, responseMs] {
+            coordinator->configureSearch(idleMs, responseMs);
+        },
+        Qt::QueuedConnection);
 }
 void EngineSupervisor::close() {
     Q_ASSERT(QThread::currentThread() == thread());

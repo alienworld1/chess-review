@@ -7,10 +7,12 @@ and annotations. Board orientation and the analysis split survive orderly exit.
 Saved games open in Analyze with their full history, variations, comments, and NAGs.
 The last opened game and selected stored move resume after orderly exit.
 Exploratory moves and new board annotations are session-only; a discard confirmation
-protects against accidental loss. Engine analysis and guided review are not implemented
-yet. Settings now registers local UCI executables through a nonblocking validation
+protects against accidental loss. Live analysis controls and guided review remain
+future work. Settings now registers local UCI executables through a nonblocking validation
 handshake and persists their profiles. Explicit Connect/Disconnect controls keep
 an engine Ready and expose its advertised options without starting a search.
+The engine infrastructure now supports position searches, MultiPV, optional WDL,
+validated candidate lines, and asynchronous stop through its typed C++ API.
 Home offers import actions; Puzzles remains
 a placeholder.
 
@@ -65,7 +67,7 @@ libraries separate. Automated tests use temporary storage.
 - [Development setup](docs/development.md): Qt installation, CMake, and tooling
 - [Testing](docs/testing.md): test selection, sanitizers, and CI
 - [Storage](docs/storage.md): paths, UI preferences, database lifecycle, and migrations
-- [Local UCI engines](docs/engines.md): registration, live handshake connections, and discovery limits
+- [Local UCI engines](docs/engines.md): registration, connections, position-search API, and limits
 - [Diagnostics](docs/diagnostics.md): troubleshooting, local logs, and privacy
 - [Analyze board](docs/analysis-board.md): moves, navigation, annotations, and preferences
 - [Chess core](docs/chess-core.md): adapter API, FEN policy, moves, and identity

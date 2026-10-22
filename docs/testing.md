@@ -645,3 +645,28 @@ order. The 1,024-option stress case additionally records heartbeat gaps on the
 engine's own event-loop thread; measurements are diagnostic, not portable timing
 thresholds. Streaming and decoded declarations use the same private indexed
 collector, with the existing option/byte bounds and persisted format unchanged.
+
+
+## Position analysis
+
+`engine_analysis` exercises the public search API against the deterministic child:
+all four limits, history-preserving position commands, repeated searches and option
+reset, capability downgrade, mixed-depth MultiPV, optional WDL, restricted root
+moves, and validated score/PV/bestmove/ponder evidence. It covers terminal roots,
+castling/promotion/en-passant lines, malformed numeric/evidence fields, oversized
+PV/history/line bounds, stdout/stderr flooding, stale IDs, Busy rejection,
+configuration cancellation, repeated stop, readiness probes overlapping bestmove,
+fragmented replies, timeouts, crashes, disconnect/reconnect, and service closure.
+
+A streaming regression lowers the injected output budget to exercise several
+one-second windows beyond the former lifetime allowance. It checks coalesced
+progress and a caller heartbeat without imposing a machine-specific latency SLA.
+The production budget remains 1 MiB per window. Existing framing/drain bounds and
+handshake totals remain tested by the previous suites.
+
+`engine_process_worker` additionally closes synchronously from search phase
+notifications before/after go and checks the extended transition graph.
+`engine_exit` closes the real production QApplication during infinite analysis,
+requires orderly exit, and reopens the saved registry without launching a child.
+All fixtures and protocol scenarios remain outside persistence without introducing
+SQL; database implementation and SQL fixtures stay inside persistence.

@@ -65,7 +65,8 @@ enum class ErrorCode {
     Closing,
     Storage,
     InvalidRecord,
-    Replacement
+    Replacement,
+    InvalidRequest
 };
 struct Error {
     ErrorCode code;

@@ -50,15 +50,47 @@ void installDriver() {
                 chess_review::engine::ValidatorTestAccess::configure(
                     chess_review::app::EngineControllerTestAccess::validator(controller),
                     qEnvironmentVariable("CHESS_REVIEW_ENGINE_PROBE_SCENARIO"), 10000);
+                if (mode == QStringLiteral("analyzing")) {
+                    auto& supervisor =
+                        chess_review::app::EngineControllerTestAccess::validator(controller);
+                    QObject::connect(
+                        &supervisor, &chess_review::engine::EngineSupervisor::searchChanged, window,
+                        [window](const chess_review::engine::SearchState& state) {
+                            if (state.phase == chess_review::engine::SearchPhase::Analyzing) {
+                                std::fputs("engine-close-requested\n", stdout);
+                                std::fflush(stdout);
+                                window->close();
+                            }
+                        });
+                }
                 QObject::connect(
                     &controller, &chess_review::app::EngineSettingsController::changed, window,
                     [window, &controller, mode] {
                         using State = chess_review::app::EngineRegistrationState;
                         const auto state = controller.state().registration;
-                        if (mode == QStringLiteral("connected") &&
+                        if ((mode == QStringLiteral("connected") ||
+                             mode == QStringLiteral("analyzing")) &&
                             controller.state().profiles.size() == 1 &&
                             controller.state().runtime.session.isNull()) {
+                            if (mode == QStringLiteral("analyzing")) {
+                                chess_review::engine::ValidatorTestAccess::configure(
+                                    chess_review::app::EngineControllerTestAccess::validator(
+                                        controller),
+                                    qEnvironmentVariable(
+                                        "CHESS_REVIEW_ENGINE_PROBE_SEARCH_SCENARIO"),
+                                    10000);
+                            }
                             controller.connectEngine(controller.state().profiles.front().id);
+                            return;
+                        }
+                        if (mode == QStringLiteral("analyzing") &&
+                            controller.state().runtime.phase ==
+                                chess_review::engine::RuntimePhase::Ready) {
+                            chess_review::engine::AnalysisRequest request;
+                            request.id = QUuid::createUuid();
+                            request.limit = chess_review::engine::InfiniteLimit{};
+                            chess_review::app::EngineControllerTestAccess::validator(controller)
+                                .analyze(controller.state().runtime.session, request);
                             return;
                         }
                         if (state == State::Selected) {
