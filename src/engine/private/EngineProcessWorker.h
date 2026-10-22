@@ -1,5 +1,6 @@
 #pragma once
 #include "engine/EngineSupervisor.h"
+#include "engine/private/OptionCollector.h"
 #include "engine/private/ProcessStage.h"
 #include <QCryptographicHash>
 #include <QFile>
@@ -61,6 +62,7 @@ class EngineProcessWorker final : public QObject {
     Stage lineStage_ = Stage::Created;
     QUuid request_;
     ValidatedEngine profile_;
+    OptionCollector options_;
     std::optional<Error> failure_;
     std::optional<std::pair<int, QProcess::ExitStatus>> pendingExit_;
     std::optional<RuntimeState> runtime_;

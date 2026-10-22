@@ -9,13 +9,18 @@ bool sameDiscovery(const ValidatedEngine& saved, const ValidatedEngine& fresh) {
         saved.capabilities.options.size() != fresh.capabilities.options.size()) {
         return false;
     }
+    auto options = fresh.capabilities.options;
+    std::sort(options.begin(), options.end(), [](const UciOption& left, const UciOption& right) {
+        return left.name.compare(right.name, Qt::CaseInsensitive) < 0;
+    });
     for (const auto& expected : saved.capabilities.options) {
         const auto found =
-            std::find_if(fresh.capabilities.options.begin(), fresh.capabilities.options.end(),
-                         [&](const UciOption& value) {
-                             return value.name.compare(expected.name, Qt::CaseInsensitive) == 0;
-                         });
-        if (found == fresh.capabilities.options.end()) {
+            std::lower_bound(options.cbegin(), options.cend(), expected.name,
+                             [](const UciOption& value, const QString& name) {
+                                 return value.name.compare(name, Qt::CaseInsensitive) < 0;
+                             });
+        if (found == options.cend() ||
+            found->name.compare(expected.name, Qt::CaseInsensitive) != 0) {
             return false;
         }
         auto comparable = *found;
@@ -62,6 +67,9 @@ EngineProcessWorker::EngineProcessWorker(AttemptMode mode, ProcessConfiguration 
             return;
         }
         publish(RuntimePhase::Handshaking);
+        if (stage_ != Stage::AwaitingUciOk) {
+            return;
+        }
         timer_.start(handshakeMs_);
         send("uci\n");
     });
@@ -80,6 +88,8 @@ EngineProcessWorker::EngineProcessWorker(AttemptMode mode, ProcessConfiguration 
         }
     });
     connect(&process_, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
+        // Deadlines control the child, not the time spent draining its final buffered output.
+        timer_.stop();
         awaitingExit_ = false;
         pendingExit_ = std::pair{code, status};
         drain(false);
@@ -140,6 +150,9 @@ void EngineProcessWorker::validate(QUuid request, const QString& path) {
     }
     profile_.executablePath = path;
     publish(RuntimePhase::CheckingExecutable);
+    if (stage_ != Stage::Created) {
+        return;
+    }
     beginHash(false);
 }
 
@@ -197,6 +210,9 @@ void EngineProcessWorker::beginHash(bool after) {
     remaining_ = snapshot_->size();
     emit progress(request_, after ? QStringLiteral("Checking executable is unchanged…")
                                   : QStringLiteral("Hashing executable…"));
+    if (stage_ != (after ? Stage::CheckingIntegrity : Stage::CheckingExecutable)) {
+        return;
+    }
     hash_.reset();
     chunks_.start(0);
 }
@@ -266,7 +282,13 @@ void EngineProcessWorker::hashChunk() {
         return;
     }
     publish(RuntimePhase::Starting);
+    if (stage_ != Stage::Starting) {
+        return;
+    }
     emit progress(request_, QStringLiteral("Starting engine and detecting UCI capabilities…"));
+    if (stage_ != Stage::Starting) {
+        return;
+    }
     timer_.start(startMs_);
     process_.setProcessChannelMode(QProcess::SeparateChannels);
     awaitingExit_ = true;
@@ -389,6 +411,7 @@ void EngineProcessWorker::handleLine(const QByteArray& bytes, Stage receivedStag
             protocolFailure();
             return;
         }
+        profile_.capabilities = options_.capabilities();
         if (runtime_ && !sameDiscovery(*expected_, profile_)) {
             fail({ErrorCode::Changed,
                   QStringLiteral(
@@ -402,6 +425,9 @@ void EngineProcessWorker::handleLine(const QByteArray& bytes, Stage receivedStag
         preReadyBytes_ = process_.bytesAvailable();
         timer_.start(handshakeMs_);
         emit progress(request_, QStringLiteral("Waiting for engine readiness…"));
+        if (stage_ != Stage::AwaitingReadyOk) {
+            return;
+        }
         send("isready\n");
         return;
     }
@@ -439,8 +465,7 @@ void EngineProcessWorker::handleLine(const QByteArray& bytes, Stage receivedStag
                 fail(*error);
                 return;
             }
-            if (auto error =
-                    appendOption(profile_.capabilities, std::get<UciOption>(std::move(parsed)))) {
+            if (auto error = options_.append(std::get<UciOption>(std::move(parsed)))) {
                 fail(*error);
             }
             return;
@@ -482,7 +507,7 @@ void EngineProcessWorker::protocolFailure() {
 }
 
 void EngineProcessWorker::timeout() {
-    if (stage_ == Stage::Finished) {
+    if (stage_ == Stage::Finished || pendingExit_) {
         return;
     }
     if (stage_ == Stage::Killing) {
@@ -574,7 +599,9 @@ void EngineProcessWorker::publish(RuntimePhase phase) {
     if (phase != RuntimePhase::Ready) {
         runtime_->discovery.reset();
     }
-    emit runtimeChanged(*runtime_);
+    // A direct listener may disconnect and reset runtime_ before later listeners run.
+    const auto snapshot = *runtime_;
+    emit runtimeChanged(snapshot);
 }
 
 void EngineProcessWorker::finishRuntime() {

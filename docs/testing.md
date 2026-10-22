@@ -635,3 +635,13 @@ reconnect after cancellation/protocol failure/forced cleanup, and one-shot termi
 and service-close notifications. Boundary checks use explicit state synchronization;
 production cleanup deadlines are unchanged. Unix missing-interpreter and signal
 fixtures retain the platform limits described above. No SQL fixtures live here.
+
+Lifecycle adversarial regressions also cancel directly from runtime/progress
+notifications, verify immutable snapshots for later listeners, and require
+pre-launch cancellation to start no child. A real buffered-exit fixture requires
+process deadlines to stop when exit is observed. Codec cases reject case-insensitive
+duplicates in ASCII, Greek and supplementary Unicode while preserving declaration
+order. The 1,024-option stress case additionally records heartbeat gaps on the
+engine's own event-loop thread; measurements are diagnostic, not portable timing
+thresholds. Streaming and decoded declarations use the same private indexed
+collector, with the existing option/byte bounds and persisted format unchanged.

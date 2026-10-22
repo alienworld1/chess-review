@@ -6,6 +6,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <utility>
 #ifdef Q_OS_UNIX
 #include <sys/stat.h>
 #endif
@@ -49,6 +50,39 @@ class EngineValidationTest final : public QObject {
         QVERIFY(!decodeCapabilities(QByteArray("{\"version\":2,\"options\":[]}")));
         QVERIFY(std::holds_alternative<Error>(
             parseOption(QStringLiteral("option name X type spin default 2 min 3 max 4"))));
+    }
+
+    void codecRejectsCaseInsensitiveDuplicates() {
+        const QList<std::pair<QString, QString>> pairs{
+            {QStringLiteral("Threads"), QStringLiteral("THREADS")},
+            {QStringLiteral("Name \u03a3"), QStringLiteral("Name \u03c3")},
+            {QStringLiteral("Name \U00010400"), QStringLiteral("Name \U00010428")}};
+        for (const auto& [first, second] : pairs) {
+            QCOMPARE(first.compare(second, Qt::CaseInsensitive), 0);
+            Capabilities capabilities;
+            UciOption one;
+            one.name = first;
+            one.type = OptionType::Check;
+            one.defaultValue = QStringLiteral("false");
+            auto two = one;
+            two.name = second;
+            capabilities.options = {one, two};
+            QVERIFY(!decodeCapabilities(encodeCapabilities(capabilities)));
+            capabilities.options = {one};
+            const auto decoded = decodeCapabilities(encodeCapabilities(capabilities));
+            QVERIFY(decoded);
+            QCOMPARE(decoded->options, capabilities.options);
+        }
+        Capabilities ordered;
+        for (const auto* name : {"Zebra", "alpha", "Middle"}) {
+            auto option = std::get<UciOption>(
+                parseOption(QStringLiteral("option name %1 type check default false")
+                                .arg(QString::fromLatin1(name))));
+            QVERIFY(!appendOption(ordered, std::move(option)));
+        }
+        const auto decoded = decodeCapabilities(encodeCapabilities(ordered));
+        QVERIFY(decoded);
+        QCOMPARE(*decoded, ordered); // Sorting duplicate-check keys must not reorder declarations.
     }
     void profileConsistency() {
         ValidatedEngine value;

@@ -1,4 +1,5 @@
 #include "engine/EngineProfile.h"
+#include "engine/private/OptionCollector.h"
 #include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -44,6 +45,23 @@ bool validOption(const UciOption& option) {
         return !option.minimum && !option.maximum && option.choices.isEmpty();
     }
     return false;
+}
+// Callers validate declarations and reject duplicate names before recording them.
+void recordOption(Capabilities& capabilities, UciOption option) {
+    const auto spin = option.type == OptionType::Spin;
+    if (option.name.compare(QStringLiteral("MultiPV"), Qt::CaseInsensitive) == 0) {
+        capabilities.supportsMultiPv = spin && *option.maximum >= 2;
+    }
+    if (option.name.compare(QStringLiteral("UCI_ShowWDL"), Qt::CaseInsensitive) == 0) {
+        capabilities.supportsWdl = option.type == OptionType::Check;
+    }
+    if (option.name.compare(QStringLiteral("Threads"), Qt::CaseInsensitive) == 0) {
+        capabilities.supportsThreads = spin && *option.maximum >= 1;
+    }
+    if (option.name.compare(QStringLiteral("Hash"), Qt::CaseInsensitive) == 0) {
+        capabilities.supportsHash = spin && *option.maximum >= 1;
+    }
+    capabilities.options.push_back(std::move(option));
 }
 } // namespace
 std::variant<UciOption, Error> parseOption(const QString& line) {
@@ -161,20 +179,18 @@ std::optional<Error> appendOption(Capabilities& capabilities, UciOption option) 
                     })) {
         return malformed();
     }
-    const auto spin = option.type == OptionType::Spin;
-    if (option.name.compare(QStringLiteral("MultiPV"), Qt::CaseInsensitive) == 0) {
-        capabilities.supportsMultiPv = spin && *option.maximum >= 2;
+    recordOption(capabilities, std::move(option));
+    return std::nullopt;
+}
+std::optional<Error> OptionCollector::append(UciOption option) {
+    if (capabilities_.options.size() >= 1024) {
+        return Error{ErrorCode::OutputLimit,
+                     QStringLiteral("The engine advertised more than 1,024 UCI options.")};
     }
-    if (option.name.compare(QStringLiteral("UCI_ShowWDL"), Qt::CaseInsensitive) == 0) {
-        capabilities.supportsWdl = option.type == OptionType::Check;
+    if (!validOption(option) || !names_.insert(option.name).second) {
+        return malformed();
     }
-    if (option.name.compare(QStringLiteral("Threads"), Qt::CaseInsensitive) == 0) {
-        capabilities.supportsThreads = spin && *option.maximum >= 1;
-    }
-    if (option.name.compare(QStringLiteral("Hash"), Qt::CaseInsensitive) == 0) {
-        capabilities.supportsHash = spin && *option.maximum >= 1;
-    }
-    capabilities.options.push_back(std::move(option));
+    recordOption(capabilities_, std::move(option));
     return std::nullopt;
 }
 QByteArray encodeCapabilities(const Capabilities& capabilities) {
@@ -211,7 +227,7 @@ std::optional<Capabilities> decodeCapabilities(const QByteArray& bytes) {
     if (options.size() > 1024) {
         return std::nullopt;
     }
-    Capabilities capabilities;
+    OptionCollector collector;
     for (const auto& value : options) {
         if (!value.isObject()) {
             return std::nullopt;
@@ -248,11 +264,11 @@ std::optional<Capabilities> decodeCapabilities(const QByteArray& bytes) {
             }
         }
         if (object.size() != 4 + (option.minimum ? 1 : 0) + (option.maximum ? 1 : 0) ||
-            appendOption(capabilities, std::move(option))) {
+            collector.append(std::move(option))) {
             return std::nullopt;
         }
     }
-    return capabilities;
+    return collector.capabilities();
 }
 bool validEngine(const ValidatedEngine& engine) {
     if (engine.capabilities.options.size() > 1024) {

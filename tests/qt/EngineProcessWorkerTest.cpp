@@ -2,12 +2,14 @@
 #include "EngineTestSupport.h"
 #include "TestEnvironment.h"
 #include "engine/private/SupervisorCoordinator.h"
+#include <QElapsedTimer>
 #include <QPointer>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 #include <algorithm>
 #include <array>
+#include <utility>
 
 using namespace chess_review::engine;
 namespace {
@@ -438,6 +440,225 @@ class EngineProcessWorkerTest final : public QObject {
         service.close();
         QCoreApplication::sendPostedEvents();
         QCOMPARE(closed.size(), 1);
+    }
+    void closeFromNotification_data() {
+        QTest::addColumn<QString>("notification");
+        QTest::addColumn<bool>("runtime");
+        for (const auto* name : {"checking", "starting", "handshaking", "ready", "hash-progress",
+                                 "start-progress", "readiness-progress", "integrity-progress"}) {
+            QTest::newRow(name) << QString::fromLatin1(name) << true;
+        }
+        for (const auto* name :
+             {"hash-progress", "start-progress", "readiness-progress", "integrity-progress"}) {
+            QTest::newRow((QByteArray("registration-") + name).constData())
+                << QString::fromLatin1(name) << false;
+        }
+    }
+
+    void closeFromNotification() {
+        QFETCH(QString, notification);
+        QFETCH(bool, runtime);
+        QTemporaryDir directory;
+        engine_test::Validator service;
+        const auto script = engine_test::scenario(
+            directory.filePath(QStringLiteral("registration.json")), engine_test::handshake());
+        const auto profile = profileFor(service.service, script);
+        auto steps = engine_test::handshake();
+        if (notification == QStringLiteral("handshaking")) {
+            steps.removeAt(0);
+            steps.removeAt(0);
+        } else if (notification == QStringLiteral("readiness-progress")) {
+            steps.removeAt(1);
+        }
+        const auto workerScript =
+            engine_test::scenario(directory.filePath(QStringLiteral("worker.json")), steps);
+        Attempt attempt(runtime ? AttemptMode::Runtime : AttemptMode::Registration, workerScript);
+        QSignalSpy completed(&attempt.worker, &EngineProcessWorker::completed);
+        QSignalSpy events(&attempt.worker, &EngineProcessWorker::runtimeChanged);
+        bool cancelled = false;
+        connect(&attempt.worker, &EngineProcessWorker::runtimeChanged, &attempt.worker,
+                [&](const RuntimeState& state) {
+                    const bool target = (notification == QStringLiteral("checking") &&
+                                         state.phase == RuntimePhase::CheckingExecutable) ||
+                                        (notification == QStringLiteral("starting") &&
+                                         state.phase == RuntimePhase::Starting) ||
+                                        (notification == QStringLiteral("handshaking") &&
+                                         state.phase == RuntimePhase::Handshaking) ||
+                                        (notification == QStringLiteral("ready") &&
+                                         state.phase == RuntimePhase::Ready);
+                    if (target && !std::exchange(cancelled, true)) {
+                        attempt.worker.close();
+                    }
+                });
+        connect(&attempt.worker, &EngineProcessWorker::progress, &attempt.worker,
+                [&](QUuid, const QString& message) {
+                    const bool target =
+                        (notification == QStringLiteral("hash-progress") &&
+                         message == QStringLiteral("Hashing executable…")) ||
+                        (notification == QStringLiteral("start-progress") &&
+                         message ==
+                             QStringLiteral("Starting engine and detecting UCI capabilities…")) ||
+                        (notification == QStringLiteral("readiness-progress") &&
+                         message == QStringLiteral("Waiting for engine readiness…")) ||
+                        (notification == QStringLiteral("integrity-progress") &&
+                         message == QStringLiteral("Checking executable is unchanged…"));
+                    if (target && !std::exchange(cancelled, true)) {
+                        attempt.worker.close();
+                    }
+                });
+        // Observe after the cancelling listener: nested notifications must not mutate snapshots.
+        QSignalSpy snapshots(&attempt.worker, &EngineProcessWorker::runtimeChanged);
+        QSignalSpy finished(&attempt.worker, &EngineProcessWorker::finished);
+        auto* process = attempt.worker.findChild<QProcess*>();
+        QVERIFY(process);
+        QSignalSpy launches(process, &QProcess::started);
+        if (runtime) {
+            attempt.worker.connectEngine(QUuid::createUuid(), profile);
+        } else {
+            attempt.worker.validate(QUuid::createUuid(), profile.engine.executablePath);
+        }
+        QTRY_COMPARE(finished.size(), 1);
+        QVERIFY(cancelled);
+        if (runtime) {
+            const auto terminal = qvariant_cast<RuntimeState>(events.back()[0]);
+            QCOMPARE(terminal.phase, RuntimePhase::Disconnected);
+            QVERIFY(!terminal.error);
+        } else {
+            QCOMPARE(completed.size(), 1);
+            QCOMPARE(std::get<Error>(qvariant_cast<ValidationResult>(completed.front()[1])).code,
+                     ErrorCode::Cancelled);
+        }
+        QCOMPARE(process->state(), QProcess::NotRunning);
+        if (notification == QStringLiteral("checking") ||
+            notification == QStringLiteral("starting") ||
+            notification == QStringLiteral("hash-progress") ||
+            notification == QStringLiteral("start-progress")) {
+            QCOMPARE(launches.size(), 0);
+        }
+        if (notification == QStringLiteral("ready")) {
+            bool observedReady = false;
+            for (const auto& event : snapshots) {
+                const auto state = qvariant_cast<RuntimeState>(event[0]);
+                if (state.phase == RuntimePhase::Ready) {
+                    observedReady = true;
+                    QVERIFY(state.discovery);
+                }
+            }
+            QVERIFY(observedReady);
+        }
+    }
+
+    void exitStopsProcessDeadline() {
+        QTemporaryDir directory;
+        engine_test::Validator service;
+        const auto registration = engine_test::scenario(
+            directory.filePath(QStringLiteral("registration.json")), engine_test::handshake());
+        const auto profile = profileFor(service.service, registration);
+        auto steps = engine_test::handshake();
+        auto output = engine_test::write(QString(250000, u'x'));
+        output[QStringLiteral("stream")] = QStringLiteral("stderr");
+        steps[2] = engine_test::step(
+            QStringLiteral("quit"),
+            {output, QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")}}});
+        const auto script =
+            engine_test::scenario(directory.filePath(QStringLiteral("worker.json")), steps);
+        Attempt attempt(AttemptMode::Runtime, script);
+        auto* process = attempt.worker.findChild<QProcess*>();
+        QVERIFY(process);
+        QSignalSpy events(&attempt.worker, &EngineProcessWorker::runtimeChanged);
+        QSignalSpy finished(&attempt.worker, &EngineProcessWorker::finished);
+        bool deadlineStoppedAtExit = false;
+        bool exitHadBufferedData = false;
+        connect(&attempt.worker, &EngineProcessWorker::runtimeChanged, &attempt.worker,
+                [&](const RuntimeState& state) {
+                    if (state.phase == RuntimePhase::Ready) {
+                        // Accumulate a real exit buffer so completion requires multiple drain
+                        // turns.
+                        disconnect(process, &QProcess::readyReadStandardError, &attempt.worker,
+                                   nullptr);
+                        attempt.worker.close();
+                    }
+                });
+        connect(process, &QProcess::finished, &attempt.worker, [&](int, QProcess::ExitStatus) {
+            process->setReadChannel(QProcess::StandardError);
+            exitHadBufferedData = process->bytesAvailable() > 65536;
+            const auto timers = attempt.worker.findChildren<QTimer*>();
+            deadlineStoppedAtExit = std::none_of(timers.begin(), timers.end(),
+                                                 [](QTimer* timer) { return timer->isActive(); });
+        });
+        attempt.worker.connectEngine(QUuid::createUuid(), profile);
+        QTRY_COMPARE(finished.size(), 1);
+        QVERIFY(exitHadBufferedData);
+        QVERIFY(deadlineStoppedAtExit);
+        const auto terminal = qvariant_cast<RuntimeState>(events.back()[0]);
+        QCOMPARE(terminal.phase, RuntimePhase::Disconnected);
+        QVERIFY(!terminal.error);
+    }
+
+    void supervisorThreadResponsiveness() {
+        QTemporaryDir directory;
+        engine_test::Validator service;
+        QString declarations = QStringLiteral("id name Test engine\nid author Tests\n");
+        for (int i = 0; i < 1024; ++i) {
+            declarations += QStringLiteral("option name %1%2 type check default false\n")
+                                .arg(QString(512, u'a'))
+                                .arg(i, 4, 10, QLatin1Char('0'));
+        }
+        declarations += QStringLiteral("uciok\n");
+        const auto script = engine_test::scenario(directory.filePath(QStringLiteral("stress.json")),
+                                                  engine_test::handshake(declarations));
+        ValidatorTestAccess::configure(service.service, script, 10000);
+        QSignalSpy registration(&service.service, &EngineSupervisor::completed);
+        service.service.validate(QUuid::createUuid(),
+                                 QFileInfo(QString::fromUtf8(FAKE_UCI_ENGINE)).canonicalFilePath());
+        QVERIFY(registration.wait(15000));
+        const auto result = qvariant_cast<ValidationResult>(registration.front()[1]);
+        QVERIFY(std::holds_alternative<ValidatedEngine>(result));
+        EngineProfile profile;
+        profile.id = 1;
+        profile.engine = std::get<ValidatedEngine>(result);
+        EngineProcessWorker worker(
+            AttemptMode::Runtime,
+            {{QStringLiteral("--scenario"), script}, 10000, 10000, 1024 * 1024});
+        QSignalSpy finished(&worker, &EngineProcessWorker::finished);
+        QElapsedTimer clock;
+        clock.start();
+        qint64 lastTick = 0;
+        qint64 maxGap = 0;
+        int ticks = 0;
+        bool reachedReady = false;
+        RuntimeState terminal;
+        QTimer heartbeat;
+        heartbeat.setInterval(1);
+        connect(&heartbeat, &QTimer::timeout, &worker, [&] {
+            const auto now = clock.elapsed();
+            maxGap = std::max(maxGap, now - lastTick);
+            lastTick = now;
+            ++ticks;
+        });
+        connect(&worker, &EngineProcessWorker::runtimeChanged, &worker,
+                [&](const RuntimeState& state) {
+                    if (state.phase == RuntimePhase::Ready) {
+                        reachedReady = true;
+                        maxGap = std::max(maxGap, clock.elapsed() - lastTick);
+                        worker.close();
+                    } else if (!runtimeActive(state.phase)) {
+                        terminal = state;
+                    }
+                });
+        heartbeat.start();
+        worker.connectEngine(QUuid::createUuid(), profile);
+        if (finished.isEmpty() && !finished.wait(15000)) {
+            qFatal("Supervisor-thread stress fixture did not finish");
+        }
+        heartbeat.stop();
+        qInfo() << "Supervisor-thread stress:" << clock.elapsed() << "ms," << ticks
+                << "ticks, max gap" << maxGap << "ms";
+        QVERIFY(ticks > 0);
+        QVERIFY(reachedReady);
+        QCOMPARE(terminal.phase, RuntimePhase::Disconnected);
+        QVERIFY(!terminal.error);
+        QCOMPARE(finished.size(), 1);
     }
 };
 QTEST_GUILESS_MAIN(EngineProcessWorkerTest)
