@@ -36,7 +36,8 @@ Opening Settings or restarting the application reads those records without
 launching software. **Last validated** is historical, not a current readiness
 claim. Select a list row to inspect and copy its full name and executable path.
 The list uses bounded plain-text previews. Invisible control and formatting
-characters are shown as `\uXXXX` escapes to prevent misleading path/name display;
+characters are shown as `\uXXXX` escapes (or `\UXXXXXXXX` for supplementary
+code points) to prevent misleading path/name display;
 the original reported identity is saved unchanged.
 Paths with spaces, Unicode, and shell punctuation are passed as paths, never shell
 commands.
@@ -58,12 +59,16 @@ author and option declarations must also match; declaration order and option-nam
 casing are ignored. A mismatch leaves the saved profile unchanged. Replacement
 management is not available yet.
 
+Connect follows the single selected row. Moving keyboard focus without changing
+the selection does not change the target executable. Selected executable paths
+and full live metadata are shown in copyable, scrollable read-only panes.
+
 **Ready** means the UCI handshake and readiness response completed. No position
 or search is sent, no options are changed, and engine defaults remain in effect.
 The capability summary describes advertised support; WDL output and analysis
 correctness are not verified. The read-only option selector shows full identity,
-option type, default, bounds and choices. Engine-provided text is escaped for
-invisible formatting and displayed as plain text.
+executable path, option type, default, bounds and choices. Engine-provided text is
+escaped for invisible formatting and displayed as plain text.
 
 The connection stays alive across page navigation until **Disconnect**, failure,
 or application exit. Disconnect also cancels startup. Registration and runtime
@@ -79,4 +84,6 @@ uses the same quit/terminate/kill deadlines as registration. Output limits apply
 to the whole connected session, including idle stdout and stderr. Failed or
 forcibly disconnected sessions are never reused. Opening Settings or restarting
 the application never restores a live connection automatically. Saved validation
-timestamps and profiles are not updated by connecting.
+timestamps and profiles are not updated by connecting. During explicit Disconnect,
+late handshake replies and incomplete idle lines are discarded; combined output
+limits, exit-status validation and forced-cleanup failures still apply.

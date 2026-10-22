@@ -1,6 +1,8 @@
 #pragma once
 #include "app/EngineSettingsController.h"
 #include <QWidget>
+#include <cstdint>
+#include <optional>
 class QLabel;
 class QPushButton;
 class QPlainTextEdit;
@@ -22,13 +24,14 @@ class EngineSettingsPage final : public QWidget {
     void updateDetails();
     void updateRuntime();
     void updateOption();
+    const engine::EngineProfile* selectedProfile() const;
     app::EngineSettingsController& controller_;
     QTableWidget* profiles_;
     QPlainTextEdit* details_;
     QFileDialog* picker_ = nullptr; // Owned by this widget, reused between selections.
     bool picking_ = false;
     std::uint64_t profilesRevision_ = 0;
-    QLabel* path_;
+    QPlainTextEdit* path_;
     QLabel* message_;
     QLabel* listError_;
     QPushButton* browse_;

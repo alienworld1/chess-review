@@ -2,18 +2,21 @@
 #include "engine/EngineProfile.h"
 #include <QObject>
 #include <QUuid>
+#include <cstdint>
 #include <memory>
+#include <optional>
 
 namespace chess_review::engine {
 class ValidatorTestAccess;
+// Stable numeric phase codes in runtime diagnostics; do not renumber.
 enum class RuntimePhase {
-    Disconnected,
-    CheckingExecutable,
-    Starting,
-    Handshaking,
-    Ready,
-    Disconnecting,
-    Failed
+    Disconnected = 0,
+    CheckingExecutable = 1,
+    Starting = 2,
+    Handshaking = 3,
+    Ready = 4,
+    Disconnecting = 5,
+    Failed = 6
 };
 constexpr bool runtimeActive(RuntimePhase phase) {
     return phase != RuntimePhase::Disconnected && phase != RuntimePhase::Failed;
@@ -33,7 +36,7 @@ class EngineSupervisor final : public QObject {
     ~EngineSupervisor() override;
     void inspect(QUuid request, const QString& path);
     void validate(QUuid request, const QString& resolvedPath);
-    void cancel();
+    void cancel(); // Validation only; disconnectEngine() cancels runtime startup.
     // Use a fresh non-null session ID per attempt. Accepted sessions last until disconnect,
     // failure or close; Failed/Disconnected arrive after child cleanup. No searches or overrides.
     void connectEngine(QUuid session, const EngineProfile& profile);

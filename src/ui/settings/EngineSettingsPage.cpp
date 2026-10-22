@@ -3,10 +3,13 @@
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QSizePolicy>
+#include <QStringView>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -18,19 +21,31 @@ QLabel* plainLabel(QWidget* parent, const QString& text = {}) {
     auto* label = new QLabel(text, parent);
     label->setTextFormat(Qt::PlainText);
     label->setWordWrap(true);
+    // Unbroken engine text must not impose a minimum page width. Full metadata
+    // remains available in the scrollable, copyable detail panes.
+    auto policy = label->sizePolicy();
+    policy.setHorizontalPolicy(QSizePolicy::Ignored);
+    label->setSizePolicy(policy);
     return label;
 }
 QString presented(const QString& text) {
     QString result;
-    for (const auto character : text) {
-        const auto category = character.category();
+    for (qsizetype index = 0; index < text.size();) {
+        const auto character = text[index];
+        const bool pair = character.isHighSurrogate() && index + 1 < text.size() &&
+                          text[index + 1].isLowSurrogate();
+        const auto code = pair ? QChar::surrogateToUcs4(character, text[index + 1])
+                               : static_cast<char32_t>(character.unicode());
+        const auto category = QChar::category(code);
         if (category == QChar::Other_Control || category == QChar::Other_Format ||
-            category == QChar::Separator_Line || category == QChar::Separator_Paragraph) {
-            result += QStringLiteral("\\u%1").arg(static_cast<uint>(character.unicode()), 4, 16,
-                                                  QLatin1Char('0'));
+            category == QChar::Other_Surrogate || category == QChar::Separator_Line ||
+            category == QChar::Separator_Paragraph) {
+            result += (pair ? QStringLiteral("\\U%1") : QStringLiteral("\\u%1"))
+                          .arg(static_cast<uint>(code), pair ? 8 : 4, 16, QLatin1Char('0'));
         } else {
-            result += character;
+            result += QStringView(text).sliced(index, pair ? 2 : 1);
         }
+        index += pair ? 2 : 1;
     }
     return result;
 }
@@ -58,6 +73,7 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
         {tr("Engine"), tr("Executable path"), tr("Default"), tr("Last validated (UTC)")});
     profiles_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     profiles_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    profiles_->setSelectionMode(QAbstractItemView::SingleSelection);
     profiles_->setWordWrap(false);
     profiles_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     profiles_->horizontalHeader()->setStretchLastSection(true);
@@ -103,9 +119,8 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     detailsTabs_->addTab(liveDetails, tr("Live options (read only)"));
     connect(options_, &QComboBox::currentIndexChanged, this, &EngineSettingsPage::updateOption);
     connect(connect_, &QPushButton::clicked, this, [this] {
-        const auto row = profiles_->currentRow();
-        if (row >= 0 && !profiles_->selectedItems().isEmpty()) {
-            controller_.connectEngine(profiles_->item(row, 0)->data(Qt::UserRole).toLongLong());
+        if (const auto* profile = selectedProfile()) {
+            controller_.connectEngine(profile->id);
         }
     });
     connect(disconnect_, &QPushButton::clicked, &controller_,
@@ -126,10 +141,11 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     browse_ = new QPushButton(tr("Choose &Executable…"), this);
     browse_->setObjectName(QStringLiteral("chooseEngine"));
     layout->addWidget(browse_, 0, Qt::AlignLeft);
-    path_ = plainLabel(this);
+    path_ = new QPlainTextEdit(this);
     path_->setObjectName(QStringLiteral("engineSelectedPath"));
     path_->setAccessibleName(tr("Resolved executable path"));
-    path_->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    path_->setReadOnly(true);
+    path_->setMaximumHeight(60);
     layout->addWidget(path_);
     message_ = plainLabel(this);
     message_->setObjectName(QStringLiteral("engineRegistrationMessage"));
@@ -193,8 +209,11 @@ void EngineSettingsPage::updateState() {
                      state.registration == EngineRegistrationState::Selected);
     cancel_->setEnabled(state.ready && state.registration != EngineRegistrationState::Idle &&
                         state.registration != EngineRegistrationState::Saving);
-    path_->setText(state.selectedPath.isEmpty() ? tr("No executable selected.")
-                                                : presented(state.selectedPath));
+    const auto path = presented(state.selectedPath);
+    if (path_->toPlainText() != path) {
+        path_->setPlainText(path);
+    }
+    path_->setVisible(!path.isEmpty());
     message_->setText(state.message);
     listError_->setText(
         state.listError.isEmpty() && state.profiles.empty()
@@ -210,9 +229,8 @@ void EngineSettingsPage::updateState() {
         return;
     }
     profilesRevision_ = state.profilesRevision;
-    const auto selected = profiles_->currentRow() >= 0
-                              ? profiles_->item(profiles_->currentRow(), 0)->data(Qt::UserRole)
-                              : QVariant();
+    const auto* selectedValue = selectedProfile();
+    const auto selected = selectedValue ? std::optional(selectedValue->id) : std::nullopt;
     const QSignalBlocker blocker(profiles_);
     profiles_->clearContents();
     profiles_->clearSelection();
@@ -229,7 +247,7 @@ void EngineSettingsPage::updateState() {
             profiles_->setItem(row, column, new QTableWidgetItem(values[column]));
         }
         profiles_->item(row, 0)->setData(Qt::UserRole, static_cast<qlonglong>(profile.id));
-        if (selected.isValid() && selected.toLongLong() == profile.id) {
+        if (selected && *selected == profile.id) {
             profiles_->selectRow(row);
         }
         ++row;
@@ -238,17 +256,30 @@ void EngineSettingsPage::updateState() {
 }
 void EngineSettingsPage::updateDetails() {
     updateRuntime();
-    const auto& profiles = controller_.state().profiles;
-    const auto row = profiles_->currentRow();
-    if (row < 0 || static_cast<std::size_t>(row) >= profiles.size() ||
-        profiles_->selectedItems().isEmpty()) {
+    const auto* profile = selectedProfile();
+    if (!profile) {
         details_->clear();
         return;
     }
-    const auto& profile = profiles[static_cast<std::size_t>(row)];
     details_->setPlainText(
         tr("Engine: %1\nExecutable: %2")
-            .arg(presented(profile.displayName), presented(profile.engine.executablePath)));
+            .arg(presented(profile->displayName), presented(profile->engine.executablePath)));
+}
+const engine::EngineProfile* EngineSettingsPage::selectedProfile() const {
+    const auto rows = profiles_->selectionModel()->selectedRows();
+    if (rows.size() != 1) {
+        return nullptr;
+    }
+    const auto* item = profiles_->item(rows.front().row(), 0);
+    if (!item) {
+        return nullptr;
+    }
+    const auto id = item->data(Qt::UserRole).toLongLong();
+    const auto& profiles = controller_.state().profiles;
+    const auto found =
+        std::find_if(profiles.begin(), profiles.end(),
+                     [id](const engine::EngineProfile& value) { return value.id == id; });
+    return found == profiles.end() ? nullptr : &*found;
 }
 void EngineSettingsPage::updateRuntime() {
     const auto& state = controller_.state();
@@ -258,7 +289,7 @@ void EngineSettingsPage::updateRuntime() {
                          state.registration != app::EngineRegistrationState::Inspecting &&
                          state.registration != app::EngineRegistrationState::Validating &&
                          state.registration != app::EngineRegistrationState::Saving &&
-                         !profiles_->selectedItems().isEmpty());
+                         selectedProfile() != nullptr);
     disconnect_->setEnabled(state.ready && engine::runtimeActive(phase) &&
                             phase != RuntimePhase::Disconnecting);
     QString status;
@@ -315,6 +346,7 @@ void EngineSettingsPage::updateRuntime() {
         }
     }
     options_->setEnabled(options_->count() > 0);
+    options_->setVisible(options_->count() > 0);
     updateOption();
 }
 void EngineSettingsPage::updateOption() {
@@ -324,9 +356,10 @@ void EngineSettingsPage::updateOption() {
         return;
     }
     const auto identity =
-        tr("Reported name: %1\nAuthor: %2")
+        tr("Reported name: %1\nAuthor: %2\nExecutable: %3")
             .arg(presented(discovery_->reportedName),
-                 presented(discovery_->reportedAuthor.value_or(tr("Not provided"))));
+                 presented(discovery_->reportedAuthor.value_or(tr("Not provided"))),
+                 presented(discovery_->executablePath));
     if (index < 0) {
         optionDetails_->setPlainText(identity + tr("\nNo UCI options advertised."));
         return;

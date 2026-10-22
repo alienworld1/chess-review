@@ -1,9 +1,13 @@
 #include "EngineTestSupport.h"
 #include "TestEnvironment.h"
+#include <QDebug>
+#include <QElapsedTimer>
 #include <QFileInfo>
+#include <QSaveFile>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <algorithm>
 using namespace chess_review::engine;
 namespace {
 const QString identity =
@@ -11,13 +15,13 @@ const QString identity =
                    "option name Threads type spin default 1 min 1 max 4\n"
                    "option name UCI_ShowWDL type check default false\nuciok\n");
 EngineProfile registered(EngineSupervisor& supervisor, QTemporaryDir& directory,
-                         const QString& declarations = identity) {
+                         const QString& declarations = identity,
+                         const QString& executable = QString::fromUtf8(FAKE_UCI_ENGINE)) {
     ValidatorTestAccess::configure(
         supervisor, engine_test::scenario(directory.filePath(QStringLiteral("registration.json")),
                                           engine_test::handshake(declarations)));
     QSignalSpy done(&supervisor, &EngineSupervisor::completed);
-    supervisor.validate(QUuid::createUuid(),
-                        QFileInfo(QString::fromUtf8(FAKE_UCI_ENGINE)).canonicalFilePath());
+    supervisor.validate(QUuid::createUuid(), QFileInfo(executable).canonicalFilePath());
     if (!done.wait(5000)) {
         qFatal("Registration fixture timed out");
     }
@@ -290,6 +294,186 @@ class EngineRuntimeTest final : public QObject {
         service.connectEngine(QUuid::createUuid(), profile);
         QTRY_COMPARE(latest(events).phase, RuntimePhase::Failed);
         QCOMPARE(latest(events).error->code, ErrorCode::Closing);
+    }
+    void lateOutputDuringDisconnect_data() {
+        QTest::addColumn<QString>("boundary");
+        QTest::newRow("discovery-reply-after-quit") << QStringLiteral("discovery");
+        QTest::newRow("readiness-reply-after-quit") << QStringLiteral("readiness");
+        QTest::newRow("partial-idle-line-at-quit") << QStringLiteral("idle");
+    }
+    void lateOutputDuringDisconnect() {
+        QFETCH(QString, boundary);
+        QTemporaryDir directory;
+        engine_test::Validator fixture;
+        const auto profile = registered(fixture.service, directory);
+        auto steps = engine_test::handshake(identity);
+        if (boundary == QStringLiteral("discovery")) {
+            steps[0] = engine_test::step(QStringLiteral("uci"), {});
+            steps.removeAt(1);
+            steps[1] =
+                engine_test::step(QStringLiteral("quit"),
+                                  {engine_test::write(identity),
+                                   QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")}}});
+        } else if (boundary == QStringLiteral("readiness")) {
+            steps[1] = engine_test::step(QStringLiteral("isready"), {});
+            steps[2] =
+                engine_test::step(QStringLiteral("quit"),
+                                  {engine_test::write(QStringLiteral("readyok\n")),
+                                   QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")}}});
+        } else {
+            steps[1] =
+                engine_test::step(QStringLiteral("isready"),
+                                  {engine_test::write(QStringLiteral("readyok\ninfo incomplete"))});
+        }
+        configure(fixture.service, directory, steps, 5000);
+        QSignalSpy events(&fixture.service, &EngineSupervisor::runtimeChanged);
+        QSignalSpy progress(&fixture.service, &EngineSupervisor::progress);
+        const auto session = QUuid::createUuid();
+        fixture.service.connectEngine(session, profile);
+        QTRY_COMPARE(latest(events).phase, boundary == QStringLiteral("idle")
+                                               ? RuntimePhase::Ready
+                                               : RuntimePhase::Handshaking);
+        if (boundary == QStringLiteral("readiness")) {
+            QTRY_VERIFY(!progress.empty() && progress.back()[1].toString() ==
+                                                 QStringLiteral("Waiting for engine readiness…"));
+        }
+        fixture.service.disconnectEngine(session);
+        QTRY_VERIFY(!runtimeActive(latest(events).phase));
+        QCOMPARE(latest(events).phase, RuntimePhase::Disconnected);
+        QVERIFY(!latest(events).error);
+        configure(fixture.service, directory, engine_test::handshake(identity));
+        fixture.service.connectEngine(QUuid::createUuid(), profile);
+        QTRY_COMPARE(latest(events).phase, RuntimePhase::Ready);
+    }
+    void disconnectKeepsOutputAndExitChecks_data() {
+        QTest::addColumn<bool>("flood");
+        QTest::newRow("late-output-limit") << true;
+        QTest::newRow("nonzero-quit-exit") << false;
+    }
+    void disconnectKeepsOutputAndExitChecks() {
+        QFETCH(bool, flood);
+        QTemporaryDir directory;
+        engine_test::Validator fixture;
+        const auto profile = registered(fixture.service, directory);
+        auto steps = engine_test::handshake(identity);
+        if (flood) {
+            steps[2] =
+                engine_test::step(QStringLiteral("quit"),
+                                  {engine_test::write(QString(16384, u'x')),
+                                   QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")}}});
+        } else {
+            // A command mismatch exits the fixture normally with a nonzero status.
+            steps[2] =
+                engine_test::step(QStringLiteral("not-quit"),
+                                  {QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")}}});
+        }
+        configure(fixture.service, directory, steps, 5000, 8192);
+        QSignalSpy events(&fixture.service, &EngineSupervisor::runtimeChanged);
+        const auto session = QUuid::createUuid();
+        fixture.service.connectEngine(session, profile);
+        QTRY_COMPARE(latest(events).phase, RuntimePhase::Ready);
+        fixture.service.disconnectEngine(session);
+        QTRY_COMPARE(latest(events).phase, RuntimePhase::Failed);
+        QVERIFY(latest(events).error);
+        QCOMPARE(latest(events).error->code, flood ? ErrorCode::OutputLimit : ErrorCode::Crash);
+    }
+    void changedRuntimeExecutable_data() {
+        QTest::addColumn<bool>("afterReadiness");
+        QTest::newRow("changed-before-launch") << false;
+        QTest::newRow("replaced-during-integrity-check") << true;
+    }
+    void changedRuntimeExecutable() {
+#ifndef Q_OS_LINUX
+        QSKIP("Replacement of a running executable is verified on Linux.");
+#else
+        QFETCH(bool, afterReadiness);
+        QTemporaryDir directory;
+        engine_test::Validator fixture;
+        const auto copiedPath = directory.filePath(QStringLiteral("engine"));
+        QVERIFY(QFile::copy(QString::fromUtf8(FAKE_UCI_ENGINE), copiedPath));
+        if (afterReadiness) {
+            // Keep hashing in flight long enough to replace the path after its
+            // descriptor opens. The copied ELF remains a valid executable.
+            QFile padded(copiedPath);
+            QVERIFY(padded.open(QIODevice::ReadWrite));
+            QVERIFY(padded.resize(padded.size() + 128 * 1024 * 1024));
+        }
+        const auto profile = registered(fixture.service, directory, identity, copiedPath);
+        configure(fixture.service, directory, engine_test::handshake(identity));
+        QSignalSpy events(&fixture.service, &EngineSupervisor::runtimeChanged);
+        const auto session = QUuid::createUuid();
+        bool replaced = false;
+        if (afterReadiness) {
+            connect(&fixture.service, &EngineSupervisor::progress, this,
+                    [&](QUuid request, const QString& message) {
+                        if (request == session &&
+                            message == QStringLiteral("Checking executable is unchanged…")) {
+                            QSaveFile replacement(copiedPath);
+                            QVERIFY(replacement.open(QIODevice::WriteOnly));
+                            QCOMPARE(replacement.write("replacement"), qint64(11));
+                            QVERIFY(replacement.commit());
+                            replaced = true;
+                        }
+                    });
+        } else {
+            QFile changed(copiedPath);
+            QVERIFY(changed.open(QIODevice::Append));
+            QCOMPARE(changed.write("changed"), qint64(7));
+        }
+        fixture.service.connectEngine(session, profile);
+        QTRY_COMPARE(latest(events).phase, RuntimePhase::Failed);
+        QVERIFY(latest(events).error);
+        QCOMPARE(latest(events).error->code, ErrorCode::Changed);
+        QCOMPARE(replaced, afterReadiness);
+        for (const auto& event : events) {
+            const auto phase = qvariant_cast<RuntimeState>(event[0]).phase;
+            QVERIFY(phase != RuntimePhase::Ready);
+            if (!afterReadiness) {
+                QVERIFY(phase != RuntimePhase::Starting);
+            }
+        }
+#endif
+    }
+    void maximumDiscoveryRemainsAsynchronous() {
+        QTemporaryDir directory;
+        engine_test::Validator fixture;
+        QString declarations = QStringLiteral("id name Bulk\n");
+        const QString prefix(512, u'x');
+        for (int index = 0; index < 1024; ++index) {
+            declarations += QStringLiteral("option name %1%2 type button\n").arg(prefix).arg(index);
+        }
+        declarations += QStringLiteral("uciok\n");
+        configure(fixture.service, directory, engine_test::handshake(declarations), 10000);
+        QSignalSpy validated(&fixture.service, &EngineSupervisor::completed);
+        QElapsedTimer elapsed;
+        elapsed.start();
+        qint64 lastTick = 0;
+        qint64 maximumGap = 0;
+        int ticks = 0;
+        QTimer heartbeat;
+        connect(&heartbeat, &QTimer::timeout, this, [&] {
+            const auto now = elapsed.elapsed();
+            maximumGap = std::max(maximumGap, now - lastTick);
+            lastTick = now;
+            ++ticks;
+        });
+        heartbeat.start(10);
+        fixture.service.validate(QUuid::createUuid(),
+                                 QFileInfo(QString::fromUtf8(FAKE_UCI_ENGINE)).canonicalFilePath());
+        QTRY_COMPARE_WITH_TIMEOUT(validated.size(), 1, 15000);
+        const auto result = qvariant_cast<ValidationResult>(validated.front()[1]);
+        QVERIFY(std::holds_alternative<ValidatedEngine>(result));
+        EngineProfile profile;
+        profile.id = 1;
+        profile.engine = std::get<ValidatedEngine>(result);
+        QCOMPARE(profile.engine.capabilities.options.size(), 1024);
+        QSignalSpy events(&fixture.service, &EngineSupervisor::runtimeChanged);
+        fixture.service.connectEngine(QUuid::createUuid(), profile);
+        QTRY_COMPARE_WITH_TIMEOUT(latest(events).phase, RuntimePhase::Ready, 15000);
+        QCOMPARE(latest(events).discovery->capabilities.options.size(), 1024);
+        QVERIFY(ticks > 0);
+        qInfo() << "1024-option registration/connection milliseconds:" << elapsed.elapsed()
+                << "caller heartbeat ticks:" << ticks << "maximum gap milliseconds:" << maximumGap;
     }
     void handshakeTimeout() {
         QTemporaryDir directory;

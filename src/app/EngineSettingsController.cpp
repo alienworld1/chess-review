@@ -30,7 +30,7 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
     : QObject(parent), database_(database), logger_(logger), supervisor_(supervisor) {
     connect(&supervisor_, &engine::EngineSupervisor::runtimeChanged, this,
             [this](const engine::RuntimeState& state) {
-                if (closing_ || state.session != state_.runtime.session ||
+                if (state.session != state_.runtime.session ||
                     state.profileId != state_.runtime.profileId ||
                     !acceptsRuntimePhase(state_.runtime.phase, state.phase)) {
                     return;
@@ -266,6 +266,10 @@ void EngineSettingsController::close() {
     closing_ = true;
     state_.ready = false;
     state_.registration = EngineRegistrationState::Closing;
+    if (engine::runtimeActive(state_.runtime.phase)) {
+        state_.runtime.phase = engine::RuntimePhase::Disconnecting;
+        state_.runtime.discovery.reset();
+    }
     supervisor_.close();
     emit changed();
 }

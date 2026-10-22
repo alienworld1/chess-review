@@ -122,6 +122,9 @@ class SupervisorWorker final : public QObject {
             return;
         }
         disconnecting_ = true;
+        // No discovery claim survives explicit cancellation. Late replies and partial
+        // lines are irrelevant, but output accounting and exit checks still apply.
+        output_.clear();
         publish(RuntimePhase::Disconnecting);
         chunks_.stop();
         file_.close();
@@ -338,7 +341,7 @@ class SupervisorWorker final : public QObject {
                       QStringLiteral("The engine exceeded the output limit.")});
                 continue;
             }
-            if (errors) {
+            if (errors || disconnecting_) {
                 continue;
             }
             const auto receivedStage = beforeReady ? Stage::Uci : stage_;

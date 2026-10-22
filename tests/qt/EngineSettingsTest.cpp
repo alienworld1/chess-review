@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QEventLoop>
+#include <QItemSelectionModel>
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -78,6 +79,14 @@ class EngineSettingsTest final : public QObject {
             application.window.show();
             controller.selectExecutable(QString::fromUtf8(FAKE_UCI_ENGINE));
             QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Selected);
+            auto* selectedPath =
+                application.window.findChild<QPlainTextEdit*>(QStringLiteral("engineSelectedPath"));
+            QVERIFY(selectedPath && selectedPath->isReadOnly());
+            QCOMPARE(selectedPath->toPlainText(), controller.state().selectedPath);
+            selectedPath->selectAll();
+            controller.refresh();
+            QTRY_VERIFY(!controller.state().listing);
+            QCOMPARE(selectedPath->textCursor().selectedText(), controller.state().selectedPath);
             // Selecting and inspecting a path must not start the handshake or create a profile.
             QTest::qWait(80);
             QCOMPARE(controller.state().profiles.size(), std::size_t(0));
@@ -233,13 +242,61 @@ class EngineSettingsTest final : public QObject {
         table->selectRow(0);
         connectButton->click();
         QTRY_COMPARE(controller.state().runtime.phase, engine::RuntimePhase::Ready);
-        // Application fixture shutdown must also reap a connected child.
+        application.startup.shutdown();
+        QCOMPARE(controller.state().runtime.phase, engine::RuntimePhase::Disconnecting);
+        QVERIFY(!controller.state().runtime.discovery);
+        QTRY_COMPARE(application.startup.state(), app::Lifecycle::Stopped);
+        QVERIFY(!engine::runtimeActive(controller.state().runtime.phase));
+    }
+    void connectUsesSelectedRowInsteadOfKeyboardFocus() {
+        QTemporaryDir directory;
+        Application application;
+        auto& controller = application.startup.engines();
+        auto& supervisor = app::EngineControllerTestAccess::validator(controller);
+        engine::ValidatorTestAccess::configure(
+            supervisor, engine_test::scenario(directory.filePath(QStringLiteral("engine.json")),
+                                              engine_test::handshake()));
+        application.startup.start(directory.filePath(QStringLiteral("library.sqlite3")));
+        QTRY_VERIFY(controller.state().ready);
+        controller.selectExecutable(QString::fromUtf8(FAKE_UCI_ENGINE));
+        QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Selected);
+        controller.registerSelected();
+        QTRY_COMPARE(controller.state().profiles.size(), std::size_t(1));
+        const auto saved = controller.state().profiles.front();
+        auto other = saved;
+        other.id = saved.id + 1;
+        other.displayName = QStringLiteral("Unselected engine");
+        other.engine.executablePath = directory.filePath(QStringLiteral("not-selected"));
+        app::EngineControllerTestAccess::replaceProfiles(controller, {saved, other});
+        auto* table = application.window.findChild<QTableWidget*>(QStringLiteral("engineProfiles"));
+        auto* connectButton =
+            application.window.findChild<QPushButton*>(QStringLiteral("connectEngine"));
+        table->selectRow(0);
+        // Ctrl+navigation can move focus without selecting that row.
+        table->selectionModel()->setCurrentIndex(table->model()->index(1, 0),
+                                                 QItemSelectionModel::NoUpdate);
+        QCOMPARE(table->selectionModel()->selectedRows().front().row(), 0);
+        QCOMPARE(table->currentRow(), 1);
+        connectButton->click();
+        QCOMPARE(controller.state().runtime.profileId, saved.id);
+        QTRY_COMPARE(controller.state().runtime.phase, engine::RuntimePhase::Ready);
+        auto* details = application.window.findChild<QPlainTextEdit*>(
+            QStringLiteral("engineRuntimeOptionDetails"));
+        QVERIFY(details->toPlainText().contains(saved.engine.executablePath));
+        app::EngineControllerTestAccess::replaceProfiles(controller, {});
+        QCOMPARE(controller.state().runtime.profileId, saved.id);
+        QCOMPARE(controller.state().runtime.phase, engine::RuntimePhase::Ready);
+        QVERIFY(details->toPlainText().contains(saved.engine.executablePath));
+        auto* disconnectButton =
+            application.window.findChild<QPushButton*>(QStringLiteral("disconnectEngine"));
+        QVERIFY(disconnectButton->isEnabled());
+        QVERIFY(!connectButton->isEnabled());
     }
     void invisibleEngineTextIsVisibleAndFullDetailsAreAvailable() {
         QTemporaryDir directory;
         Application application;
         auto& controller = application.startup.engines();
-        const auto name = QString(300, u'x') + QStringLiteral("\u202E.exe");
+        const auto name = QString(300, u'x') + QStringLiteral("\u202E.exe\U000e0001\U0001f600");
         engine::ValidatorTestAccess::configure(
             app::EngineControllerTestAccess::validator(controller),
             engine_test::scenario(directory.filePath(QStringLiteral("engine.json")),
@@ -259,6 +316,32 @@ class EngineSettingsTest final : public QObject {
         QVERIFY(details->toPlainText().contains(QString(300, u'x')));
         QVERIFY(details->toPlainText().contains(QStringLiteral("\\u202e.exe")));
         QVERIFY(!details->toPlainText().contains(QChar(0x202e)));
+        QVERIFY(details->toPlainText().contains(QStringLiteral("\\U000e0001")));
+        QVERIFY(!details->toPlainText().contains(QStringLiteral("\U000e0001")));
+        QVERIFY(details->toPlainText().contains(QStringLiteral("\U0001f600")));
+        application.navigation.navigate(app::Destination::Settings);
+        application.window.resize(1100, 720);
+        application.window.show();
+        controller.connectEngine(controller.state().profiles.front().id);
+        QTRY_COMPARE(controller.state().runtime.phase, engine::RuntimePhase::Ready);
+        // Resize after first-show geometry has settled (offscreen screens may be smaller).
+        application.window.resize(1100, 720);
+        QCOMPARE(application.window.width(), 1100);
+        const auto* status =
+            application.window.findChild<QLabel*>(QStringLiteral("engineRuntimeStatus"));
+        QVERIFY(status);
+        QVERIFY(status->mapTo(&application.window, QPoint{}).x() + status->width() <=
+                application.window.width());
+        auto* liveDetails = application.window.findChild<QPlainTextEdit*>(
+            QStringLiteral("engineRuntimeOptionDetails"));
+        QVERIFY(liveDetails->toPlainText().contains(QStringLiteral("\\U000e0001")));
+        QVERIFY(application.window.findChild<QComboBox*>(QStringLiteral("engineRuntimeOptions"))
+                    ->isHidden());
+        const auto screenshots = qEnvironmentVariable("CHESS_REVIEW_ENGINE_SCREENSHOTS");
+        if (!screenshots.isEmpty()) {
+            QVERIFY(
+                application.window.grab().save(screenshots + QStringLiteral("/hostile-1100.png")));
+        }
     }
     void cancelBeforeQueuedSuccess() {
         QTemporaryDir directory;

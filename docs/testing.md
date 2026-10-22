@@ -605,3 +605,17 @@ unchanged saved profiles. `engine_exit` closes production main while connected a
 reopens the saved registry without launching an engine. Screenshot capture through
 `CHESS_REVIEW_ENGINE_SCREENSHOTS` includes connected Settings at 1100×720 and
 1360×850. These checks retain the existing Linux/Unix platform limits.
+
+Runtime adversarial regressions cover late discovery/readiness replies and partial
+lines during clean disconnect, retained cleanup output/exit checks, actual binary
+changes before launch and replacement during the post-readiness integrity check.
+A 1,024-option stress case with long shared name prefixes verifies discovery at
+the count bound and records caller event-loop heartbeat timings without asserting
+a machine-specific latency threshold. Existing CTest deadlines are unchanged.
+
+Settings regressions distinguish keyboard focus from the selected row, preserve
+the active executable path across list changes, escape supplementary Unicode
+formatting characters while preserving ordinary supplementary text, and constrain
+long unbroken names to the viewport. The same screenshot option also writes
+`hostile-1100.png` for long/invisible engine identity. No SQL fixture is introduced
+outside persistence.
