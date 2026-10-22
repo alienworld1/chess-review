@@ -136,8 +136,11 @@ requested, and disables it for subsequent requests that do not request it.
 Unsupported/missing WDL stays absent rather than being fabricated.
 
 `searchChanged` reports Configuring, Analyzing, Stopping, and Synchronizing with
-session/request identity. `analysisUpdated` publishes coalesced evidence at most
-ten times per second, plus an immediate final snapshot. `analysisFinished`
+session/request identity. Progress is produced on a 100 ms worker timer, plus a
+final snapshot, and delivered through `analysisUpdated`. While the caller is stalled, a
+bounded mailbox retains only the latest progress value and one queued notification;
+intermediate progress may be skipped. Terminal results always retain full evidence.
+`analysisFinished`
 provides Rejected, Completed, Stopped, or Failed. Await that terminal signal
 before submitting another search. Completed means natural UCI completion and
 successful final synchronization; it does not prove the requested node budget,
@@ -149,11 +152,16 @@ Each rank retains its latest evidence-bearing info line independently, with its
 own depth and statistics. Missing fields remain absent; unrelated partial updates
 never manufacture a score/PV pair. Global statistics accept partial updates, including depth-only progress, without
 changing the depth attached to an older PV.
-`achievedWidth` counts contiguous ranks with both score and PV; `commonDepth` is
+`achievedWidth` counts contiguous ranks with both score and PV and distinct root
+moves; duplicate candidates never count as additional width. Temporary rank overlap
+can occur while an engine updates its ordering and does not itself fail the search.
+`commonDepth` is
 present only when the entire effective width has that depth. Mixed-depth ranks
 remain visible without implying a coherent set. WDL values use the 0–1000 scale
 and sum to 1000. PVs are limited to 1,024 legal plies; bestmove and ponder are also
-validated, including root restrictions. `0000`/`(none)` is accepted only when
+validated, including root restrictions. Truncated or overlong tokens beginning
+with a square-like file/digit pair are rejected as malformed moves rather than
+silently accepted as extensions. `0000`/`(none)` is accepted only when
 there are no legal moves.
 
 Stop sends `stop` once and waits up to five seconds for `bestmove`. If stopped

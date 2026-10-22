@@ -1,8 +1,10 @@
 #include "engine/private/SearchProtocol.h"
+#include <QStringView>
 #include <algorithm>
 #include <array>
 #include <limits>
 #include <set>
+#include <tuple>
 #include <type_traits>
 
 namespace chess_review::engine {
@@ -39,8 +41,8 @@ bool infoField(QStringView token) {
 bool looksLikeMove(QStringView token) {
     // Unknown extension keys terminate a PV. Move-shaped tokens still undergo full
     // adapter validation, so an illegal continuation cannot become accepted evidence.
-    return (token.size() == 4 || token.size() == 5) && token[0] >= u'a' && token[0] <= u'h' &&
-           token[1] >= u'0' && token[1] <= u'9';
+    return token.size() >= 2 && token[0] >= u'a' && token[0] <= u'h' && token[1] >= u'0' &&
+           token[1] <= u'9';
 }
 bool unsignedNumber(const QString& text, std::uint64_t& value) {
     if (text.isEmpty() ||
@@ -49,7 +51,7 @@ bool unsignedNumber(const QString& text, std::uint64_t& value) {
     }
     bool ok = false;
     value = text.toULongLong(&ok);
-    return ok && value <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    return ok;
 }
 bool integer(const QString& text, int& value, int maximum = std::numeric_limits<int>::max()) {
     std::uint64_t number = 0;
@@ -359,23 +361,29 @@ void mergeStatistics(SearchStatistics& target, const SearchStatistics& update) {
 }
 void updateEvidence(AnalysisSnapshot& snapshot, InfoUpdate update) {
     mergeStatistics(snapshot.statistics, update.line.statistics);
-    if (update.hasEvidence) {
-        auto found =
-            std::lower_bound(snapshot.lines.begin(), snapshot.lines.end(), update.line.rank,
-                             [](const AnalysisLine& line, int rank) { return line.rank < rank; });
-        if (found == snapshot.lines.end() || found->rank != update.line.rank) {
-            snapshot.lines.insert(found, std::move(update.line));
-        } else {
-            *found = std::move(update.line);
-        }
+    if (!update.hasEvidence) {
+        return;
+    }
+    auto found =
+        std::lower_bound(snapshot.lines.begin(), snapshot.lines.end(), update.line.rank,
+                         [](const AnalysisLine& line, int rank) { return line.rank < rank; });
+    if (found == snapshot.lines.end() || found->rank != update.line.rank) {
+        snapshot.lines.insert(found, std::move(update.line));
+    } else {
+        *found = std::move(update.line);
     }
     snapshot.achievedWidth = 0;
     snapshot.commonDepth.reset();
     std::optional<int> depth;
     bool coherent = true;
+    std::set<std::tuple<int, int, std::optional<chess::PieceType>>> roots;
     for (const auto& line : snapshot.lines) {
         if (line.rank != snapshot.achievedWidth + 1 || !line.score || line.pv.empty()) {
             break;
+        }
+        const auto& root = line.pv.front();
+        if (!roots.emplace(root.from.index(), root.to.index(), root.promotion).second) {
+            break; // Rank changes can temporarily overlap; they do not supply extra candidates.
         }
         ++snapshot.achievedWidth;
         if (snapshot.achievedWidth == 1) {

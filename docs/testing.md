@@ -670,3 +670,14 @@ notifications before/after go and checks the extended transition graph.
 requires orderly exit, and reopens the saved registry without launching a child.
 All fixtures and protocol scenarios remain outside persistence without introducing
 SQL; database implementation and SQL fixtures stay inside persistence.
+
+
+Position-analysis adversarial regressions additionally check distinct-candidate
+coverage, malformed move tails that could resemble extensions, numeric evidence
+at representable integer boundaries, and same-read protocol tails after explicit
+teardown begins. A deliberately stalled caller must receive one latest progress
+update rather than a backlog; another case checks final progress precedes terminal
+completion with no later stale progress. The engine thread continues independently.
+A 4,000-ply/20-candidate stress case records caller heartbeat gaps and progress
+frames while processing 1,000 candidate updates. These are measured observations,
+not portable performance guarantees.

@@ -2,6 +2,7 @@
 
 #include "chess/Position.h"
 #include "engine/EngineProfile.h"
+#include <QMetaType>
 #include <QUuid>
 #include <cstdint>
 #include <optional>
@@ -68,7 +69,7 @@ struct AnalysisSnapshot {
     bool wdlSupported = false;
     std::vector<AnalysisLine> lines;
     SearchStatistics statistics;
-    int achievedWidth = 0;          // Contiguous ranks containing both score and PV.
+    int achievedWidth = 0;          // Contiguous score/PV ranks with distinct root moves.
     std::optional<int> commonDepth; // Present only for a full effective-width set.
     std::optional<chess::Move> bestMove;
     std::optional<chess::Move> ponder;

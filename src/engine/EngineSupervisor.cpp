@@ -2,6 +2,7 @@
 #include "engine/private/SupervisorCoordinator.h"
 #include <QThread>
 #include <QTimer>
+#include <mutex>
 #include <utility>
 
 namespace chess_review::engine {
@@ -9,6 +10,10 @@ struct EngineSupervisor::Impl {
     QThread thread;
     SupervisorCoordinator* coordinator = nullptr;
     bool closing = false;
+    // The worker shares only this mailbox; all QObject/service state stays thread-affine.
+    std::mutex progressMutex;
+    std::optional<AnalysisSnapshot> pendingProgress;
+    bool progressQueued = false;
 };
 EngineSupervisor::EngineSupervisor(QObject* parent)
     : QObject(parent), impl_(std::make_unique<Impl>()) {
@@ -35,8 +40,37 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
             &EngineSupervisor::runtimeChanged, Qt::QueuedConnection);
     connect(impl_->coordinator, &SupervisorCoordinator::searchChanged, this,
             &EngineSupervisor::searchChanged, Qt::QueuedConnection);
-    connect(impl_->coordinator, &SupervisorCoordinator::analysisUpdated, this,
-            &EngineSupervisor::analysisUpdated, Qt::QueuedConnection);
+    // One queued notification and one latest value bound engine-driven memory even
+    // while the owning event loop is stalled. Never emit callbacks under the mutex.
+    connect(
+        impl_->coordinator, &SupervisorCoordinator::analysisUpdated, this,
+        [this](const AnalysisSnapshot& snapshot) {
+            auto next = snapshot;
+            bool post = false;
+            {
+                const std::lock_guard lock(impl_->progressMutex);
+                impl_->pendingProgress = std::move(next);
+                post = !std::exchange(impl_->progressQueued, true);
+            }
+            if (!post) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                this,
+                [this] {
+                    std::optional<AnalysisSnapshot> pending;
+                    {
+                        const std::lock_guard lock(impl_->progressMutex);
+                        pending = std::exchange(impl_->pendingProgress, std::nullopt);
+                        impl_->progressQueued = false;
+                    }
+                    if (pending) {
+                        emit analysisUpdated(*pending);
+                    }
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::DirectConnection);
     connect(impl_->coordinator, &SupervisorCoordinator::analysisFinished, this,
             &EngineSupervisor::analysisFinished, Qt::QueuedConnection);
     // QThread::finished owns deletion on the engine thread.

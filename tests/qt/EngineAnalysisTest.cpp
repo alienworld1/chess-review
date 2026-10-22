@@ -1,10 +1,15 @@
 #include "EngineTestSupport.h"
 #include "TestEnvironment.h"
 #include "engine/private/SearchProtocol.h"
+#include <QDebug>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QThread>
+#include <algorithm>
+#include <atomic>
 #include <limits>
 
 using namespace chess_review;
@@ -525,6 +530,216 @@ class EngineAnalysisTest final : public QObject {
         QTRY_COMPARE(done.size(), 1);
         QCOMPARE(result(done).outcome, AnalysisOutcome::Failed);
         QCOMPARE(result(done).error->code, ErrorCode::OutputLimit);
+    }
+    void distinctCandidatesRequiredForCoverage() {
+        const auto search = request(NodeLimit{200}, 2);
+        AnalysisSnapshot snapshot;
+        snapshot.effectiveMultiPv = 2;
+        for (const auto* text : {"info depth 3 multipv 1 score cp 20 pv e2e4",
+                                 "info depth 3 multipv 2 score cp 10 pv e2e4"}) {
+            updateEvidence(snapshot, std::get<InfoUpdate>(parseSearchInfo(
+                                         tokens(QString::fromUtf8(text)), search, 2)));
+        }
+        QCOMPARE(snapshot.achievedWidth, 1);
+        QVERIFY(!snapshot.commonDepth);
+        // An intermediate rank overlap is not itself a protocol failure: rankings can change.
+        updateEvidence(
+            snapshot,
+            std::get<InfoUpdate>(parseSearchInfo(
+                tokens(QStringLiteral("info depth 3 multipv 2 score cp 10 pv d2d4")), search, 2)));
+        QCOMPARE(snapshot.achievedWidth, 2);
+        QCOMPARE(snapshot.commonDepth, 3);
+    }
+    void malformedMoveTails_data() {
+        QTest::addColumn<QString>("tail");
+        QTest::newRow("truncated") << QStringLiteral("e7e");
+        QTest::newRow("overlong") << QStringLiteral("e7e5garbage");
+        QTest::newRow("invalid-promotion-length") << QStringLiteral("e7e5qq");
+    }
+    void malformedMoveTails() {
+        QFETCH(QString, tail);
+        const auto parsed = parseSearchInfo(
+            tokens(QStringLiteral("info depth 3 score cp 20 pv e2e4 ") + tail), request(), 1);
+        QVERIFY(std::holds_alternative<Error>(parsed));
+    }
+    void disconnectDiscardsSameReadTail() {
+        Conversation conversation;
+        auto steps = conversation.setup();
+        steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+        steps.append(engine_test::step(QStringLiteral("go infinite"), {}));
+        steps.append(engine_test::step(QStringLiteral("stop"),
+                                       {engine_test::write(QStringLiteral("bestmove e2e4\n"))}));
+        // Teardown begins within this very read, immediately after the readiness reply.
+        steps.append(ready(QStringLiteral("readyok\nbestmove e2e5\n")));
+        conversation.connect(steps);
+        auto& service = conversation.service();
+        QSignalSpy states(&service, &EngineSupervisor::searchChanged);
+        QSignalSpy runtime(&service, &EngineSupervisor::runtimeChanged);
+        QSignalSpy done(&service, &EngineSupervisor::analysisFinished);
+        service.analyze(conversation.session, request(InfiniteLimit{}));
+        QTRY_VERIFY(!states.empty() &&
+                    qvariant_cast<SearchState>(states.back()[0]).phase == SearchPhase::Analyzing);
+        service.disconnectEngine(conversation.session);
+        QTRY_COMPARE(done.size(), 1);
+        QCOMPARE(result(done).outcome, AnalysisOutcome::Stopped);
+        QTRY_COMPARE(qvariant_cast<RuntimeState>(runtime.back()[0]).phase,
+                     RuntimePhase::Disconnected);
+    }
+    void stalledCallerCoalescesProgress() {
+        Conversation conversation;
+        auto steps = conversation.setup();
+        steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+        QJsonArray updates;
+        for (int i = 0; i < 30; ++i) {
+            updates.append(engine_test::write(
+                QStringLiteral("info depth 2 nodes %1 score cp 20 pv e2e4\n").arg(i), i * 20));
+        }
+        steps.append(engine_test::step(QStringLiteral("go infinite"), updates));
+        steps.append(engine_test::step(QStringLiteral("stop"),
+                                       {engine_test::write(QStringLiteral("bestmove e2e4\n"))}));
+        steps.append(ready());
+        conversation.connect(steps);
+        auto& service = conversation.service();
+        QSignalSpy states(&service, &EngineSupervisor::searchChanged);
+        QSignalSpy progress(&service, &EngineSupervisor::analysisUpdated);
+        QSignalSpy done(&service, &EngineSupervisor::analysisFinished);
+        const auto search = request(InfiniteLimit{});
+        service.analyze(conversation.session, search);
+        QTRY_VERIFY(!states.empty() &&
+                    qvariant_cast<SearchState>(states.back()[0]).phase == SearchPhase::Analyzing);
+        progress.clear();
+        QTest::qSleep(1200); // Deliberately stall only the caller; the engine thread stays live.
+        QCoreApplication::sendPostedEvents(&service, QEvent::MetaCall);
+        QCOMPARE(progress.size(), 1);
+        QCOMPARE(qvariant_cast<AnalysisSnapshot>(progress.back()[0]).statistics.nodes, 29);
+        service.stopAnalysis(conversation.session, search.id);
+        QTRY_COMPARE(done.size(), 1);
+        QCOMPARE(result(done).outcome, AnalysisOutcome::Stopped);
+    }
+    void integerEvidenceUsesRepresentableRange() {
+        const auto parsed = parseSearchInfo(
+            tokens(QStringLiteral(
+                "info nodes 18446744073709551615 time 0 score cp -9223372036854775808 pv e2e4")),
+            request(), 1);
+        QVERIFY(std::holds_alternative<InfoUpdate>(parsed));
+        const auto& line = std::get<InfoUpdate>(parsed).line;
+        QCOMPARE(line.statistics.nodes, std::numeric_limits<std::uint64_t>::max());
+        QCOMPARE(line.score->value, std::numeric_limits<std::int64_t>::min());
+        QVERIFY(std::holds_alternative<Error>(parseSearchInfo(
+            tokens(QStringLiteral("info nodes 18446744073709551616")), request(), 1)));
+        QVERIFY(std::holds_alternative<Error>(parseSearchInfo(
+            tokens(QStringLiteral("info score cp -9223372036854775809")), request(), 1)));
+        QVERIFY(std::holds_alternative<Error>(prepareSearch(
+            request(NodeLimit{std::numeric_limits<std::uint64_t>::max()}), Capabilities{})));
+    }
+    void stalledCallerReceivesFinalBeforeCompletion() {
+        Conversation conversation;
+        auto steps = conversation.setup();
+        steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+        steps.append(engine_test::step(
+            QStringLiteral("go nodes 200"),
+            {engine_test::write(QStringLiteral("info depth 2 score cp 20 nodes 100 pv e2e4\n")),
+             engine_test::write(
+                 QStringLiteral("info depth 3 score cp 30 nodes 200 pv e2e4 e7e5\nbestmove e2e4\n"),
+                 250)}));
+        steps.append(ready());
+        conversation.connect(steps);
+        auto& service = conversation.service();
+        QSignalSpy states(&service, &EngineSupervisor::searchChanged);
+        QSignalSpy progress(&service, &EngineSupervisor::analysisUpdated);
+        QSignalSpy done(&service, &EngineSupervisor::analysisFinished);
+        bool terminal = false;
+        bool lateProgress = false;
+        std::atomic<bool> correctThread{true};
+        QObject observer; // Disconnect before captured locals die, including assertion failures.
+        QObject::connect(&service, &EngineSupervisor::analysisUpdated, &observer,
+                         [&](const AnalysisSnapshot&) { lateProgress = lateProgress || terminal; });
+        QObject::connect(
+            &service, &EngineSupervisor::analysisUpdated, &observer,
+            [&](const AnalysisSnapshot&) {
+                if (QThread::currentThread() != service.thread()) {
+                    correctThread.store(false);
+                }
+            },
+            Qt::DirectConnection);
+        QObject::connect(&service, &EngineSupervisor::analysisFinished, &observer,
+                         [&](const AnalysisResult&) { terminal = true; });
+        service.analyze(conversation.session, request());
+        QTRY_VERIFY(!states.empty() &&
+                    qvariant_cast<SearchState>(states.back()[0]).phase == SearchPhase::Analyzing);
+        QTest::qSleep(700);
+        QTRY_COMPARE(done.size(), 1);
+        QTest::qWait(150);
+        QVERIFY(!lateProgress);
+        QVERIFY(correctThread.load());
+        QVERIFY(!progress.empty());
+        const auto last = qvariant_cast<AnalysisSnapshot>(progress.back()[0]);
+        QVERIFY(last.bestMove);
+        QCOMPARE(last.statistics.nodes, 200);
+        QCOMPARE(result(done).outcome, AnalysisOutcome::Completed);
+    }
+    void analysisStressKeepsCallerResponsive() {
+        auto search = request(NodeLimit{200}, 20);
+        QString positionCommand = QStringLiteral("position startpos moves");
+        for (int i = 0; i < 1000; ++i) {
+            for (const auto* uci : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
+                QVERIFY(std::holds_alternative<std::monostate>(
+                    search.position.play(move(search.position, uci))));
+                positionCommand += u' ' + QString::fromUtf8(uci);
+            }
+        }
+        Conversation conversation(
+            QString(identity).replace(QStringLiteral("max 3"), QStringLiteral("max 20")));
+        auto steps = conversation.setup(20);
+        steps.append(engine_test::step(positionCommand, {}));
+        QString batch;
+        const auto legal = search.position.legalMoves();
+        QCOMPARE(legal.size(), std::size_t(20));
+        for (std::size_t i = 0; i < legal.size(); ++i) {
+            batch += QStringLiteral("info depth 8 multipv %1 score cp 20 nodes 200 pv %2\n")
+                         .arg(i + 1)
+                         .arg(QString::fromStdString(
+                             std::get<std::string>(search.position.uci(legal[i]))));
+        }
+        QJsonArray actions;
+        for (int i = 0; i < 50; ++i) {
+            actions.append(engine_test::write(batch, i * 20));
+        }
+        actions.append(engine_test::write(
+            QStringLiteral("bestmove ") +
+                QString::fromStdString(std::get<std::string>(search.position.uci(legal[0]))) +
+                u'\n',
+            1100));
+        steps.append(engine_test::step(QStringLiteral("go nodes 200"), actions));
+        steps.append(ready());
+        conversation.connect(steps);
+        auto& service = conversation.service();
+        QSignalSpy done(&service, &EngineSupervisor::analysisFinished);
+        QSignalSpy progress(&service, &EngineSupervisor::analysisUpdated);
+        QElapsedTimer elapsed;
+        elapsed.start();
+        qint64 lastTick = 0;
+        qint64 maxGap = 0;
+        int ticks = 0;
+        QTimer heartbeat;
+        heartbeat.setInterval(5);
+        QObject::connect(&heartbeat, &QTimer::timeout, &heartbeat, [&] {
+            const auto now = elapsed.elapsed();
+            maxGap = std::max(maxGap, now - lastTick);
+            lastTick = now;
+            ++ticks;
+        });
+        heartbeat.start();
+        service.analyze(conversation.session, search);
+        QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 10000);
+        QCOMPARE(result(done).outcome, AnalysisOutcome::Completed);
+        QCOMPARE(result(done).evidence.achievedWidth, 20);
+        QCOMPARE(result(done).evidence.commonDepth, 8);
+        QVERIFY(ticks > 20);
+        QVERIFY(progress.size() > 2);
+        qInfo("Search stress: %lld ms, %d caller ticks, %lld ms max gap, %lld progress frames",
+              static_cast<long long>(elapsed.elapsed()), ticks, static_cast<long long>(maxGap),
+              static_cast<long long>(progress.size()));
     }
     void evidenceAndInputBounds() {
         auto search = request();

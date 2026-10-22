@@ -367,7 +367,11 @@ void EngineProcessWorker::drain(bool errors) {
         }
         const auto receivedEpoch = beforeReady ? bufferedEpoch_ : epoch_;
         for (const auto byte : bytes) {
-            if (failure_) {
+            // A reply in this chunk can begin explicit teardown. Do not parse its
+            // remaining bytes after quit; the entire chunk was already accounted.
+            if (failure_ ||
+                (disconnecting_ && (!search_ || stage_ == Stage::Quitting ||
+                                    stage_ == Stage::Terminating || stage_ == Stage::Killing))) {
                 break;
             }
             if (byte == '\n' || byte == '\r') {
