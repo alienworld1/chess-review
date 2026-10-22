@@ -184,6 +184,9 @@ std::variant<PreparedSearch, Error> prepareSearch(const AnalysisRequest& request
 
 std::variant<InfoUpdate, Error> parseSearchInfo(const QStringList& tokens,
                                                 const AnalysisRequest& request, int width) {
+    if (tokens.isEmpty() || tokens.front() != QStringLiteral("info") || width < 1) {
+        return invalidEvidence();
+    }
     InfoUpdate update;
     std::set<QString> seen;
     for (qsizetype i = 1; i < tokens.size(); ++i) {
@@ -195,9 +198,11 @@ std::variant<InfoUpdate, Error> parseSearchInfo(const QStringList& tokens,
             token == QStringLiteral("depth") || token == QStringLiteral("seldepth") ||
             token == QStringLiteral("multipv") || token == QStringLiteral("nodes") ||
             token == QStringLiteral("time") || token == QStringLiteral("nps") ||
-            token == QStringLiteral("tbhits") || token == QStringLiteral("hashfull");
+            token == QStringLiteral("tbhits") || token == QStringLiteral("hashfull") ||
+            token == QStringLiteral("currmovenumber") || token == QStringLiteral("cpuload") ||
+            token == QStringLiteral("sbhits");
         if (numeric || token == QStringLiteral("score") || token == QStringLiteral("wdl") ||
-            token == QStringLiteral("pv")) {
+            token == QStringLiteral("pv") || token == QStringLiteral("currmove")) {
             if (!seen.insert(token).second || i + 1 >= tokens.size()) {
                 return invalidEvidence();
             }
@@ -215,11 +220,14 @@ std::variant<InfoUpdate, Error> parseSearchInfo(const QStringList& tokens,
                 update.line.statistics.nps = value;
             } else if (token == QStringLiteral("tbhits")) {
                 update.line.statistics.tablebaseHits = value;
+            } else if (token == QStringLiteral("sbhits")) {
+                // Validated auxiliary statistics never become analysis evidence.
             } else {
-                const auto maximum = token == QStringLiteral("multipv") ? width
-                                     : token == QStringLiteral("hashfull")
-                                         ? 1000
-                                         : std::numeric_limits<int>::max();
+                const auto maximum =
+                    token == QStringLiteral("multipv") ? width
+                    : (token == QStringLiteral("hashfull") || token == QStringLiteral("cpuload"))
+                        ? 1000
+                        : std::numeric_limits<int>::max();
                 if (value > static_cast<std::uint64_t>(maximum)) {
                     return invalidEvidence();
                 }
@@ -230,12 +238,21 @@ std::variant<InfoUpdate, Error> parseSearchInfo(const QStringList& tokens,
                     update.line.statistics.selectiveDepth = number;
                 } else if (token == QStringLiteral("hashfull")) {
                     update.line.statistics.hashFull = number;
-                } else {
+                } else if (token == QStringLiteral("multipv") ||
+                           token == QStringLiteral("currmovenumber")) {
                     if (number == 0) {
                         return invalidEvidence();
                     }
-                    update.line.rank = number;
+                    if (token == QStringLiteral("multipv")) {
+                        update.line.rank = number;
+                    }
                 }
+            }
+        } else if (token == QStringLiteral("currmove")) {
+            const auto move = request.position.parseUci(tokens[++i].toStdString());
+            if (!std::holds_alternative<chess::Move>(move) ||
+                !allowed(request, std::get<chess::Move>(move))) {
+                return invalidEvidence();
             }
         } else if (token == QStringLiteral("score")) {
             if (i + 2 >= tokens.size()) {
@@ -275,17 +292,29 @@ std::variant<InfoUpdate, Error> parseSearchInfo(const QStringList& tokens,
             i += 3;
             update.line.wdl = wdl;
             update.hasEvidence = true;
-        } else if (token == QStringLiteral("pv")) {
-            auto position = request.position;
-            while (++i < tokens.size()) {
-                if (infoField(tokens[i]) || !looksLikeMove(tokens[i])) {
-                    if (update.line.pv.empty()) {
+        } else if (token == QStringLiteral("pv") || token == QStringLiteral("refutation") ||
+                   token == QStringLiteral("currline")) {
+            const bool evidence = token == QStringLiteral("pv");
+            const bool currentLine = token == QStringLiteral("currline");
+            if (currentLine && i + 1 < tokens.size()) {
+                const auto& next = tokens[i + 1];
+                if (!next.isEmpty() && ((next.front() >= u'0' && next.front() <= u'9') ||
+                                        next.front() == u'-' || next.front() == u'+')) {
+                    int cpu = 0;
+                    if (!integer(next, cpu) || cpu == 0) {
                         return invalidEvidence();
                     }
-                    --i; // Let the outer loop parse fields following the variable-length PV.
+                    ++i;
+                }
+            }
+            auto position = request.position;
+            std::size_t plies = 0;
+            while (++i < tokens.size()) {
+                if (infoField(tokens[i]) || !looksLikeMove(tokens[i])) {
+                    --i; // Resume parsing fields after the variable-length continuation.
                     break;
                 }
-                if (update.line.pv.size() == 1024) {
+                if (plies == 1024) {
                     return invalidEvidence();
                 }
                 const auto move = position.parseUci(tokens[i].toStdString());
@@ -293,13 +322,21 @@ std::variant<InfoUpdate, Error> parseSearchInfo(const QStringList& tokens,
                     return invalidEvidence();
                 }
                 const auto parsed = std::get<chess::Move>(move);
-                if ((update.line.pv.empty() && !allowed(request, parsed)) ||
+                if ((evidence && plies == 0 && !allowed(request, parsed)) ||
                     std::holds_alternative<chess::Error>(position.play(parsed))) {
                     return invalidEvidence();
                 }
-                update.line.pv.push_back(parsed);
+                ++plies;
+                if (evidence) {
+                    update.line.pv.push_back(parsed);
+                }
             }
-            update.hasEvidence = true;
+            if (!currentLine && plies == 0) {
+                return invalidEvidence();
+            }
+            if (evidence) {
+                update.hasEvidence = true;
+            }
         }
     }
     return update;
@@ -307,7 +344,8 @@ std::variant<InfoUpdate, Error> parseSearchInfo(const QStringList& tokens,
 
 std::variant<BestMove, Error> parseBestMove(const QStringList& tokens,
                                             const AnalysisRequest& request) {
-    if (tokens.size() != 2 && (tokens.size() != 4 || tokens[2] != QStringLiteral("ponder"))) {
+    if (tokens.isEmpty() || tokens.front() != QStringLiteral("bestmove") ||
+        (tokens.size() != 2 && (tokens.size() != 4 || tokens[2] != QStringLiteral("ponder")))) {
         return invalidEvidence();
     }
     BestMove result;

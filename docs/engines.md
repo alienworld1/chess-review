@@ -164,6 +164,21 @@ with a square-like file/digit pair are rejected as malformed moves rather than
 silently accepted as extensions. `0000`/`(none)` is accepted only when
 there are no legal moves.
 
+Auxiliary `info` fields are checked and discarded: `currmove` must be a legal
+root move allowed by the request, `currmovenumber` must be positive, `cpuload`
+uses 0–1000, and `sbhits` fits unsigned 64 bits. Move numbers and optional positive
+`currline` CPU numbers fit a signed int. `refutation` requires at least one legal
+move; `currline` may be empty. Both replay from the root, allow up to 1,024 plies,
+and may include moves outside the request's root restrictions. Repeated refutations
+and current lines are accepted; duplicate scalar fields and PVs fail. These fields
+never create candidates, coverage, search statistics, or meaningful search activity.
+An invalid field rejects the entire record before its valid prefix can be applied.
+
+Unknown words end move sequences and are skipped while known fields afterward
+are still parsed. Square-like malformed tokens remain errors. `string` makes the
+rest of an info record opaque. `bestmove` accepts only a legal move with an optional
+legal `ponder` move; extra tokens fail, and terminal null moves cannot have ponder.
+
 Stop sends `stop` once and waits up to five seconds for `bestmove`. If stopped
 during setup, no `go` is sent and no bestmove is required. Every completed search
 requires a subsequent `isready`/`readyok` barrier before reuse. After ten seconds

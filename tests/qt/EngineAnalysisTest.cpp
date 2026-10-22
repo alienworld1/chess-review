@@ -239,20 +239,63 @@ class EngineAnalysisTest final : public QObject {
         QTRY_COMPARE(qvariant_cast<RuntimeState>(runtime.back()[0]).phase,
                      RuntimePhase::Disconnected);
     }
+    void auxiliaryEvidenceAndFragmentedWhitespace() {
+        Conversation conversation;
+        auto steps = conversation.setup();
+        steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+        steps.append(engine_test::step(
+            QStringLiteral("go nodes 200"),
+            {engine_test::write(QStringLiteral("\tinfo  currline 1 e2e4 e7e5 refut")),
+             engine_test::write(
+                 QStringLiteral(
+                     "ation d2d4 d7d5 currmove e2e4 currmovenumber 1 cpuload 1000 sbhits 2 "
+                     "depth 3 score cp 23 pv e2e4 e7e5 vendor value nodes 200\r\n"
+                     " bestmove\te2e4\tponder "),
+                 10),
+             engine_test::write(QStringLiteral("e7e5 \n"), 20)}));
+        steps.append(ready());
+        conversation.connect(steps);
+        QSignalSpy done(&conversation.service(), &EngineSupervisor::analysisFinished);
+        QSignalSpy progress(&conversation.service(), &EngineSupervisor::analysisUpdated);
+        conversation.service().analyze(conversation.session, request());
+        QTRY_COMPARE(done.size(), 1);
+        const auto completed = result(done);
+        QCOMPARE(completed.outcome, AnalysisOutcome::Completed);
+        QCOMPARE(completed.evidence.lines.size(), std::size_t(1));
+        QCOMPARE(completed.evidence.lines.front().score->value, 23);
+        QCOMPARE(completed.evidence.lines.front().pv.size(), std::size_t(2));
+        QCOMPARE(completed.evidence.statistics.nodes, 200);
+        QCOMPARE(completed.evidence.commonDepth, 3);
+        QVERIFY(completed.evidence.bestMove);
+        QVERIFY(completed.evidence.ponder);
+        QVERIFY(!progress.empty());
+        const auto final = qvariant_cast<AnalysisSnapshot>(progress.back()[0]);
+        QCOMPARE(final.bestMove, completed.evidence.bestMove);
+        QCOMPARE(final.ponder, completed.evidence.ponder);
+    }
     void malformedEvidence_data() {
         QTest::addColumn<QString>("output");
-        for (const auto& row : {std::pair{"illegal-pv", "info depth 1 score cp 10 pv e2e5\n"},
-                                {"bad-rank", "info multipv 2 score cp 10 pv e2e4\n"},
-                                {"bad-score", "info score cp broken pv e2e4\n"},
-                                {"bad-wdl", "info wdl 1000 1 0 pv e2e4\n"},
-                                {"overflow", "info nodes 18446744073709551616\n"},
-                                {"negative-depth", "info depth -1\n"},
-                                {"bad-bestmove", "bestmove e2e5\n"},
-                                {"null-live-position", "bestmove 0000\n"},
-                                {"illegal-ponder", "bestmove e2e4 ponder e2e3\n"},
-                                {"duplicate-field", "info depth 1 depth 2 score cp 1 pv e2e4\n"},
-                                {"unsolicited-ready", "readyok\n"},
-                                {"bundled-barrier", "bestmove e2e4\nreadyok\n"}}) {
+        for (const auto& row :
+             {std::pair{"invalid-current-move", "info score cp 20 pv e2e4 currmove e2e5\n"},
+              {"invalid-refutation", "info refutation e2e4 e7e\n"},
+              {"invalid-current-line", "info currline 1 e2e4 e7e5qq\n"},
+              {"invalid-cpu-number", "info currline 0 e2e4\n"},
+              {"invalid-cpu-load", "info cpuload 1001\n"},
+              {"invalid-move-number", "info currmovenumber 0\n"},
+              {"duplicate-auxiliary", "info sbhits 1 sbhits 2\n"},
+              {"trailing-bestmove", "bestmove e2e4 ponder e7e5 extra\n"},
+              {"illegal-pv", "info depth 1 score cp 10 pv e2e5\n"},
+              {"bad-rank", "info multipv 2 score cp 10 pv e2e4\n"},
+              {"bad-score", "info score cp broken pv e2e4\n"},
+              {"bad-wdl", "info wdl 1000 1 0 pv e2e4\n"},
+              {"overflow", "info nodes 18446744073709551616\n"},
+              {"negative-depth", "info depth -1\n"},
+              {"bad-bestmove", "bestmove e2e5\n"},
+              {"null-live-position", "bestmove 0000\n"},
+              {"illegal-ponder", "bestmove e2e4 ponder e2e3\n"},
+              {"duplicate-field", "info depth 1 depth 2 score cp 1 pv e2e4\n"},
+              {"unsolicited-ready", "readyok\n"},
+              {"bundled-barrier", "bestmove e2e4\nreadyok\n"}}) {
             QTest::newRow(row.first) << QString::fromUtf8(row.second);
         }
     }
@@ -275,6 +318,10 @@ class EngineAnalysisTest final : public QObject {
         QCOMPARE(result(done).error->code, ErrorCode::Protocol);
         QTRY_COMPARE(qvariant_cast<RuntimeState>(runtime.back()[0]).phase, RuntimePhase::Failed);
         QVERIFY(result(done).evidence.session == conversation.session);
+        QVERIFY(result(done).evidence.lines.empty());
+        if (!output.startsWith(QStringLiteral("bestmove e2e4\nreadyok"))) {
+            QVERIFY(!result(done).evidence.bestMove);
+        }
     }
     void probesAndStop() {
         Conversation conversation(identity, 70, 300);

@@ -73,6 +73,9 @@ add_dependencies(game_opening_tests shell_exit_probe)
 target_compile_definitions(game_opening_tests PRIVATE
     CHESS_REVIEW_EXIT_PROBE="$<TARGET_FILE:shell_exit_probe>")
 
+chess_review_add_qt_test(search_protocol_tests search_protocol
+    SOURCES qt/SearchProtocolTest.cpp LIBRARIES chess_review_engine)
+
 # Unix pipe transport; Windows support is intentionally not implemented yet.
 if(UNIX)
     add_executable(fake_uci_engine

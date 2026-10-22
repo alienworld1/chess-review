@@ -681,3 +681,13 @@ completion with no later stale progress. The engine thread continues independent
 A 4,000-ply/20-candidate stress case records caller heartbeat gaps and progress
 frames while processing 1,000 candidate updates. These are measured observations,
 not portable performance guarantees.
+
+## Search protocol parser
+
+`ctest --preset dev -R '^search_protocol$'` runs the process-free Qt Core parser
+suite on every supported platform, independently of the Unix-only fake UCI engine.
+It covers command guards, auxiliary-field validation, duplicate and partial fields,
+opaque strings, extension boundaries, numeric limits, legal continuations and root
+restrictions, special moves, terminal bestmoves, ponder grammar, position immutability,
+1,024-ply limits, and conservative evidence updates. The `engine_analysis` suite adds
+fragmented whitespace/output, final evidence delivery, and invalid-record retirement.
