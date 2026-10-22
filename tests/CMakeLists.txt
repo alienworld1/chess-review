@@ -72,3 +72,23 @@ chess_review_add_qt_test(game_opening_tests game_opening INTEGRATION WIDGETS
 add_dependencies(game_opening_tests shell_exit_probe)
 target_compile_definitions(game_opening_tests PRIVATE
     CHESS_REVIEW_EXIT_PROBE="$<TARGET_FILE:shell_exit_probe>")
+
+# Unix pipe transport; Windows support is intentionally not implemented yet.
+if(UNIX)
+    add_executable(fake_uci_engine
+        fake-uci-engine/main.cpp
+        fake-uci-engine/Scenario.cpp
+        fake-uci-engine/PipeIo.cpp)
+    set_target_properties(fake_uci_engine PROPERTIES
+        OUTPUT_NAME fake-uci-engine AUTOMOC OFF AUTOUIC OFF)
+    target_link_libraries(fake_uci_engine PRIVATE Qt6::Core)
+    chess_review_apply_options(fake_uci_engine)
+
+    chess_review_add_qt_test(fake_uci_tests fake_uci INTEGRATION
+        SOURCES qt/FakeUciTest.cpp
+        LIBRARIES Qt6::Core)
+    add_dependencies(fake_uci_tests fake_uci_engine)
+    target_compile_definitions(fake_uci_tests PRIVATE
+        FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>"
+        FAKE_UCI_SCENARIOS="${CMAKE_CURRENT_SOURCE_DIR}/fake-uci-engine/scenarios")
+endif()

@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "expect": "uci",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "uciok\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "isready",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "readyok\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "position startpos",
+      "actions": []
+    },
+    {
+      "expect": "go infinite",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "info string searching\n",
+          "afterMs": 0
+        },
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "info nodes 999 pv e2e4\n",
+          "afterMs": 100
+        }
+      ]
+    },
+    {
+      "expect": "isready",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "readyok\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "stop",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "bestmove e2e4\n",
+          "afterMs": 0
+        },
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "info string settled\n",
+          "afterMs": 150
+        }
+      ]
+    },
+    {
+      "expect": "quit",
+      "actions": [
+        {
+          "type": "exit"
+        }
+      ]
+    }
+  ]
+}

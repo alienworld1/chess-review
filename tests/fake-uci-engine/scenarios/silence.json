@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "expect": "uci",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "uciok\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "go infinite",
+      "actions": []
+    },
+    {
+      "expect": "stop",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "bestmove e2e4\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "quit",
+      "actions": [
+        {
+          "type": "exit"
+        }
+      ]
+    }
+  ]
+}

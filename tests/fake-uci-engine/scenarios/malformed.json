@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "expect": "uci",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "id na",
+          "afterMs": 0
+        },
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "me fake\r\nuci",
+          "afterMs": 0
+        },
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "ok\n",
+          "afterMs": 0
+        },
+        {
+          "type": "write",
+          "stream": "stderr",
+          "data": "private test stderr\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "isready",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "readyok\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "position startpos",
+      "actions": []
+    },
+    {
+      "expect": "go nodes 100",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "nonsense\ninfo depth nope score cp ???\ninfo string \u0000\tUnicode \u265f\n",
+          "afterMs": 0
+        },
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "bestmove z9z9",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "quit",
+      "actions": [
+        {
+          "type": "exit"
+        }
+      ]
+    }
+  ]
+}

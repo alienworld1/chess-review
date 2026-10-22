@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "expect": "uci",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "id name chess-review deterministic fake\nid author chess-review tests\noption name Threads type spin default 1 min 1 max 4\noption name Hash type spin default 16 min 1 max 128\noption name MultiPV type spin default 1 min 1 max 3\noption name UCI_ShowWDL type check default false\noption name Style type combo default Normal var Normal var Quiet\noption name Book Path type string default <empty>\noption name Clear Hash type button\nuciok\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "setoption name MultiPV value 2",
+      "actions": []
+    },
+    {
+      "expect": "setoption name UCI_ShowWDL value true",
+      "actions": []
+    },
+    {
+      "expect": "isready",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "readyok\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "ucinewgame",
+      "actions": []
+    },
+    {
+      "expect": "position startpos",
+      "actions": []
+    },
+    {
+      "expect": "go nodes 200",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "info depth 1 multipv 1 score cp 20 wdl 200 700 100 nodes 100 time 1 pv e2e4 e7e5\ninfo depth 1 multipv 2 score cp 10 wdl 180 700 120 nodes 100 time 1 pv d2d4 d7d5\n",
+          "afterMs": 0
+        },
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "info depth 2 multipv 1 score cp 25 wdl 210 690 100 nodes 200 time 2 pv e2e4 e7e5\nbestmove e2e4\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "position startpos moves f2f3 e7e5 g2g4",
+      "actions": []
+    },
+    {
+      "expect": "go depth 2",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "info depth 2 score mate 1 nodes 20 pv d8h4\nbestmove d8h4\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "quit",
+      "actions": [
+        {
+          "type": "exit"
+        }
+      ]
+    }
+  ]
+}

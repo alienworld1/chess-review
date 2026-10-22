@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "expect": "uci",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "uciok\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "go infinite",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "info string entering hang\n",
+          "afterMs": 0
+        },
+        {
+          "type": "hang"
+        }
+      ]
+    }
+  ]
+}

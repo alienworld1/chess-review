@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "expect": "uci",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "uciok\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "go nodes 100",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "info nodes 10\n",
+          "afterMs": 0
+        },
+        {
+          "type": "crash"
+        }
+      ]
+    }
+  ]
+}

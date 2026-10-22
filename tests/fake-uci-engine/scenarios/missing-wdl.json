@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "expect": "uci",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "id name generic fake\nuciok\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "position startpos",
+      "actions": []
+    },
+    {
+      "expect": "go nodes 100",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "info nodes 100 depth 1 score cp 12 pv e2e4\nbestmove e2e4\n",
+          "afterMs": 0
+        }
+      ]
+    },
+    {
+      "expect": "quit",
+      "actions": [
+        {
+          "type": "exit"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "expect": "uci",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "id name chess-review deterministic fake\nid author chess-review tests\n",
+          "afterMs": 0
+        },
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "uciok\n",
+          "afterMs": 200
+        }
+      ]
+    },
+    {
+      "expect": "isready",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "readyok\n",
+          "afterMs": 5
+        }
+      ]
+    },
+    {
+      "expect": "position startpos",
+      "actions": []
+    },
+    {
+      "expect": "go nodes 100",
+      "actions": [
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "info nodes 100 score cp 20 pv e2e4\n",
+          "afterMs": 20
+        },
+        {
+          "type": "write",
+          "stream": "stdout",
+          "data": "bestmove e2e4\n",
+          "afterMs": 30
+        }
+      ]
+    },
+    {
+      "expect": "quit",
+      "actions": [
+        {
+          "type": "exit"
+        }
+      ]
+    }
+  ]
+}
