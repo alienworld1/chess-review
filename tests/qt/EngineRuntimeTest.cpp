@@ -200,11 +200,14 @@ class EngineRuntimeTest final : public QObject {
     }
     void disconnectDuringHandshakeAndForcedCleanup_data() {
         QTest::addColumn<bool>("stubborn");
-        QTest::newRow("cancel-handshake") << false;
-        QTest::newRow("kill-ready-child") << true;
+        QTest::addColumn<bool>("waitingForReady");
+        QTest::newRow("cancel-handshake") << false << false;
+        QTest::newRow("cancel-readiness") << false << true;
+        QTest::newRow("kill-ready-child") << true << false;
     }
     void disconnectDuringHandshakeAndForcedCleanup() {
         QFETCH(bool, stubborn);
+        QFETCH(bool, waitingForReady);
         QTemporaryDir directory;
         engine_test::Validator fixture;
         const auto profile = registered(fixture.service, directory);
@@ -213,21 +216,35 @@ class EngineRuntimeTest final : public QObject {
             steps[2] = engine_test::step(
                 QStringLiteral("quit"),
                 {QJsonObject{{QStringLiteral("type"), QStringLiteral("stubbornHang")}}});
-        } else {
+        } else if (waitingForReady) {
             steps[1] = engine_test::step(QStringLiteral("isready"), {});
+        } else {
+            // Handshaking is published before uciok, so quit may precede isready.
+            // Keep the child in discovery and expect cancellation at that boundary.
+            steps[0] = engine_test::step(QStringLiteral("uci"), {});
+            steps.removeAt(1);
         }
         configure(fixture.service, directory, steps, 5000);
         QSignalSpy events(&fixture.service, &EngineSupervisor::runtimeChanged);
+        QSignalSpy progress(&fixture.service, &EngineSupervisor::progress);
         const auto session = QUuid::createUuid();
         fixture.service.connectEngine(session, profile);
         QTRY_COMPARE(latest(events).phase,
                      stubborn ? RuntimePhase::Ready : RuntimePhase::Handshaking);
+        if (waitingForReady) {
+            QTRY_VERIFY(!progress.empty() && progress.back()[1].toString() ==
+                                                 QStringLiteral("Waiting for engine readiness…"));
+        }
         fixture.service.disconnectEngine(session);
         QTRY_COMPARE(latest(events).phase,
                      stubborn ? RuntimePhase::Failed : RuntimePhase::Disconnected);
         if (stubborn) {
+            QVERIFY(latest(events).error);
             QCOMPARE(latest(events).error->code, ErrorCode::Cleanup);
+        } else {
+            QVERIFY(!latest(events).error);
         }
+        QCOMPARE(latest(events).session, session);
     }
     void disconnectBeforeLaunchAndReuse() {
         QTemporaryDir directory;
