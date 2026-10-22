@@ -1,5 +1,5 @@
 #pragma once
-#include "engine/ExecutableValidator.h"
+#include "engine/EngineSupervisor.h"
 #include "persistence/Database.h"
 #include <QObject>
 #include <cstdint>
@@ -21,12 +21,15 @@ struct EngineSettingsState {
     bool ready = false;
     bool listing = false;
     bool hasNext = false;
+    engine::RuntimeState runtime;
+    QString connectedDisplayName;
 };
 class EngineControllerTestAccess;
 class EngineSettingsController final : public QObject {
     Q_OBJECT
   public:
     explicit EngineSettingsController(persistence::Database& database,
+                                      engine::EngineSupervisor& supervisor,
                                       diagnostics::Logger* logger = nullptr,
                                       QObject* parent = nullptr);
     const EngineSettingsState& state() const { return state_; }
@@ -35,6 +38,8 @@ class EngineSettingsController final : public QObject {
     void registerSelected();
     void cancel();
     void refresh(std::int64_t offset = 0);
+    void connectEngine(std::int64_t profileId);
+    void disconnectEngine();
     void close();
   signals:
     void changed();
@@ -43,15 +48,15 @@ class EngineSettingsController final : public QObject {
   private:
     void finishClose();
     persistence::Database& database_;
-    diagnostics::Logger* logger_; // Outlives closed().
-    engine::ExecutableValidator validator_;
+    diagnostics::Logger* logger_;          // Outlives closed().
+    engine::EngineSupervisor& supervisor_; // Outlives closed().
     EngineSettingsState state_;
     QUuid selection_;
     QUuid registration_;
     QUuid listing_;
     std::int64_t requestedOffset_ = 0;
     bool closing_ = false;
-    bool validatorClosed_ = false;
+    bool supervisorClosed_ = false;
     bool saving_ = false;
     bool cancelRequested_ = false;
     bool closed_ = false;

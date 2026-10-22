@@ -1,5 +1,5 @@
 #pragma once
-#include "engine/ExecutableValidator.h"
+#include "engine/EngineSupervisor.h"
 #include <QEventLoop>
 #include <QFile>
 #include <QJsonArray>
@@ -10,8 +10,8 @@
 namespace chess_review::engine {
 class ValidatorTestAccess {
   public:
-    static void configure(ExecutableValidator& validator, const QString& scenario,
-                          int deadline = 300, qsizetype outputLimit = 1024 * 1024) {
+    static void configure(EngineSupervisor& validator, const QString& scenario, int deadline = 300,
+                          qsizetype outputLimit = 1024 * 1024) {
         validator.setTestArguments({QStringLiteral("--scenario"), scenario}, deadline, deadline,
                                    outputLimit);
     }
@@ -52,10 +52,10 @@ class Validator final {
   public:
     ~Validator() {
         QEventLoop loop;
-        QObject::connect(&service, &chess_review::engine::ExecutableValidator::closed, &loop,
+        QObject::connect(&service, &chess_review::engine::EngineSupervisor::closed, &loop,
                          &QEventLoop::quit);
         bool closed = false;
-        QObject::connect(&service, &chess_review::engine::ExecutableValidator::closed, &loop,
+        QObject::connect(&service, &chess_review::engine::EngineSupervisor::closed, &loop,
                          [&] { closed = true; });
         QTimer::singleShot(6000, &loop, &QEventLoop::quit);
         service.close();
@@ -64,6 +64,6 @@ class Validator final {
             qFatal("Validator did not close");
         }
     }
-    chess_review::engine::ExecutableValidator service;
+    chess_review::engine::EngineSupervisor service;
 };
 } // namespace engine_test

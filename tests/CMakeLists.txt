@@ -97,6 +97,11 @@ if(UNIX)
     add_dependencies(engine_validation_tests fake_uci_engine)
     target_compile_definitions(engine_validation_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
 
+    chess_review_add_qt_test(engine_runtime_tests engine_runtime INTEGRATION
+        SOURCES qt/EngineRuntimeTest.cpp LIBRARIES chess_review_engine)
+    add_dependencies(engine_runtime_tests fake_uci_engine)
+    target_compile_definitions(engine_runtime_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
+
     chess_review_add_qt_test(engine_settings_tests engine_settings INTEGRATION WIDGETS
         SOURCES qt/EngineSettingsTest.cpp LIBRARIES chess_review_ui)
     add_dependencies(engine_settings_tests fake_uci_engine)

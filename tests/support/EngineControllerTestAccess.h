@@ -3,8 +3,8 @@
 namespace chess_review::app {
 class EngineControllerTestAccess {
   public:
-    static engine::ExecutableValidator& validator(EngineSettingsController& controller) {
-        return controller.validator_;
+    static engine::EngineSupervisor& validator(EngineSettingsController& controller) {
+        return controller.supervisor_;
     }
 };
 } // namespace chess_review::app

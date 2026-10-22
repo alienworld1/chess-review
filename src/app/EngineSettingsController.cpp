@@ -1,13 +1,52 @@
 #include "app/EngineSettingsController.h"
 #include "diagnostics/Logger.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace chess_review::app {
+namespace {
+bool acceptsRuntimePhase(engine::RuntimePhase current, engine::RuntimePhase next) {
+    using engine::RuntimePhase;
+    if (next == RuntimePhase::Failed || next == RuntimePhase::Disconnected ||
+        next == RuntimePhase::Disconnecting) {
+        return engine::runtimeActive(current);
+    }
+    switch (current) {
+    case RuntimePhase::CheckingExecutable:
+        return next == RuntimePhase::CheckingExecutable || next == RuntimePhase::Starting;
+    case RuntimePhase::Starting:
+        return next == RuntimePhase::Handshaking;
+    case RuntimePhase::Handshaking:
+        return next == RuntimePhase::Ready;
+    default:
+        return false;
+    }
+}
+} // namespace
 EngineSettingsController::EngineSettingsController(persistence::Database& database,
+                                                   engine::EngineSupervisor& supervisor,
                                                    diagnostics::Logger* logger, QObject* parent)
-    : QObject(parent), database_(database), logger_(logger) {
-    connect(&validator_, &engine::ExecutableValidator::inspected, this,
+    : QObject(parent), database_(database), logger_(logger), supervisor_(supervisor) {
+    connect(&supervisor_, &engine::EngineSupervisor::runtimeChanged, this,
+            [this](const engine::RuntimeState& state) {
+                if (closing_ || state.session != state_.runtime.session ||
+                    state.profileId != state_.runtime.profileId ||
+                    !acceptsRuntimePhase(state_.runtime.phase, state.phase)) {
+                    return;
+                }
+                state_.runtime = state;
+                if (logger_) {
+                    diagnostics::Context context;
+                    context.count = static_cast<quint64>(state.phase);
+                    if (state.error) {
+                        context.errorCode = static_cast<int>(state.error->code);
+                    }
+                    logger_->record(diagnostics::Event::EngineRuntimeChanged, context);
+                }
+                emit changed();
+            });
+    connect(&supervisor_, &engine::EngineSupervisor::inspected, this,
             [this](QUuid request, const engine::PathResult& result) {
                 if (closing_ || request != selection_ ||
                     state_.registration != EngineRegistrationState::Inspecting) {
@@ -25,7 +64,7 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                 }
                 emit changed();
             });
-    connect(&validator_, &engine::ExecutableValidator::progress, this,
+    connect(&supervisor_, &engine::EngineSupervisor::progress, this,
             [this](QUuid request, const QString& message) {
                 if (!closing_ && !cancelRequested_ && request == registration_ &&
                     state_.registration == EngineRegistrationState::Validating) {
@@ -34,7 +73,7 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                 }
             });
     connect(
-        &validator_, &engine::ExecutableValidator::completed, this,
+        &supervisor_, &engine::EngineSupervisor::completed, this,
         [this](QUuid request, const engine::ValidationResult& result) {
             if (request != registration_ ||
                 state_.registration != EngineRegistrationState::Validating) {
@@ -124,8 +163,8 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                 }
                 emit changed();
             });
-    connect(&validator_, &engine::ExecutableValidator::closed, this, [this] {
-        validatorClosed_ = true;
+    connect(&supervisor_, &engine::EngineSupervisor::closed, this, [this] {
+        supervisorClosed_ = true;
         finishClose();
     });
 }
@@ -140,7 +179,7 @@ void EngineSettingsController::setReady(bool ready) {
     emit changed();
 }
 void EngineSettingsController::selectExecutable(const QString& path) {
-    if (closing_ || !state_.ready || saving_ ||
+    if (closing_ || !state_.ready || saving_ || engine::runtimeActive(state_.runtime.phase) ||
         state_.registration == EngineRegistrationState::Validating) {
         return;
     }
@@ -148,11 +187,12 @@ void EngineSettingsController::selectExecutable(const QString& path) {
     state_.selectedPath.clear();
     state_.registration = EngineRegistrationState::Inspecting;
     state_.message = QStringLiteral("Checking executable path…");
-    validator_.inspect(selection_, path);
+    supervisor_.inspect(selection_, path);
     emit changed();
 }
 void EngineSettingsController::registerSelected() {
-    if (closing_ || !state_.ready || state_.registration != EngineRegistrationState::Selected) {
+    if (closing_ || !state_.ready || engine::runtimeActive(state_.runtime.phase) ||
+        state_.registration != EngineRegistrationState::Selected) {
         return;
     }
     if (logger_) {
@@ -162,7 +202,7 @@ void EngineSettingsController::registerSelected() {
     registration_ = QUuid::createUuid();
     state_.registration = EngineRegistrationState::Validating;
     state_.message = QStringLiteral("Preparing executable validation…");
-    validator_.validate(registration_, state_.selectedPath);
+    supervisor_.validate(registration_, state_.selectedPath);
     emit changed();
 }
 void EngineSettingsController::cancel() {
@@ -172,7 +212,7 @@ void EngineSettingsController::cancel() {
     if (state_.registration == EngineRegistrationState::Validating) {
         cancelRequested_ = true;
         state_.message = QStringLiteral("Cancelling and closing engine…");
-        validator_.cancel();
+        supervisor_.cancel();
     } else {
         selection_ = {};
         state_.selectedPath.clear();
@@ -191,6 +231,34 @@ void EngineSettingsController::refresh(std::int64_t offset) {
     database_.listEngines(listing_, offset, 51);
     emit changed();
 }
+void EngineSettingsController::connectEngine(std::int64_t profileId) {
+    if (closing_ || !state_.ready || saving_ || engine::runtimeActive(state_.runtime.phase) ||
+        state_.registration == EngineRegistrationState::Inspecting ||
+        state_.registration == EngineRegistrationState::Validating) {
+        return;
+    }
+    const auto found = std::find_if(
+        state_.profiles.begin(), state_.profiles.end(),
+        [profileId](const engine::EngineProfile& profile) { return profile.id == profileId; });
+    if (found == state_.profiles.end()) {
+        return;
+    }
+    state_.runtime = {
+        QUuid::createUuid(), profileId, engine::RuntimePhase::CheckingExecutable, {}, {}};
+    state_.connectedDisplayName = found->displayName;
+    supervisor_.connectEngine(state_.runtime.session, *found);
+    emit changed();
+}
+void EngineSettingsController::disconnectEngine() {
+    if (closing_ || !engine::runtimeActive(state_.runtime.phase) ||
+        state_.runtime.phase == engine::RuntimePhase::Disconnecting) {
+        return;
+    }
+    state_.runtime.phase = engine::RuntimePhase::Disconnecting;
+    state_.runtime.discovery.reset();
+    supervisor_.disconnectEngine(state_.runtime.session);
+    emit changed();
+}
 void EngineSettingsController::close() {
     if (closing_) {
         return;
@@ -198,11 +266,11 @@ void EngineSettingsController::close() {
     closing_ = true;
     state_.ready = false;
     state_.registration = EngineRegistrationState::Closing;
-    validator_.close();
+    supervisor_.close();
     emit changed();
 }
 void EngineSettingsController::finishClose() {
-    if (!closing_ || !validatorClosed_ || saving_ || closed_) {
+    if (!closing_ || !supervisorClosed_ || saving_ || closed_) {
         return;
     }
     closed_ = true;

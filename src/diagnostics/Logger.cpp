@@ -73,6 +73,8 @@ const char* eventName(Event event) {
         return "engine.validation_failed";
     case Event::EngineRegistrationFinished:
         return "engine.registration_finished";
+    case Event::EngineRuntimeChanged:
+        return "engine.runtime_changed";
     case Event::UiStateFailed:
         return "ui_state.failed";
     case Event::EventsDropped:

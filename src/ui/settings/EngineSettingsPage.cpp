@@ -1,4 +1,5 @@
 #include "ui/settings/EngineSettingsPage.h"
+#include <QComboBox>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -6,6 +7,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -61,16 +63,53 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     profiles_->horizontalHeader()->setStretchLastSection(true);
     profiles_->setColumnWidth(0, 200);
     profiles_->setColumnWidth(1, 300);
-    profiles_->setMinimumHeight(180);
+    profiles_->setMinimumHeight(150);
     layout->addWidget(profiles_);
     details_ = new QPlainTextEdit(this);
     details_->setObjectName(QStringLiteral("engineProfileDetails"));
     details_->setAccessibleName(tr("Selected engine details"));
     details_->setReadOnly(true);
-    details_->setMaximumHeight(100);
     details_->setPlaceholderText(
         tr("Select an engine to inspect and copy its full name and path."));
-    layout->addWidget(details_);
+    detailsTabs_ = new QTabWidget(this);
+    detailsTabs_->setMaximumHeight(170);
+    detailsTabs_->addTab(details_, tr("Saved profile"));
+    layout->addWidget(detailsTabs_);
+    auto* connectionActions = new QHBoxLayout;
+    connect_ = new QPushButton(tr("&Connect"), this);
+    connect_->setObjectName(QStringLiteral("connectEngine"));
+    disconnect_ = new QPushButton(tr("&Disconnect"), this);
+    disconnect_->setObjectName(QStringLiteral("disconnectEngine"));
+    connectionActions->addWidget(connect_);
+    connectionActions->addWidget(disconnect_);
+    connectionActions->addStretch();
+    layout->addLayout(connectionActions);
+    runtimeStatus_ = plainLabel(this);
+    runtimeStatus_->setObjectName(QStringLiteral("engineRuntimeStatus"));
+    layout->addWidget(runtimeStatus_);
+    auto* liveDetails = new QWidget(detailsTabs_);
+    auto* liveLayout = new QVBoxLayout(liveDetails);
+    options_ = new QComboBox(this);
+    options_->setObjectName(QStringLiteral("engineRuntimeOptions"));
+    options_->setAccessibleName(tr("Advertised UCI options (read only)"));
+    options_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    options_->setMinimumContentsLength(20);
+    liveLayout->addWidget(options_);
+    optionDetails_ = new QPlainTextEdit(this);
+    optionDetails_->setObjectName(QStringLiteral("engineRuntimeOptionDetails"));
+    optionDetails_->setAccessibleName(tr("Full UCI option declaration (read only)"));
+    optionDetails_->setReadOnly(true);
+    liveLayout->addWidget(optionDetails_);
+    detailsTabs_->addTab(liveDetails, tr("Live options (read only)"));
+    connect(options_, &QComboBox::currentIndexChanged, this, &EngineSettingsPage::updateOption);
+    connect(connect_, &QPushButton::clicked, this, [this] {
+        const auto row = profiles_->currentRow();
+        if (row >= 0 && !profiles_->selectedItems().isEmpty()) {
+            controller_.connectEngine(profiles_->item(row, 0)->data(Qt::UserRole).toLongLong());
+        }
+    });
+    connect(disconnect_, &QPushButton::clicked, &controller_,
+            &app::EngineSettingsController::disconnectEngine);
     connect(profiles_, &QTableWidget::itemSelectionChanged, this,
             &EngineSettingsPage::updateDetails);
     auto* pagination = new QHBoxLayout;
@@ -143,13 +182,15 @@ void EngineSettingsPage::updateState() {
     using app::EngineRegistrationState;
     const bool busy = state.registration == EngineRegistrationState::Validating ||
                       state.registration == EngineRegistrationState::Saving ||
-                      state.registration == EngineRegistrationState::Closing;
+                      state.registration == EngineRegistrationState::Closing ||
+                      engine::runtimeActive(state.runtime.phase);
     browse_->setEnabled(state.ready && !busy && !picking_ &&
                         state.registration != EngineRegistrationState::Inspecting);
     if (!state.ready && picking_) {
         picker_->reject();
     }
-    add_->setEnabled(state.ready && state.registration == EngineRegistrationState::Selected);
+    add_->setEnabled(state.ready && !busy &&
+                     state.registration == EngineRegistrationState::Selected);
     cancel_->setEnabled(state.ready && state.registration != EngineRegistrationState::Idle &&
                         state.registration != EngineRegistrationState::Saving);
     path_->setText(state.selectedPath.isEmpty() ? tr("No executable selected.")
@@ -164,6 +205,7 @@ void EngineSettingsPage::updateState() {
     previous_->setEnabled(state.ready && !state.listing && state.offset > 0);
     next_->setEnabled(state.ready && !state.listing && state.hasNext);
     refresh_->setEnabled(state.ready && !state.listing);
+    updateRuntime();
     if (profilesRevision_ == state.profilesRevision) {
         return;
     }
@@ -195,6 +237,7 @@ void EngineSettingsPage::updateState() {
     updateDetails();
 }
 void EngineSettingsPage::updateDetails() {
+    updateRuntime();
     const auto& profiles = controller_.state().profiles;
     const auto row = profiles_->currentRow();
     if (row < 0 || static_cast<std::size_t>(row) >= profiles.size() ||
@@ -206,5 +249,120 @@ void EngineSettingsPage::updateDetails() {
     details_->setPlainText(
         tr("Engine: %1\nExecutable: %2")
             .arg(presented(profile.displayName), presented(profile.engine.executablePath)));
+}
+void EngineSettingsPage::updateRuntime() {
+    const auto& state = controller_.state();
+    using engine::RuntimePhase;
+    const auto phase = state.runtime.phase;
+    connect_->setEnabled(state.ready && !engine::runtimeActive(phase) &&
+                         state.registration != app::EngineRegistrationState::Inspecting &&
+                         state.registration != app::EngineRegistrationState::Validating &&
+                         state.registration != app::EngineRegistrationState::Saving &&
+                         !profiles_->selectedItems().isEmpty());
+    disconnect_->setEnabled(state.ready && engine::runtimeActive(phase) &&
+                            phase != RuntimePhase::Disconnecting);
+    QString status;
+    switch (phase) {
+    case RuntimePhase::Disconnected:
+        status = tr("Disconnected");
+        break;
+    case RuntimePhase::CheckingExecutable:
+        status = tr("Checking executable…");
+        break;
+    case RuntimePhase::Starting:
+        status = tr("Starting…");
+        break;
+    case RuntimePhase::Handshaking:
+        status = tr("Handshaking…");
+        break;
+    case RuntimePhase::Ready:
+        status = tr("Ready — handshake completed; no analysis requested.");
+        break;
+    case RuntimePhase::Disconnecting:
+        status = tr("Disconnecting…");
+        break;
+    case RuntimePhase::Failed:
+        status = tr("Failed");
+        break;
+    }
+    if (!state.connectedDisplayName.isEmpty()) {
+        status.prepend(presented(clipped(state.connectedDisplayName)) + QStringLiteral(": "));
+    }
+    if (state.runtime.error) {
+        status += QStringLiteral("\n") + state.runtime.error->message;
+    }
+    if (state.runtime.discovery) {
+        const auto& value = *state.runtime.discovery;
+        const auto yesNo = [](bool supported) { return supported ? tr("Yes") : tr("No"); };
+        status += tr("\nAdvertised support — MultiPV: %1; WDL: %2; Threads: %3; Hash: %4")
+                      .arg(yesNo(value.capabilities.supportsMultiPv),
+                           yesNo(value.capabilities.supportsWdl),
+                           yesNo(value.capabilities.supportsThreads),
+                           yesNo(value.capabilities.supportsHash));
+    }
+    runtimeStatus_->setText(status);
+    detailsTabs_->setTabEnabled(1, state.runtime.discovery.has_value());
+    if (discovery_ == state.runtime.discovery) {
+        return;
+    }
+    discovery_ = state.runtime.discovery;
+    detailsTabs_->setCurrentIndex(discovery_ ? 1 : 0);
+    const QSignalBlocker blocker(options_);
+    options_->clear();
+    if (discovery_) {
+        for (const auto& option : discovery_->capabilities.options) {
+            options_->addItem(clipped(presented(option.name)));
+        }
+    }
+    options_->setEnabled(options_->count() > 0);
+    updateOption();
+}
+void EngineSettingsPage::updateOption() {
+    const auto index = options_->currentIndex();
+    if (!discovery_) {
+        optionDetails_->setPlainText(tr("Connect an engine to inspect its advertised options."));
+        return;
+    }
+    const auto identity =
+        tr("Reported name: %1\nAuthor: %2")
+            .arg(presented(discovery_->reportedName),
+                 presented(discovery_->reportedAuthor.value_or(tr("Not provided"))));
+    if (index < 0) {
+        optionDetails_->setPlainText(identity + tr("\nNo UCI options advertised."));
+        return;
+    }
+    const auto& value = discovery_->capabilities.options[index];
+    QString type;
+    switch (value.type) {
+    case engine::OptionType::Check:
+        type = QStringLiteral("check");
+        break;
+    case engine::OptionType::Spin:
+        type = QStringLiteral("spin");
+        break;
+    case engine::OptionType::Combo:
+        type = QStringLiteral("combo");
+        break;
+    case engine::OptionType::Button:
+        type = QStringLiteral("button");
+        break;
+    case engine::OptionType::String:
+        type = QStringLiteral("string");
+        break;
+    }
+    QString text = identity + QStringLiteral("\n\n") +
+                   tr("Name: %1\nType: %2\nDefault: %3")
+                       .arg(presented(value.name), type, presented(value.defaultValue));
+    if (value.minimum && value.maximum) {
+        text += tr("\nMinimum: %1\nMaximum: %2").arg(*value.minimum).arg(*value.maximum);
+    }
+    if (!value.choices.isEmpty()) {
+        QStringList choices;
+        for (const auto& choice : value.choices) {
+            choices.append(presented(choice));
+        }
+        text += tr("\nChoices:\n%1").arg(choices.join(u'\n'));
+    }
+    optionDetails_->setPlainText(text);
 }
 } // namespace chess_review::ui

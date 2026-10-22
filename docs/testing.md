@@ -589,3 +589,19 @@ and inserts that fail their readback postcondition. Settings checks full details
 visible escapes for invisible engine text, and no table data changes during
 selection/progress. These tests supplement the original cancellation, shutdown,
 output-limit, persistence, and application-exit coverage.
+
+## Runtime UCI handshake
+
+`engine_runtime` exercises the reusable `EngineSupervisor` through real scripted
+children. Registration and runtime use the same handshake implementation. Runtime
+cases cover persistent Ready, single-child admission, discovery equivalence and
+mismatch, changed saved hashes, unsupported overrides, fragmented/minimal output,
+idle crashes and invalid output, output bounds, handshake cancellation/timeouts,
+forced cleanup, startup shutdown, and reconnect with fresh state.
+
+`engine_settings` also checks explicit Connect/Disconnect, read-only full option
+declarations, live state across navigation/selection, stale callback rejection and
+unchanged saved profiles. `engine_exit` closes production main while connected and
+reopens the saved registry without launching an engine. Screenshot capture through
+`CHESS_REVIEW_ENGINE_SCREENSHOTS` includes connected Settings at 1100×720 and
+1360×850. These checks retain the existing Linux/Unix platform limits.

@@ -55,6 +55,12 @@ void installDriver() {
                     [window, &controller, mode] {
                         using State = chess_review::app::EngineRegistrationState;
                         const auto state = controller.state().registration;
+                        if (mode == QStringLiteral("connected") &&
+                            controller.state().profiles.size() == 1 &&
+                            controller.state().runtime.session.isNull()) {
+                            controller.connectEngine(controller.state().profiles.front().id);
+                            return;
+                        }
                         if (state == State::Selected) {
                             controller.registerSelected();
                             return;
@@ -63,6 +69,9 @@ void installDriver() {
                              controller.state().message ==
                                  QStringLiteral("Waiting for engine readiness…")) ||
                             (mode == QStringLiteral("saving") && state == State::Saving) ||
+                            (mode == QStringLiteral("connected") &&
+                             controller.state().runtime.phase ==
+                                 chess_review::engine::RuntimePhase::Ready) ||
                             (mode == QStringLiteral("add") &&
                              controller.state().profiles.size() == 1)) {
                             std::fputs("engine-close-requested\n", stdout);

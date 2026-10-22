@@ -14,6 +14,7 @@ class EngineExitTest final : public QObject {
         QTest::newRow("during-validation") << QStringLiteral("validating");
         QTest::newRow("during-save") << QStringLiteral("saving");
         QTest::newRow("after-add") << QStringLiteral("add");
+        QTest::newRow("connected-ready") << QStringLiteral("connected");
     }
     void actualExit() {
 #ifndef Q_OS_LINUX

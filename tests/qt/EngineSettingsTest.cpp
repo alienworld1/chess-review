@@ -4,6 +4,7 @@
 #include "app/StartupCoordinator.h"
 #include "ui/shell/MainWindow.h"
 #include <QApplication>
+#include <QComboBox>
 #include <QEventLoop>
 #include <QLabel>
 #include <QPlainTextEdit>
@@ -94,7 +95,7 @@ class EngineSettingsTest final : public QObject {
                     }
                 });
             auto& validator = app::EngineControllerTestAccess::validator(controller);
-            connect(&validator, &engine::ExecutableValidator::completed, &registrationObserver,
+            connect(&validator, &engine::EngineSupervisor::completed, &registrationObserver,
                     [&](QUuid request, const engine::ValidationResult& result) {
                         if (!replayed && std::holds_alternative<engine::ValidatedEngine>(result)) {
                             replayed = true;
@@ -139,11 +140,100 @@ class EngineSettingsTest final : public QObject {
             // No scenario is configured: any unintended launch would fail the fixture executable.
             QSignalSpy progress(
                 &app::EngineControllerTestAccess::validator(application.startup.engines()),
-                &engine::ExecutableValidator::progress);
+                &engine::EngineSupervisor::progress);
             application.startup.start(database);
             QTRY_COMPARE(application.startup.engines().state().profiles.size(), std::size_t(1));
             QCOMPARE(progress.size(), 0);
         }
+    }
+    void runtimeConnectionAndReadOnlyOptions() {
+        QTemporaryDir directory;
+        Application application;
+        auto& controller = application.startup.engines();
+        auto& supervisor = app::EngineControllerTestAccess::validator(controller);
+        const auto script = engine_test::scenario(
+            directory.filePath(QStringLiteral("runtime.json")),
+            engine_test::handshake(QStringLiteral(
+                "id name <b>Runtime</b>\nid author Tests\n"
+                "option name Threads type spin default 1 min 1 max 4\n"
+                "option name Style type combo default Quiet var Quiet var Aggressive\nuciok\n")));
+        engine::ValidatorTestAccess::configure(supervisor, script);
+        QSignalSpy runtimeEvents(&supervisor, &engine::EngineSupervisor::runtimeChanged);
+        application.startup.start(directory.filePath(QStringLiteral("library.sqlite3")));
+        QTRY_VERIFY(controller.state().ready);
+        controller.selectExecutable(QString::fromUtf8(FAKE_UCI_ENGINE));
+        QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Selected);
+        controller.registerSelected();
+        QTRY_COMPARE(controller.state().profiles.size(), std::size_t(1));
+        const auto saved = controller.state().profiles.front();
+        QCOMPARE(runtimeEvents.size(), 0);
+        auto* table = application.window.findChild<QTableWidget*>(QStringLiteral("engineProfiles"));
+        auto* connectButton =
+            application.window.findChild<QPushButton*>(QStringLiteral("connectEngine"));
+        auto* disconnectButton =
+            application.window.findChild<QPushButton*>(QStringLiteral("disconnectEngine"));
+        auto* options =
+            application.window.findChild<QComboBox*>(QStringLiteral("engineRuntimeOptions"));
+        auto* details = application.window.findChild<QPlainTextEdit*>(
+            QStringLiteral("engineRuntimeOptionDetails"));
+        auto* status = application.window.findChild<QLabel*>(QStringLiteral("engineRuntimeStatus"));
+        QVERIFY(connectButton && disconnectButton && options && details && status);
+        QVERIFY(!connectButton->isEnabled());
+        table->selectRow(0);
+        QVERIFY(connectButton->isEnabled());
+        application.navigation.navigate(app::Destination::Settings);
+        application.window.show();
+        connectButton->click();
+        QTRY_COMPARE(controller.state().runtime.phase, engine::RuntimePhase::Ready);
+        const auto ready = controller.state().runtime;
+        QVERIFY(status->text().contains(QStringLiteral("<b>Runtime</b>")));
+        QCOMPARE(status->textFormat(), Qt::PlainText);
+        QCOMPARE(options->count(), 2);
+        QVERIFY(details->isReadOnly());
+        QVERIFY(details->toPlainText().contains(QStringLiteral("Maximum: 4")));
+        options->setCurrentIndex(1);
+        QVERIFY(details->toPlainText().contains(QStringLiteral("Aggressive")));
+        QVERIFY(disconnectButton->isEnabled());
+        QVERIFY(!connectButton->isEnabled());
+        const auto selectedPath = controller.state().selectedPath;
+        controller.selectExecutable(QStringLiteral("/cannot-select-while-connected"));
+        controller.registerSelected();
+        QCOMPARE(controller.state().selectedPath, selectedPath);
+        QVERIFY(controller.state().registration != app::EngineRegistrationState::Validating);
+        auto stale = ready;
+        stale.session = QUuid::createUuid();
+        stale.phase = engine::RuntimePhase::Failed;
+        emit supervisor.runtimeChanged(stale);
+        stale = ready;
+        stale.phase = engine::RuntimePhase::Handshaking;
+        emit supervisor.runtimeChanged(stale);
+        QCOMPARE(controller.state().runtime.phase, engine::RuntimePhase::Ready);
+        application.navigation.navigate(app::Destination::Analyze);
+        application.navigation.navigate(app::Destination::Settings);
+        QCOMPARE(controller.state().runtime.phase, engine::RuntimePhase::Ready);
+        table->clearSelection();
+        QVERIFY(disconnectButton->isEnabled());
+        QCOMPARE(controller.state().connectedDisplayName, saved.displayName);
+        application.window.resize(1100, 720);
+        const auto screenshots = qEnvironmentVariable("CHESS_REVIEW_ENGINE_SCREENSHOTS");
+        if (!screenshots.isEmpty()) {
+            QVERIFY(
+                application.window.grab().save(screenshots + QStringLiteral("/runtime-1100.png")));
+            application.window.resize(1360, 850);
+            QVERIFY(
+                application.window.grab().save(screenshots + QStringLiteral("/runtime-1360.png")));
+        }
+        disconnectButton->click();
+        emit supervisor.runtimeChanged(ready); // Queued success cannot undo cancellation.
+        QTRY_COMPARE(controller.state().runtime.phase, engine::RuntimePhase::Disconnected);
+        controller.refresh();
+        QTRY_VERIFY(!controller.state().listing);
+        QCOMPARE(controller.state().profiles.front(), saved);
+        QVERIFY(!disconnectButton->isEnabled());
+        table->selectRow(0);
+        connectButton->click();
+        QTRY_COMPARE(controller.state().runtime.phase, engine::RuntimePhase::Ready);
+        // Application fixture shutdown must also reap a connected child.
     }
     void invisibleEngineTextIsVisibleAndFullDetailsAreAvailable() {
         QTemporaryDir directory;
@@ -188,7 +278,7 @@ class EngineSettingsTest final : public QObject {
             }
         });
         auto& validator = app::EngineControllerTestAccess::validator(controller);
-        connect(&validator, &engine::ExecutableValidator::progress, this,
+        connect(&validator, &engine::EngineSupervisor::progress, this,
                 [&](QUuid request, const QString& message) {
                     if (message == QStringLiteral("Checking executable is unchanged…")) {
                         emit validator.progress(request, QStringLiteral("stale progress"));

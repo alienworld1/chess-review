@@ -31,7 +31,10 @@ Normal records cover session/storage lifecycle, schema version, backup/migration
 outcomes, elapsed time, and stable error codes. Engine registration adds validation
 start/success/failure and registration-completion events. Registration counts
 separate new entries (one) from duplicates (zero); failures carry typed numeric error
-codes. Engine identity, options, paths, and raw stdout/stderr remain excluded. For extra safe intermediate events
+codes. Runtime connections add `engine.runtime_changed`; its numeric `count` is
+the runtime phase (Disconnected=0, CheckingExecutable=1, Starting=2, Handshaking=3,
+Ready=4, Disconnecting=5, Failed=6), with a typed numeric error code on failure.
+Engine identity, options, paths, and raw stdout/stderr remain excluded. For extra safe intermediate events
 on one launch:
 
 ```sh

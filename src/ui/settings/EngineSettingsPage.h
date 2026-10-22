@@ -6,6 +6,8 @@ class QPushButton;
 class QPlainTextEdit;
 class QFileDialog;
 class QTableWidget;
+class QComboBox;
+class QTabWidget;
 namespace chess_review::ui {
 class EnginePageTestAccess;
 class EngineSettingsPage final : public QWidget {
@@ -18,6 +20,8 @@ class EngineSettingsPage final : public QWidget {
     friend class EnginePageTestAccess;
     void updateState();
     void updateDetails();
+    void updateRuntime();
+    void updateOption();
     app::EngineSettingsController& controller_;
     QTableWidget* profiles_;
     QPlainTextEdit* details_;
@@ -33,5 +37,12 @@ class EngineSettingsPage final : public QWidget {
     QPushButton* previous_;
     QPushButton* next_;
     QPushButton* refresh_;
+    QPushButton* connect_;
+    QPushButton* disconnect_;
+    QLabel* runtimeStatus_;
+    QComboBox* options_;
+    QPlainTextEdit* optionDetails_;
+    QTabWidget* detailsTabs_;
+    std::optional<engine::ValidatedEngine> discovery_;
 };
 } // namespace chess_review::ui

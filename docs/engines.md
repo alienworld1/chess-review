@@ -49,3 +49,34 @@ options. Raw output and executable paths are not written to diagnostic logs.
 These checks detect ordinary errors and observed replacement. They do not protect
 against malicious concurrent same-user filesystem changes or arbitrary filesystem
 stalls. Keep engine binaries and the application database on trusted local storage.
+
+## Live handshake connections
+
+Select a saved engine and choose **Connect** to launch it and rediscover its UCI
+identity and options. The executable hash must match registration. Reported name,
+author and option declarations must also match; declaration order and option-name
+casing are ignored. A mismatch leaves the saved profile unchanged. Replacement
+management is not available yet.
+
+**Ready** means the UCI handshake and readiness response completed. No position
+or search is sent, no options are changed, and engine defaults remain in effect.
+The capability summary describes advertised support; WDL output and analysis
+correctness are not verified. The read-only option selector shows full identity,
+option type, default, bounds and choices. Engine-provided text is escaped for
+invisible formatting and displayed as plain text.
+
+The connection stays alive across page navigation until **Disconnect**, failure,
+or application exit. Disconnect also cancels startup. Registration and runtime
+connections share one supervisor thread and allow only one child process at a
+time. Disconnect before validating or connecting another engine. The active
+engine remains identified even when another row is selected or another list page
+is loaded.
+
+The application monitors process exit and protocol violations but does not send
+periodic readiness probes. A crash, timeout or invalid response triggers cleanup
+and a visible failure; reconnect requires another explicit **Connect**. Cleanup
+uses the same quit/terminate/kill deadlines as registration. Output limits apply
+to the whole connected session, including idle stdout and stderr. Failed or
+forcibly disconnected sessions are never reused. Opening Settings or restarting
+the application never restores a live connection automatically. Saved validation
+timestamps and profiles are not updated by connecting.

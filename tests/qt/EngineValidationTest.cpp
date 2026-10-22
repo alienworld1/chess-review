@@ -72,7 +72,7 @@ class EngineValidationTest final : public QObject {
         ValidatorTestAccess::configure(
             validator.service,
             engine_test::scenario(directory.filePath(QStringLiteral("script.json")), steps));
-        QSignalSpy done(&validator.service, &ExecutableValidator::completed);
+        QSignalSpy done(&validator.service, &EngineSupervisor::completed);
         validator.service.validate(
             QUuid::createUuid(), QFileInfo(QString::fromUtf8(FAKE_UCI_ENGINE)).canonicalFilePath());
         QTRY_COMPARE(done.size(), 1);
@@ -113,7 +113,7 @@ class EngineValidationTest final : public QObject {
         ValidatorTestAccess::configure(
             validator.service,
             engine_test::scenario(directory.filePath(QStringLiteral("script.json")), steps));
-        QSignalSpy done(&validator.service, &ExecutableValidator::completed);
+        QSignalSpy done(&validator.service, &EngineSupervisor::completed);
         int heartbeat = 0;
         QTimer timer;
         connect(&timer, &QTimer::timeout, this, [&] { ++heartbeat; });
@@ -179,7 +179,7 @@ class EngineValidationTest final : public QObject {
         ValidatorTestAccess::configure(
             validator.service,
             engine_test::scenario(directory.filePath(QStringLiteral("script.json")), steps));
-        QSignalSpy done(&validator.service, &ExecutableValidator::completed);
+        QSignalSpy done(&validator.service, &EngineSupervisor::completed);
         validator.service.validate(
             QUuid::createUuid(), QFileInfo(QString::fromUtf8(FAKE_UCI_ENGINE)).canonicalFilePath());
         QTRY_COMPARE(done.size(), 1);
@@ -199,7 +199,7 @@ class EngineValidationTest final : public QObject {
         ValidatorTestAccess::configure(
             validator.service,
             engine_test::scenario(directory.filePath(QStringLiteral("script.json")), steps));
-        QSignalSpy done(&validator.service, &ExecutableValidator::completed);
+        QSignalSpy done(&validator.service, &EngineSupervisor::completed);
         validator.service.validate(
             QUuid::createUuid(), QFileInfo(QString::fromUtf8(FAKE_UCI_ENGINE)).canonicalFilePath());
         QTRY_COMPARE(done.size(), 1);
@@ -243,8 +243,8 @@ class EngineValidationTest final : public QObject {
             engine_test::scenario(directory.filePath(QStringLiteral("script.json")), steps),
             // Sanitizer abort reporting can outlive the deliberately short timeout fixtures.
             mode == QStringLiteral("crash") ? 5000 : 300);
-        QSignalSpy progress(&validator.service, &ExecutableValidator::progress);
-        QSignalSpy done(&validator.service, &ExecutableValidator::completed);
+        QSignalSpy progress(&validator.service, &EngineSupervisor::progress);
+        QSignalSpy done(&validator.service, &EngineSupervisor::completed);
         validator.service.validate(
             QUuid::createUuid(), QFileInfo(QString::fromUtf8(FAKE_UCI_ENGINE)).canonicalFilePath());
         if (mode == QStringLiteral("cancel")) {
@@ -280,14 +280,14 @@ class EngineValidationTest final : public QObject {
                                   engine_test::handshake()),
             1000);
         bool appended = false;
-        connect(&validator.service, &ExecutableValidator::progress, this,
+        connect(&validator.service, &EngineSupervisor::progress, this,
                 [&](QUuid, const QString& message) {
                     if (message == QStringLiteral("Hashing executable…")) {
                         appended = file.open(QIODevice::Append) && file.write("changed") == 7;
                         file.close();
                     }
                 });
-        QSignalSpy done(&validator.service, &ExecutableValidator::completed);
+        QSignalSpy done(&validator.service, &EngineSupervisor::completed);
         validator.service.validate(QUuid::createUuid(), executable);
         QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 5000);
         QVERIFY(appended);
@@ -312,8 +312,8 @@ class EngineValidationTest final : public QObject {
         ValidatorTestAccess::configure(
             validator.service,
             engine_test::scenario(directory.filePath(QStringLiteral("script.json")), steps), 1000);
-        QSignalSpy progress(&validator.service, &ExecutableValidator::progress);
-        QSignalSpy done(&validator.service, &ExecutableValidator::completed);
+        QSignalSpy progress(&validator.service, &EngineSupervisor::progress);
+        QSignalSpy done(&validator.service, &EngineSupervisor::completed);
         validator.service.validate(QUuid::createUuid(), executable);
         QTRY_VERIFY(progress.size() >= 3);
         QVERIFY(QFile::remove(executable));
@@ -336,7 +336,7 @@ class EngineValidationTest final : public QObject {
             validator.service,
             engine_test::scenario(directory.filePath(QStringLiteral("script.json")), steps), 1000,
             8192);
-        QSignalSpy done(&validator.service, &ExecutableValidator::completed);
+        QSignalSpy done(&validator.service, &EngineSupervisor::completed);
         validator.service.validate(
             QUuid::createUuid(), QFileInfo(QString::fromUtf8(FAKE_UCI_ENGINE)).canonicalFilePath());
         QTRY_COMPARE(done.size(), 1);
@@ -347,7 +347,7 @@ class EngineValidationTest final : public QObject {
     void pathsAndReplacement() {
         QTemporaryDir directory;
         engine_test::Validator validator;
-        QSignalSpy inspected(&validator.service, &ExecutableValidator::inspected);
+        QSignalSpy inspected(&validator.service, &EngineSupervisor::inspected);
         validator.service.inspect(QUuid::createUuid(), directory.path());
         QTRY_COMPARE(inspected.size(), 1);
         QVERIFY(std::holds_alternative<Error>(qvariant_cast<PathResult>(inspected.back()[1])));
@@ -363,7 +363,7 @@ class EngineValidationTest final : public QObject {
         QCOMPARE(invalid.write("invalid executable"), qint64(18));
         invalid.close();
         QVERIFY(invalid.setPermissions(QFileDevice::ReadOwner | QFileDevice::ExeOwner));
-        QSignalSpy invalidDone(&validator.service, &ExecutableValidator::completed);
+        QSignalSpy invalidDone(&validator.service, &EngineSupervisor::completed);
         validator.service.validate(QUuid::createUuid(), invalid.fileName());
         QTRY_COMPARE(invalidDone.size(), 1);
         const auto invalidResult = qvariant_cast<ValidationResult>(invalidDone.front()[1]);
@@ -372,7 +372,7 @@ class EngineValidationTest final : public QObject {
         const auto script = engine_test::scenario(directory.filePath(QStringLiteral("script.json")),
                                                   engine_test::handshake());
         ValidatorTestAccess::configure(validator.service, script);
-        QSignalSpy done(&validator.service, &ExecutableValidator::completed);
+        QSignalSpy done(&validator.service, &EngineSupervisor::completed);
         validator.service.validate(QUuid::createUuid(), binary);
         QTRY_COMPARE(done.size(), 1);
         QVERIFY(std::holds_alternative<ValidatedEngine>(

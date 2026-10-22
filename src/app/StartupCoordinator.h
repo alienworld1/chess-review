@@ -56,7 +56,8 @@ class StartupCoordinator final : public QObject {
     diagnostics::Logger* logger_ = nullptr;
     AnalysisController analysis_;
     persistence::Database database_;
-    EngineSettingsController engines_{database_, logger_};
+    engine::EngineSupervisor engineSupervisor_;
+    EngineSettingsController engines_{database_, engineSupervisor_, logger_};
     GameImportService imports_{database_};
     ImportController localImports_{imports_};
     GameLibraryController library_{database_};
