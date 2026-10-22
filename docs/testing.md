@@ -549,3 +549,35 @@ pipe errors, and cancellation/command responsiveness while the parent deliberate
 leaves stdout unread. That last probe bypasses QProcess's automatic output drain. A maximum-size pending
 action backlog also exercises deadline ordering and cancellation without an
 arbitrary performance threshold.
+
+## Engine registration
+
+`engine_validation`, `engine_repository`, `engine_settings`, and `engine_exit`
+cover this increment. Run them with:
+
+```sh
+ctest --preset dev -R '^engine_'
+```
+
+The validator uses the real deterministic child process through a private test
+launch seam; production registration exposes no arguments or timeout overrides.
+Tests lower handshake deadlines and, for aggregate-output rejection, the output
+budget without changing production defaults. Cases cover typed options/codec,
+fragmented protocol output, Unicode/punctuation paths, symbolic links, invalid
+executables, replacement during validation, malformed output, crashes, hung
+shutdown, cancellation, persistence, and application exit. All SQL fixtures stay
+under `src/persistence/tests`.
+
+The Settings fixture verifies explicit registration, duplicate feedback, cancelled
+queued success, and reopening without engine launch. Optional offscreen screenshots
+can be written to an existing directory by setting
+`CHESS_REVIEW_ENGINE_SCREENSHOTS` when running `engine_settings_tests`.
+The exit probe compiles production `main.cpp` with a test-only driver and requires
+normal process exit during active validation, saving, and after registration. It
+reopens committed profiles in a second isolated process. Linux XDG profile isolation
+and the Unix fake-engine transport do not establish Windows support.
+
+The fake fixture also supports a terminal `stubbornHang` action. Like `hang`, it
+ignores protocol commands and observes stdin EOF, but it additionally ignores
+SIGTERM. This exercises the production validator's terminate-to-kill escalation;
+native signal handling remains confined to the fixture's pipe transport module.

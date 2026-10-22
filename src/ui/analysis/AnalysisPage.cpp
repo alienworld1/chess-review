@@ -37,6 +37,7 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     notice_->setWordWrap(true);
     layout->addWidget(notice_);
     auto* commands = new QHBoxLayout;
+    commands->setObjectName(QStringLiteral("analysisCommands"));
     auto* reset = new QPushButton(tr("New Analysis"), this);
     reset->setObjectName(QStringLiteral("newAnalysisButton"));
     reset->setToolTip(tr("Start over after the current position update finishes."));

@@ -168,13 +168,17 @@ std::optional<Scenario> readScenario(const QString& path, QString& error) {
                     action.type = ActionType::Exit;
                 } else if (type == u"crash") {
                     action.type = ActionType::Crash;
+                } else if (type == u"stubbornHang") {
+                    action.type = ActionType::StubbornHang;
                 } else if (type == u"hang") {
                     action.type = ActionType::Hang;
                 } else {
                     return std::nullopt;
                 }
                 hasTerminal = hasTerminal || action.type == ActionType::Exit ||
-                              action.type == ActionType::Hang || action.type == ActionType::Crash;
+                              action.type == ActionType::Hang ||
+                              action.type == ActionType::StubbornHang ||
+                              action.type == ActionType::Crash;
             }
             step.actions.push_back(std::move(action));
         }

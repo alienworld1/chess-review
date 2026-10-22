@@ -10,7 +10,7 @@ inline constexpr qsizetype kMaxBytes = 1024 * 1024;
 inline constexpr qsizetype kMaxLineBytes = 64 * 1024;
 inline constexpr qsizetype kMaxActions = 4096;
 
-enum class ActionType { Write, CancelPending, Exit, Crash, Hang };
+enum class ActionType { Write, CancelPending, Exit, Crash, Hang, StubbornHang };
 struct Action {
     ActionType type{};
     int afterMs{};

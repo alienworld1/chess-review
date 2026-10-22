@@ -29,7 +29,14 @@ target_link_libraries(chess_review_diagnostics PUBLIC Qt6::Core)
 chess_review_apply_options(chess_review_diagnostics)
 target_compile_definitions(chess_review_diagnostics PUBLIC CHESS_REVIEW_VERSION="${PROJECT_VERSION}")
 
+add_library(chess_review_engine STATIC src/engine/EngineProfile.cpp src/engine/ExecutableValidator.cpp)
+target_include_directories(chess_review_engine PUBLIC src)
+target_link_libraries(chess_review_engine PUBLIC Qt6::Core)
+chess_review_apply_options(chess_review_engine)
+
 add_library(chess_review_persistence STATIC
+    src/persistence/private/EngineRepository.cpp
+    src/persistence/migrations/004_engines.cpp
     src/persistence/GameRepository.h
     src/persistence/private/GameCodec.cpp
     src/persistence/private/GameRepository.cpp
@@ -44,7 +51,7 @@ add_library(chess_review_persistence STATIC
     src/persistence/migrations/001_initial.cpp
 )
 target_include_directories(chess_review_persistence PUBLIC src)
-target_link_libraries(chess_review_persistence PUBLIC Qt6::Core chess_review_pgn PRIVATE Qt6::Sql chess_review_diagnostics)
+target_link_libraries(chess_review_persistence PUBLIC Qt6::Core chess_review_pgn chess_review_engine PRIVATE Qt6::Sql chess_review_diagnostics)
 chess_review_apply_options(chess_review_persistence)
 
 add_library(chess_review_app_paths STATIC src/app/AppPaths.cpp)
@@ -53,6 +60,7 @@ target_link_libraries(chess_review_app_paths PUBLIC Qt6::Core)
 chess_review_apply_options(chess_review_app_paths)
 
 add_library(chess_review_startup STATIC
+    src/app/EngineSettingsController.cpp
     src/app/AnalysisController.cpp
     src/app/MoveNavigationState.cpp
     src/app/GameImportService.cpp
@@ -68,6 +76,7 @@ target_link_libraries(chess_review_startup PUBLIC chess_review_persistence chess
 chess_review_apply_options(chess_review_startup)
 
 add_library(chess_review_ui STATIC
+    src/ui/settings/EngineSettingsPage.cpp
     src/ui/chess/ChessBoardWidget.cpp
     src/ui/chess/BoardAccessibility.cpp
     src/ui/analysis/AnalysisPage.cpp

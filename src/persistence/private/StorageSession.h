@@ -27,6 +27,9 @@ class StorageSession final {
                                             std::span<const Migration> registry,
                                             const Progress& progress, const Observe& observe = {});
 
+    RegisterEngineResult registerEngine(const engine::ValidatedEngine& engine);
+    ListEnginesResult listEngines(std::int64_t offset, int limit);
+
     InsertGameResult insertGame(const pgn::PgnDocument& document, const GameSource& source);
     LoadGameResult loadGame(GameId id);
     ListGamesResult listGames(std::int64_t offset, int limit);

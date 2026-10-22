@@ -1,6 +1,7 @@
 #pragma once
 #include "app/AnalysisController.h"
 #include "app/Diagnostic.h"
+#include "app/EngineSettingsController.h"
 #include "app/GameImportService.h"
 #include "app/GameLibraryController.h"
 #include "app/ImportController.h"
@@ -27,6 +28,7 @@ class StartupCoordinator final : public QObject {
     // Called synchronously by the composition root on stopping(), before saving begins.
     void setFinalUiState(const UiState& state);
     Lifecycle state() const;
+    EngineSettingsController& engines() { return engines_; }
     AnalysisController& analysis() { return analysis_; }
     // Production composition routes application Quit through the UI's discard gate.
     void requireQuitConfirmation() { confirmQuit_ = true; }
@@ -50,9 +52,11 @@ class StartupCoordinator final : public QObject {
   private:
     void connectServices();
     void finishServices();
+    void closeStorageWhenProducersFinish();
     diagnostics::Logger* logger_ = nullptr;
     AnalysisController analysis_;
     persistence::Database database_;
+    EngineSettingsController engines_{database_, logger_};
     GameImportService imports_{database_};
     ImportController localImports_{imports_};
     GameLibraryController library_{database_};
@@ -64,6 +68,8 @@ class StartupCoordinator final : public QObject {
     bool analysisClosed_ = false;
     bool started_ = false;
     bool storageClosed_ = false;
+    bool importsClosed_ = false;
+    bool enginesClosed_ = false;
     bool preferencesClosed_ = false;
     bool closingLogger_ = false;
 };

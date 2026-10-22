@@ -367,3 +367,30 @@ There is at most one open request in flight, independent of the paged list reque
 Readiness generations reject obsolete responses without releasing admission until
 the accepted response arrives. Library refreshes do not erase game-opening errors.
 Service shutdown disables admission and invalidates loading before draining storage.
+
+## Engine profiles
+
+Migration 004 adds engine profiles without modifying earlier migrations. Existing
+backup and transactional migration rules apply. `Database::registerEngine` and
+`Database::listEngines` are typed asynchronous operations on the existing storage
+worker, sharing its 16-request admission bound. Listing defaults to 50 records;
+limits must be 1–200, with a nonnegative offset.
+
+Registration returns a saved profile plus a duplicate flag, or a typed engine
+error. One transaction covers identity checks, first-engine default assignment,
+and insertion. Executable SHA-256 and resolved paths are unique; a partial unique
+index permits at most one default. Failed insertion/commit rolls back, and failed
+rollback disables further product operations for that storage session. Existing
+records are never silently replaced or relocated.
+
+Capabilities use a bounded version-1 JSON document containing typed options.
+Capability flags are derived again on read. Option overrides are explicitly empty
+and detected version is absent in this increment. Invalid types, encodings,
+versions, oversized metadata, and invalid option definitions fail closed without
+repairing records. Reads bound bytes before Qt materializes values. A damaged page
+fails explicitly; healthy pages remain accessible through the repository API.
+
+SQL, migrations, SQLite handles, and SQL fixture tests remain exclusively in
+`src/persistence`. Engine/application/UI code exchanges values and request IDs.
+Shutdown stops engine registration and import producers before closing storage;
+accepted writes finish and deliver their outcomes before storage closure.

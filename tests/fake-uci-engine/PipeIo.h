@@ -14,6 +14,7 @@ class PipeIo final : public QObject {
     explicit PipeIo(QObject* parent = nullptr);
     ~PipeIo() override;
     bool start();
+    bool ignoreTermination();
     bool write(bool stderrStream, const QByteArray& data);
     qsizetype pendingBytes() const;
     void stopInput();

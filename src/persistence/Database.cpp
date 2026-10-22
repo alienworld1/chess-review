@@ -94,6 +94,18 @@ class StorageWorker final : public QObject {
                              QStringLiteral("Game storage could not complete the request.")};
         }
     }
+    template <typename Result, typename Operation> Result executeEngine(Operation operation) {
+        if (!session_) {
+            return engine::Error{engine::ErrorCode::Storage,
+                                 QStringLiteral("Engine storage is unavailable.")};
+        }
+        try {
+            return operation(*session_);
+        } catch (const std::exception&) {
+            return engine::Error{engine::ErrorCode::Storage,
+                                 QStringLiteral("Engine storage could not complete the request.")};
+        }
+    }
     void close() {
         session_.reset();
         if (logger_) {
@@ -259,6 +271,59 @@ void Database::listGames(RequestId request, std::int64_t offset, int limit) {
                 [this, request, result] {
                     --impl_->pending;
                     emit gamesListed(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
+void Database::registerEngine(RequestId request, engine::ValidatedEngine engine) {
+    if (auto error = acceptRequest()) {
+        const engine::Error failure{
+            error->code == GameErrorCode::Busy ? engine::ErrorCode::Busy
+                                               : engine::ErrorCode::Storage,
+            QStringLiteral("Engine storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, request, failure] { emit engineRegistered(request, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, engine = std::move(engine)] {
+            const auto result = impl_->worker->executeEngine<RegisterEngineResult>(
+                [&](detail::StorageSession& session) { return session.registerEngine(engine); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit engineRegistered(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::listEngines(RequestId request, std::int64_t offset, int limit) {
+    if (auto error = acceptRequest()) {
+        const engine::Error failure{
+            error->code == GameErrorCode::Busy ? engine::ErrorCode::Busy
+                                               : engine::ErrorCode::Storage,
+            QStringLiteral("Engine storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, request, failure] { emit enginesListed(request, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, offset, limit] {
+            const auto result = impl_->worker->executeEngine<ListEnginesResult>(
+                [&](detail::StorageSession& session) {
+                    return session.listEngines(offset, limit);
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit enginesListed(request, result);
                 },
                 Qt::QueuedConnection);
         },

@@ -26,7 +26,11 @@ enum class Event {
     LoggingFailed,
     QtCaptureUnavailable,
     EventsDropped,
-    UiStateFailed
+    UiStateFailed,
+    EngineValidationStarted,
+    EngineValidationSucceeded,
+    EngineValidationFailed,
+    EngineRegistrationFinished
 };
 
 enum class Severity { Debug, Info, Warning, Error, Fatal };

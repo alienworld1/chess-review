@@ -1,5 +1,6 @@
 #pragma once
 
+#include "persistence/EngineRepository.h"
 #include "persistence/GameRepository.h"
 #include <QMetaType>
 #include <QObject>
@@ -51,12 +52,18 @@ class Database final : public QObject {
     void close();
     // Repository calls are asynchronous, on this object's owning thread. IDs are caller-owned.
     // At most 16 accepted repository requests may be pending; otherwise returns Busy.
+    void registerEngine(RequestId request, engine::ValidatedEngine engine);
+    void listEngines(RequestId request, std::int64_t offset = 0, int limit = 50);
     void insertGame(RequestId request, std::shared_ptr<const pgn::PgnDocument> document,
                     GameSource source = {});
     void loadGame(RequestId request, GameId id);
     void listGames(RequestId request, std::int64_t offset = 0, int limit = 50);
 
   signals:
+    void engineRegistered(chess_review::persistence::RequestId request,
+                          const chess_review::persistence::RegisterEngineResult& result);
+    void enginesListed(chess_review::persistence::RequestId request,
+                       const chess_review::persistence::ListEnginesResult& result);
     void progress(const QString& message);
     void ready(int schemaVersion);
     void failed(const chess_review::persistence::DatabaseError& error);

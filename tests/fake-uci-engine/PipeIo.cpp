@@ -23,6 +23,11 @@ PipeIo::~PipeIo() {
         }
     }
 }
+bool PipeIo::ignoreTermination() {
+    struct sigaction ignore {};
+    ignore.sa_handler = SIG_IGN;
+    return ::sigemptyset(&ignore.sa_mask) == 0 && ::sigaction(SIGTERM, &ignore, nullptr) == 0;
+}
 bool PipeIo::start() {
     // Broken parent pipes are I/O errors, not accidental crashes. Intentional crash fixtures
     // must not leave core files in the caller's working directory.

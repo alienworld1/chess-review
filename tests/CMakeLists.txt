@@ -91,4 +91,25 @@ if(UNIX)
     target_compile_definitions(fake_uci_tests PRIVATE
         FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>"
         FAKE_UCI_SCENARIOS="${CMAKE_CURRENT_SOURCE_DIR}/fake-uci-engine/scenarios")
+
+    chess_review_add_qt_test(engine_validation_tests engine_validation INTEGRATION
+        SOURCES qt/EngineValidationTest.cpp LIBRARIES chess_review_engine)
+    add_dependencies(engine_validation_tests fake_uci_engine)
+    target_compile_definitions(engine_validation_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
+
+    chess_review_add_qt_test(engine_settings_tests engine_settings INTEGRATION WIDGETS
+        SOURCES qt/EngineSettingsTest.cpp LIBRARIES chess_review_ui)
+    add_dependencies(engine_settings_tests fake_uci_engine)
+    target_compile_definitions(engine_settings_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
+
+    qt_add_executable(engine_exit_probe "${PROJECT_SOURCE_DIR}/src/main.cpp" qt/EngineExitProbe.cpp)
+    target_include_directories(engine_exit_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+    target_link_libraries(engine_exit_probe PRIVATE chess_review_ui chess_review_app_paths)
+    chess_review_apply_options(engine_exit_probe)
+    chess_review_add_qt_test(engine_exit_tests engine_exit INTEGRATION
+        SOURCES qt/EngineExitTest.cpp LIBRARIES chess_review_engine)
+    add_dependencies(engine_exit_tests engine_exit_probe fake_uci_engine)
+    target_compile_definitions(engine_exit_tests PRIVATE
+        FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>"
+        ENGINE_EXIT_PROBE="$<TARGET_FILE:engine_exit_probe>")
 endif()

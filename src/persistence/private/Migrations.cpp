@@ -48,7 +48,7 @@ std::optional<QString> verifyBackup(const QString& path) {
 
 const std::vector<Migration>& migrations() {
     static const std::vector<Migration> registry{initialMigration(), gamesMigration(),
-                                                 gameTextMigration()};
+                                                 gameTextMigration(), enginesMigration()};
     return registry;
 }
 

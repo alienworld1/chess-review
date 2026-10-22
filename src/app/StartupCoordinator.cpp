@@ -28,7 +28,14 @@ void StartupCoordinator::connectServices() {
         finishServices();
     });
     QCoreApplication::instance()->installEventFilter(this);
-    connect(&localImports_, &ImportController::closed, &database_, &persistence::Database::close);
+    connect(&localImports_, &ImportController::closed, this, [this] {
+        importsClosed_ = true;
+        closeStorageWhenProducersFinish();
+    });
+    connect(&engines_, &EngineSettingsController::closed, this, [this] {
+        enginesClosed_ = true;
+        closeStorageWhenProducersFinish();
+    });
     connect(&localImports_, &ImportController::committed, &library_,
             &GameLibraryController::importedGame);
     connect(&localImports_, &ImportController::finished, &library_,
@@ -37,6 +44,7 @@ void StartupCoordinator::connectServices() {
     connect(&database_, &persistence::Database::ready, this, [this] {
         state_ = Lifecycle::Ready;
         localImports_.setReady(true);
+        engines_.setReady(true);
         library_.setReady(true);
         // A user may start exploring while storage is still initializing. Do not
         // replace that work when a delayed automatic recovery becomes available.
@@ -70,6 +78,11 @@ void StartupCoordinator::connectServices() {
         }
         emit uiStateFailed(error);
     });
+}
+void StartupCoordinator::closeStorageWhenProducersFinish() {
+    if (importsClosed_ && enginesClosed_) {
+        database_.close();
+    }
 }
 void StartupCoordinator::finishServices() {
     if (!analysisClosed_ || !storageClosed_ || !preferencesClosed_ || closingLogger_) {
@@ -135,6 +148,7 @@ void StartupCoordinator::shutdown() {
     emit stopping();
     analysis_.close();
     library_.setReady(false);
+    engines_.close();
     localImports_.close();
     uiState_.saveAndClose(finalUiState_);
 }

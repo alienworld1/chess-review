@@ -196,8 +196,9 @@ void GameOpeningTest::importNavigateAndReopen() {
         Fixture fixture(database, preferences);
         auto& analysis = fixture.startup.analysis();
         QTRY_COMPARE(analysis.gameId(), savedId);
+        // gameOpened queues the remembered-node navigation after the root snapshot.
+        QTRY_COMPARE(analysis.currentNode(), branch);
         QTRY_VERIFY(!analysis.busy());
-        QCOMPARE(analysis.currentNode(), branch);
         QCOMPARE(fixture.navigation.current(), app::Destination::Analyze);
         QVERIFY(analysis.positionNotes().contains(QStringLiteral("$5")));
         analysis.end();

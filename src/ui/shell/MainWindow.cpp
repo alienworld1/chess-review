@@ -2,6 +2,7 @@
 #include "ui/analysis/AnalysisPage.h"
 #include "ui/games/GamesPage.h"
 #include "ui/games/PgnTextEdit.h"
+#include "ui/settings/EngineSettingsPage.h"
 #include "ui/shell/StartupPanel.h"
 #include <QAction>
 #include <QActionGroup>
@@ -179,6 +180,32 @@ MainWindow::MainWindow(app::NavigationController& navigation, app::AnalysisContr
                        QWidget* parent)
     : MainWindow(navigation, parent) {
     installAnalysis(analysis);
+}
+void MainWindow::installEngines(app::EngineSettingsController& engines) {
+    auto* placeholder =
+        pages_->findChild<QWidget*>(QStringLiteral("settingsPage"), Qt::FindDirectChildrenOnly);
+    Q_ASSERT(placeholder);
+    const int index = pages_->indexOf(placeholder);
+    pages_->removeWidget(placeholder);
+    delete placeholder;
+    pages_->insertWidget(index, new EngineSettingsPage(engines, pages_));
+    auto* action = new QAction(tr("Engine Settings…"), this);
+    action->setObjectName(QStringLiteral("engineSettingsAction"));
+    findChild<QMenu*>(QStringLiteral("viewMenu"))->addAction(action);
+    connect(action, &QAction::triggered, this, [this] {
+        if (!closing_) {
+            navigation_.navigate(app::Destination::Settings);
+        }
+    });
+    if (analysis_) {
+        auto* button = new QPushButton(tr("Engine Settings…"), analysis_);
+        button->setObjectName(QStringLiteral("analysisEngineSettings"));
+        auto* commands = analysis_->findChild<QHBoxLayout*>(QStringLiteral("analysisCommands"));
+        Q_ASSERT(commands);
+        commands->addWidget(button);
+        connect(button, &QPushButton::clicked, action, &QAction::trigger);
+    }
+    selectDestination();
 }
 void MainWindow::installAnalysis(app::AnalysisController& controller) {
     Q_ASSERT(!analysis_);

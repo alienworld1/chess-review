@@ -31,6 +31,7 @@ int main(int argc, char* argv[]) {
     chess_review::app::NavigationController navigation;
     chess_review::app::StartupCoordinator startup(logger);
     chess_review::ui::MainWindow window(navigation, startup.analysis());
+    window.installEngines(startup.engines());
     window.installImports(startup.localImports(), startup.library());
     window.setDiagnostics(logger);
     startup.requireQuitConfirmation();

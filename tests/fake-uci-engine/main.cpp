@@ -175,6 +175,12 @@ class Runner final : public QObject {
                     finish(ExitCode::Success, true);
                 }
                 return;
+            case ActionType::StubbornHang:
+                if (!io_.ignoreTermination() || !io_.write(true, "fake-uci: SIGTERM ignored\n")) {
+                    finish(ExitCode::IoFailure, false);
+                    return;
+                }
+                [[fallthrough]];
             case ActionType::Hang:
                 clearPending();
                 hanging_ = true;

@@ -140,6 +140,7 @@ class FakeUciTest final : public QObject {
     void cancellation();
     void silentAndHang_data();
     void silentAndHang();
+    void stubbornHang();
     void intentionalCrash();
     void mismatchAndEof();
     void framingAndBounds();
@@ -375,6 +376,34 @@ void FakeUciTest::silentAndHang() {
         QCOMPARE(child.process.exitCode(), 0);
     }
     QVERIFY(child.errors.isEmpty());
+}
+void FakeUciTest::stubbornHang() {
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("stubborn.json"));
+    QVERIFY(save(
+        path,
+        scenario({step(QStringLiteral("uci"),
+                       {QJsonObject{{QStringLiteral("type"), QStringLiteral("stubbornHang")}}})})));
+    for (bool closeInput : {false, true}) {
+        Child child;
+        child.start({QStringLiteral("--scenario"), path});
+        QTRY_COMPARE(child.process.state(), QProcess::Running);
+        QVERIFY(child.send("uci\n"));
+        QTRY_VERIFY(child.errors.contains("SIGTERM ignored"));
+        child.process.terminate();
+        QTest::qWait(50);
+        QCOMPARE(child.process.state(), QProcess::Running);
+        if (closeInput) {
+            child.process.closeWriteChannel();
+        } else {
+            child.process.kill();
+        }
+        QTRY_COMPARE(child.process.state(), QProcess::NotRunning);
+        QCOMPARE(child.process.exitStatus(),
+                 closeInput ? QProcess::NormalExit : QProcess::CrashExit);
+        QCOMPARE(child.process.exitCode(), closeInput ? 0 : SIGKILL);
+        QVERIFY(cleanDiagnostics(child.errors));
+    }
 }
 void FakeUciTest::intentionalCrash() {
     Child child;

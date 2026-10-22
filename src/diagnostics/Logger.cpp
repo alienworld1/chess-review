@@ -65,6 +65,14 @@ const char* eventName(Event event) {
         return "logging.failed";
     case Event::QtCaptureUnavailable:
         return "logging.qt_capture_unavailable";
+    case Event::EngineValidationStarted:
+        return "engine.validation_started";
+    case Event::EngineValidationSucceeded:
+        return "engine.validation_succeeded";
+    case Event::EngineValidationFailed:
+        return "engine.validation_failed";
+    case Event::EngineRegistrationFinished:
+        return "engine.registration_finished";
     case Event::UiStateFailed:
         return "ui_state.failed";
     case Event::EventsDropped:

@@ -28,7 +28,10 @@ second process uses memory-only diagnostics while the log directory is locked.
 Only known log filenames rotate; unrelated cache and library files are preserved.
 
 Normal records cover session/storage lifecycle, schema version, backup/migration
-outcomes, elapsed time, and stable error codes. For extra safe intermediate events
+outcomes, elapsed time, and stable error codes. Engine registration adds validation
+start/success/failure and registration-completion events. Registration counts
+separate new entries (one) from duplicates (zero); failures carry typed numeric error
+codes. Engine identity, options, paths, and raw stdout/stderr remain excluded. For extra safe intermediate events
 on one launch:
 
 ```sh
