@@ -323,6 +323,27 @@ class EngineAnalysisTest final : public QObject {
             QVERIFY(!result(done).evidence.bestMove);
         }
     }
+    void malformedAuxiliaryRetainsPriorEvidence() {
+        Conversation conversation;
+        auto steps = conversation.setup();
+        steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+        steps.append(engine_test::step(
+            QStringLiteral("go nodes 200"),
+            {engine_test::write(
+                QStringLiteral("info depth 3 score cp 7 pv e2e4\n"
+                               "info depth 99 nodes 999 score cp 999 pv d2d4 currmove e2e5\n"))}));
+        conversation.connect(steps);
+        QSignalSpy done(&conversation.service(), &EngineSupervisor::analysisFinished);
+        conversation.service().analyze(conversation.session, request());
+        QTRY_COMPARE(done.size(), 1);
+        const auto failed = result(done);
+        QCOMPARE(failed.outcome, AnalysisOutcome::Failed);
+        QCOMPARE(failed.error->code, ErrorCode::Protocol);
+        QCOMPARE(failed.evidence.lines.size(), std::size_t(1));
+        QCOMPARE(failed.evidence.lines.front().score->value, 7);
+        QCOMPARE(failed.evidence.statistics.depth, 3);
+        QVERIFY(!failed.evidence.statistics.nodes);
+    }
     void probesAndStop() {
         Conversation conversation(identity, 70, 300);
         auto steps = conversation.setup();

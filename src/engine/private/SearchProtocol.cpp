@@ -2,7 +2,9 @@
 #include <QStringView>
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <limits>
+#include <optional>
 #include <set>
 #include <tuple>
 #include <type_traits>
@@ -189,6 +191,8 @@ std::variant<InfoUpdate, Error> parseSearchInfo(const QStringList& tokens,
     }
     InfoUpdate update;
     std::set<QString> seen;
+    // Copy the history only if moves need replaying, then reuse it for this record.
+    std::optional<chess::Position> replay;
     for (qsizetype i = 1; i < tokens.size(); ++i) {
         const auto& token = tokens[i];
         if (token == QStringLiteral("string")) {
@@ -307,7 +311,6 @@ std::variant<InfoUpdate, Error> parseSearchInfo(const QStringList& tokens,
                     ++i;
                 }
             }
-            auto position = request.position;
             std::size_t plies = 0;
             while (++i < tokens.size()) {
                 if (infoField(tokens[i]) || !looksLikeMove(tokens[i])) {
@@ -317,18 +320,27 @@ std::variant<InfoUpdate, Error> parseSearchInfo(const QStringList& tokens,
                 if (plies == 1024) {
                     return invalidEvidence();
                 }
-                const auto move = position.parseUci(tokens[i].toStdString());
+                if (!replay) {
+                    replay.emplace(request.position);
+                }
+                const auto move = replay->parseUci(tokens[i].toStdString());
                 if (!std::holds_alternative<chess::Move>(move)) {
                     return invalidEvidence();
                 }
                 const auto parsed = std::get<chess::Move>(move);
                 if ((evidence && plies == 0 && !allowed(request, parsed)) ||
-                    std::holds_alternative<chess::Error>(position.play(parsed))) {
+                    std::holds_alternative<chess::Error>(replay->play(parsed))) {
                     return invalidEvidence();
                 }
                 ++plies;
                 if (evidence) {
                     update.line.pv.push_back(parsed);
+                }
+            }
+            // Each auxiliary line and PV starts at the request root, not the prior tail.
+            for (std::size_t undone = 0; undone < plies; ++undone) {
+                if (!replay->undo()) {
+                    return invalidEvidence();
                 }
             }
             if (!currentLine && plies == 0) {

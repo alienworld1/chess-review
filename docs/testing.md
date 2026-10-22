@@ -691,3 +691,10 @@ opaque strings, extension boundaries, numeric limits, legal continuations and ro
 restrictions, special moves, terminal bestmoves, ponder grammar, position immutability,
 1,024-ply limits, and conservative evidence updates. The `engine_analysis` suite adds
 fragmented whitespace/output, final evidence delivery, and invalid-record retirement.
+
+Parser adversarial cases additionally generate 200 legal mixed-field records and
+4,000 deterministic mutations, checking legal accepted moves, static diagnostics,
+atomic failed-record handling, and unchanged request histories. Repeated auxiliary
+records exercise a 12,000-ply root history and report elapsed parsing observations;
+these measurements are not portable timing guarantees. Mixed auxiliary/PV sequences
+also verify independent root replay for castling, en passant, and promotion.
