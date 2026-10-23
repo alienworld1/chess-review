@@ -112,6 +112,13 @@ if(UNIX)
     add_dependencies(engine_process_worker_tests fake_uci_engine)
     target_compile_definitions(engine_process_worker_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
 
+    chess_review_add_qt_test(engine_scheduling_tests engine_scheduling INTEGRATION
+        SOURCES qt/EngineSchedulingTest.cpp LIBRARIES chess_review_engine)
+    # Includes actual 65,536-entry admission/tombstone boundary checks.
+    set_tests_properties(engine_scheduling PROPERTIES TIMEOUT 60)
+    add_dependencies(engine_scheduling_tests fake_uci_engine)
+    target_compile_definitions(engine_scheduling_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
+
     chess_review_add_qt_test(engine_analysis_tests engine_analysis INTEGRATION
         SOURCES qt/EngineAnalysisTest.cpp LIBRARIES chess_review_engine)
     add_dependencies(engine_analysis_tests fake_uci_engine)

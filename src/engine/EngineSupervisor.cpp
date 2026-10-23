@@ -14,6 +14,9 @@ struct EngineSupervisor::Impl {
     std::mutex progressMutex;
     std::optional<AnalysisSnapshot> pendingProgress;
     bool progressQueued = false;
+    std::optional<ScheduledEvidence> scheduledProgress;
+    bool scheduledProgressQueued = false;
+    std::uint64_t scheduledEpoch = 0;
 };
 EngineSupervisor::EngineSupervisor(QObject* parent)
     : QObject(parent), impl_(std::make_unique<Impl>()) {
@@ -23,6 +26,9 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
     qRegisterMetaType<SearchState>();
     qRegisterMetaType<AnalysisSnapshot>();
     qRegisterMetaType<AnalysisResult>();
+    qRegisterMetaType<ScheduledState>();
+    qRegisterMetaType<ScheduledEvidence>();
+    qRegisterMetaType<ScheduledResult>();
     auto coordinator = std::make_unique<SupervisorCoordinator>();
     impl_->coordinator = coordinator.get();
     impl_->coordinator->moveToThread(&impl_->thread);
@@ -73,6 +79,66 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
         Qt::DirectConnection);
     connect(impl_->coordinator, &SupervisorCoordinator::analysisFinished, this,
             &EngineSupervisor::analysisFinished, Qt::QueuedConnection);
+    // Bound provisional scheduled evidence independently of lossless state/results. A
+    // boundary invalidates the mailbox synchronously on the producer thread, so an old
+    // queued notification cannot publish evidence from an obsolete attempt.
+    const auto invalidateScheduled = [this] {
+        const std::lock_guard lock(impl_->progressMutex);
+        impl_->scheduledProgress.reset();
+        ++impl_->scheduledEpoch;
+    };
+    connect(
+        impl_->coordinator, &SupervisorCoordinator::scheduledChanged, this,
+        [invalidateScheduled](const ScheduledState&) { invalidateScheduled(); },
+        Qt::DirectConnection);
+    connect(
+        impl_->coordinator, &SupervisorCoordinator::scheduledInterrupted, this,
+        [invalidateScheduled](const ScheduledEvidence&) { invalidateScheduled(); },
+        Qt::DirectConnection);
+    connect(
+        impl_->coordinator, &SupervisorCoordinator::scheduledFinished, this,
+        [invalidateScheduled](const ScheduledResult&) { invalidateScheduled(); },
+        Qt::DirectConnection);
+    connect(impl_->coordinator, &SupervisorCoordinator::scheduledChanged, this,
+            &EngineSupervisor::scheduledChanged, Qt::QueuedConnection);
+    connect(impl_->coordinator, &SupervisorCoordinator::scheduledInterrupted, this,
+            &EngineSupervisor::scheduledInterrupted, Qt::QueuedConnection);
+    connect(impl_->coordinator, &SupervisorCoordinator::scheduledFinished, this,
+            &EngineSupervisor::scheduledFinished, Qt::QueuedConnection);
+    connect(
+        impl_->coordinator, &SupervisorCoordinator::scheduledUpdated, this,
+        [this](const ScheduledEvidence& evidence) {
+            auto next = evidence;
+            bool post = false;
+            std::uint64_t epoch = 0;
+            {
+                const std::lock_guard lock(impl_->progressMutex);
+                impl_->scheduledProgress = std::move(next);
+                epoch = impl_->scheduledEpoch;
+                post = !std::exchange(impl_->scheduledProgressQueued, true);
+            }
+            if (!post) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                this,
+                [this, epoch] {
+                    std::optional<ScheduledEvidence> pending;
+                    {
+                        const std::lock_guard lock(impl_->progressMutex);
+                        if (epoch == impl_->scheduledEpoch) {
+                            pending = std::move(impl_->scheduledProgress);
+                        }
+                        impl_->scheduledProgress.reset();
+                        impl_->scheduledProgressQueued = false;
+                    }
+                    if (pending) {
+                        emit scheduledUpdated(*pending);
+                    }
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::DirectConnection);
     // QThread::finished owns deletion on the engine thread.
     coordinator.release();
     impl_->thread.start();
@@ -173,6 +239,49 @@ void EngineSupervisor::stopAnalysis(QUuid session, QUuid requestId) {
             impl_->coordinator,
             [coordinator = impl_->coordinator, session, requestId] {
                 coordinator->stopAnalysis(session, requestId);
+            },
+            Qt::QueuedConnection);
+    }
+}
+void EngineSupervisor::scheduleAnalysis(QUuid session, const AnalysisRequest& request,
+                                        AnalysisPriority priority, std::optional<QUuid> job) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (impl_->closing) {
+        const ScheduledState state{session, request.id, job, {}, ScheduledPhase::Queued};
+        QTimer::singleShot(0, this, [this, state] {
+            emit scheduledFinished(
+                {state,
+                 ScheduledOutcome::Rejected,
+                 {},
+                 Error{ErrorCode::Closing, QStringLiteral("Engine supervision is closing.")}});
+        });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->coordinator,
+        [coordinator = impl_->coordinator, session, request, priority, job] {
+            coordinator->scheduleAnalysis(session, request, priority, job);
+        },
+        Qt::QueuedConnection);
+}
+void EngineSupervisor::cancelScheduledAnalysis(QUuid session, QUuid requestId) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!impl_->closing) {
+        QMetaObject::invokeMethod(
+            impl_->coordinator,
+            [coordinator = impl_->coordinator, session, requestId] {
+                coordinator->cancelScheduledAnalysis(session, requestId);
+            },
+            Qt::QueuedConnection);
+    }
+}
+void EngineSupervisor::cancelAnalysisJob(QUuid session, QUuid jobId) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!impl_->closing) {
+        QMetaObject::invokeMethod(
+            impl_->coordinator,
+            [coordinator = impl_->coordinator, session, jobId] {
+                coordinator->cancelAnalysisJob(session, jobId);
             },
             Qt::QueuedConnection);
     }

@@ -46,6 +46,13 @@ class EngineSupervisor final : public QObject {
     // Use the evidence statistics/achievedWidth/commonDepth to assess actual coverage.
     void analyze(QUuid session, const AnalysisRequest& request);
     void stopAnalysis(QUuid session, QUuid requestId);
+    // Explicit single-worker queue: 256 pending, FIFO within priority. See scheduled signals.
+    // Logical IDs are session-unique; attempts restart with fresh IDs after preemption.
+    void scheduleAnalysis(QUuid session, const AnalysisRequest& request, AnalysisPriority priority,
+                          std::optional<QUuid> job = std::nullopt);
+    void cancelScheduledAnalysis(QUuid session, QUuid requestId);
+    // Blocks future submissions with this job ID until reconnect. Reruns need fresh IDs.
+    void cancelAnalysisJob(QUuid session, QUuid jobId);
     void close();
   signals:
     void inspected(QUuid request, const chess_review::engine::PathResult& result);
@@ -55,6 +62,10 @@ class EngineSupervisor final : public QObject {
     void searchChanged(const chess_review::engine::SearchState& state);
     void analysisUpdated(const chess_review::engine::AnalysisSnapshot& snapshot);
     void analysisFinished(const chess_review::engine::AnalysisResult& result);
+    void scheduledChanged(const chess_review::engine::ScheduledState& state);
+    void scheduledUpdated(const chess_review::engine::ScheduledEvidence& evidence);
+    void scheduledInterrupted(const chess_review::engine::ScheduledEvidence& evidence);
+    void scheduledFinished(const chess_review::engine::ScheduledResult& result);
     void closed();
 
   private:

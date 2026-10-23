@@ -12,7 +12,8 @@ future work. Settings now registers local UCI executables through a nonblocking 
 handshake and persists their profiles. Explicit Connect/Disconnect controls keep
 an engine Ready and expose its advertised options without starting a search.
 The engine infrastructure now supports position searches, MultiPV, optional WDL,
-validated candidate lines, and asynchronous stop through its typed C++ API.
+validated candidate lines, asynchronous stop, and bounded priority scheduling with
+request/job cancellation through its typed C++ API.
 Home offers import actions; Puzzles remains
 a placeholder.
 

@@ -33,18 +33,26 @@ void SupervisorCoordinator::connectEngine(QUuid session, const EngineProfile& pr
                   QStringLiteral("The saved engine is invalid or has unsupported overrides.")}});
         return;
     }
+    runtime_.reset();
+    scheduledIds_.clear();
+    cancelledJobs_.clear();
+    submissionOrder_ = 0;
+    schedulingStopped_ = true;
     createWorker(AttemptMode::Runtime, session);
     worker_->connectEngine(session, profile);
 }
 
 void SupervisorCoordinator::disconnectEngine(QUuid session) {
     if (worker_) {
+        if (runtime_ && runtime_->session == session) {
+            stopScheduling();
+        }
         worker_->disconnectEngine(session);
     }
 }
 
 void SupervisorCoordinator::analyze(QUuid session, const AnalysisRequest& request) {
-    if (closing_ || !worker_ || retiring_) {
+    if (closing_ || !worker_ || retiring_ || active_ || !pending_.empty()) {
         AnalysisSnapshot snapshot;
         snapshot.session = session;
         snapshot.request = request.id;
@@ -57,7 +65,7 @@ void SupervisorCoordinator::analyze(QUuid session, const AnalysisRequest& reques
     worker_->analyze(session, request);
 }
 void SupervisorCoordinator::stopAnalysis(QUuid session, QUuid requestId) {
-    if (worker_ && !retiring_) {
+    if (worker_ && !retiring_ && directSearch_ == requestId) {
         worker_->stopAnalysis(session, requestId);
     }
 }
@@ -78,6 +86,7 @@ void SupervisorCoordinator::close() {
     if (std::exchange(closing_, true)) {
         return;
     }
+    stopScheduling();
     if (worker_) {
         worker_->close();
     } else {
@@ -124,6 +133,14 @@ void SupervisorCoordinator::createWorker(AttemptMode mode, QUuid request) {
                 if (worker_ != attempt || retiring_) {
                     return;
                 }
+                runtime_ = state;
+                if (state.phase == RuntimePhase::Ready) {
+                    schedulingStopped_ = false;
+                } else if (state.phase == RuntimePhase::Failed ||
+                           state.phase == RuntimePhase::Disconnected ||
+                           state.phase == RuntimePhase::Disconnecting) {
+                    schedulingStopped_ = true;
+                }
                 if (runtimeActive(state.phase)) {
                     emit runtimeChanged(state);
                 } else {
@@ -133,13 +150,36 @@ void SupervisorCoordinator::createWorker(AttemptMode mode, QUuid request) {
     connect(attempt, &EngineProcessWorker::searchChanged, this,
             [this, attempt](const SearchState& state) {
                 if (worker_ == attempt && !retiring_) {
-                    emit searchChanged(state);
+                    if (active_ && active_->state.attempt == state.request) {
+                        switch (state.phase) {
+                        case SearchPhase::Configuring:
+                            active_->state.phase = ScheduledPhase::Configuring;
+                            break;
+                        case SearchPhase::Analyzing:
+                            active_->state.phase = ScheduledPhase::Analyzing;
+                            break;
+                        case SearchPhase::Stopping:
+                            active_->state.phase = ScheduledPhase::Stopping;
+                            break;
+                        case SearchPhase::Synchronizing:
+                            active_->state.phase = ScheduledPhase::Synchronizing;
+                            break;
+                        }
+                        emit scheduledChanged(active_->state);
+                    } else {
+                        directSearch_ = state.request;
+                        emit searchChanged(state);
+                    }
                 }
             });
     connect(attempt, &EngineProcessWorker::analysisUpdated, this,
             [this, attempt](const AnalysisSnapshot& snapshot) {
                 if (worker_ == attempt && !retiring_) {
-                    emit analysisUpdated(snapshot);
+                    if (active_ && active_->state.attempt == snapshot.request) {
+                        emit scheduledUpdated({active_->state, snapshot});
+                    } else {
+                        emit analysisUpdated(snapshot);
+                    }
                 }
             });
     connect(attempt, &EngineProcessWorker::analysisFinished, this,
@@ -150,7 +190,7 @@ void SupervisorCoordinator::createWorker(AttemptMode mode, QUuid request) {
                 if (result.outcome == AnalysisOutcome::Failed) {
                     failedSearch_ = result;
                 } else {
-                    emit analysisFinished(result);
+                    finishSearch(result);
                 }
             });
     connect(attempt, &EngineProcessWorker::finished, this, [this, attempt] {
@@ -166,11 +206,15 @@ void SupervisorCoordinator::createWorker(AttemptMode mode, QUuid request) {
         retiring_ = false;
         const auto result = std::exchange(result_, std::monostate{});
         if (failedSearch_) {
-            emit analysisFinished(*std::exchange(failedSearch_, std::nullopt));
+            finishSearch(*std::exchange(failedSearch_, std::nullopt));
         }
         if (const auto* validation = std::get_if<ValidationResult>(&result)) {
             emit completed(request, *validation);
         } else if (const auto* runtime = std::get_if<RuntimeState>(&result)) {
+            cancelPending(runtime->phase == RuntimePhase::Failed ? ScheduledOutcome::Failed
+                                                                 : ScheduledOutcome::Cancelled,
+                          runtime->error);
+            directSearch_.reset();
             emit runtimeChanged(*runtime);
         }
         if (closing_) {

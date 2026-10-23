@@ -33,7 +33,8 @@ add_library(chess_review_engine STATIC src/engine/EngineProfile.cpp src/engine/E
     src/engine/private/EngineProcessWorker.cpp src/engine/private/EngineProcessWorker.h
     src/engine/Analysis.h src/engine/private/SearchProtocol.cpp
     src/engine/private/EngineProcessWorkerSearch.cpp
-    src/engine/private/SupervisorCoordinator.cpp src/engine/private/SupervisorCoordinator.h)
+    src/engine/private/SupervisorCoordinator.cpp src/engine/private/SupervisorCoordinator.h
+    src/engine/private/SupervisorScheduling.cpp)
 target_include_directories(chess_review_engine PUBLIC src)
 target_link_libraries(chess_review_engine PUBLIC Qt6::Core chess_review_chess)
 chess_review_apply_options(chess_review_engine)

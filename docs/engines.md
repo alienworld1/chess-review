@@ -29,7 +29,8 @@ The first engine becomes default. Further additions preserve that default.
 An identical binary returns the existing entry without changing its path or
 validation time, even if another copy was selected. Changed content at an already
 registered path is rejected. Rename, remove, relocation, replacement, changing the
-default, option editing, and analysis scheduling are later increments.
+default and option editing are later increments. Priority scheduling is available
+through the infrastructure API described below.
 
 Saved profiles live in the application SQLite database, never `ui-state.ini`.
 Opening Settings or restarting the application reads those records without
@@ -230,3 +231,73 @@ buffered output is drained. Tail replies cannot complete analysis, change its
 frozen evidence, or replace that failure's context. Both output channels are still
 drained before retirement. Results completed before the exit was observed remain
 completed.
+
+
+## Scheduled analysis API
+
+`EngineSupervisor::scheduleAnalysis(session, request, priority, optionalJobId)` queues
+an immutable copy of a request on the established runtime connection. It launches
+nothing without an explicit connection and submission. The scheduler shares the
+existing engine thread and single process; no live analysis UI or persisted queue
+is provided yet.
+
+Priority order is `InteractiveAnalysis`, `RetryMove`, `VisibleReviewDeepening`,
+`ReviewQuickScan`, `ReviewBackgroundDeepening`, `PuzzleVerification`, then
+`Maintenance`. Equal priorities run FIFO. Interactive analysis and retry grading
+may stop the three lowest classes; other priorities only select the next search.
+Strict priority permits sustained interactive work to delay background work.
+
+There is room for 256 pending requests and one active request. Overflow rejects
+with Busy. A review producer should submit batches as capacity becomes available.
+Malformed requests reject before they can interrupt a healthy search. Logical
+request IDs are unique per session, including cancelled requests. The accepted-ID
+and cancelled-job registries each hold at most 65,536 IDs; at exhaustion new
+submissions reject with InvalidRequest until explicit reconnect.
+
+Preemption uses the normal cooperative stop and final readiness barrier. It emits
+`scheduledInterrupted` with a lossless partial snapshot, then requeues the logical
+request at its original FIFO position. Resumption starts a fresh internal attempt
+with the full original budget. Statistics, ranks, and budgets from different
+attempts are never combined. This restarts work; it does not resume engine state.
+The existing 65,536 worker search-ID limit also counts restarted attempts. If the
+worker cannot admit a fresh attempt, that logical request fails explicitly.
+
+`scheduledChanged` exposes Queued, Configuring, Analyzing, Stopping, and Synchronizing.
+`scheduledUpdated` is provisional and latest-only: callers must tolerate missing
+updates. State, interruption and terminal events are lossless queued deliveries on
+the supervisor's owning thread. `scheduledFinished` reports Rejected, Completed,
+Cancelled or Failed, with optional contextual error and available evidence.
+A completed result still does not prove the requested depth, width, or strength;
+inspect its actual evidence as with direct searches.
+
+The outer identity contains the stable logical request, session, optional job, and
+current attempt UUID. Queued requests have no current attempt. An evidence value
+carries its own originating attempt identity; its inner `AnalysisSnapshot::request`
+is that attempt UUID. A cancelled restart that produced no candidates can retain
+an earlier interrupted attempt's useful evidence. Always use that evidence's
+identity rather than assuming it came from the terminal result's current attempt.
+Do not treat retained partial evidence as a completed search.
+
+`cancelScheduledAnalysis(session, requestId)` removes a pending request or stops its
+active attempt. Repeated or stale cancellation is harmless. A natural bestmove
+already received wins over subsequent cancellation, provided final synchronization
+succeeds. Cancelling an already preempted attempt prevents its restart even while
+that stopped attempt is synchronizing. Protocol and cleanup failures remain failures.
+
+`cancelAnalysisJob(session, jobId)` cancels unfinished members and blocks future
+submissions with that ID until reconnect. Use a fresh non-null job UUID for a rerun;
+omit the optional job for independent requests. Cancelling a job never retracts
+completed results. Useful partial evidence is delivered to callers, but this
+increment does not cache or persist it.
+
+Failure finishes queued work as Failed after worker retirement. Explicit disconnect
+or close cancels queued work and drains the active attempt; active cleanup errors
+remain failures. Scheduled terminal delivery precedes `closed()`. Reconnect is
+explicit and starts an empty queue with fresh registries; no pending work retries.
+
+The direct `analyze`/`stopAnalysis` API retains its existing rejection and stop
+semantics and legacy signals. Direct requests reject while the scheduler owns
+capacity. Scheduled work waits for an active direct search and never preempts it.
+Scheduled attempt events use only the scheduled signals; legacy stop calls cannot
+cancel scheduled work. Settings remains the only application consumer and retains
+its existing shutdown ownership until a future analysis UI consumer is integrated.

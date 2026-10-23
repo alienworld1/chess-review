@@ -86,7 +86,39 @@ struct AnalysisResult {
     AnalysisOutcome outcome = AnalysisOutcome::Rejected;
     std::optional<Error> error;
 };
+// Scheduling metadata is separate from immutable chess/search input.
+enum class AnalysisPriority {
+    InteractiveAnalysis,
+    RetryMove,
+    VisibleReviewDeepening,
+    ReviewQuickScan,
+    ReviewBackgroundDeepening,
+    PuzzleVerification,
+    Maintenance
+};
+enum class ScheduledPhase { Queued, Configuring, Analyzing, Stopping, Synchronizing };
+enum class ScheduledOutcome { Rejected, Completed, Cancelled, Failed };
+struct ScheduledState {
+    QUuid session;
+    QUuid request; // Logical request, stable across restarts.
+    std::optional<QUuid> job;
+    std::optional<QUuid> attempt; // Absent while queued.
+    ScheduledPhase phase = ScheduledPhase::Queued;
+};
+struct ScheduledEvidence {
+    ScheduledState identity;
+    AnalysisSnapshot evidence; // request identifies the internal attempt, not the logical request.
+};
+struct ScheduledResult {
+    ScheduledState identity;
+    ScheduledOutcome outcome = ScheduledOutcome::Rejected;
+    std::optional<ScheduledEvidence> evidence;
+    std::optional<Error> error;
+};
 } // namespace chess_review::engine
 Q_DECLARE_METATYPE(chess_review::engine::AnalysisSnapshot)
 Q_DECLARE_METATYPE(chess_review::engine::SearchState)
 Q_DECLARE_METATYPE(chess_review::engine::AnalysisResult)
+Q_DECLARE_METATYPE(chess_review::engine::ScheduledState)
+Q_DECLARE_METATYPE(chess_review::engine::ScheduledEvidence)
+Q_DECLARE_METATYPE(chess_review::engine::ScheduledResult)

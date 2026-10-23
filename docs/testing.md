@@ -698,3 +698,21 @@ atomic failed-record handling, and unchanged request histories. Repeated auxilia
 records exercise a 12,000-ply root history and report elapsed parsing observations;
 these measurements are not portable timing guarantees. Mixed auxiliary/PV sequences
 also verify independent root replay for castling, en passant, and promotion.
+
+
+## Analysis priority scheduling
+
+`ctest --preset dev -R '^engine_scheduling$'` exercises the public scheduled API
+against the deterministic fake engine. It covers all seven priorities, FIFO,
+repeated preemption of each eligible class, full-budget restarts, distinct attempt
+identities, queue overflow, direct/scheduled coexistence, and invalid submissions
+that must not preempt. It checks cancellation before go, during analysis and while
+preempted, bestmove races, job cancellation and session-long tombstones, retained
+interruption evidence, failure propagation, explicit reconnect, and shutdown.
+
+The suite exercises the actual 65,536-entry request and cancelled-job registry
+bounds, so its CTest budget is 60 seconds. Production protocol deadlines are
+unchanged. A deliberate caller stall checks latest-only provisional delivery;
+terminal evidence and interruption snapshots remain lossless. Owning-thread
+callbacks and no progress after terminal completion are also checked. Existing
+engine lifecycle and production-main exit probes remain part of regression testing.
