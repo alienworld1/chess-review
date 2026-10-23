@@ -224,3 +224,9 @@ output also trigger immediate cleanup. Earlier valid evidence and completed resu
 are retained, but failed evidence is never presented as completed analysis. Closing
 or disconnecting during recovery keeps the bounded cleanup active without blocking
 the GUI. No retry or expensive analysis starts automatically.
+
+When an unexpected process exit is observed, its failure is recorded before final
+buffered output is drained. Tail replies cannot complete analysis, change its
+frozen evidence, or replace that failure's context. Both output channels are still
+drained before retirement. Results completed before the exit was observed remain
+completed.

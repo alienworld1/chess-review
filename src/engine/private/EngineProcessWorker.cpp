@@ -96,8 +96,8 @@ EngineProcessWorker::EngineProcessWorker(AttemptMode mode, ProcessConfiguration 
             fail({ErrorCode::Start, QStringLiteral("The executable could not start. Check that "
                                                    "it is compatible with this system.")});
         } else if (error != QProcess::Crashed) {
-            fail({ErrorCode::Crash,
-                  QStringLiteral("Communication with the engine failed. Reconnect to try again.")});
+            fail({ErrorCode::Crash, QStringLiteral("Communication with the engine failed. Try "
+                                                   "again with a compatible UCI engine.")});
         }
     });
     connect(&process_, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
@@ -107,6 +107,14 @@ EngineProcessWorker::EngineProcessWorker(AttemptMode mode, ProcessConfiguration 
         searchProgress_.stop();
         awaitingExit_ = false;
         pendingExit_ = std::pair{code, status};
+        // Once exit is known, buffered replies cannot complete a live search or
+        // replace the exit's failure context. Still drain both channels before retirement.
+        if (stage_ != Stage::Quitting || code != 0 || status != QProcess::NormalExit) {
+            recordFailure(
+                {ErrorCode::Crash,
+                 QStringLiteral("The engine exited unexpectedly or did not shut down cleanly. "
+                                "Try again with a compatible UCI engine.")});
+        }
         drain(false);
         drain(true);
         completeExit();
@@ -329,8 +337,8 @@ void EngineProcessWorker::hashChunk() {
 
 void EngineProcessWorker::send(const QByteArray& bytes) {
     if (process_.write(bytes) != bytes.size()) {
-        fail({ErrorCode::Crash,
-              QStringLiteral("Could not send a command to the engine. Reconnect to try again.")});
+        fail({ErrorCode::Crash, QStringLiteral("Could not send a command to the engine. Try again "
+                                               "with a compatible UCI engine.")});
     }
 }
 
@@ -352,7 +360,7 @@ void EngineProcessWorker::drain(bool errors) {
         if (bytes.isEmpty()) {
             break;
         }
-        if (failure_ && stage_ != Stage::FailureStopping) {
+        if (failure_ && (stage_ != Stage::FailureStopping || pendingExit_)) {
             continue;
         }
         if (runtimeOutput_ && outputWindow_.elapsed() >= 1000) {
@@ -373,7 +381,7 @@ void EngineProcessWorker::drain(bool errors) {
         for (const auto byte : bytes) {
             // A reply in this chunk can begin explicit teardown. Do not parse its
             // remaining bytes after quit; the entire chunk was already accounted.
-            if ((failure_ && stage_ != Stage::FailureStopping) ||
+            if ((failure_ && (stage_ != Stage::FailureStopping || pendingExit_)) ||
                 (disconnecting_ && (!search_ || stage_ == Stage::Quitting ||
                                     stage_ == Stage::Terminating || stage_ == Stage::Killing))) {
                 break;
@@ -425,7 +433,7 @@ void EngineProcessWorker::completeExit() {
         recordFailure(
             {ErrorCode::Crash,
              QStringLiteral("The engine exited unexpectedly or did not shut down cleanly. "
-                            "Reconnect to try again.")});
+                            "Try again with a compatible UCI engine.")});
     }
     if (runtime_) {
         finishRuntime();
@@ -616,7 +624,7 @@ void EngineProcessWorker::timeout() {
             recordFailure(
                 {ErrorCode::Cleanup,
                  QStringLiteral("The engine did not exit after quit and required forced cleanup. "
-                                "Reconnect to try again.")});
+                                "Try again with a compatible UCI engine.")});
         }
         if (!transition(Stage::Terminating)) {
             return;
@@ -629,7 +637,7 @@ void EngineProcessWorker::timeout() {
     switch (stage_) {
     case Stage::Starting:
         message = QStringLiteral("The engine did not start in time. Check executable compatibility "
-                                 "and try connecting again.");
+                                 "and try again.");
         break;
     case Stage::ConfiguringSearch:
         message = QStringLiteral(

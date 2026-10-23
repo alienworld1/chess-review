@@ -851,6 +851,97 @@ class EngineProcessWorkerTest final : public QObject {
         }
     }
 
+    void unexpectedExitCannotCompleteBufferedSearch_data() {
+        QTest::addColumn<bool>("crash");
+        QTest::addColumn<bool>("synchronizing");
+        QTest::newRow("unexpected-normal-exit") << false << true;
+        QTest::newRow("crash") << true << true;
+        QTest::newRow("malformed-analysis-tail") << false << false;
+        QTest::newRow("crashed-malformed-analysis-tail") << true << false;
+    }
+    void unexpectedExitCannotCompleteBufferedSearch() {
+        QFETCH(bool, crash);
+        QFETCH(bool, synchronizing);
+        QTemporaryDir directory;
+        engine_test::Validator registration;
+        const auto profile =
+            profileFor(registration.service,
+                       engine_test::scenario(directory.filePath(QStringLiteral("register.json")),
+                                             engine_test::handshake()));
+        auto steps = engine_test::handshake();
+        steps.removeAt(steps.size() - 1);
+        steps.append(engine_test::step(QStringLiteral("ucinewgame"), {}));
+        steps.append(engine_test::step(QStringLiteral("isready"),
+                                       {engine_test::write(QStringLiteral("readyok\n"))}));
+        steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+        const QJsonObject exitAction{
+            {QStringLiteral("type"), crash ? QStringLiteral("crash") : QStringLiteral("exit")}};
+        if (synchronizing) {
+            steps.append(
+                engine_test::step(QStringLiteral("go nodes 200"),
+                                  {engine_test::write(QStringLiteral(
+                                      "info depth 2 score cp 7 pv e2e4\nbestmove e2e4\n"))}));
+            steps.append(engine_test::step(
+                QStringLiteral("isready"),
+                {engine_test::write(QStringLiteral("readyok\ninfo score cp broken\n")),
+                 exitAction}));
+        } else {
+            steps.append(engine_test::step(
+                QStringLiteral("go nodes 200"),
+                {engine_test::write(QStringLiteral("info score cp broken\nbestmove e2e4\n")),
+                 exitAction}));
+        }
+        Attempt attempt(
+            AttemptMode::Runtime,
+            engine_test::scenario(directory.filePath(QStringLiteral("search.json")), steps));
+        auto* process = attempt.worker.findChild<QProcess*>();
+        QVERIFY(process);
+        QSignalSpy runtime(&attempt.worker, &EngineProcessWorker::runtimeChanged);
+        QSignalSpy done(&attempt.worker, &EngineProcessWorker::analysisFinished);
+        QSignalSpy lifecycle(&attempt.worker, &EngineProcessWorker::stateChanged);
+        connect(&attempt.worker, &EngineProcessWorker::searchChanged, &attempt.worker,
+                [&](const SearchState& state) {
+                    if (state.phase ==
+                        (synchronizing ? SearchPhase::Synchronizing : SearchPhase::Analyzing)) {
+                        // Force final stdout to be consumed by the finished handler.
+                        disconnect(process, &QProcess::readyReadStandardOutput, &attempt.worker,
+                                   nullptr);
+                    }
+                });
+        const auto session = QUuid::createUuid();
+        attempt.worker.connectEngine(session, profile);
+        QTRY_VERIFY(!runtime.empty() &&
+                    qvariant_cast<RuntimeState>(runtime.back()[0]).phase == RuntimePhase::Ready);
+        AnalysisRequest search;
+        search.id = QUuid::createUuid();
+        search.limit = NodeLimit{200};
+        attempt.worker.analyze(session, search);
+        QTRY_VERIFY_WITH_TIMEOUT(attempt.finished, 6000);
+        QCOMPARE(done.size(), 1);
+        const auto failed = qvariant_cast<AnalysisResult>(done.front()[0]);
+        QCOMPARE(failed.outcome, AnalysisOutcome::Failed);
+        QVERIFY(failed.error);
+        QCOMPARE(failed.error->code, ErrorCode::Crash);
+        QCOMPARE(failed.error->stage,
+                 synchronizing ? FailureStage::FinalSynchronization : FailureStage::Analysis);
+        if (synchronizing) {
+            QCOMPARE(failed.evidence.lines.size(), std::size_t(1));
+            QCOMPARE(failed.evidence.lines.front().score->value, 7);
+            QVERIFY(failed.evidence.bestMove);
+        } else {
+            QVERIFY(failed.evidence.lines.empty());
+            QVERIFY(!failed.evidence.bestMove);
+        }
+        QCOMPARE(stages(lifecycle).count(Stage::Ready), 1);
+        const auto terminal = qvariant_cast<RuntimeState>(runtime.back()[0]);
+        QCOMPARE(terminal.phase, RuntimePhase::Failed);
+        QCOMPARE(terminal.error->code, failed.error->code);
+        QCOMPARE(terminal.error->stage, failed.error->stage);
+        QCOMPARE(process->state(), QProcess::NotRunning);
+        QCOMPARE(process->readAllStandardOutput().size(), 0);
+        QCOMPARE(process->readAllStandardError().size(), 0);
+    }
+
     void supervisorThreadResponsiveness() {
         QTemporaryDir directory;
         engine_test::Validator service;
