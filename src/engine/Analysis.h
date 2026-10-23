@@ -1,10 +1,13 @@
 #pragma once
 
 #include "chess/Position.h"
+#include "engine/EngineFingerprint.h"
 #include "engine/EngineProfile.h"
+#include <QDateTime>
 #include <QMetaType>
 #include <QUuid>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <variant>
 #include <vector>
@@ -59,6 +62,12 @@ struct AnalysisLine {
     std::vector<chess::Move> pv;
     SearchStatistics statistics;
 };
+struct AnalysisProvenance {
+    chess::PositionContext position;
+    EngineFingerprint fingerprint;
+    std::optional<std::vector<chess::Move>> searchMoves;
+    QDateTime createdAt;
+};
 struct AnalysisSnapshot {
     QUuid session;
     QUuid request;
@@ -69,6 +78,8 @@ struct AnalysisSnapshot {
     bool wdlSupported = false;
     std::vector<AnalysisLine> lines;
     SearchStatistics statistics;
+    std::shared_ptr<const AnalysisProvenance> provenance;
+    bool searchStarted = false;     // True only after go dispatch; not a completion claim.
     int achievedWidth = 0;          // Contiguous score/PV ranks with distinct root moves.
     std::optional<int> commonDepth; // Present only for a full effective-width set.
     std::optional<chess::Move> bestMove;

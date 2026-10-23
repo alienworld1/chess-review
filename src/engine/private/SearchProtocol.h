@@ -2,6 +2,7 @@
 #include "engine/Analysis.h"
 #include <QByteArray>
 #include <QStringList>
+#include <vector>
 
 namespace chess_review::engine {
 struct PreparedSearch {
@@ -10,6 +11,8 @@ struct PreparedSearch {
     QByteArray go;
     int effectiveMultiPv = 1;
     bool wdlSupported = false;
+    std::vector<EffectiveOption> effectiveOptions;
+    chess::PositionContext context;
 };
 // Complete typed-input validation, including exact command bounds, without history replay.
 // Full serialization still replays through the adapter immediately before dispatch.

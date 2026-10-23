@@ -199,6 +199,13 @@ class EngineSchedulingTest final : public QObject {
         QCOMPARE(interrupted.size(), 2);
         const auto first = qvariant_cast<ScheduledEvidence>(interrupted[0][0]);
         const auto second = qvariant_cast<ScheduledEvidence>(interrupted[1][0]);
+        QVERIFY(first.evidence.provenance);
+        QVERIFY(second.evidence.provenance);
+        QVERIFY(first.evidence.provenance != second.evidence.provenance);
+        QCOMPARE(first.evidence.provenance->fingerprint, second.evidence.provenance->fingerprint);
+        QVERIFY(first.evidence.provenance->createdAt.isValid());
+        QVERIFY(second.evidence.provenance->createdAt.isValid());
+        QVERIFY(first.evidence.searchStarted);
         QCOMPARE(first.identity.request, background.id);
         QCOMPARE(first.evidence.statistics.nodes, 10);
         QCOMPARE(first.evidence.lines.size(), 1U);
@@ -209,6 +216,8 @@ class EngineSchedulingTest final : public QObject {
         QCOMPARE(final.outcome, ScheduledOutcome::Completed);
         QVERIFY(final.identity.attempt != first.identity.attempt);
         QVERIFY(final.identity.attempt != second.identity.attempt);
+        QVERIFY(final.evidence->evidence.provenance != first.evidence.provenance);
+        QCOMPARE(final.evidence->evidence.provenance->position, background.position.context());
         QCOMPARE(final.evidence->evidence.statistics.nodes, 900);
         QCOMPARE(final.evidence->evidence.lines.front().score->value, 20);
         QVERIFY(legacy.empty());
@@ -295,6 +304,8 @@ class EngineSchedulingTest final : public QObject {
                                  AnalysisPriority::InteractiveAnalysis);
         QTRY_COMPARE(done.size(), 2);
         QCOMPARE(result(done, 0).outcome, ScheduledOutcome::Cancelled);
+        QVERIFY(result(done, 0).evidence->evidence.provenance);
+        QVERIFY(!result(done, 0).evidence->evidence.searchStarted);
         QCOMPARE(result(done, 1).outcome, ScheduledOutcome::Completed);
     }
     void preemptionDuringConfiguration() {
@@ -460,6 +471,9 @@ class EngineSchedulingTest final : public QObject {
         }
         QTRY_VERIFY(!runtime.empty() &&
                     qvariant_cast<RuntimeState>(runtime.back()[0]).phase == RuntimePhase::Failed);
+        QVERIFY(result(done, 0).evidence->evidence.provenance);
+        QVERIFY(result(done, 0).evidence->evidence.searchStarted);
+        const auto failedProvenance = result(done, 0).evidence->evidence.provenance;
         QCOMPARE(result(done, 0).evidence->evidence.lines.size(), 1U);
         if (closeDuringCleanup) {
             return;
@@ -473,6 +487,9 @@ class EngineSchedulingTest final : public QObject {
                                  AnalysisPriority::InteractiveAnalysis);
         QTRY_COMPARE(done.size(), 3);
         QCOMPARE(result(done).outcome, ScheduledOutcome::Completed);
+        QVERIFY(result(done).evidence->evidence.provenance != failedProvenance);
+        QCOMPARE(result(done).evidence->evidence.provenance->fingerprint,
+                 failedProvenance->fingerprint);
     }
     void cancelledRestartRetainsInterruptedEvidence() {
         Conversation c;
@@ -501,6 +518,8 @@ class EngineSchedulingTest final : public QObject {
         QCOMPARE(result(done).outcome, ScheduledOutcome::Cancelled);
         QCOMPARE(interrupted.size(), 1);
         const auto partial = qvariant_cast<ScheduledEvidence>(interrupted.front()[0]);
+        QCOMPARE(result(done).evidence->evidence.provenance, partial.evidence.provenance);
+        QVERIFY(result(done).evidence->evidence.searchStarted);
         QCOMPARE(result(done).evidence->identity.attempt, partial.identity.attempt);
         QVERIFY(result(done).identity.attempt != partial.identity.attempt);
         QCOMPARE(result(done).evidence->evidence.statistics.nodes, 10);

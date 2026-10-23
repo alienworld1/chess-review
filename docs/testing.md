@@ -726,3 +726,20 @@ a machine-specific latency assertion. Parser checks compare admission with full
 serialization for initial, castling, en-passant, promotion and terminal roots,
 invalid limits and restrictions, and promotion-bearing history exactly at and
 above the 64 KiB command bound. Full adapter replay before dispatch remains required.
+
+## Raw analysis provenance
+
+`engine_fingerprint` is a process-free Qt Core suite covering deterministic golden
+vectors, case/order normalization, typed effective defaults, unknown options,
+button exclusion, binary/identity/configuration/version changes, metadata
+exclusions, and unambiguous framing (including null/empty string equivalence).
+Run it with `ctest --preset dev -R '^engine_fingerprint$'`.
+
+`engine_analysis` checks provenance against the fake engine's expected commands,
+including Hash defaults, Threads, MultiPV downgrade and WDL reset, restrictions,
+rejection and cancellation before go. A 4,000-ply history receives multiple progress
+frames sharing the same provenance object and retains its result after service
+destruction. Exact context distinguishes that history from an equivalent FEN root.
+`engine_scheduling` checks fresh attempt provenance, retained original evidence,
+failure/reconnect, and configuration cancellation. Fingerprint equality in these
+tests is not a cache-reuse assertion.

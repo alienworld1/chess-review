@@ -18,6 +18,7 @@ namespace {
 const QString identity =
     QStringLiteral("id name Analysis test\n"
                    "option name Threads type spin default 4 min 1 max 8\n"
+                   "option name Hash type spin default 16 min 1 max 128\n"
                    "option name MultiPV type spin default 1 min 1 max 3\n"
                    "option name UCI_ShowWDL type check default false\nuciok\n");
 QJsonObject quit() {
@@ -168,6 +169,21 @@ class EngineAnalysisTest final : public QObject {
         QTRY_COMPARE(done.size(), 1);
         auto evidence = result(done).evidence;
         QCOMPARE(result(done).outcome, AnalysisOutcome::Completed);
+        QVERIFY(evidence.provenance);
+        QVERIFY(evidence.searchStarted);
+        QCOMPARE(evidence.provenance->position, first.position.context());
+        QCOMPARE(evidence.provenance->fingerprint.executableSha256,
+                 conversation.profile.engine.executableSha256);
+        QCOMPARE(evidence.provenance->fingerprint.reportedName, QStringLiteral("Analysis test"));
+        QVERIFY(evidence.provenance->createdAt.isValid());
+        QCOMPARE(evidence.provenance->createdAt.timeSpec(), Qt::UTC);
+        const auto original = evidence.provenance;
+        const auto& settings = original->fingerprint.options;
+        QCOMPARE(settings.size(), 4U);
+        QCOMPARE(settings[0].value, QStringLiteral("16")); // Hash default, no setoption sent.
+        QCOMPARE(settings[1].value, QStringLiteral("3"));  // Effective width, not requested eight.
+        QCOMPARE(settings[2].value, QStringLiteral("1"));
+        QCOMPARE(settings[3].value, QStringLiteral("true"));
         QCOMPARE(evidence.requestedMultiPv, 8);
         QCOMPARE(evidence.effectiveMultiPv, 3);
         QCOMPARE(evidence.achievedWidth, 3);
@@ -187,6 +203,10 @@ class EngineAnalysisTest final : public QObject {
         QTRY_COMPARE(done.size(), 2);
         evidence = result(done).evidence;
         QCOMPARE(result(done).outcome, AnalysisOutcome::Completed);
+        QVERIFY(evidence.provenance != original);
+        QCOMPARE(evidence.provenance->position, second.position.context());
+        QVERIFY(evidence.provenance->fingerprint.digest != original->fingerprint.digest);
+        QCOMPARE(evidence.provenance->fingerprint.options[3].value, QStringLiteral("false"));
         QCOMPARE(evidence.lines[0].score->type, ScoreType::Mate);
         QCOMPARE(evidence.lines[0].score->value, 1);
         QVERIFY(!evidence.lines[0].wdl);
@@ -196,6 +216,7 @@ class EngineAnalysisTest final : public QObject {
         service.analyze(conversation.session, timed);
         QTRY_COMPARE(done.size(), 3);
         QCOMPARE(result(done).outcome, AnalysisOutcome::Completed);
+        QCOMPARE(result(done).evidence.provenance->searchMoves, timed.searchMoves);
         const auto infinite = request(InfiniteLimit{});
         service.analyze(conversation.session, infinite);
         QTRY_COMPARE(qvariant_cast<SearchState>(states.back()[0]).phase, SearchPhase::Analyzing);
@@ -208,6 +229,52 @@ class EngineAnalysisTest final : public QObject {
         service.analyze(conversation.session, first);
         QTRY_COMPARE(done.size(), 5);
         QCOMPARE(result(done).outcome, AnalysisOutcome::Rejected);
+        QVERIFY(!result(done).evidence.provenance);
+        QVERIFY(!result(done).evidence.searchStarted);
+    }
+    void longHistoryProvenanceLifetime() {
+        AnalysisSnapshot retained;
+        {
+            Conversation c;
+            auto search = request(InfiniteLimit{});
+            for (int cycle = 0; cycle < 1000; ++cycle) {
+                for (const auto* uci : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
+                    QVERIFY(std::holds_alternative<std::monostate>(
+                        search.position.play(move(search.position, uci))));
+                }
+            }
+            auto prepared =
+                std::get<PreparedSearch>(prepareSearch(search, c.profile.engine.capabilities));
+            auto steps = c.setup();
+            steps.append(engine_test::step(QString::fromUtf8(prepared.position).trimmed(), {}));
+            steps.append(engine_test::step(
+                QStringLiteral("go infinite"),
+                {engine_test::write(QStringLiteral("info depth 1 score cp 1 pv e2e4\n")),
+                 engine_test::write(QStringLiteral("info depth 2 score cp 2 pv e2e4\n"), 250)}));
+            steps.append(engine_test::step(
+                QStringLiteral("stop"), {engine_test::write(QStringLiteral("bestmove e2e4\n"))}));
+            steps.append(ready());
+            c.connect(steps);
+            QSignalSpy updates(&c.service(), &EngineSupervisor::analysisUpdated);
+            QSignalSpy done(&c.service(), &EngineSupervisor::analysisFinished);
+            c.service().analyze(c.session, search);
+            QTRY_VERIFY(updates.size() >= 2);
+            const auto first = qvariant_cast<AnalysisSnapshot>(updates.front()[0]);
+            const auto latest = qvariant_cast<AnalysisSnapshot>(updates.back()[0]);
+            QVERIFY(first.provenance);
+            QCOMPARE(first.provenance, latest.provenance);
+            QCOMPARE(first.provenance->position, search.position.context());
+            auto fenOnly =
+                std::get<chess::Position>(chess::Position::fromFen(search.position.fen()));
+            QVERIFY(first.provenance->position != fenOnly.context());
+            c.service().stopAnalysis(c.session, search.id);
+            QTRY_COMPARE(done.size(), 1);
+            retained = result(done).evidence;
+            QCOMPARE(retained.provenance, first.provenance);
+        }
+        QVERIFY(retained.searchStarted);
+        QCOMPARE(retained.provenance->position.moves.size(), 4000U);
+        QCOMPARE(retained.provenance->fingerprint.digest.size(), 32);
     }
     void rejectionAndStopBeforeGo() {
         Conversation conversation;
@@ -232,6 +299,10 @@ class EngineAnalysisTest final : public QObject {
         QCOMPARE(result(done, 2).error->code, ErrorCode::Busy);
         QCOMPARE(result(done).outcome, AnalysisOutcome::Stopped);
         QVERIFY(!result(done).evidence.bestMove);
+        QVERIFY(result(done).evidence.provenance);
+        QVERIFY(!result(done).evidence.searchStarted);
+        QVERIFY(!result(done, 0).evidence.provenance);
+        QVERIFY(!result(done, 1).evidence.provenance);
         QTest::qWait(400); // The consumed configuration deadline must not kill Ready.
         QSignalSpy runtime(&service, &EngineSupervisor::runtimeChanged);
         service.disconnectEngine(conversation.session);

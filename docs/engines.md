@@ -309,3 +309,47 @@ capacity. Scheduled work waits for an active direct search and never preempts it
 Scheduled attempt events use only the scheduled signals; legacy stop calls cannot
 cancel scheduled work. Settings remains the only application consumer and retains
 its existing shutdown ownership until a future analysis UI consumer is integrated.
+
+## Raw evidence provenance and fingerprints
+
+Every accepted worker attempt attaches `AnalysisSnapshot::provenance`, a
+`std::shared_ptr<const AnalysisProvenance>` shared by its progress and terminal
+snapshots. It owns the exact history-bearing `PositionContext`, original optional
+root-move restrictions, UTC attempt creation time, and `EngineFingerprint`.
+Creation time records acceptance by the worker, not queue submission or completion.
+Rejected submissions have no provenance. A request cancelled while queued has no
+new attempt provenance, but can retain an earlier interrupted attempt's evidence.
+`searchStarted` becomes true when the worker dispatches `go`; configuration-only
+cancellation leaves it false. Neither field proves sufficient analysis strength.
+
+The fingerprint captures freshly verified runtime executable SHA-256 and reported
+UCI name/optional author, plus every effective non-button option. Advertised
+defaults are combined with actual per-search settings: Threads remains one, Hash
+retains its advertised default, and MultiPV/WDL reflect the dispatched settings.
+Unknown options are included conservatively. Option names are case-folded and
+sorted, spin values use canonical decimal text, and string/combo values preserve
+internal whitespace and case. Check defaults already have validated true/false
+spelling. Profile labels/IDs, executable locations, timestamps and request/job/
+session identities do not affect the digest.
+
+Schema version 1 uses SHA-256 over QDataStream Qt_6_0 big-endian framing: a
+length-prefixed UTF-8 domain tag, schema and adapter-policy uint32 versions,
+length-prefixed executable hash and reported name, an author-presence boolean and
+optional length-prefixed author, resource-verification uint32, option-count uint32,
+and sorted options (length-prefixed UTF-8 name, stable OptionType uint32, and
+length-prefixed UTF-8 value). Null and empty strings have the same encoding;
+missing author remains distinct from a present empty author. This internal digest
+format is not a persisted result codec. Adapter-policy version changes are required
+when engine interaction or evidence semantics materially change.
+
+Every fingerprint explicitly carries `ExternalResourcesUnverified`. UCI discovery
+cannot prove the identity of external networks, tablebases, or other dependencies.
+Equal digests establish captured configuration identity only; they never authorize
+cache reuse. This increment does not hash external resources, persist results, or
+implement cache compatibility/dominance.
+
+Scheduled evidence retains its originating attempt's provenance across preemption
+and cancellation. A restarted attempt gets a new immutable object and creation
+time; its fingerprint may remain equal. Snapshots remain valid after disconnect
+or supervisor destruction. Raw scores, bounds, WDL, PVs and measured coverage
+retain their existing semantics and remain independent of review interpretation.

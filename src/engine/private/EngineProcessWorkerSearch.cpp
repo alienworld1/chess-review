@@ -1,4 +1,7 @@
 #include "engine/private/EngineProcessWorker.h"
+#include "engine/private/Fingerprint.h"
+#include <QDateTime>
+#include <memory>
 #include <utility>
 
 namespace chess_review::engine {
@@ -33,6 +36,10 @@ void EngineProcessWorker::analyze(QUuid session, const AnalysisRequest& request)
     auto commands = std::get<PreparedSearch>(std::move(prepared));
     snapshot.effectiveMultiPv = commands.effectiveMultiPv;
     snapshot.wdlSupported = commands.wdlSupported;
+    snapshot.provenance = std::make_shared<const AnalysisProvenance>(
+        AnalysisProvenance{std::move(commands.context),
+                           makeFingerprint(profile_, std::move(commands.effectiveOptions)),
+                           request.searchMoves, QDateTime::currentDateTimeUtc()});
     searchIds_.insert(request.id);
     search_.emplace(ActiveSearch{
         request, std::move(commands), std::move(snapshot), false, false, false, {}, 0, 0});
@@ -96,6 +103,7 @@ void EngineProcessWorker::startSearch() {
     // Commands precede notifications so a direct stop listener cannot send stop before go.
     send(search_->prepared.position + search_->prepared.go);
     if (stage_ == Stage::Analyzing && !failure_) {
+        search_->snapshot.searchStarted = true;
         publishSearch(SearchPhase::Analyzing);
     }
 }
