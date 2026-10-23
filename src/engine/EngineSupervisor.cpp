@@ -79,25 +79,31 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
         Qt::DirectConnection);
     connect(impl_->coordinator, &SupervisorCoordinator::analysisFinished, this,
             &EngineSupervisor::analysisFinished, Qt::QueuedConnection);
-    // Bound provisional scheduled evidence independently of lossless state/results. A
-    // boundary invalidates the mailbox synchronously on the producer thread, so an old
-    // queued notification cannot publish evidence from an obsolete attempt.
-    const auto invalidateScheduled = [this] {
+    // Invalidate only the attempt that actually ended. Unrelated queued/rejected
+    // requests must not erase the active search's latest provisional evidence.
+    const auto invalidateScheduled = [this](const ScheduledState& state) {
         const std::lock_guard lock(impl_->progressMutex);
-        impl_->scheduledProgress.reset();
-        ++impl_->scheduledEpoch;
+        const auto& pending = impl_->scheduledProgress;
+        if (pending && pending->identity.session == state.session &&
+            pending->identity.request == state.request &&
+            pending->identity.attempt == state.attempt) {
+            impl_->scheduledProgress.reset();
+            ++impl_->scheduledEpoch;
+        }
     };
     connect(
-        impl_->coordinator, &SupervisorCoordinator::scheduledChanged, this,
-        [invalidateScheduled](const ScheduledState&) { invalidateScheduled(); },
-        Qt::DirectConnection);
-    connect(
         impl_->coordinator, &SupervisorCoordinator::scheduledInterrupted, this,
-        [invalidateScheduled](const ScheduledEvidence&) { invalidateScheduled(); },
+        [invalidateScheduled](const ScheduledEvidence& value) {
+            invalidateScheduled(value.identity);
+        },
         Qt::DirectConnection);
     connect(
         impl_->coordinator, &SupervisorCoordinator::scheduledFinished, this,
-        [invalidateScheduled](const ScheduledResult&) { invalidateScheduled(); },
+        [invalidateScheduled](const ScheduledResult& value) {
+            if (value.outcome != ScheduledOutcome::Rejected) {
+                invalidateScheduled(value.identity);
+            }
+        },
         Qt::DirectConnection);
     connect(impl_->coordinator, &SupervisorCoordinator::scheduledChanged, this,
             &EngineSupervisor::scheduledChanged, Qt::QueuedConnection);
@@ -121,22 +127,7 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
                 return;
             }
             QMetaObject::invokeMethod(
-                this,
-                [this, epoch] {
-                    std::optional<ScheduledEvidence> pending;
-                    {
-                        const std::lock_guard lock(impl_->progressMutex);
-                        if (epoch == impl_->scheduledEpoch) {
-                            pending = std::move(impl_->scheduledProgress);
-                        }
-                        impl_->scheduledProgress.reset();
-                        impl_->scheduledProgressQueued = false;
-                    }
-                    if (pending) {
-                        emit scheduledUpdated(*pending);
-                    }
-                },
-                Qt::QueuedConnection);
+                this, [this, epoch] { deliverScheduledProgress(epoch); }, Qt::QueuedConnection);
         },
         Qt::DirectConnection);
     // QThread::finished owns deletion on the engine thread.
@@ -144,6 +135,29 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
     impl_->thread.start();
 }
 EngineSupervisor::~EngineSupervisor() { Q_ASSERT(!impl_->thread.isRunning()); }
+void EngineSupervisor::deliverScheduledProgress(std::uint64_t epoch) {
+    std::optional<ScheduledEvidence> pending;
+    bool repost = false;
+    std::uint64_t nextEpoch = 0;
+    {
+        const std::lock_guard lock(impl_->progressMutex);
+        if (epoch != impl_->scheduledEpoch && impl_->scheduledProgress) {
+            // This notification predates a new attempt. Preserve its latest value,
+            // and deliver behind that attempt's already-posted state notifications.
+            repost = true;
+            nextEpoch = impl_->scheduledEpoch;
+        } else {
+            pending = std::exchange(impl_->scheduledProgress, std::nullopt);
+            impl_->scheduledProgressQueued = false;
+        }
+    }
+    if (repost) {
+        QMetaObject::invokeMethod(
+            this, [this, nextEpoch] { deliverScheduledProgress(nextEpoch); }, Qt::QueuedConnection);
+    } else if (pending) {
+        emit scheduledUpdated(*pending);
+    }
+}
 void EngineSupervisor::inspect(QUuid request, const QString& path) {
     Q_ASSERT(QThread::currentThread() == thread());
     if (impl_->closing) {

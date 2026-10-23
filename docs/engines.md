@@ -249,9 +249,12 @@ Strict priority permits sustained interactive work to delay background work.
 
 There is room for 256 pending requests and one active request. Overflow rejects
 with Busy. A review producer should submit batches as capacity becomes available.
-Malformed requests reject before they can interrupt a healthy search. Logical
-request IDs are unique per session, including cancelled requests. The accepted-ID
-and cancelled-job registries each hold at most 65,536 IDs; at exhaustion new
+Malformed requests reject before they can interrupt a healthy search. Admission
+validates limits, capabilities, root restrictions and exact command bounds against
+the owned chess position. Complete history serialization still replays through the
+chess adapter when an attempt starts; queued requests do not pay that replay cost.
+Accepted logical request IDs are unique per session, including cancelled requests.
+The accepted-ID and cancelled-job registries each hold at most 65,536 IDs; at exhaustion new
 submissions reject with InvalidRequest until explicit reconnect.
 
 Preemption uses the normal cooperative stop and final readiness barrier. It emits
@@ -264,8 +267,10 @@ worker cannot admit a fresh attempt, that logical request fails explicitly.
 
 `scheduledChanged` exposes Queued, Configuring, Analyzing, Stopping, and Synchronizing.
 `scheduledUpdated` is provisional and latest-only: callers must tolerate missing
-updates. State, interruption and terminal events are lossless queued deliveries on
-the supervisor's owning thread. `scheduledFinished` reports Rejected, Completed,
+updates. Unrelated queue changes and rejected submissions preserve the active
+attempt's latest value. Across restarts, progress follows the new attempt's state
+notifications. State, interruption and terminal events are lossless queued
+deliveries on the supervisor's owning thread. `scheduledFinished` reports Rejected, Completed,
 Cancelled or Failed, with optional contextual error and available evidence.
 A completed result still does not prove the requested depth, width, or strength;
 inspect its actual evidence as with direct searches.
@@ -276,7 +281,10 @@ carries its own originating attempt identity; its inner `AnalysisSnapshot::reque
 is that attempt UUID. A cancelled restart that produced no candidates can retain
 an earlier interrupted attempt's useful evidence. Always use that evidence's
 identity rather than assuming it came from the terminal result's current attempt.
-Do not treat retained partial evidence as a completed search.
+Do not treat retained partial evidence as a completed search. Every Completed
+result carries evidence from its completing attempt, including terminal positions
+with no legal bestmove or candidate lines. A Rejected submission with a reused ID
+does not terminate the previously admitted request carrying that ID.
 
 `cancelScheduledAnalysis(session, requestId)` removes a pending request or stops its
 active attempt. Repeated or stale cancellation is harmless. A natural bestmove

@@ -43,8 +43,7 @@ void SupervisorCoordinator::scheduleAnalysis(QUuid session, const AnalysisReques
         return;
     }
     // Validate before preemption. All chess replay/serialization stays off the GUI thread.
-    const auto prepared = prepareSearch(request, runtime_->discovery->capabilities);
-    if (const auto* error = std::get_if<Error>(&prepared)) {
+    if (const auto error = validateSearchRequest(request, runtime_->discovery->capabilities)) {
         reject(*error);
         return;
     }
@@ -141,9 +140,13 @@ void SupervisorCoordinator::finishSearch(const AnalysisResult& result) {
     } else {
         auto finished = std::move(*active_);
         active_.reset();
+        const bool completed = result.outcome == AnalysisOutcome::Completed ||
+                               (result.outcome == AnalysisOutcome::Stopped &&
+                                finished.state.phase == ScheduledPhase::Synchronizing &&
+                                !finished.cancelled && !finished.preempted);
         // Keep the most recent useful attempt when cancellation occurs before a restart's go.
-        if (result.outcome == AnalysisOutcome::Completed || !result.evidence.lines.empty() ||
-            result.evidence.bestMove || !finished.evidence) {
+        if (completed || !result.evidence.lines.empty() || result.evidence.bestMove ||
+            !finished.evidence) {
             finished.evidence = ScheduledEvidence{finished.state, result.evidence};
         }
         if (finished.preempted && !finished.cancelled && !schedulingStopped_ &&
@@ -154,10 +157,6 @@ void SupervisorCoordinator::finishSearch(const AnalysisResult& result) {
             pending_.push_back(std::move(finished));
             emit scheduledChanged(pending_.back().state);
         } else {
-            const bool completed = result.outcome == AnalysisOutcome::Completed ||
-                                   (result.outcome == AnalysisOutcome::Stopped &&
-                                    finished.state.phase == ScheduledPhase::Synchronizing &&
-                                    !finished.cancelled && !finished.preempted);
             const auto outcome = completed ? ScheduledOutcome::Completed
                                  : result.outcome == AnalysisOutcome::Stopped
                                      ? ScheduledOutcome::Cancelled

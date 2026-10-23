@@ -70,6 +70,7 @@ class EngineSupervisor final : public QObject {
 
   private:
     void finishClose();
+    void deliverScheduledProgress(std::uint64_t epoch);
     struct Impl;
     std::unique_ptr<Impl> impl_;
     friend class ValidatorTestAccess;

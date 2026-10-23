@@ -11,6 +11,10 @@ struct PreparedSearch {
     int effectiveMultiPv = 1;
     bool wdlSupported = false;
 };
+// Complete typed-input validation, including exact command bounds, without history replay.
+// Full serialization still replays through the adapter immediately before dispatch.
+std::optional<Error> validateSearchRequest(const AnalysisRequest& request,
+                                           const Capabilities& capabilities);
 std::variant<PreparedSearch, Error> prepareSearch(const AnalysisRequest& request,
                                                   const Capabilities& capabilities);
 struct InfoUpdate {

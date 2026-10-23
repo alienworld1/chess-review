@@ -3,9 +3,11 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QTest>
+#include <array>
 #include <cstddef>
 #include <limits>
 #include <random>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -336,6 +338,98 @@ class SearchProtocolTest final : public QObject {
             }
             QCOMPARE(search.position.context(), before);
         }
+    }
+    void admissionChecksMatchSerialization() {
+        const std::array roots{"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                               "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+                               "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2", "7k/P7/8/8/8/8/8/K7 w - - 0 1",
+                               "7k/5K2/6Q1/8/8/8/8/8 b - - 0 1"};
+        const std::array<SearchLimit, 5> limits{NodeLimit{200}, DepthLimit{2}, TimeLimit{20},
+                                                InfiniteLimit{}, NodeLimit{0}};
+        for (const auto* fen : roots) {
+            auto search = request();
+            auto parsed = chess::Position::fromFen(fen);
+            QVERIFY(std::holds_alternative<chess::Position>(parsed));
+            search.position = std::get<chess::Position>(std::move(parsed));
+            const auto before = search.position.context();
+            for (const auto& limit : limits) {
+                search.limit = limit;
+                for (int restriction = 0; restriction < 3; ++restriction) {
+                    search.searchMoves.reset();
+                    const auto legal = search.position.legalMoves();
+                    if (restriction == 1 && !legal.empty()) {
+                        search.searchMoves = std::vector{legal.front()};
+                    }
+                    if (restriction == 2) {
+                        search.searchMoves = std::vector<chess::Move>{};
+                    }
+                    const auto error = validateSearchRequest(search, Capabilities{});
+                    const auto prepared = prepareSearch(search, Capabilities{});
+                    QCOMPARE(error.has_value(), std::holds_alternative<Error>(prepared));
+                    if (error) {
+                        QCOMPARE(error->code, std::get<Error>(prepared).code);
+                    }
+                    QCOMPARE(search.position.context(), before);
+                }
+            }
+        }
+    }
+    void promotionHistoryCommandBoundary() {
+        auto search = request();
+        qsizetype headerSize = 0;
+        // Align a promotion-bearing history exactly to the 64 KiB command limit.
+        for (int fullmove = 1; fullmove <= 10000; fullmove *= 10) {
+            const auto fen = std::string("7k/P7/8/8/8/8/8/K7 w - - 0 ") + std::to_string(fullmove);
+            auto parsed = chess::Position::fromFen(fen);
+            QVERIFY(std::holds_alternative<chess::Position>(parsed));
+            search.position = std::get<chess::Position>(std::move(parsed));
+            headerSize = static_cast<qsizetype>(search.position.context().rootFen.size()) + 19;
+            if ((headerSize + 6) % 5 == 0) {
+                break;
+            }
+        }
+        QCOMPARE((headerSize + 6) % 5, 0);
+        const auto promote = std::get<chess::Move>(search.position.parseUci("a7a8n"));
+        QVERIFY(std::holds_alternative<std::monostate>(search.position.play(promote)));
+        const std::array cycle{"h8h7", "a8b6", "h7h8", "b6a8"};
+        const auto ordinary = (65535 - headerSize - 6) / 5;
+        for (qsizetype index = 0; index < ordinary; ++index) {
+            const auto move = std::get<chess::Move>(
+                search.position.parseUci(cycle[static_cast<std::size_t>(index % 4)]));
+            QVERIFY(std::holds_alternative<std::monostate>(search.position.play(move)));
+        }
+        QVERIFY(!validateSearchRequest(search, Capabilities{}));
+        const auto prepared = prepareSearch(search, Capabilities{});
+        QVERIFY(std::holds_alternative<PreparedSearch>(prepared));
+        QCOMPARE(std::get<PreparedSearch>(prepared).position.size(), 65536);
+        const auto move = std::get<chess::Move>(
+            search.position.parseUci(cycle[static_cast<std::size_t>(ordinary % 4)]));
+        QVERIFY(std::holds_alternative<std::monostate>(search.position.play(move)));
+        QVERIFY(validateSearchRequest(search, Capabilities{}));
+        QVERIFY(std::holds_alternative<Error>(prepareSearch(search, Capabilities{})));
+    }
+    void invalidLimitsWithLongHistory() {
+        auto search = request();
+        for (int cycle = 0; cycle < 3000; ++cycle) {
+            for (const auto* uci : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
+                const auto move = std::get<chess::Move>(search.position.parseUci(uci));
+                QVERIFY(std::holds_alternative<std::monostate>(search.position.play(move)));
+            }
+        }
+        const auto before = search.position.context();
+        const std::array<SearchLimit, 4> invalid{NodeLimit{0}, DepthLimit{0}, TimeLimit{0},
+                                                 TimeLimit{2147483647}};
+        QElapsedTimer elapsed;
+        elapsed.start();
+        for (const auto& limit : invalid) {
+            search.limit = limit;
+            const auto prepared = prepareSearch(search, Capabilities{});
+            QVERIFY(std::holds_alternative<Error>(prepared));
+            QCOMPARE(std::get<Error>(prepared).code, ErrorCode::InvalidRequest);
+        }
+        qInfo("Invalid-limit validation with 12,000-ply history (four requests): %lld ms",
+              static_cast<long long>(elapsed.elapsed()));
+        QCOMPARE(search.position.context(), before);
     }
     void bestMoveGrammar() {
         auto search = request();

@@ -716,3 +716,13 @@ unchanged. A deliberate caller stall checks latest-only provisional delivery;
 terminal evidence and interruption snapshots remain lossless. Owning-thread
 callbacks and no progress after terminal completion are also checked. Existing
 engine lifecycle and production-main exit probes remain part of regression testing.
+
+Scheduling adversarial regressions stall the receiver across unrelated queue
+changes, duplicate rejection and attempt replacement, requiring one latest update
+with state-before-progress ordering. Terminal-root restarts followed by close or
+disconnect must report Completed with evidence from the completing attempt.
+Long-history admission/cancellation records timing and caller heartbeats without
+a machine-specific latency assertion. Parser checks compare admission with full
+serialization for initial, castling, en-passant, promotion and terminal roots,
+invalid limits and restrictions, and promotion-bearing history exactly at and
+above the 64 KiB command bound. Full adapter replay before dispatch remains required.

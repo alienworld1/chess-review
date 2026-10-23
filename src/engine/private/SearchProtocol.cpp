@@ -63,13 +63,43 @@ bool integer(const QString& text, int& value, int maximum = std::numeric_limits<
     value = static_cast<int>(number);
     return true;
 }
-} // namespace
-std::variant<PreparedSearch, Error> prepareSearch(const AnalysisRequest& request,
-                                                  const Capabilities& capabilities) {
+struct SearchSetup {
+    PreparedSearch commands;
+    chess::PositionContext context;
+};
+std::variant<SearchSetup, Error> prepareSearchSetup(const AnalysisRequest& request,
+                                                    const Capabilities& capabilities) {
     if (request.id.isNull() || request.multiPv < 1) {
         return invalidRequest();
     }
     PreparedSearch prepared;
+    bool valid = true;
+    prepared.go = std::visit(
+        [&valid](const auto& limit) -> QByteArray {
+            using T = std::decay_t<decltype(limit)>;
+            if constexpr (std::is_same_v<T, InfiniteLimit>) {
+                return "go infinite";
+            } else if constexpr (std::is_same_v<T, NodeLimit>) {
+                valid = limit.nodes > 0 && limit.nodes <= static_cast<std::uint64_t>(
+                                                              std::numeric_limits<qint64>::max());
+                return "go nodes " + QByteArray::number(static_cast<qulonglong>(limit.nodes));
+            } else if constexpr (std::is_same_v<T, DepthLimit>) {
+                valid = limit.depth > 0 &&
+                        limit.depth <= static_cast<std::uint32_t>(std::numeric_limits<int>::max());
+                return "go depth " + QByteArray::number(limit.depth);
+            } else {
+                valid = limit.milliseconds > 0 &&
+                        limit.milliseconds <=
+                            static_cast<std::uint64_t>(std::numeric_limits<int>::max() - 5000);
+                return "go movetime " +
+                       QByteArray::number(static_cast<qulonglong>(limit.milliseconds));
+            }
+        },
+        request.limit);
+    if (!valid) {
+        return invalidRequest();
+    }
+
     const auto legal = request.position.legalMoves();
     auto count = legal.size();
     if (request.searchMoves) {
@@ -113,61 +143,29 @@ std::variant<PreparedSearch, Error> prepareSearch(const AnalysisRequest& request
     if (prepared.wdlSupported) {
         set(*wdl, request.wantWdl ? "true" : "false");
     }
-    // Replay on a copy: the caller's independent position/history never changes.
-    const auto context = request.position.context();
-    auto root = chess::Position::fromFen(context.rootFen);
-    if (!std::holds_alternative<chess::Position>(root)) {
-        return invalidRequest();
-    }
-    auto replay = std::get<chess::Position>(std::move(root));
+    // Position is an independently owned, validated adapter value. Its history
+    // contains only legal standard-chess moves (4 UCI bytes, or 5 for promotion).
+    // Admission checks exact command size without replaying the entire history.
+    auto context = request.position.context();
     prepared.position = context.provenance == chess::RootProvenance::InitialPosition
                             ? QByteArray("position startpos")
                             : "position fen " + QByteArray::fromStdString(context.rootFen);
     if (!context.moves.empty()) {
         prepared.position += " moves";
     }
-    // Every UCI move needs at least four bytes plus its separating space.
-    if (prepared.position.size() >= 65536 ||
-        context.moves.size() > static_cast<std::size_t>((65535 - prepared.position.size()) / 5)) {
+    if (prepared.position.size() >= 65536) {
+        return invalidRequest();
+    }
+    auto remaining = static_cast<std::size_t>(65535 - prepared.position.size());
+    if (context.moves.size() > remaining / 5) {
         return invalidRequest();
     }
     for (const auto& move : context.moves) {
-        const auto uci = replay.uci(move);
-        if (!std::holds_alternative<std::string>(uci)) {
+        const std::size_t bytes = move.promotion ? 6 : 5; // Space plus UCI move.
+        if (bytes > remaining) {
             return invalidRequest();
         }
-        prepared.position += ' ' + QByteArray::fromStdString(std::get<std::string>(uci));
-        if (prepared.position.size() >= 65536 ||
-            std::holds_alternative<chess::Error>(replay.play(move))) {
-            return invalidRequest();
-        }
-    }
-    prepared.position += '\n';
-    bool valid = true;
-    prepared.go = std::visit(
-        [&valid](const auto& limit) -> QByteArray {
-            using T = std::decay_t<decltype(limit)>;
-            if constexpr (std::is_same_v<T, InfiniteLimit>) {
-                return "go infinite";
-            } else if constexpr (std::is_same_v<T, NodeLimit>) {
-                valid = limit.nodes > 0 && limit.nodes <= static_cast<std::uint64_t>(
-                                                              std::numeric_limits<qint64>::max());
-                return "go nodes " + QByteArray::number(static_cast<qulonglong>(limit.nodes));
-            } else if constexpr (std::is_same_v<T, DepthLimit>) {
-                valid = limit.depth > 0 &&
-                        limit.depth <= static_cast<std::uint32_t>(std::numeric_limits<int>::max());
-                return "go depth " + QByteArray::number(limit.depth);
-            } else {
-                valid = limit.milliseconds > 0 &&
-                        limit.milliseconds <=
-                            static_cast<std::uint64_t>(std::numeric_limits<int>::max() - 5000);
-                return "go movetime " +
-                       QByteArray::number(static_cast<qulonglong>(limit.milliseconds));
-            }
-        },
-        request.limit);
-    if (!valid) {
-        return invalidRequest();
+        remaining -= bytes;
     }
     if (request.searchMoves) {
         prepared.go += " searchmoves";
@@ -181,7 +179,44 @@ std::variant<PreparedSearch, Error> prepareSearch(const AnalysisRequest& request
         prepared.options.size() > 65536) {
         return invalidRequest();
     }
-    return prepared;
+    return SearchSetup{std::move(prepared), std::move(context)};
+}
+} // namespace
+
+std::optional<Error> validateSearchRequest(const AnalysisRequest& request,
+                                           const Capabilities& capabilities) {
+    const auto setup = prepareSearchSetup(request, capabilities);
+    if (const auto* error = std::get_if<Error>(&setup)) {
+        return *error;
+    }
+    return std::nullopt;
+}
+
+std::variant<PreparedSearch, Error> prepareSearch(const AnalysisRequest& request,
+                                                  const Capabilities& capabilities) {
+    auto setup = prepareSearchSetup(request, capabilities);
+    if (const auto* error = std::get_if<Error>(&setup)) {
+        return *error;
+    }
+    auto prepared = std::get<SearchSetup>(std::move(setup));
+    auto root = chess::Position::fromFen(prepared.context.rootFen);
+    if (!std::holds_alternative<chess::Position>(root)) {
+        return invalidRequest();
+    }
+    auto replay = std::get<chess::Position>(std::move(root));
+    for (const auto& move : prepared.context.moves) {
+        const auto uci = replay.uci(move);
+        if (!std::holds_alternative<std::string>(uci)) {
+            return invalidRequest();
+        }
+        prepared.commands.position += ' ' + QByteArray::fromStdString(std::get<std::string>(uci));
+        if (prepared.commands.position.size() >= 65536 ||
+            std::holds_alternative<chess::Error>(replay.play(move))) {
+            return invalidRequest();
+        }
+    }
+    prepared.commands.position += '\n';
+    return std::move(prepared.commands);
 }
 
 std::variant<InfoUpdate, Error> parseSearchInfo(const QStringList& tokens,

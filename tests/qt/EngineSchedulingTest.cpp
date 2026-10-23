@@ -620,6 +620,170 @@ class EngineSchedulingTest final : public QObject {
         QVERIFY(correctThread);
         QCOMPARE(result(done).evidence->evidence.statistics.nodes, 29);
     }
+    void stalledProgressAcrossQueueEvents_data() {
+        QTest::addColumn<QString>("boundary");
+        QTest::newRow("unrelated-queued") << QStringLiteral("queued");
+        QTest::newRow("duplicate-rejected") << QStringLiteral("rejected");
+        QTest::newRow("attempt-replaced") << QStringLiteral("preempted");
+    }
+    void stalledProgressAcrossQueueEvents() {
+        QFETCH(QString, boundary);
+        const bool preempted = boundary == QStringLiteral("preempted");
+        Conversation c;
+        QJsonArray steps;
+        QJsonArray updates{engine_test::write(QStringLiteral("info nodes 1 score cp 5 pv e2e4\n"))};
+        if (!preempted) {
+            updates.append(
+                engine_test::write(QStringLiteral("info nodes 2 score cp 6 pv e2e4\n"), 400));
+        }
+        search(steps, QStringLiteral("go infinite"), updates);
+        steps.append(engine_test::step(QStringLiteral("stop"),
+                                       {engine_test::write(QStringLiteral("bestmove e2e4\n"))}));
+        steps.append(ready());
+        if (preempted) {
+            search(steps, QStringLiteral("go infinite"),
+                   {engine_test::write(QStringLiteral("info nodes 22 score cp 7 pv d2d4\n"), 100)});
+            steps.append(engine_test::step(
+                QStringLiteral("stop"), {engine_test::write(QStringLiteral("bestmove d2d4\n"))}));
+            steps.append(ready());
+        }
+        c.connect(steps);
+        auto& service = c.service();
+        QSignalSpy states(&service, &EngineSupervisor::scheduledChanged);
+        QSignalSpy progress(&service, &EngineSupervisor::scheduledUpdated);
+        QSignalSpy done(&service, &EngineSupervisor::scheduledFinished);
+        bool progressBeforeState = false;
+        QObject observer;
+        QObject::connect(&service, &EngineSupervisor::scheduledUpdated, &observer,
+                         [&](const ScheduledEvidence& value) {
+                             progressBeforeState =
+                                 progressBeforeState ||
+                                 !phase(states, value.identity.request, ScheduledPhase::Analyzing);
+                         });
+        const auto first = request(InfiniteLimit{});
+        const auto second = request(InfiniteLimit{});
+        service.scheduleAnalysis(c.session, first, AnalysisPriority::Maintenance);
+        QTRY_VERIFY(phase(states, first.id, ScheduledPhase::Analyzing));
+        progress.clear();
+        QTest::qSleep(250); // One old notification is pending; keep the receiver stalled.
+        if (boundary == QStringLiteral("rejected")) {
+            service.scheduleAnalysis(c.session, first, AnalysisPriority::InteractiveAnalysis);
+        } else {
+            service.scheduleAnalysis(c.session, second,
+                                     preempted ? AnalysisPriority::InteractiveAnalysis
+                                               : AnalysisPriority::Maintenance);
+        }
+        QTest::qSleep(450); // The latest active-attempt update arrives after the boundary.
+        QCoreApplication::sendPostedEvents(&service, QEvent::MetaCall);
+        QCoreApplication::sendPostedEvents(&service, QEvent::MetaCall);
+        QCOMPARE(progress.size(), 1);
+        const auto latest = qvariant_cast<ScheduledEvidence>(progress.front()[0]);
+        QCOMPARE(latest.identity.request, preempted ? second.id : first.id);
+        QCOMPARE(latest.evidence.statistics.nodes, preempted ? 22 : 2);
+        QVERIFY(!progressBeforeState);
+        service.cancelScheduledAnalysis(c.session, preempted ? first.id : second.id);
+        service.cancelScheduledAnalysis(c.session, preempted ? second.id : first.id);
+        QTRY_COMPARE(done.size(), 2);
+    }
+    void terminalRestartCompletionUsesCurrentEvidence_data() {
+        QTest::addColumn<bool>("close");
+        QTest::newRow("disconnect") << false;
+        QTest::newRow("close") << true;
+    }
+    void terminalRestartCompletionUsesCurrentEvidence() {
+        QFETCH(bool, close);
+        Conversation c;
+        QJsonArray steps;
+        const auto fen = QStringLiteral("7k/5K2/6Q1/8/8/8/8/8 b - - 0 1");
+        const auto position = QStringLiteral("position fen ") + fen;
+        setup(steps);
+        steps.append(engine_test::step(position, {}));
+        steps.append(engine_test::step(QStringLiteral("go nodes 900"),
+                                       {engine_test::write(QStringLiteral("info nodes 10\n"))}));
+        steps.append(engine_test::step(QStringLiteral("stop"),
+                                       {engine_test::write(QStringLiteral("bestmove 0000\n"))}));
+        steps.append(ready());
+        completedSearch(steps, 2, 50);
+        setup(steps);
+        steps.append(engine_test::step(position, {}));
+        steps.append(engine_test::step(
+            QStringLiteral("go nodes 900"),
+            {engine_test::write(QStringLiteral("info nodes 900\nbestmove 0000\n"))}));
+        steps.append(ready(200));
+        c.connect(steps);
+        auto& service = c.service();
+        QSignalSpy states(&service, &EngineSupervisor::scheduledChanged);
+        QSignalSpy done(&service, &EngineSupervisor::scheduledFinished);
+        QSignalSpy interrupted(&service, &EngineSupervisor::scheduledInterrupted);
+        auto background = request(NodeLimit{900});
+        background.position = std::get<chess_review::chess::Position>(
+            chess_review::chess::Position::fromFen(fen.toStdString()));
+        service.scheduleAnalysis(c.session, background, AnalysisPriority::Maintenance);
+        QTRY_VERIFY(phase(states, background.id, ScheduledPhase::Analyzing));
+        service.scheduleAnalysis(c.session, request(NodeLimit{2}),
+                                 AnalysisPriority::InteractiveAnalysis);
+        QTRY_VERIFY(std::count_if(states.begin(), states.end(), [&](const auto& args) {
+                        const auto state = qvariant_cast<ScheduledState>(args[0]);
+                        return state.request == background.id &&
+                               state.phase == ScheduledPhase::Synchronizing;
+                    }) == 2);
+        if (close) {
+            service.close();
+        } else {
+            service.disconnectEngine(c.session);
+        }
+        QTRY_COMPARE(done.size(), 2);
+        QCOMPARE(interrupted.size(), 1);
+        const auto final = result(done);
+        QCOMPARE(final.identity.request, background.id);
+        QCOMPARE(final.outcome, ScheduledOutcome::Completed);
+        QVERIFY(final.evidence);
+        QCOMPARE(final.evidence->identity.attempt, final.identity.attempt);
+        QCOMPARE(final.evidence->evidence.statistics.nodes, 900);
+        QVERIFY(final.evidence->evidence.lines.empty());
+        QVERIFY(!final.evidence->evidence.bestMove);
+    }
+    void longHistoryQueueCancellation() {
+        Conversation c;
+        QJsonArray steps;
+        stoppedSearch(steps);
+        c.connect(steps);
+        auto& service = c.service();
+        QSignalSpy states(&service, &EngineSupervisor::scheduledChanged);
+        QSignalSpy done(&service, &EngineSupervisor::scheduledFinished);
+        const auto active = request(InfiniteLimit{});
+        service.scheduleAnalysis(c.session, active, AnalysisPriority::InteractiveAnalysis);
+        QTRY_VERIFY(phase(states, active.id, ScheduledPhase::Analyzing));
+        auto queued = request();
+        for (int cycle = 0; cycle < 3000; ++cycle) {
+            for (const auto* uci : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
+                const auto move =
+                    std::get<chess_review::chess::Move>(queued.position.parseUci(uci));
+                QVERIFY(std::holds_alternative<std::monostate>(queued.position.play(move)));
+            }
+        }
+        QElapsedTimer elapsed;
+        elapsed.start();
+        int ticks = 0;
+        QTimer heartbeat;
+        heartbeat.setInterval(5);
+        QObject::connect(&heartbeat, &QTimer::timeout, &heartbeat, [&] { ++ticks; });
+        heartbeat.start();
+        const auto job = QUuid::createUuid();
+        for (int index = 0; index < 16; ++index) {
+            queued.id = QUuid::createUuid();
+            service.scheduleAnalysis(c.session, queued, AnalysisPriority::Maintenance, job);
+        }
+        service.cancelAnalysisJob(c.session, job);
+        service.cancelScheduledAnalysis(c.session, active.id);
+        QTRY_COMPARE_WITH_TIMEOUT(done.size(), 17, 10000);
+        for (qsizetype index = 0; index < done.size(); ++index) {
+            QCOMPARE(result(done, index).outcome, ScheduledOutcome::Cancelled);
+        }
+        QVERIFY(ticks > 0);
+        qInfo("Queue/cancel sixteen 12,000-ply requests: %lld ms, %d caller heartbeats",
+              static_cast<long long>(elapsed.elapsed()), ticks);
+    }
     void shutdownDrainsQueue_data() {
         QTest::addColumn<bool>("close");
         QTest::newRow("disconnect") << false;
