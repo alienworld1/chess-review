@@ -65,7 +65,9 @@ class EngineProcessWorker final : public QObject {
     void quitRuntime();
     void protocolFailure();
     void timeout();
-    void fail(Error error);
+    FailureStage failureStage() const;
+    void recordFailure(Error error);
+    void fail(Error error, bool stopFirst = false);
     void finish(ValidationResult result);
     void publish(RuntimePhase phase);
     void finishRuntime();

@@ -107,6 +107,8 @@ if(UNIX)
 
     chess_review_add_qt_test(engine_process_worker_tests engine_process_worker INTEGRATION
         SOURCES qt/EngineProcessWorkerTest.cpp LIBRARIES chess_review_engine)
+    # Multiple real terminate/kill cases need headroom under ASan/UBSan.
+    set_tests_properties(engine_process_worker PROPERTIES TIMEOUT 60)
     add_dependencies(engine_process_worker_tests fake_uci_engine)
     target_compile_definitions(engine_process_worker_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
 

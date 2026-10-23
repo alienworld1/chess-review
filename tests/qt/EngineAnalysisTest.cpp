@@ -316,6 +316,10 @@ class EngineAnalysisTest final : public QObject {
         QTRY_COMPARE(done.size(), 1);
         QCOMPARE(result(done).outcome, AnalysisOutcome::Failed);
         QCOMPARE(result(done).error->code, ErrorCode::Protocol);
+        QCOMPARE(result(done).error->stage,
+                 output.startsWith(QStringLiteral("bestmove e2e4\nreadyok"))
+                     ? FailureStage::FinalSynchronization
+                     : FailureStage::Analysis);
         QTRY_COMPARE(qvariant_cast<RuntimeState>(runtime.back()[0]).phase, RuntimePhase::Failed);
         QVERIFY(result(done).evidence.session == conversation.session);
         QVERIFY(result(done).evidence.lines.empty());
@@ -402,7 +406,8 @@ class EngineAnalysisTest final : public QObject {
             if (kind == QStringLiteral("probe") || kind == QStringLiteral("barrier")) {
                 steps.append(engine_test::step(QStringLiteral("isready"), {}));
             }
-            if (kind == QStringLiteral("stop")) {
+            if (kind == QStringLiteral("stop") || kind == QStringLiteral("probe") ||
+                kind == QStringLiteral("time")) {
                 steps.append(engine_test::step(QStringLiteral("stop"), {}));
             }
         }
@@ -419,7 +424,58 @@ class EngineAnalysisTest final : public QObject {
         QCOMPARE(result(done).outcome, AnalysisOutcome::Failed);
         QCOMPARE(result(done).error->code,
                  kind == QStringLiteral("crash") ? ErrorCode::Crash : ErrorCode::Timeout);
+        const auto expectedStage =
+            kind == QStringLiteral("config")    ? FailureStage::SearchSetup
+            : kind == QStringLiteral("probe")   ? FailureStage::ReadinessProbe
+            : kind == QStringLiteral("stop")    ? FailureStage::Stop
+            : kind == QStringLiteral("time")    ? FailureStage::TimedSearchCompletion
+            : kind == QStringLiteral("barrier") ? FailureStage::FinalSynchronization
+                                                : FailureStage::Analysis;
+        QCOMPARE(result(done).error->stage, expectedStage);
     }
+    void timeoutRetiresBeforeReconnectAndKeepsCompletedResults() {
+        Conversation conversation(identity, 10000, 150);
+        auto steps = conversation.setup();
+        steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+        steps.append(engine_test::step(QStringLiteral("go nodes 200"),
+                                       {engine_test::write(QStringLiteral(
+                                           "info depth 3 score cp 42 pv e2e4\nbestmove e2e4\n"))}));
+        steps.append(ready());
+        Conversation::append(steps, conversation.setup());
+        steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+        steps.append(engine_test::step(QStringLiteral("go movetime 1"), {}));
+        steps.append(engine_test::step(QStringLiteral("stop"),
+                                       {engine_test::write(QStringLiteral("bestmove d2d4\n"))}));
+        conversation.connect(steps);
+        auto& service = conversation.service();
+        QSignalSpy done(&service, &EngineSupervisor::analysisFinished);
+        QSignalSpy runtime(&service, &EngineSupervisor::runtimeChanged);
+        const auto completedRequest = request();
+        service.analyze(conversation.session, completedRequest);
+        QTRY_COMPARE(done.size(), 1);
+        QCOMPARE(result(done).outcome, AnalysisOutcome::Completed);
+        const auto completed = result(done);
+        const auto failedRequest = request(TimeLimit{1});
+        service.analyze(conversation.session, failedRequest);
+        QTRY_COMPARE(done.size(), 2);
+        QCOMPARE(result(done).outcome, AnalysisOutcome::Failed);
+        QCOMPARE(result(done).error->stage, FailureStage::TimedSearchCompletion);
+        QTRY_VERIFY(!runtime.empty() &&
+                    qvariant_cast<RuntimeState>(runtime.back()[0]).phase == RuntimePhase::Failed);
+        QCOMPARE(result(done, 0).evidence.request, completedRequest.id);
+        QCOMPARE(result(done, 0).evidence.lines.front().score->value, 42);
+        QCOMPARE(completed.evidence.lines.front().score->value, 42);
+        // Both terminal notifications follow retirement; a fresh connection is immediately
+        // admitted.
+        conversation.session = QUuid::createUuid();
+        conversation.connect({});
+        QCOMPARE(done.size(), 2);
+        service.disconnectEngine(conversation.session);
+        QTRY_COMPARE(qvariant_cast<RuntimeState>(runtime.back()[0]).phase,
+                     RuntimePhase::Disconnected);
+        QCOMPARE(done.size(), 2);
+    }
+
     void shutdownDuringSearch() {
         Conversation conversation;
         auto steps = conversation.setup();

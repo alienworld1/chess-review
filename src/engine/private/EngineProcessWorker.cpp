@@ -96,7 +96,8 @@ EngineProcessWorker::EngineProcessWorker(AttemptMode mode, ProcessConfiguration 
             fail({ErrorCode::Start, QStringLiteral("The executable could not start. Check that "
                                                    "it is compatible with this system.")});
         } else if (error != QProcess::Crashed) {
-            fail({ErrorCode::Crash, QStringLiteral("Communication with the engine failed.")});
+            fail({ErrorCode::Crash,
+                  QStringLiteral("Communication with the engine failed. Reconnect to try again.")});
         }
     });
     connect(&process_, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
@@ -131,7 +132,9 @@ void EngineProcessWorker::disconnectEngine(QUuid session) {
         stopAnalysis(session, search_->request.id);
         return;
     }
-    quitRuntime();
+    if (stage_ != Stage::FailureStopping) {
+        quitRuntime();
+    }
 }
 
 void EngineProcessWorker::quitRuntime() {
@@ -326,7 +329,8 @@ void EngineProcessWorker::hashChunk() {
 
 void EngineProcessWorker::send(const QByteArray& bytes) {
     if (process_.write(bytes) != bytes.size()) {
-        fail({ErrorCode::Crash, QStringLiteral("Could not send a command to the engine.")});
+        fail({ErrorCode::Crash,
+              QStringLiteral("Could not send a command to the engine. Reconnect to try again.")});
     }
 }
 
@@ -348,7 +352,7 @@ void EngineProcessWorker::drain(bool errors) {
         if (bytes.isEmpty()) {
             break;
         }
-        if (failure_) {
+        if (failure_ && stage_ != Stage::FailureStopping) {
             continue;
         }
         if (runtimeOutput_ && outputWindow_.elapsed() >= 1000) {
@@ -369,7 +373,7 @@ void EngineProcessWorker::drain(bool errors) {
         for (const auto byte : bytes) {
             // A reply in this chunk can begin explicit teardown. Do not parse its
             // remaining bytes after quit; the entire chunk was already accounted.
-            if (failure_ ||
+            if ((failure_ && stage_ != Stage::FailureStopping) ||
                 (disconnecting_ && (!search_ || stage_ == Stage::Quitting ||
                                     stage_ == Stage::Terminating || stage_ == Stage::Killing))) {
                 break;
@@ -418,9 +422,10 @@ void EngineProcessWorker::completeExit() {
     }
     if (!failure_ && (stage_ != Stage::Quitting || exit.first != 0 ||
                       exit.second != QProcess::NormalExit || !output_.isEmpty())) {
-        failure_ =
-            Error{ErrorCode::Crash,
-                  QStringLiteral("The engine exited unexpectedly or did not shut down cleanly.")};
+        recordFailure(
+            {ErrorCode::Crash,
+             QStringLiteral("The engine exited unexpectedly or did not shut down cleanly. "
+                            "Reconnect to try again.")});
     }
     if (runtime_) {
         finishRuntime();
@@ -438,6 +443,32 @@ void EngineProcessWorker::handleLine(const QByteArray& bytes, std::uint64_t rece
     }
     const auto line = QString::fromUtf8(bytes);
     const auto normalized = line.simplified();
+    if (stage_ == Stage::FailureStopping) {
+        const auto tokens = normalized.split(u' ');
+        if (tokens.front() == QStringLiteral("bestmove")) {
+            // Validate the terminal reply, but never change evidence after failure.
+            // Valid and invalid terminal replies both end the stop grace period.
+            if (receivedEpoch < search_->goEpoch || receivedEpoch > epoch_) {
+                protocolFailure();
+                return;
+            }
+            const auto terminal = parseBestMove(tokens, search_->request);
+            if (const auto* error = std::get_if<Error>(&terminal)) {
+                fail(*error);
+            } else {
+                quitRuntime();
+            }
+        } else if (normalized == QStringLiteral("readyok") && search_->probeAt &&
+                   receivedEpoch == epoch_ && process_.bytesToWrite() == 0) {
+            search_->probeAt.reset();
+        } else if (tokens.front() == QStringLiteral("readyok") ||
+                   tokens.front() == QStringLiteral("uciok") ||
+                   tokens.front() == QStringLiteral("id") ||
+                   tokens.front() == QStringLiteral("option")) {
+            protocolFailure();
+        }
+        return;
+    }
     if (normalized == QStringLiteral("info") || normalized.startsWith(QStringLiteral("info ")) ||
         normalized == QStringLiteral("bestmove") ||
         normalized.startsWith(QStringLiteral("bestmove "))) {
@@ -552,12 +583,19 @@ void EngineProcessWorker::protocolFailure() {
     fail({ErrorCode::Protocol,
           search_ ? QStringLiteral("The engine returned an invalid search protocol response. "
                                    "Reconnect a compatible engine.")
-                  : QStringLiteral("The executable returned an invalid UCI handshake. Choose a "
-                                   "compatible UCI engine.")});
+          : stage_ == Stage::Ready
+              ? QStringLiteral("The engine returned an unexpected UCI response while idle. "
+                               "Reconnect a compatible engine.")
+              : QStringLiteral("The executable returned an invalid UCI handshake. Choose a "
+                               "compatible UCI engine.")});
 }
 
 void EngineProcessWorker::timeout() {
     if (stage_ == Stage::Finished || pendingExit_) {
+        return;
+    }
+    if (stage_ == Stage::FailureStopping) {
+        quitRuntime();
         return;
     }
     if (stage_ == Stage::Killing) {
@@ -575,9 +613,10 @@ void EngineProcessWorker::timeout() {
     }
     if (stage_ == Stage::Quitting) {
         if (!failure_) {
-            failure_ = Error{
-                ErrorCode::Cleanup,
-                QStringLiteral("The engine did not exit after quit and required forced cleanup.")};
+            recordFailure(
+                {ErrorCode::Cleanup,
+                 QStringLiteral("The engine did not exit after quit and required forced cleanup. "
+                                "Reconnect to try again.")});
         }
         if (!transition(Stage::Terminating)) {
             return;
@@ -586,44 +625,100 @@ void EngineProcessWorker::timeout() {
         timer_.start(1000);
         return;
     }
-    if (search_) {
-        fail({ErrorCode::Timeout, QStringLiteral("The engine did not finish a search or readiness "
-                                                 "request within the allowed time.")});
-        return;
+    QString message;
+    switch (stage_) {
+    case Stage::Starting:
+        message = QStringLiteral("The engine did not start in time. Check executable compatibility "
+                                 "and try connecting again.");
+        break;
+    case Stage::ConfiguringSearch:
+        message = QStringLiteral(
+            "The engine did not become ready to start analysis. Reconnect to try again.");
+        break;
+    case Stage::Stopping:
+        message = QStringLiteral("The engine did not finish after stop. Reconnect to try again.");
+        break;
+    case Stage::SynchronizingSearch:
+        message = QStringLiteral(
+            "The engine did not synchronize after analysis. Reconnect to try again.");
+        break;
+    default:
+        message = QStringLiteral("The engine did not complete its UCI handshake in time. "
+                                 "Choose a compatible UCI engine and try again.");
+        break;
     }
-    fail({ErrorCode::Timeout, QStringLiteral("The engine did not start or complete the UCI "
-                                             "handshake within the allowed time.")});
+    fail({ErrorCode::Timeout, std::move(message)});
 }
 
-void EngineProcessWorker::fail(Error error) {
+FailureStage EngineProcessWorker::failureStage() const {
+    switch (stage_) {
+    case Stage::Created:
+    case Stage::CheckingExecutable:
+        return FailureStage::ExecutableCheck;
+    case Stage::Starting:
+        return FailureStage::Launch;
+    case Stage::AwaitingUciOk:
+    case Stage::AwaitingReadyOk:
+        return FailureStage::Handshake;
+    case Stage::CheckingIntegrity:
+        return FailureStage::IntegrityVerification;
+    case Stage::Ready:
+        return FailureStage::IdleConnection;
+    case Stage::ConfiguringSearch:
+        return FailureStage::SearchSetup;
+    case Stage::Analyzing:
+        return FailureStage::Analysis;
+    case Stage::Stopping:
+    case Stage::FailureStopping:
+        return FailureStage::Stop;
+    case Stage::SynchronizingSearch:
+        return FailureStage::FinalSynchronization;
+    default:
+        return FailureStage::Cleanup;
+    }
+}
+
+void EngineProcessWorker::recordFailure(Error error) {
+    if (!failure_) {
+        if (!error.stage) {
+            error.stage = failureStage();
+        }
+        failure_ = std::move(error);
+    }
+}
+
+void EngineProcessWorker::fail(Error error, bool stopFirst) {
     if (stage_ == Stage::Finished) {
         return;
     }
-    if (!failure_) {
-        failure_ = std::move(error);
-    }
-    if (runtime_ && !disconnecting_) {
-        publish(RuntimePhase::Disconnecting);
-    }
+    const bool first = !failure_;
+    recordFailure(std::move(error));
     chunks_.stop();
     searchWatch_.stop();
     searchProgress_.stop();
+    progressDirty_ = false;
     file_.close();
-    if (process_.state() == QProcess::NotRunning) {
-        if (awaitingExit_ || pendingExit_) {
+    if (stopFirst && first && stage_ == Stage::Analyzing && search_ && search_->sentGo &&
+        process_.state() == QProcess::Running) {
+        if (!transition(Stage::FailureStopping)) {
             return;
         }
+        timer_.start(searchResponseMs_);
+        send("stop\n");
+        if (stage_ == Stage::FailureStopping) {
+            publish(RuntimePhase::Disconnecting);
+        }
+        return;
+    }
+    // Keep the first error even when a write, reply or exit fails during recovery.
+    if (runtime_ && !disconnecting_) {
+        publish(RuntimePhase::Disconnecting);
+    }
+    if (process_.state() == QProcess::NotRunning && !awaitingExit_ && !pendingExit_) {
         finish(*failure_);
-        return;
+    } else {
+        quitRuntime();
     }
-    if (stage_ == Stage::Quitting || stage_ == Stage::Terminating || stage_ == Stage::Killing) {
-        return;
-    }
-    if (!transition(Stage::Quitting)) {
-        return;
-    }
-    send("quit\n");
-    timer_.start(1000);
 }
 
 void EngineProcessWorker::finish(ValidationResult result) {
@@ -632,7 +727,7 @@ void EngineProcessWorker::finish(ValidationResult result) {
     }
     if (runtime_) {
         if (const auto* error = std::get_if<Error>(&result)) {
-            failure_ = *error;
+            recordFailure(*error);
         }
         finishRuntime();
         return;
@@ -641,6 +736,9 @@ void EngineProcessWorker::finish(ValidationResult result) {
     timer_.stop();
     chunks_.stop();
     file_.close();
+    if (auto* error = std::get_if<Error>(&result); error && !error->stage) {
+        error->stage = failureStage();
+    }
     if (!transition(Stage::Finished)) {
         return;
     }

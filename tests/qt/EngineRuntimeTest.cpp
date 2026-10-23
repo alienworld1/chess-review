@@ -198,6 +198,7 @@ class EngineRuntimeTest final : public QObject {
         QTRY_COMPARE(latest(events).phase, RuntimePhase::Ready);
         QTRY_COMPARE(latest(events).phase, RuntimePhase::Failed);
         QCOMPARE(int(latest(events).error->code), expected);
+        QCOMPARE(latest(events).error->stage, FailureStage::IdleConnection);
         configure(fixture.service, directory, engine_test::handshake(identity));
         fixture.service.connectEngine(QUuid::createUuid(), profile);
         QTRY_COMPARE(latest(events).phase, RuntimePhase::Ready);
@@ -245,6 +246,7 @@ class EngineRuntimeTest final : public QObject {
         if (stubborn) {
             QVERIFY(latest(events).error);
             QCOMPARE(latest(events).error->code, ErrorCode::Cleanup);
+            QCOMPARE(latest(events).error->stage, FailureStage::Cleanup);
         } else {
             QVERIFY(!latest(events).error);
         }
@@ -486,6 +488,7 @@ class EngineRuntimeTest final : public QObject {
         fixture.service.connectEngine(QUuid::createUuid(), profile);
         QTRY_COMPARE(latest(events).phase, RuntimePhase::Failed);
         QCOMPARE(latest(events).error->code, ErrorCode::Timeout);
+        QCOMPARE(latest(events).error->stage, FailureStage::Handshake);
     }
 };
 QTEST_GUILESS_MAIN(EngineRuntimeTest)

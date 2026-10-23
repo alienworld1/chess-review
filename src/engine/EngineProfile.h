@@ -68,9 +68,25 @@ enum class ErrorCode {
     Replacement,
     InvalidRequest
 };
+// Stable public failure context; independent of private lifecycle and runtime phase codes.
+enum class FailureStage {
+    ExecutableCheck = 0,
+    Launch = 1,
+    Handshake = 2,
+    IntegrityVerification = 3,
+    IdleConnection = 4,
+    SearchSetup = 5,
+    Analysis = 6,
+    ReadinessProbe = 7,
+    TimedSearchCompletion = 8,
+    Stop = 9,
+    FinalSynchronization = 10,
+    Cleanup = 11
+};
 struct Error {
     ErrorCode code;
     QString message; // Static, actionable text; never native errors or raw engine output.
+    std::optional<FailureStage> stage = std::nullopt;
 };
 using ValidationResult = std::variant<ValidatedEngine, Error>;
 using PathResult = std::variant<QString, Error>;

@@ -14,6 +14,7 @@ enum class ProcessStage {
     Analyzing,
     Stopping,
     SynchronizingSearch,
+    FailureStopping,
     Quitting,
     Terminating,
     Killing,
@@ -32,7 +33,8 @@ constexpr bool canTransition(ProcessStage current, ProcessStage next) {
     if (next == Quitting) {
         return current == Starting || current == AwaitingUciOk || current == AwaitingReadyOk ||
                current == CheckingIntegrity || current == Ready || current == ConfiguringSearch ||
-               current == Analyzing || current == Stopping || current == SynchronizingSearch;
+               current == Analyzing || current == Stopping || current == SynchronizingSearch ||
+               current == FailureStopping;
     }
     switch (current) {
     case Created:
@@ -52,7 +54,7 @@ constexpr bool canTransition(ProcessStage current, ProcessStage next) {
     case ConfiguringSearch:
         return next == Analyzing || next == SynchronizingSearch;
     case Analyzing:
-        return next == Stopping || next == SynchronizingSearch;
+        return next == Stopping || next == SynchronizingSearch || next == FailureStopping;
     case Stopping:
         return next == SynchronizingSearch;
     case SynchronizingSearch:

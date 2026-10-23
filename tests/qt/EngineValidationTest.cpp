@@ -295,6 +295,12 @@ class EngineValidationTest final : public QObject {
                 ? ErrorCode::Cleanup
                 : ErrorCode::Timeout;
         QCOMPARE(std::get<Error>(result).code, expected);
+        if (mode != QStringLiteral("cancel")) {
+            QCOMPARE(std::get<Error>(result).stage, (mode == QStringLiteral("quit-hang") ||
+                                                     mode == QStringLiteral("quit-stubborn"))
+                                                        ? FailureStage::Cleanup
+                                                        : FailureStage::Handshake);
+        }
     }
     void growingExecutableIsRejectedDuringHashing() {
         QTemporaryDir directory;

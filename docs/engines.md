@@ -194,3 +194,33 @@ shutdown stops an active search, drains completion, then quits/reaps the child
 using existing escalation. Failure results preserve the first error and are
 published after worker retirement. Evidence is raw engine output validated for
 structure and legality, not proof that the engine's evaluation is correct.
+
+
+## Failure context and timeout recovery
+
+Process-attempt errors include optional `Error::stage` context alongside the
+existing error code and safe, actionable message. `FailureStage` distinguishes
+executable checking (0), launch (1), handshake (2), integrity verification (3),
+idle connection (4), search setup (5), analysis (6), readiness probe (7), timed
+search completion (8), stop (9), final synchronization (10), and cleanup (11).
+These numeric values are stable and independent of runtime phase codes. Errors
+outside process execution, such as admission or invalid requests, may omit stage.
+
+If a readiness probe or timed search times out during active analysis, the worker
+records Timeout and sends `stop` once. It waits up to five seconds for a legal
+`bestmove`, then quits; it also quits when that grace expires. The session always
+fails and must be explicitly reconnected, even if the engine answers stop. Normal
+quit is followed by one-second terminate/kill escalation when needed.
+
+Evidence freezes when the timeout is recorded. Late info and bestmove do not
+change the failed result. A pending probe's valid readyok may be consumed without
+extending the stop deadline. Malformed terminal/control replies or excessive output
+end the grace period immediately. Later crashes, protocol errors and forced cleanup
+never replace the first error or its stage.
+
+Search setup and final synchronization timeouts go directly to cleanup. An expired
+user-stop deadline does not send another stop. Crashes and malformed recognized
+output also trigger immediate cleanup. Earlier valid evidence and completed results
+are retained, but failed evidence is never presented as completed analysis. Closing
+or disconnecting during recovery keeps the bounded cleanup active without blocking
+the GUI. No retry or expensive analysis starts automatically.

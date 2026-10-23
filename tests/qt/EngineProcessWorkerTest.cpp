@@ -17,8 +17,14 @@ using Stage = ProcessStage;
 
 class Attempt final {
   public:
-    Attempt(AttemptMode mode, const QString& scenario)
-        : worker(mode, {{QStringLiteral("--scenario"), scenario}, 1000, 1000, 1024 * 1024}) {
+    Attempt(AttemptMode mode, const QString& scenario, int responseMs = 5000, int idleMs = 10000,
+            qsizetype outputLimit = 1024 * 1024)
+        : worker(mode, {{QStringLiteral("--scenario"), scenario},
+                        1000,
+                        1000,
+                        outputLimit,
+                        idleMs,
+                        responseMs}) {
         QObject::connect(&worker, &EngineProcessWorker::finished, &worker,
                          [this] { finished = true; });
     }
@@ -90,6 +96,8 @@ class EngineProcessWorkerTest final : public QObject {
                                    std::pair{Stage::ConfiguringSearch, Stage::Analyzing},
                                    std::pair{Stage::ConfiguringSearch, Stage::SynchronizingSearch},
                                    std::pair{Stage::Analyzing, Stage::Stopping},
+                                   std::pair{Stage::Analyzing, Stage::FailureStopping},
+                                   std::pair{Stage::FailureStopping, Stage::Quitting},
                                    std::pair{Stage::Analyzing, Stage::SynchronizingSearch},
                                    std::pair{Stage::Stopping, Stage::SynchronizingSearch},
                                    std::pair{Stage::SynchronizingSearch, Stage::Ready},
@@ -100,21 +108,13 @@ class EngineProcessWorkerTest final : public QObject {
                                    std::pair{Stage::Quitting, Stage::Terminating},
                                    std::pair{Stage::Quitting, Stage::CheckingIntegrity},
                                    std::pair{Stage::Terminating, Stage::Killing}};
-        constexpr std::array all{Stage::Created,
-                                 Stage::CheckingExecutable,
-                                 Stage::Starting,
-                                 Stage::AwaitingUciOk,
-                                 Stage::AwaitingReadyOk,
-                                 Stage::CheckingIntegrity,
-                                 Stage::Ready,
-                                 Stage::ConfiguringSearch,
-                                 Stage::Analyzing,
-                                 Stage::Stopping,
-                                 Stage::SynchronizingSearch,
-                                 Stage::Quitting,
-                                 Stage::Terminating,
-                                 Stage::Killing,
-                                 Stage::Finished};
+        constexpr std::array all{
+            Stage::Created,       Stage::CheckingExecutable,  Stage::Starting,
+            Stage::AwaitingUciOk, Stage::AwaitingReadyOk,     Stage::CheckingIntegrity,
+            Stage::Ready,         Stage::ConfiguringSearch,   Stage::Analyzing,
+            Stage::Stopping,      Stage::SynchronizingSearch, Stage::FailureStopping,
+            Stage::Quitting,      Stage::Terminating,         Stage::Killing,
+            Stage::Finished};
         for (const auto current : all) {
             for (const auto next : all) {
                 const bool expected =
@@ -176,6 +176,160 @@ class EngineProcessWorkerTest final : public QObject {
         QCOMPARE(done.size(), 1);
         QCOMPARE(qvariant_cast<AnalysisResult>(done.front()[0]).outcome, AnalysisOutcome::Stopped);
         QCOMPARE(qvariant_cast<RuntimeState>(runtime.back()[0]).phase, RuntimePhase::Disconnected);
+    }
+
+    void timeoutRecovery_data() {
+        QTest::addColumn<QString>("reply");
+        QTest::addColumn<bool>("closeDuringRecovery");
+        for (const auto* kind : {"valid", "silent", "bad-bestmove", "bad-control", "crash", "flood",
+                                 "terminate", "kill"}) {
+            QTest::newRow(kind) << QString::fromLatin1(kind) << false;
+        }
+        QTest::newRow("probe-late-ready") << QStringLiteral("probe") << false;
+        QTest::newRow("stderr-budget") << QStringLiteral("stderr-budget") << false;
+        QTest::newRow("nul") << QStringLiteral("nul") << false;
+        QTest::newRow("close-during-grace") << QStringLiteral("valid") << true;
+    }
+    void timeoutRecovery() {
+        QFETCH(QString, reply);
+        QFETCH(bool, closeDuringRecovery);
+        QTemporaryDir directory;
+        engine_test::Validator registration;
+        const auto profile =
+            profileFor(registration.service,
+                       engine_test::scenario(directory.filePath(QStringLiteral("register.json")),
+                                             engine_test::handshake()));
+        auto steps = engine_test::handshake();
+        auto quitStep = steps.takeAt(steps.size() - 1);
+        steps.append(engine_test::step(QStringLiteral("ucinewgame"), {}));
+        steps.append(engine_test::step(QStringLiteral("isready"),
+                                       {engine_test::write(QStringLiteral("readyok\n"))}));
+        steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+        steps.append(engine_test::step(
+            reply == QStringLiteral("probe") ? QStringLiteral("go infinite")
+                                             : QStringLiteral("go movetime 1"),
+            {engine_test::write(QStringLiteral("info depth 2 score cp 7 pv e2e4\n"))}));
+        QJsonArray actions;
+        if (reply == QStringLiteral("probe")) {
+            steps.append(engine_test::step(QStringLiteral("isready"), {}));
+            actions.append(engine_test::write(QStringLiteral("readyok\n")));
+        }
+        if (reply == QStringLiteral("valid") || reply == QStringLiteral("probe")) {
+            actions.append(engine_test::write(
+                QStringLiteral("info depth 99 score cp 999 pv d2d4\nbestmove d2d4\n"), 50));
+        } else if (reply == QStringLiteral("bad-bestmove")) {
+            actions.append(engine_test::write(QStringLiteral("bestmove e2e5\n")));
+        } else if (reply == QStringLiteral("bad-control")) {
+            actions.append(engine_test::write(QStringLiteral("readyok extra\n")));
+        } else if (reply == QStringLiteral("crash")) {
+            actions.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("crash")}});
+        } else if (reply == QStringLiteral("nul")) {
+            actions.append(
+                engine_test::write(QStringLiteral("info string ") + QChar::Null + u'\n'));
+        } else if (reply == QStringLiteral("stderr-budget")) {
+            auto action = engine_test::write(QString(8192, u'x'));
+            action[QStringLiteral("stream")] = QStringLiteral("stderr");
+            actions.append(action);
+        } else if (reply == QStringLiteral("flood")) {
+            actions.append(engine_test::write(QString(65537, u'x')));
+        }
+        steps.append(engine_test::step(QStringLiteral("stop"), actions));
+        if (reply == QStringLiteral("terminate") || reply == QStringLiteral("kill")) {
+            quitStep = engine_test::step(
+                QStringLiteral("quit"),
+                {QJsonObject{{QStringLiteral("type"), reply == QStringLiteral("kill")
+                                                          ? QStringLiteral("stubbornHang")
+                                                          : QStringLiteral("hang")}}});
+        }
+        steps.append(quitStep);
+        Attempt attempt(
+            AttemptMode::Runtime,
+            engine_test::scenario(directory.filePath(QStringLiteral("search.json")), steps), 200,
+            reply == QStringLiteral("probe") ? 50 : 10000,
+            reply == QStringLiteral("stderr-budget") ? 4096 : 1024 * 1024);
+        QSignalSpy runtime(&attempt.worker, &EngineProcessWorker::runtimeChanged);
+        QSignalSpy done(&attempt.worker, &EngineProcessWorker::analysisFinished);
+        QSignalSpy lifecycle(&attempt.worker, &EngineProcessWorker::stateChanged);
+        auto* process = attempt.worker.findChild<QProcess*>();
+        QVERIFY(process);
+        const auto session = QUuid::createUuid();
+        attempt.worker.connectEngine(session, profile);
+        QTRY_VERIFY(!runtime.empty() &&
+                    qvariant_cast<RuntimeState>(runtime.back()[0]).phase == RuntimePhase::Ready);
+        int ticks = 0;
+        QTimer heartbeat;
+        heartbeat.setInterval(10);
+        connect(&heartbeat, &QTimer::timeout, &attempt.worker, [&] { ++ticks; });
+        heartbeat.start();
+        QElapsedTimer grace;
+        qint64 graceMs = -1;
+        connect(&attempt.worker, &EngineProcessWorker::stateChanged, &attempt.worker,
+                [&](Stage stage) {
+                    if (stage == Stage::FailureStopping) {
+                        grace.start();
+                        if (closeDuringRecovery) {
+                            attempt.worker.close();
+                            attempt.worker.close();
+                        }
+                    } else if (stage == Stage::Quitting && grace.isValid()) {
+                        graceMs = grace.elapsed();
+                    }
+                });
+        AnalysisRequest search;
+        search.id = QUuid::createUuid();
+        search.limit = reply == QStringLiteral("probe") ? SearchLimit{InfiniteLimit{}}
+                                                        : SearchLimit{TimeLimit{1}};
+        attempt.worker.analyze(session, search);
+        QTRY_VERIFY_WITH_TIMEOUT(attempt.finished, 6000);
+        QCOMPARE(done.size(), 1);
+        const auto failed = qvariant_cast<AnalysisResult>(done.front()[0]);
+        QCOMPARE(failed.outcome, AnalysisOutcome::Failed);
+        QCOMPARE(failed.error->code, ErrorCode::Timeout);
+        QCOMPARE(failed.error->stage, reply == QStringLiteral("probe")
+                                          ? FailureStage::ReadinessProbe
+                                          : FailureStage::TimedSearchCompletion);
+        QCOMPARE(failed.evidence.lines.size(), std::size_t(1));
+        QCOMPARE(failed.evidence.lines.front().score->value, 7);
+        QCOMPARE(failed.evidence.statistics.depth, 2);
+        QVERIFY(!failed.evidence.bestMove);
+        QVERIFY(!failed.evidence.ponder);
+        const auto terminal = qvariant_cast<RuntimeState>(runtime.back()[0]);
+        QCOMPARE(terminal.phase, RuntimePhase::Failed);
+        QCOMPARE(terminal.error->stage, failed.error->stage);
+        QCOMPARE(terminal.error->message, failed.error->message);
+        const auto observed = stages(lifecycle);
+        QCOMPARE(observed.count(Stage::FailureStopping), 1);
+        if (reply == QStringLiteral("crash")) {
+            // Abort notification may arrive before or after grace expires.
+            QVERIFY(observed.count(Stage::Quitting) <= 1);
+        } else {
+            QCOMPARE(observed.count(Stage::Quitting), 1);
+        }
+        QCOMPARE(observed.count(Stage::Finished), 1);
+        QVERIFY(ticks >= 5);
+        if (reply == QStringLiteral("silent") || reply == QStringLiteral("terminate") ||
+            reply == QStringLiteral("kill")) {
+            QVERIFY(graceMs >= 200);
+        }
+        if (reply == QStringLiteral("valid") || reply == QStringLiteral("probe")) {
+            // A scripted reply must end grace before its deadline, after the scheduled delay.
+            QVERIFY(graceMs >= 40);
+            QVERIFY(graceMs < 200);
+        }
+        if (reply == QStringLiteral("bad-bestmove") || reply == QStringLiteral("bad-control") ||
+            reply == QStringLiteral("flood") || reply == QStringLiteral("stderr-budget") ||
+            reply == QStringLiteral("nul")) {
+            QVERIFY(graceMs < 200);
+        }
+        if (reply == QStringLiteral("terminate") || reply == QStringLiteral("kill")) {
+            QVERIFY(observed.contains(Stage::Terminating));
+            QCOMPARE(observed.contains(Stage::Killing), reply == QStringLiteral("kill"));
+        } else if (reply != QStringLiteral("crash")) {
+            // Zero means every scripted command (stop then quit) matched, without forced cleanup.
+            QCOMPARE(process->exitStatus(), QProcess::NormalExit);
+            QCOMPARE(process->exitCode(), 0);
+            QVERIFY(!observed.contains(Stage::Terminating));
+        }
     }
 
     void registrationSequence() {

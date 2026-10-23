@@ -217,7 +217,10 @@ void EngineProcessWorker::watchSearch() {
     const auto now = searchClock_.elapsed();
     if (search_->probeAt && now - *search_->probeAt >= searchResponseMs_) {
         fail({ErrorCode::Timeout,
-              QStringLiteral("The engine did not answer its search readiness probe.")});
+              QStringLiteral(
+                  "The engine did not answer its search readiness probe. Reconnect to try again."),
+              FailureStage::ReadinessProbe},
+             stage_ == Stage::Analyzing);
         return;
     }
     if (stage_ != Stage::Analyzing) {
@@ -225,7 +228,10 @@ void EngineProcessWorker::watchSearch() {
     }
     if (const auto* limit = std::get_if<TimeLimit>(&search_->request.limit);
         limit && now >= static_cast<qint64>(limit->milliseconds) + searchResponseMs_) {
-        fail({ErrorCode::Timeout, QStringLiteral("The engine did not finish its timed search.")});
+        fail({ErrorCode::Timeout,
+              QStringLiteral("The engine did not finish its timed search. Reconnect to try again."),
+              FailureStage::TimedSearchCompletion},
+             true);
         return;
     }
     if (!search_->probeAt && now - search_->lastActivity >= searchIdleMs_) {
