@@ -57,16 +57,22 @@ bool validRoots(const chess::Position& position,
     return std::all_of(moves->begin(), moves->end(),
                        [&](const auto& m) { return position.isLegal(m); });
 }
+bool validContextShape(const chess::PositionContext& context) {
+    return context.version == 1 && context.variant == chess::Variant::Standard &&
+           (context.provenance == chess::RootProvenance::InitialPosition ||
+            context.provenance == chess::RootProvenance::FenAnalysisRoot) &&
+           context.rootFen.size() <= 256 && context.moves.size() <= 13107;
+}
 bool validText(const QString& text) {
-    return text.size() <= 65536 && !text.contains(QChar(u'\0')) && text.isValidUtf16();
+    return text.size() <= 65536 && !text.contains(QChar(u'\0')) && !text.contains(u'\n') &&
+           !text.contains(u'\r') && text.isValidUtf16();
 }
 } // namespace
 chess::Result<chess::Position> restorePosition(const chess::PositionContext& context) {
     const auto bad = [] {
         return chess::Error{chess::ErrorCode::InvalidPosition, "Invalid cached position context."};
     };
-    if (context.version != 1 || context.variant != chess::Variant::Standard ||
-        context.rootFen.size() > 256 || context.moves.size() > 13107) {
+    if (!validContextShape(context)) {
         return bad();
     }
     auto restored = context.provenance == chess::RootProvenance::InitialPosition
@@ -133,7 +139,31 @@ bool verifiedResources(const EngineFingerprint& f) {
         }
         return QStringLiteral("<missing>");
     };
-    return value("evalfile") == QStringLiteral("nn-1a298aa575a0.nnue") &&
+    struct Range {
+        const char* name;
+        qint64 minimum;
+        qint64 maximum;
+    };
+    constexpr Range ranges[] = {{"hash", 1, 33554432},        {"move overhead", 0, 5000},
+                                {"multipv", 1, 256},          {"skill level", 0, 20},
+                                {"syzygyprobedepth", 1, 100}, {"syzygyprobelimit", 0, 7},
+                                {"uci_elo", 1320, 3190}};
+    for (const auto& range : ranges) {
+        const auto raw = value(range.name);
+        bool ok = false;
+        const auto number = raw.toLongLong(&ok);
+        if (!ok || raw != QString::number(number) || number < range.minimum ||
+            number > range.maximum) {
+            return false;
+        }
+    }
+    for (const auto* name : {"syzygy50moverule", "uci_limitstrength", "uci_showwdl"}) {
+        if (value(name) != QStringLiteral("true") && value(name) != QStringLiteral("false")) {
+            return false;
+        }
+    }
+    return value("numapolicy") == QStringLiteral("auto") &&
+           value("evalfile") == QStringLiteral("nn-1a298aa575a0.nnue") &&
            value("syzygypath").isEmpty() && value("debug log file").isEmpty() &&
            value("threads") == QStringLiteral("1") && value("nodestime") == QStringLiteral("0") &&
            value("uci_chess960") == QStringLiteral("false") &&
@@ -181,15 +211,18 @@ bool validFingerprint(const EngineFingerprint& f) {
     return f.digest.size() == 32 && f.digest == fingerprintDigest(f);
 }
 std::optional<Error> validateCacheQuery(const CacheQuery& q) {
+    if (!validLimit(q.limit) || q.multiPv < 1 || !validFingerprint(q.fingerprint)) {
+        return invalid();
+    }
     auto position = restorePosition(q.position);
     const auto* root = std::get_if<chess::Position>(&position);
-    if (!root || !validFingerprint(q.fingerprint) || !validLimit(q.limit) || q.multiPv < 1 ||
-        !validRoots(*root, q.searchMoves)) {
+    if (!root || !validRoots(*root, q.searchMoves)) {
         return invalid();
     }
     return std::nullopt;
 }
-std::optional<Error> validateCacheResult(const AnalysisResult& result) {
+std::optional<Error> validateCacheResult(const AnalysisResult& result,
+                                         const chess::Position* knownRoot) {
     const auto& s = result.evidence;
     if (result.outcome != AnalysisOutcome::Completed || result.error || !s.searchStarted ||
         !s.provenance || s.session.isNull() || s.request.isNull() || s.requestedMultiPv < 1 ||
@@ -201,11 +234,19 @@ std::optional<Error> validateCacheResult(const AnalysisResult& result) {
         return invalid();
     }
     const auto& p = *s.provenance;
-    CacheQuery q{p.position,         p.fingerprint,  s.limit,
-                 s.requestedMultiPv, s.wdlRequested, p.searchMoves};
-    if (validateCacheQuery(q)) {
+    if (!validLimit(s.limit) || !validContextShape(p.position) ||
+        !validFingerprint(p.fingerprint)) {
         return invalid();
     }
+    auto restored = knownRoot && knownRoot->context() == p.position
+                        ? chess::Result<chess::Position>(*knownRoot)
+                        : restorePosition(p.position);
+    const auto* root = std::get_if<chess::Position>(&restored);
+    if (!root || !validRoots(*root, p.searchMoves)) {
+        return invalid();
+    }
+    auto position = std::get<chess::Position>(std::move(restored));
+    const auto allowed = p.searchMoves ? roots(*p.searchMoves) : std::set<MoveKey>{};
     bool hasMultiPv = false;
     bool hasWdl = false;
     for (const auto& option : p.fingerprint.options) {
@@ -229,7 +270,6 @@ std::optional<Error> validateCacheResult(const AnalysisResult& result) {
     if ((!hasMultiPv && s.effectiveMultiPv != 1) || hasWdl != s.wdlSupported) {
         return invalid();
     }
-    auto position = std::get<chess::Position>(restorePosition(p.position));
     int width = 0;
     int previous = 0;
     std::optional<int> depth;
@@ -257,8 +297,7 @@ std::optional<Error> validateCacheResult(const AnalysisResult& result) {
                 return invalid();
             }
         }
-        if (!line.pv.empty() && p.searchMoves &&
-            !roots(*p.searchMoves).contains(key(line.pv.front()))) {
+        if (!line.pv.empty() && p.searchMoves && !allowed.contains(key(line.pv.front()))) {
             return invalid();
         }
         if (line.rank == width + 1 && line.score && !line.pv.empty() &&
@@ -278,7 +317,7 @@ std::optional<Error> validateCacheResult(const AnalysisResult& result) {
         return invalid();
     }
     if (s.bestMove && (!position.isLegal(*s.bestMove) ||
-                       (p.searchMoves && !roots(*p.searchMoves).contains(key(*s.bestMove))))) {
+                       (p.searchMoves && !allowed.contains(key(*s.bestMove))))) {
         return invalid();
     }
     if (s.ponder) {
@@ -293,16 +332,25 @@ std::uint64_t cacheStrength(const AnalysisResult& r) {
     if (std::holds_alternative<NodeLimit>(r.evidence.limit)) {
         return r.evidence.statistics.nodes.value_or(0);
     }
-    return static_cast<std::uint64_t>(r.evidence.commonDepth.value_or(0));
+    if (std::holds_alternative<DepthLimit>(r.evidence.limit)) {
+        return static_cast<std::uint64_t>(std::max(0, r.evidence.commonDepth.value_or(0)));
+    }
+    return 0;
 }
-bool cacheDominates(const AnalysisResult& r, const CacheQuery& q) {
-    if (validateCacheQuery(q) || validateCacheResult(r) || !verifiedResources(q.fingerprint)) {
+bool cacheDominates(const AnalysisResult& r, const CacheQuery& q,
+                    const chess::Position* knownRoot) {
+    if (!validLimit(q.limit) || q.multiPv < 1 ||
+        (q.searchMoves && (q.searchMoves->empty() || q.searchMoves->size() > 256 ||
+                           roots(*q.searchMoves).size() != q.searchMoves->size())) ||
+        validateCacheResult(r, knownRoot)) {
         return false;
     }
+    // Exact equality below proves the query's history/fingerprint against validated
+    // evidence. Replaying the identical query history again adds no validation.
     const auto& s = r.evidence;
     const auto& p = *s.provenance;
-    if (p.position != q.position || p.fingerprint != q.fingerprint ||
-        p.searchMoves.has_value() != q.searchMoves.has_value() ||
+    if (!verifiedResources(p.fingerprint) || p.position != q.position ||
+        p.fingerprint != q.fingerprint || p.searchMoves.has_value() != q.searchMoves.has_value() ||
         (p.searchMoves && roots(*p.searchMoves) != roots(*q.searchMoves)) ||
         s.requestedMultiPv < q.multiPv || s.achievedWidth < q.multiPv || !s.commonDepth ||
         *s.commonDepth < 1 || (q.wantWdl && (!s.wdlRequested || !s.wdlSupported))) {

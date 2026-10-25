@@ -41,22 +41,31 @@ const QString projection = QStringLiteral(
     "substr(CAST(position_key AS BLOB),1,33), substr(CAST(engine_fingerprint AS BLOB),1,33), "
     "substr(CAST(position_identity AS BLOB),1,1048577), substr(CAST(raw_result_blob AS "
     "BLOB),1,16777217), "
-    "result_format_version=1 AND typeof(result_format_version)='integer' AND "
+    "result_format_version=2 AND typeof(result_format_version)='integer' AND "
     "typeof(session)='blob' AND typeof(attempt)='blob' "
     "AND typeof(position_key)='blob' AND typeof(engine_fingerprint)='blob' AND "
     "typeof(position_identity)='blob' AND typeof(raw_result_blob)='blob' "
     "FROM analysis_results ");
+// length(BLOB) and typeof(BLOB) use SQLite column metadata. Casting a healthy
+// BLOB before length() forces every payload to be read on every retention scan.
+// Keep byte-counting correct for damaged non-BLOB fields via the fallback only.
+const QString retainedBytes =
+    QStringLiteral("(CASE WHEN typeof(position_identity)='blob' THEN length(position_identity) "
+                   "ELSE length(CAST(position_identity AS BLOB)) END + "
+                   "CASE WHEN typeof(raw_result_blob)='blob' THEN length(raw_result_blob) ELSE "
+                   "length(CAST(raw_result_blob AS BLOB)) END)");
 struct Record {
     qint64 id;
     QByteArray payload;
     engine::AnalysisResult result;
 };
-std::optional<Record> readRecord(const QSqlQuery& query) {
+std::optional<Record> readRecord(const QSqlQuery& query,
+                                 const chess::Position* knownRoot = nullptr) {
     if (!query.value(7).toBool()) {
         return std::nullopt;
     }
     const auto bytes = query.value(6).toByteArray();
-    auto result = decodeAnalysis(bytes);
+    auto result = decodeAnalysis(bytes, knownRoot);
     if (!result) {
         return std::nullopt;
     }
@@ -94,7 +103,8 @@ StoreAnalysisResult StorageSession::storeAnalysis(const engine::AnalysisResult& 
     }
     const auto& s = result.evidence;
     const auto identity = positionIdentity(s.provenance->position);
-    if (identity.size() + payload->size() > budget) {
+    if (identity.size() + payload->size() > budget ||
+        identity.size() + payload->size() > maxAnalysisBytes) {
         return CacheError{CacheErrorCode::InvalidInput,
                           QStringLiteral("Analysis exceeds the cache budget.")};
     }
@@ -132,7 +142,7 @@ StoreAnalysisResult StorageSession::storeAnalysis(const engine::AnalysisResult& 
     if (!insert.prepare(QStringLiteral(
             "INSERT INTO "
             "analysis_results(session,attempt,position_key,engine_fingerprint,position_identity,"
-            "raw_result_blob,result_format_version) VALUES(?,?,?,?,?,?,1)"))) {
+            "raw_result_blob,result_format_version) VALUES(?,?,?,?,?,?,?)"))) {
         return storage();
     }
     insert.addBindValue(s.session.toRfc4122());
@@ -141,6 +151,7 @@ StoreAnalysisResult StorageSession::storeAnalysis(const engine::AnalysisResult& 
     insert.addBindValue(s.provenance->fingerprint.digest);
     insert.addBindValue(identity);
     insert.addBindValue(*payload);
+    insert.addBindValue(analysisFormatVersion);
     if (!insert.exec() || insert.numRowsAffected() != 1) {
         return storage();
     }
@@ -161,9 +172,8 @@ StoreAnalysisResult StorageSession::storeAnalysis(const engine::AnalysisResult& 
     }
     verify.finish();
     QSqlQuery totals(database_);
-    if (!totals.exec(QStringLiteral(
-            "SELECT count(*), coalesce(sum(length(CAST(position_identity AS "
-            "BLOB))+length(CAST(raw_result_blob AS BLOB))),0) FROM analysis_results")) ||
+    if (!totals.exec(QStringLiteral("SELECT count(*), coalesce(sum(") + retainedBytes +
+                     QStringLiteral("),0) FROM analysis_results")) ||
         !totals.next()) {
         return storage();
     }
@@ -172,9 +182,8 @@ StoreAnalysisResult StorageSession::storeAnalysis(const engine::AnalysisResult& 
     totals.finish();
     while (count > recordLimit || bytes > budget) {
         QSqlQuery oldest(database_);
-        if (!oldest.exec(QStringLiteral(
-                "SELECT id,length(CAST(position_identity AS BLOB))+length(CAST(raw_result_blob AS "
-                "BLOB)) FROM analysis_results ORDER BY id LIMIT 1")) ||
+        if (!oldest.exec(QStringLiteral("SELECT id,") + retainedBytes +
+                         QStringLiteral(" FROM analysis_results ORDER BY id LIMIT 1")) ||
             !oldest.next()) {
             return storage();
         }
@@ -192,8 +201,8 @@ StoreAnalysisResult StorageSession::storeAnalysis(const engine::AnalysisResult& 
     }
     return AnalysisStored{id, false};
 }
-FindAnalysisResult StorageSession::findAnalysis(const engine::CacheQuery& query) {
-    if (!usable_) {
+FindAnalysisResult StorageSession::findAnalysis(const engine::CacheQuery& query, qint64 scanLimit) {
+    if (!usable_ || scanLimit <= 0 || scanLimit > maxAnalysisRecords) {
         return storage();
     }
     if (engine::validateCacheQuery(query)) {
@@ -204,6 +213,7 @@ FindAnalysisResult StorageSession::findAnalysis(const engine::CacheQuery& query)
     if (!engine::verifiedResources(query.fingerprint)) {
         return lookup;
     }
+    const auto root = std::get<chess::Position>(engine::restorePosition(query.position));
     const auto identity = positionIdentity(query.position);
     const auto positionKey = QCryptographicHash::hash(identity, QCryptographicHash::Sha256);
     CacheTransaction transaction(database_, usable_);
@@ -211,19 +221,22 @@ FindAnalysisResult StorageSession::findAnalysis(const engine::CacheQuery& query)
         return storage();
     }
     qint64 after = 0;
+    qint64 scanned = 0;
     std::uint64_t bestStrength = 0;
-    // Keyset iteration bounds live memory without a candidate cap that could hide a valid hit.
+    QSqlQuery candidate(database_);
+    candidate.setForwardOnly(true);
+    if (!candidate.prepare(
+            projection +
+            QStringLiteral(
+                "WHERE position_key=? AND engine_fingerprint=? AND id>? ORDER BY id LIMIT 1"))) {
+        return storage();
+    }
+    candidate.bindValue(0, positionKey);
+    candidate.bindValue(1, query.fingerprint.digest);
+    // Reuse the prepared statement; keyset iteration bounds live memory without
+    // a truncated candidate set that could hide a stronger hit.
     while (true) {
-        QSqlQuery candidate(database_);
-        candidate.setForwardOnly(true);
-        if (!candidate.prepare(projection +
-                               QStringLiteral("WHERE position_key=? AND engine_fingerprint=? AND "
-                                              "id>? ORDER BY id LIMIT 1"))) {
-            return storage();
-        }
-        candidate.addBindValue(positionKey);
-        candidate.addBindValue(query.fingerprint.digest);
-        candidate.addBindValue(after);
+        candidate.bindValue(2, after);
         if (!candidate.exec()) {
             return storage();
         }
@@ -233,8 +246,15 @@ FindAnalysisResult StorageSession::findAnalysis(const engine::CacheQuery& query)
             }
             break;
         }
+        if (scanned == scanLimit) {
+            // A legitimate cache cannot exceed its retention record cap. Fail the
+            // whole lookup, rather than return a possibly weaker partial hit.
+            return CacheError{CacheErrorCode::Storage,
+                              QStringLiteral("Analysis cache exceeds the supported lookup bound.")};
+        }
+        ++scanned;
         after = candidate.value(0).toLongLong();
-        auto record = readRecord(candidate);
+        auto record = readRecord(candidate, &root);
         candidate.finish();
         if (!record) {
             if (!removeRecord(database_, after)) {
@@ -243,7 +263,7 @@ FindAnalysisResult StorageSession::findAnalysis(const engine::CacheQuery& query)
             ++lookup.discardedRecords;
             continue;
         }
-        if (engine::cacheDominates(record->result, query)) {
+        if (engine::cacheDominates(record->result, query, &root)) {
             const auto strength = engine::cacheStrength(record->result);
             if (!lookup.hit || strength >= bestStrength) {
                 lookup.hit = std::move(record->result);

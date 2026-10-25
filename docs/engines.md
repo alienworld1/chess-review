@@ -355,7 +355,9 @@ only for the reviewed Linux Stockfish 19 binary with SHA-256
 `0f83d24cc46d2c66c60f16001af5444873bc112b7d028594513426894c12da19`, its
 known identity and complete non-button option names/types, default embedded
 `nn-1a298aa575a0.nnue`, empty Syzygy/debug-log paths, Threads=1, nodestime=0,
-Ponder=false and standard chess. Unknown builds/options, external networks and
+Ponder=false, NumaPolicy=auto and standard chess. All pinned spin values must
+be canonical integers within that build's declared ranges; check values must be
+true/false, and text must be valid UTF-16 without NUL/CR/LF. Unknown builds/options, external networks and
 tablebases remain unverified. This pin does not install, select or ship an engine.
 
 UCI discovery alone cannot establish external-resource identity. Equal digests

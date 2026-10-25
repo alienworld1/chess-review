@@ -1,4 +1,5 @@
 #include "persistence/private/AnalysisCodec.h"
+#include <QCryptographicHash>
 #include <QDataStream>
 #include <QIODevice>
 #include <QStringDecoder>
@@ -10,6 +11,21 @@
 namespace chess_review::persistence::detail {
 namespace {
 using namespace engine;
+// These values are frozen by payload format 2. Changing them requires a codec transition.
+static_assert(static_cast<int>(ScoreType::Centipawns) == 0 &&
+              static_cast<int>(ScoreType::Mate) == 1);
+static_assert(static_cast<int>(ScoreBound::Exact) == 0 &&
+              static_cast<int>(ScoreBound::Lower) == 1 && static_cast<int>(ScoreBound::Upper) == 2);
+static_assert(static_cast<int>(chess::PieceType::Pawn) == 0 &&
+              static_cast<int>(chess::PieceType::Knight) == 1 &&
+              static_cast<int>(chess::PieceType::Bishop) == 2 &&
+              static_cast<int>(chess::PieceType::Rook) == 3 &&
+              static_cast<int>(chess::PieceType::Queen) == 4 &&
+              static_cast<int>(chess::PieceType::King) == 5);
+static_assert(static_cast<int>(chess::Variant::Standard) == 0 &&
+              static_cast<int>(chess::RootProvenance::InitialPosition) == 0 &&
+              static_cast<int>(chess::RootProvenance::FenAnalysisRoot) == 1);
+
 class Writer {
   public:
     QByteArray bytes;
@@ -166,7 +182,7 @@ class Reader {
         s.tablebaseHits = optional([this] { return u64(); });
         return s;
     }
-    chess::PositionContext context() {
+    chess::PositionContext context(const chess::Position* knownRoot) {
         const auto format = u32();
         const auto version = u32();
         const auto variant = u32();
@@ -176,6 +192,15 @@ class Reader {
         if (!good || format != 1 || version != 1 || variant != 0 || provenance > 1) {
             good = false;
             return {};
+        }
+        if (knownRoot) {
+            auto context = knownRoot->context();
+            if (context.version == version &&
+                static_cast<std::uint32_t>(context.variant) == variant &&
+                context.rootFen == fen.toStdString() && context.moves == history &&
+                static_cast<std::uint32_t>(context.provenance) == provenance) {
+                return context;
+            }
         }
         auto restored = provenance == 0 ? chess::Result<chess::Position>(chess::Position::initial())
                                         : chess::Position::fromFen(fen.toStdString());
@@ -235,16 +260,22 @@ EngineFingerprint readFingerprint(Reader& r) {
     return f;
 }
 void writeLimit(Writer& w, const SearchLimit& limit) {
-    w.u32(static_cast<std::uint32_t>(limit.index()));
+    // Stable wire tags must not depend on std::variant alternative ordering.
     std::visit(
-        [&](const auto& v) {
-            using T = std::decay_t<decltype(v)>;
+        [&](const auto& value) {
+            using T = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<T, NodeLimit>) {
-                w.u64(v.nodes);
+                w.u32(0);
+                w.u64(value.nodes);
             } else if constexpr (std::is_same_v<T, DepthLimit>) {
-                w.u64(v.depth);
+                w.u32(1);
+                w.u64(value.depth);
             } else if constexpr (std::is_same_v<T, TimeLimit>) {
-                w.u64(v.milliseconds);
+                w.u32(2);
+                w.u64(value.milliseconds);
+            } else {
+                static_assert(std::is_same_v<T, InfiniteLimit>);
+                w.u32(3);
             }
         },
         limit);
@@ -273,15 +304,14 @@ QByteArray positionIdentity(const chess::PositionContext& context) {
     w.context(context);
     return w.bytes;
 }
-std::variant<QByteArray, CacheError> encodeAnalysis(const engine::AnalysisResult& result) {
-    if (engine::validateCacheResult(result)) {
-        return CacheError{CacheErrorCode::InvalidInput,
-                          QStringLiteral("Invalid completed analysis evidence.")};
-    }
+namespace {
+// The caller has validated the complete value. Canonical re-encoding must not
+// recursively repeat history/PV validation inside the decoder.
+QByteArray encodeValidatedAnalysis(const engine::AnalysisResult& result) {
     const auto& s = result.evidence;
     const auto& p = *s.provenance;
     Writer w;
-    w.u32(1);
+    w.u32(analysisFormatVersion);
     w.data(s.session.toRfc4122());
     w.data(s.request.toRfc4122());
     w.context(p.position);
@@ -314,18 +344,36 @@ std::variant<QByteArray, CacheError> encodeAnalysis(const engine::AnalysisResult
         w.moves(line.pv);
         w.stats(line.statistics);
     }
-    if (w.bytes.size() > maxAnalysisBytes || w.stream.status() != QDataStream::Ok) {
+    if (w.bytes.size() > maxAnalysisBytes - 32 || w.stream.status() != QDataStream::Ok) {
+        return {};
+    }
+    w.bytes += QCryptographicHash::hash(w.bytes, QCryptographicHash::Sha256);
+    return w.bytes;
+}
+} // namespace
+std::variant<QByteArray, CacheError> encodeAnalysis(const engine::AnalysisResult& result) {
+    if (engine::validateCacheResult(result)) {
+        return CacheError{CacheErrorCode::InvalidInput,
+                          QStringLiteral("Invalid completed analysis evidence.")};
+    }
+    const auto bytes = encodeValidatedAnalysis(result);
+    if (bytes.isEmpty()) {
         return CacheError{CacheErrorCode::InvalidInput,
                           QStringLiteral("Analysis exceeds the cache record limit.")};
     }
-    return w.bytes;
+    return bytes;
 }
-std::optional<engine::AnalysisResult> decodeAnalysis(const QByteArray& bytes) {
-    if (bytes.size() > maxAnalysisBytes || bytes.isEmpty()) {
+std::optional<engine::AnalysisResult> decodeAnalysis(const QByteArray& bytes,
+                                                     const chess::Position* knownRoot) {
+    if (bytes.size() > maxAnalysisBytes || bytes.size() < 36) {
         return std::nullopt;
     }
-    Reader r(bytes);
-    if (r.u32() != 1) {
+    const auto body = bytes.first(bytes.size() - 32);
+    if (QCryptographicHash::hash(body, QCryptographicHash::Sha256) != bytes.last(32)) {
+        return std::nullopt;
+    }
+    Reader r(body);
+    if (r.u32() != analysisFormatVersion) {
         return std::nullopt;
     }
     engine::AnalysisResult result;
@@ -339,7 +387,7 @@ std::optional<engine::AnalysisResult> decodeAnalysis(const QByteArray& bytes) {
     s.session = QUuid::fromRfc4122(session);
     s.request = QUuid::fromRfc4122(request);
     engine::AnalysisProvenance p;
-    p.position = r.context();
+    p.position = r.context(knownRoot);
     p.fingerprint = readFingerprint(r);
     p.searchMoves = r.optional([&] { return r.moves(256); });
     p.createdAt = QDateTime::fromMSecsSinceEpoch(r.i64(), QTimeZone::UTC);
@@ -374,12 +422,10 @@ std::optional<engine::AnalysisResult> decodeAnalysis(const QByteArray& bytes) {
         s.lines.push_back(std::move(line));
     }
     s.searchStarted = true;
-    if (!r.finished() || engine::validateCacheResult(result)) {
+    if (!r.finished() || engine::validateCacheResult(result, knownRoot)) {
         return std::nullopt;
     }
-    const auto encoded = encodeAnalysis(result);
-    const auto* canonical = std::get_if<QByteArray>(&encoded);
-    if (!canonical || *canonical != bytes) {
+    if (encodeValidatedAnalysis(result) != bytes) {
         return std::nullopt;
     }
     return result;

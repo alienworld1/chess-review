@@ -31,7 +31,8 @@ class StorageSession final {
     StoreAnalysisResult storeAnalysis(const engine::AnalysisResult& result,
                                       qint64 budget = analysisBudgetBytes,
                                       qint64 recordLimit = maxAnalysisRecords);
-    FindAnalysisResult findAnalysis(const engine::CacheQuery& query);
+    FindAnalysisResult findAnalysis(const engine::CacheQuery& query,
+                                    qint64 scanLimit = maxAnalysisRecords);
 
     RegisterEngineResult registerEngine(const engine::ValidatedEngine& engine);
     ListEnginesResult listEngines(std::int64_t offset, int limit);

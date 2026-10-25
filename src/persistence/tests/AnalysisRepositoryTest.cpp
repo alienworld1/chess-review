@@ -7,7 +7,9 @@
 #include "persistence/private/Migrations.h"
 #include "persistence/private/StorageSession.h"
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QSignalSpy>
 #include <QSqlQuery>
@@ -328,6 +330,186 @@ class AnalysisRepositoryTest final : public QObject {
             std::get<chess::Position>(chess::Position::fromFen(position.fen())).context();
         QVERIFY(positionIdentity(context) != positionIdentity(fen));
     }
+    void silentScoreCorruptionIsRejected() {
+        const auto original = sample();
+        auto changed = original;
+        changed.evidence.lines[0].score->value ^= 1;
+        const auto bytes = std::get<QByteArray>(encodeAnalysis(original));
+        const auto alternate = std::get<QByteArray>(encodeAnalysis(changed));
+        auto corrupted = bytes;
+        qsizetype at = 0;
+        while (at < bytes.size() && bytes[at] == alternate[at]) {
+            ++at;
+        }
+        QVERIFY(at < bytes.size());
+        corrupted[at] = alternate[at]; // One valid-looking score bit changes on disk.
+        QVERIFY(!decodeAnalysis(corrupted));
+    }
+    void legacyPayloadsAndCorruptScoresNeverBecomeHits() {
+        Fixture f;
+        const auto result = sample();
+        QVERIFY(std::holds_alternative<AnalysisStored>(f.session.storeAnalysis(result)));
+        auto bytes = std::get<QByteArray>(encodeAnalysis(result));
+        auto legacy = bytes.first(bytes.size() - 32);
+        legacy[3] = 1;
+        QSqlQuery alter(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+        QVERIFY(alter.prepare(QStringLiteral(
+            "UPDATE analysis_results SET result_format_version=1,raw_result_blob=?")));
+        alter.addBindValue(legacy);
+        QVERIFY(alter.exec());
+        alter.finish();
+        auto found = std::get<CacheLookup>(f.session.findAnalysis(queryFor(result)));
+        QVERIFY(!found.hit);
+        QCOMPARE(found.discardedRecords, 1);
+        QVERIFY(std::holds_alternative<AnalysisStored>(f.session.storeAnalysis(result)));
+        auto changed = result;
+        changed.evidence.lines[0].score->value ^= 1;
+        const auto other = std::get<QByteArray>(encodeAnalysis(changed));
+        qsizetype at = 0;
+        while (bytes[at] == other[at]) {
+            ++at;
+        }
+        bytes[at] = other[at];
+        QVERIFY(alter.prepare(QStringLiteral("UPDATE analysis_results SET raw_result_blob=?")));
+        alter.addBindValue(bytes);
+        QVERIFY(alter.exec());
+        alter.finish();
+        found = std::get<CacheLookup>(f.session.findAnalysis(queryFor(result)));
+        QVERIFY(!found.hit);
+        QCOMPARE(found.discardedRecords, 1);
+    }
+    void impossiblePinnedOptionsAreRejected() {
+        for (const auto& [name, value] : std::vector<std::pair<QString, QString>>{
+                 {QStringLiteral("hash"), QStringLiteral("0")},
+                 {QStringLiteral("multipv"), QStringLiteral("257")},
+                 {QStringLiteral("skill level"), QStringLiteral("21")},
+                 {QStringLiteral("move overhead"), QStringLiteral("-1")},
+                 {QStringLiteral("syzygyprobedepth"), QStringLiteral("0")},
+                 {QStringLiteral("syzygyprobelimit"), QStringLiteral("8")},
+                 {QStringLiteral("uci_elo"), QStringLiteral("1319")},
+                 {QStringLiteral("numapolicy"), QStringLiteral("invalid\ncommand")}}) {
+            auto f = supportedFingerprint();
+            for (auto& option : f.options) {
+                if (option.name == name) {
+                    option.value = value;
+                }
+            }
+            f.digest = fingerprintDigest(f);
+            QVERIFY2(!validFingerprint(f), qPrintable(name));
+            QVERIFY2(!verifiedResources(f), qPrintable(name));
+        }
+    }
+    void replayWitnessPreservesValidation() {
+        const auto result = sample();
+        const auto initial = chess::Position::initial();
+        auto other = initial;
+        QVERIFY(std::holds_alternative<std::monostate>(
+            other.play(std::get<chess::Move>(other.parseUci("e2e4")))));
+        QVERIFY(!validateCacheResult(result, &initial));
+        QVERIFY(!validateCacheResult(result, &other)); // A different witness falls back to replay.
+        const auto bytes = std::get<QByteArray>(encodeAnalysis(result));
+        QVERIFY(decodeAnalysis(bytes, &initial));
+        QVERIFY(decodeAnalysis(bytes, &other));
+        for (int choice = 0; choice < 4; ++choice) {
+            auto bad = result;
+            changeProvenance(bad, [&](auto& p) {
+                if (choice == 0) {
+                    ++p.position.version;
+                }
+                if (choice == 1) {
+                    ++p.position.halfmoveClock;
+                }
+                if (choice == 2) {
+                    p.position.board.sideToMove = chess::Color::Black;
+                }
+                if (choice == 3) {
+                    p.position.rootFen += " ";
+                }
+            });
+            QVERIFY(validateCacheResult(bad));
+            QVERIFY(validateCacheResult(bad, &initial));
+            QVERIFY(!cacheDominates(bad, queryFor(bad), &initial));
+        }
+        auto large = initial;
+        for (int i = 0; i < 3277; ++i) {
+            for (const auto* move : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
+                QVERIFY(std::holds_alternative<std::monostate>(
+                    large.play(std::get<chess::Move>(large.parseUci(move)))));
+            }
+        }
+        auto oversized = result;
+        changeProvenance(oversized, [&](auto& p) { p.position = large.context(); });
+        QVERIFY(validateCacheResult(oversized));
+        QVERIFY(validateCacheResult(oversized, &large));
+        auto timed = result;
+        timed.evidence.limit = TimeLimit{100};
+        QCOMPARE(cacheStrength(timed), 0U);
+        auto infinite = result;
+        infinite.evidence.limit = InfiniteLimit{};
+        QCOMPARE(cacheStrength(infinite), 0U);
+        auto duplicate = queryFor(result);
+        duplicate.searchMoves = std::vector{*result.evidence.bestMove, *result.evidence.bestMove};
+        QVERIFY(!cacheDominates(result, duplicate, &initial));
+    }
+    void cacheWorkloadMeasurement() {
+        if (!qEnvironmentVariableIsSet("CHESS_REVIEW_CACHE_BENCH")) {
+            QSKIP("Optional reproducible cache workload measurement.");
+        }
+        Fixture f;
+        auto result = sample();
+        auto position = chess::Position::initial();
+        for (int i = 0; i < 500; ++i) {
+            for (const auto* move : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
+                QVERIFY(std::holds_alternative<std::monostate>(
+                    position.play(std::get<chess::Move>(position.parseUci(move)))));
+            }
+        }
+        changeProvenance(result, [&](auto& p) { p.position = position.context(); });
+        const auto identity = positionIdentity(position.context());
+        const auto positionKey = QCryptographicHash::hash(identity, QCryptographicHash::Sha256);
+        QVERIFY(f.exec(QStringLiteral("BEGIN IMMEDIATE")));
+        QSqlQuery insert(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+        QVERIFY(insert.prepare(QStringLiteral(
+            "INSERT INTO "
+            "analysis_results(session,attempt,position_key,engine_fingerprint,position_identity,"
+            "raw_result_blob,result_format_version) VALUES(?,?,?,?,?,?,?)")));
+        for (int i = 0; i < 64; ++i) {
+            result.evidence.request = QUuid::createUuid();
+            const auto payload = std::get<QByteArray>(encodeAnalysis(result));
+            insert.bindValue(0, result.evidence.session.toRfc4122());
+            insert.bindValue(1, result.evidence.request.toRfc4122());
+            insert.bindValue(2, positionKey);
+            insert.bindValue(3, result.evidence.provenance->fingerprint.digest);
+            insert.bindValue(4, identity);
+            insert.bindValue(5, payload);
+            insert.bindValue(6, static_cast<unsigned char>(payload[3]));
+            QVERIFY(insert.exec());
+            insert.finish();
+        }
+        QVERIFY(f.exec(QStringLiteral("COMMIT")));
+        QElapsedTimer timer;
+        timer.start();
+        auto hit = std::get<CacheLookup>(f.session.findAnalysis(queryFor(result))).hit;
+        QVERIFY(hit);
+        QCOMPARE(hit->evidence.request, result.evidence.request);
+        qInfo("64 matching records with 2,000-ply histories: %lld ms",
+              static_cast<long long>(timer.elapsed()));
+        QVERIFY(f.exec(QStringLiteral("DELETE FROM analysis_results")));
+        QVERIFY(f.exec(
+            QStringLiteral("WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM rows "
+                           "WHERE n<512) INSERT INTO "
+                           "analysis_results(session,attempt,position_key,engine_fingerprint,"
+                           "position_identity,raw_result_blob,result_format_version) SELECT "
+                           "randomblob(16),randomblob(16),zeroblob(32),zeroblob(32),x'00',zeroblob("
+                           "65536),99 FROM rows")));
+        timer.restart();
+        for (int i = 0; i < 5; ++i) {
+            auto next = sample();
+            QVERIFY(std::holds_alternative<AnalysisStored>(f.session.storeAnalysis(next)));
+        }
+        qInfo("Five inserts alongside 32 MiB of cache BLOBs: %lld ms",
+              static_cast<long long>(timer.elapsed()));
+    }
     void codec() {
         auto r = sample(2, true);
         r.evidence.statistics.nps = std::numeric_limits<std::uint64_t>::max();
@@ -343,19 +525,52 @@ class AnalysisRepositoryTest final : public QObject {
         }
         QVERIFY(!decodeAnalysis(bytes + 'x'));
         auto corrupt = bytes;
-        corrupt[3] = 2;
+        corrupt[3] = 127;
         QVERIFY(!decodeAnalysis(corrupt));
         corrupt = bytes;
         for (int i = 4; i < 8; ++i) {
             corrupt[i] = static_cast<char>(0xff);
         }
         QVERIFY(!decodeAnalysis(corrupt));
+        // A checksum is not an authentication boundary: exercise malformed wire
+        // data even when its checksum was deliberately recomputed by a file owner.
+        const auto body = bytes.first(bytes.size() - 32);
+        const auto framed = [](QByteArray payload) {
+            payload += QCryptographicHash::hash(payload, QCryptographicHash::Sha256);
+            return payload;
+        };
+        for (qsizetype i = 0; i < body.size(); ++i) {
+            QVERIFY(!decodeAnalysis(framed(body.first(i))));
+        }
+        auto oversized = body;
+        for (int i = 4; i < 8; ++i) {
+            oversized[i] = static_cast<char>(0xff);
+        }
+        QVERIFY(!decodeAnalysis(framed(oversized)));
+        for (qsizetype i = 0; i < bytes.size(); ++i) {
+            auto mutated = bytes;
+            mutated[i] ^= 1;
+            QVERIFY(!decodeAnalysis(mutated));
+        }
         auto bad = r;
         bad.evidence.lines[0].wdl = Wdl{1001, 0, 0};
         QVERIFY(validateCacheResult(bad));
         bad = r;
         bad.evidence.lines[0].pv[0].promotion = chess::PieceType::King;
         QVERIFY(validateCacheResult(bad));
+    }
+    void allLimitTypesRoundTripWithStableTags() {
+        const auto initial = chess::Position::initial();
+        for (const auto& limit : std::vector<SearchLimit>{NodeLimit{1000}, DepthLimit{8},
+                                                          TimeLimit{1000}, InfiniteLimit{}}) {
+            auto result = sample();
+            result.evidence.limit = limit;
+            const auto bytes = std::get<QByteArray>(encodeAnalysis(result));
+            const auto restored = decodeAnalysis(bytes, &initial);
+            QVERIFY(restored);
+            QCOMPARE(restored->evidence.limit.index(), limit.index());
+            QCOMPARE(std::get<QByteArray>(encodeAnalysis(*restored)), bytes);
+        }
     }
     void repository() {
         QTemporaryDir dir;
@@ -468,6 +683,47 @@ class AnalysisRepositoryTest final : public QObject {
         StorageSession original;
         QVERIFY(
             !original.initialize(path, std::span(migrations()).first(4), [](const QString&) {}));
+    }
+    void oversizedLookupFailsWithoutPartialHitOrCleanup() {
+        Fixture f;
+        auto result = sample();
+        for (int i = 0; i < 3; ++i) {
+            result.evidence.request = QUuid::createUuid();
+            QVERIFY(std::holds_alternative<AnalysisStored>(f.session.storeAnalysis(result)));
+        }
+        QVERIFY(
+            f.exec(QStringLiteral("UPDATE analysis_results SET raw_result_blob=x'00' WHERE id=1")));
+        QVERIFY(std::holds_alternative<CacheError>(f.session.findAnalysis(queryFor(result), 2)));
+        const auto found = std::get<CacheLookup>(f.session.findAnalysis(queryFor(result)));
+        QCOMPARE(found.discardedRecords, 1); // Earlier cleanup was rolled back on the bound error.
+        QVERIFY(found.hit);
+        QCOMPARE(found.hit->evidence.request, result.evidence.request);
+    }
+    void retentionCountsDamagedTextInBytes() {
+        Fixture f;
+        const auto original = sample();
+        const qint64 size = std::get<QByteArray>(encodeAnalysis(original)).size() +
+                            positionIdentity(original.evidence.provenance->position).size();
+        const qint64 budget = 2 * size + 1000;
+        QVERIFY(
+            std::holds_alternative<AnalysisStored>(f.session.storeAnalysis(original, budget, 10)));
+        QSqlQuery insert(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+        QVERIFY(insert.prepare(
+            QStringLiteral("INSERT INTO "
+                           "analysis_results(session,attempt,position_key,engine_fingerprint,"
+                           "position_identity,raw_result_blob,result_format_version) "
+                           "VALUES(?,?,zeroblob(32),zeroblob(32),x'00',CAST(? AS TEXT),99)")));
+        insert.addBindValue(QUuid::createUuid().toRfc4122());
+        insert.addBindValue(QUuid::createUuid().toRfc4122());
+        insert.addBindValue(QString(1000, u'\u00e9').toUtf8());
+        QVERIFY(insert.exec());
+        insert.finish();
+        auto next = original;
+        next.evidence.request = QUuid::createUuid();
+        QVERIFY(std::holds_alternative<AnalysisStored>(f.session.storeAnalysis(next, budget, 10)));
+        // The 2,000-byte damaged TEXT record forces eviction; counting its 1,000
+        // characters instead would incorrectly retain the oldest completed result.
+        QVERIFY(!std::get<AnalysisStored>(f.session.storeAnalysis(original, budget, 10)).duplicate);
     }
     void retention_data() {
         QTest::addColumn<bool>("byBytes");

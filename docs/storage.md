@@ -427,7 +427,7 @@ errors distinguish invalid input, conflict, busy, closing, unavailable and stora
 failure. Accepted operations drain and deliver outcomes before `closed()`. There
 is no automatic scheduler interception or analysis UI integration yet.
 
-Payload format 1 uses pinned Qt_6_0 big-endian QDataStream primitives with bounded
+Payload format 2 uses pinned Qt_6_0 big-endian QDataStream primitives with bounded
 length/count framing, explicit optional presence and fixed numeric tags. It retains
 raw scores/bounds, WDL, PVs, statistics (including full unsigned 64-bit values),
 limits, configuration and attempt provenance. The position identity format stores
@@ -438,6 +438,11 @@ and compared during validation; no history-equivalence shortcuts are used.
 Readers bound database projections before allocation, validate UTF-8 and primitive
 ranges, replay legal history/PVs, recompute fingerprints and position SHA-256,
 compare indexed identity with decoded evidence, and require canonical re-encoding.
+Format 2 appends a SHA-256 checksum over the complete preceding payload, verified
+before parsing. This detects accidental changes to scores/statistics as well as
+structural corruption. It does not authenticate a file against its owner. Earlier
+unprotected format-1 cache rows are treated as unsupported and discarded on lookup;
+game records, database schema version and engine fingerprint framing do not change.
 Malformed or unsupported matching records are deleted transactionally and lookup
 continues. A bounded numeric diagnostic reports committed cleanup counts. Failure
 to delete or commit returns a storage error and rolls back cleanup; a failed
@@ -446,7 +451,16 @@ that lookup; it never authorizes a match and remains subject to normal eviction.
 These checks detect inconsistent data, not malicious rewriting by the database owner.
 
 Retention is oldest-insertion-first, with a 256 MiB logical budget for encoded
-payload plus position identity, 16 MiB per payload, and 100,000 records. Retention
+payload plus position identity, 16 MiB per record including payload/checksum and position identity, and 100,000 records. Retention
 and insertion share one transaction. SQLite pages, indexes and WAL overhead are
 outside the logical budget; eviction does not shrink the physical database file,
 and no automatic VACUUM runs. No settings UI or total-file-size guarantee is added.
+
+
+Lookup reuses an independently validated chess position only after exact full
+context comparison; this avoids replaying the same long history for every record.
+Mismatch falls back to complete replay. Every record still validates its checksum,
+configuration, coverage and legal PVs. At most 100,000 candidates are examined;
+exceeding the supported retention bound returns an explicit error and rolls back
+cleanup rather than returning a potentially weaker partial hit. Retention scans
+use BLOB length metadata, with exact byte-counting fallbacks for damaged TEXT data.

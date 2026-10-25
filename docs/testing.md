@@ -780,3 +780,21 @@ CHESS_REVIEW_STOCKFISH=/absolute/path/to/stockfish \
 The independently encoded empty-option v2 fingerprint golden vector complements
 the unchanged v1 vectors. Resource-policy changes require new versioned fixtures
 and a renewed source/runtime review of the pinned build.
+
+
+Cache adversarial regressions exercise valid-looking score bit corruption, one-bit changes at every
+byte position, truncations with deliberately recomputed checksums,
+unprotected legacy-row removal, impossible pinned-option values, replay-witness
+fallback/bounds, stable limit tags, damaged TEXT byte accounting and bounded lookup
+rollback without a partial hit. Payload checksums detect corruption, not owner
+forgery; tests deliberately recompute them to reach the semantic decoder.
+
+For the optional reproducible workload observation:
+
+```sh
+CHESS_REVIEW_CACHE_BENCH=1 \
+  build/dev/src/persistence/tests/analysis_repository_tests cacheWorkloadMeasurement
+```
+
+It measures lookup over 64 matching 2,000-ply histories and five inserts alongside
+32 MiB of cache BLOBs. These are host-specific observations, not timing assertions.
