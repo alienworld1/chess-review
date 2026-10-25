@@ -1,5 +1,4 @@
 #include "engine/private/SearchProtocol.h"
-#include <QMap>
 #include <QStringView>
 #include <algorithm>
 #include <array>
@@ -101,18 +100,6 @@ std::variant<SearchSetup, Error> prepareSearchSetup(const AnalysisRequest& reque
         return invalidRequest();
     }
 
-    QMap<QString, EffectiveOption> effective;
-    for (const auto& declared : capabilities.options) {
-        if (declared.type == OptionType::Button) {
-            continue;
-        }
-        const auto name = declared.name.toCaseFolded();
-        const auto value = declared.type == OptionType::Spin
-                               ? QString::number(declared.defaultValue.toLongLong())
-                               : declared.defaultValue;
-        effective.insert(name, {name, declared.type, value});
-    }
-
     const auto legal = request.position.legalMoves();
     auto count = legal.size();
     if (request.searchMoves) {
@@ -135,8 +122,9 @@ std::variant<SearchSetup, Error> prepareSearchSetup(const AnalysisRequest& reque
     // An option whose minimum exceeds the safe/effective width cannot represent this request.
     prepared.effectiveMultiPv = static_cast<int>(std::min<qint64>(
         {request.multiPv, maximum, static_cast<qint64>(std::max<std::size_t>(count, 1))}));
-    const auto set = [&prepared, &effective](const UciOption& value, const QByteArray& setting) {
-        effective[value.name.toCaseFolded()].value = QString::fromUtf8(setting);
+    const auto set = [&prepared](const UciOption& value, const QByteArray& setting) {
+        prepared.effectiveOptions.push_back(
+            {value.name.toCaseFolded(), value.type, QString::fromUtf8(setting)});
         prepared.options += "setoption name " + value.name.toUtf8() + " value " + setting + '\n';
     };
     if (multiPv && capabilities.supportsMultiPv) {
@@ -193,9 +181,6 @@ std::variant<SearchSetup, Error> prepareSearchSetup(const AnalysisRequest& reque
         prepared.options.size() > 65536) {
         return invalidRequest();
     }
-    for (const auto& value : effective) {
-        prepared.effectiveOptions.push_back(value);
-    }
     return SearchSetup{std::move(prepared), std::move(context)};
 }
 } // namespace
@@ -233,6 +218,33 @@ std::variant<PreparedSearch, Error> prepareSearch(const AnalysisRequest& request
         }
     }
     prepared.commands.position += '\n';
+    // Admission needs only the commands/guards. Capture the full default configuration
+    // once at dispatch, rather than copying large declarations for every queued request.
+    const auto overrides = std::move(prepared.commands.effectiveOptions);
+    auto& effective = prepared.commands.effectiveOptions;
+    effective.clear();
+    effective.reserve(static_cast<std::size_t>(capabilities.options.size()));
+    for (const auto& declared : capabilities.options) {
+        if (declared.type == OptionType::Button) {
+            continue;
+        }
+        const auto name = declared.name.toCaseFolded();
+        const auto configured =
+            std::find_if(overrides.begin(), overrides.end(),
+                         [&name](const EffectiveOption& value) { return value.name == name; });
+        if (configured != overrides.end()) {
+            effective.push_back(*configured);
+        } else {
+            effective.push_back({name, declared.type,
+                                 declared.type == OptionType::Spin
+                                     ? QString::number(declared.defaultValue.toLongLong())
+                                     : declared.defaultValue});
+        }
+    }
+    std::sort(effective.begin(), effective.end(),
+              [](const EffectiveOption& left, const EffectiveOption& right) {
+                  return left.name < right.name;
+              });
     prepared.commands.context = std::move(prepared.context);
     return std::move(prepared.commands);
 }

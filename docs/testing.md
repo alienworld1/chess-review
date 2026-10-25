@@ -743,3 +743,12 @@ destruction. Exact context distinguishes that history from an equivalent FEN roo
 `engine_scheduling` checks fresh attempt provenance, retained original evidence,
 failure/reconnect, and configuration cancellation. Fingerprint equality in these
 tests is not a cache-reuse assertion.
+
+Raw-evidence adversarial regressions additionally stall the direct API receiver
+across two accepted searches, with the second still active or already completed.
+They require request phase events before progress, every final update before its
+terminal result, no progress after terminal, and matching immutable provenance.
+Duplicate and unrelated Busy rejections must leave active progress intact.
+A process-free fixture measures 256 admissions with 1,007 legal advertised options;
+full capture at dispatch still includes all 1,006 non-button effective values.
+Timings are observations rather than portable pass/fail latency thresholds.

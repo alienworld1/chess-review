@@ -804,11 +804,18 @@ class EngineAnalysisTest final : public QObject {
                     qvariant_cast<SearchState>(states.back()[0]).phase == SearchPhase::Analyzing);
         progress.clear();
         QTest::qSleep(1200); // Deliberately stall only the caller; the engine thread stays live.
+        service.analyze(conversation.session,
+                        search); // Duplicate rejection must not erase progress.
+        service.analyze(conversation.session, request()); // Nor may an unrelated Busy rejection.
+        QTest::qSleep(100);
         QCoreApplication::sendPostedEvents(&service, QEvent::MetaCall);
         QCOMPARE(progress.size(), 1);
         QCOMPARE(qvariant_cast<AnalysisSnapshot>(progress.back()[0]).statistics.nodes, 29);
+        QCOMPARE(done.size(), 2);
+        QVERIFY(!result(done, 0).evidence.provenance);
+        QVERIFY(!result(done, 1).evidence.provenance);
         service.stopAnalysis(conversation.session, search.id);
-        QTRY_COMPARE(done.size(), 1);
+        QTRY_COMPARE(done.size(), 3);
         QCOMPARE(result(done).outcome, AnalysisOutcome::Stopped);
     }
     void integerEvidenceUsesRepresentableRange() {
@@ -826,6 +833,96 @@ class EngineAnalysisTest final : public QObject {
             tokens(QStringLiteral("info score cp -9223372036854775809")), request(), 1)));
         QVERIFY(std::holds_alternative<Error>(prepareSearch(
             request(NodeLimit{std::numeric_limits<std::uint64_t>::max()}), Capabilities{})));
+    }
+    void stalledCallerAcrossDirectRequests_data() {
+        QTest::addColumn<bool>("secondCompletes");
+        QTest::newRow("second-completed") << true;
+        QTest::newRow("second-active") << false;
+    }
+    void stalledCallerAcrossDirectRequests() {
+        QFETCH(bool, secondCompletes);
+        Conversation c;
+        auto steps = c.setup();
+        steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+        steps.append(
+            engine_test::step(QStringLiteral("go nodes 200"),
+                              {engine_test::write(QStringLiteral(
+                                  "info nodes 200 score cp 10 pv e2e4\nbestmove e2e4\n"))}));
+        steps.append(ready());
+        Conversation::append(steps, c.setup());
+        steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+        steps.append(engine_test::step(
+            secondCompletes ? QStringLiteral("go nodes 200") : QStringLiteral("go infinite"),
+            {engine_test::write(
+                secondCompletes
+                    ? QStringLiteral("info nodes 200 score cp 20 pv d2d4\nbestmove d2d4\n")
+                    : QStringLiteral("info nodes 20 score cp 20 pv d2d4\n"))}));
+        if (!secondCompletes) {
+            steps.append(engine_test::step(
+                QStringLiteral("stop"), {engine_test::write(QStringLiteral("bestmove d2d4\n"))}));
+        }
+        steps.append(ready());
+        c.connect(steps);
+        QSignalSpy states(&c.service(), &EngineSupervisor::searchChanged);
+        QSignalSpy done(&c.service(), &EngineSupervisor::analysisFinished);
+        QSignalSpy updates(&c.service(), &EngineSupervisor::analysisUpdated);
+        const auto first = request();
+        const auto second =
+            request(secondCompletes ? SearchLimit{NodeLimit{200}} : SearchLimit{InfiniteLimit{}});
+        bool beforeState = false;
+        bool afterTerminal = false;
+        bool missingFinal = false;
+        QObject observer;
+        connect(&c.service(), &EngineSupervisor::analysisUpdated, &observer,
+                [&](const AnalysisSnapshot& snapshot) {
+                    beforeState = beforeState ||
+                                  std::none_of(states.begin(), states.end(), [&](const auto& args) {
+                                      const auto state = qvariant_cast<SearchState>(args[0]);
+                                      return state.request == snapshot.request &&
+                                             state.phase == SearchPhase::Analyzing;
+                                  });
+                    afterTerminal = afterTerminal ||
+                                    std::any_of(done.begin(), done.end(), [&](const auto& args) {
+                                        const auto terminal =
+                                            qvariant_cast<AnalysisResult>(args[0]);
+                                        return terminal.outcome != AnalysisOutcome::Rejected &&
+                                               terminal.evidence.request == snapshot.request;
+                                    });
+                });
+        connect(&c.service(), &EngineSupervisor::analysisFinished, &observer,
+                [&](const AnalysisResult& terminal) {
+                    if (terminal.outcome != AnalysisOutcome::Rejected) {
+                        missingFinal =
+                            missingFinal ||
+                            std::none_of(updates.begin(), updates.end(), [&](const auto& args) {
+                                const auto snapshot = qvariant_cast<AnalysisSnapshot>(args[0]);
+                                return snapshot.request == terminal.evidence.request &&
+                                       snapshot.bestMove &&
+                                       snapshot.provenance == terminal.evidence.provenance;
+                            });
+                    }
+                });
+        c.service().analyze(c.session, first);
+        QTest::qSleep(400); // Worker completes without delivering owner-thread events.
+        c.service().analyze(c.session, second);
+        QTest::qSleep(400); // New evidence must not overwrite the earlier final update.
+        QCoreApplication::sendPostedEvents(&c.service(), QEvent::MetaCall);
+        QCoreApplication::sendPostedEvents(&c.service(), QEvent::MetaCall);
+        QTRY_VERIFY(done.size() >= 1);
+        if (!secondCompletes) {
+            c.service().stopAnalysis(c.session, second.id);
+        }
+        QTRY_COMPARE(done.size(), 2);
+        QCoreApplication::sendPostedEvents(&c.service(), QEvent::MetaCall);
+        qInfo("Direct boundary: progress before state=%d, after terminal=%d, missing final=%d",
+              beforeState, afterTerminal, missingFinal);
+        QVERIFY(!beforeState);
+        QVERIFY(!afterTerminal);
+        QVERIFY(!missingFinal);
+        QCOMPARE(result(done, 0).outcome, AnalysisOutcome::Completed);
+        QCOMPARE(result(done, 1).outcome,
+                 secondCompletes ? AnalysisOutcome::Completed : AnalysisOutcome::Stopped);
+        QVERIFY(result(done, 0).evidence.provenance != result(done, 1).evidence.provenance);
     }
     void stalledCallerReceivesFinalBeforeCompletion() {
         Conversation conversation;

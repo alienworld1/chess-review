@@ -2,6 +2,7 @@
 #include "engine/private/Fingerprint.h"
 #include "engine/private/SearchProtocol.h"
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QTest>
 #include <algorithm>
 #include <utility>
@@ -98,6 +99,28 @@ class EngineFingerprintTest final : public QObject {
         versioned = first;
         versioned.options[0].type = OptionType::String;
         QVERIFY(fingerprintDigest(versioned) != first.digest);
+    }
+    void largeDiscoveryAdmission() {
+        auto engine = discovery();
+        for (int index = 0; index < 1000; ++index) {
+            UciOption option;
+            option.name = QString::number(index) + QString(380, u'X');
+            option.defaultValue = QString(380, u'Y');
+            QVERIFY(!appendOption(engine.capabilities, std::move(option)));
+        }
+        QVERIFY(encodeCapabilities(engine.capabilities).size() < 1024 * 1024);
+        AnalysisRequest request;
+        request.id = QUuid::createUuid();
+        QElapsedTimer elapsed;
+        elapsed.start();
+        for (int index = 0; index < 256; ++index) {
+            QVERIFY(!validateSearchRequest(request, engine.capabilities));
+        }
+        qInfo("256 admissions with 1,007 advertised options: %lld ms",
+              static_cast<long long>(elapsed.elapsed()));
+        const auto prepared = std::get<PreparedSearch>(prepareSearch(request, engine.capabilities));
+        QCOMPARE(prepared.effectiveOptions.size(), 1006U);
+        QCOMPARE(makeFingerprint(engine, prepared.effectiveOptions).digest.size(), 32);
     }
     void framedEncoding() {
         EngineFingerprint value;

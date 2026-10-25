@@ -138,9 +138,14 @@ Unsupported/missing WDL stays absent rather than being fabricated.
 
 `searchChanged` reports Configuring, Analyzing, Stopping, and Synchronizing with
 session/request identity. Progress is produced on a 100 ms worker timer, plus a
-final snapshot, and delivered through `analysisUpdated`. While the caller is stalled, a
-bounded mailbox retains only the latest progress value and one queued notification;
-intermediate progress may be skipped. Terminal results always retain full evidence.
+final snapshot, and delivered through `analysisUpdated`. While the caller is stalled,
+a bounded mailbox retains only the latest provisional value and one queued
+notification; intermediate progress may be skipped. Each accepted direct request's
+final snapshot is delivered independently before `analysisFinished`,
+so it may repeat the last provisional value. Terminal results retain full evidence.
+An older notification cannot deliver a newer request ahead of its phase events.
+Rejected submissions neither clear another request's progress nor produce a final
+analysis update. Consumers should still correlate every event by session/request.
 `analysisFinished`
 provides Rejected, Completed, Stopped, or Failed. Await that terminal signal
 before submitting another search. Completed means natural UCI completion and
@@ -324,7 +329,8 @@ cancellation leaves it false. Neither field proves sufficient analysis strength.
 
 The fingerprint captures freshly verified runtime executable SHA-256 and reported
 UCI name/optional author, plus every effective non-button option. Advertised
-defaults are combined with actual per-search settings: Threads remains one, Hash
+defaults are captured once at dispatch and combined with actual per-search settings:
+Threads remains one, Hash
 retains its advertised default, and MultiPV/WDL reflect the dispatched settings.
 Unknown options are included conservatively. Option names are case-folded and
 sorted, spin values use canonical decimal text, and string/combo values preserve

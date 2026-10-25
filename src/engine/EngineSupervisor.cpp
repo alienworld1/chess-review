@@ -14,6 +14,7 @@ struct EngineSupervisor::Impl {
     std::mutex progressMutex;
     std::optional<AnalysisSnapshot> pendingProgress;
     bool progressQueued = false;
+    std::uint64_t progressEpoch = 0;
     std::optional<ScheduledEvidence> scheduledProgress;
     bool scheduledProgressQueued = false;
     std::uint64_t scheduledEpoch = 0;
@@ -53,28 +54,42 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
         [this](const AnalysisSnapshot& snapshot) {
             auto next = snapshot;
             bool post = false;
+            std::uint64_t epoch = 0;
             {
                 const std::lock_guard lock(impl_->progressMutex);
                 impl_->pendingProgress = std::move(next);
+                epoch = impl_->progressEpoch;
                 post = !std::exchange(impl_->progressQueued, true);
             }
             if (!post) {
                 return;
             }
             QMetaObject::invokeMethod(
-                this,
-                [this] {
-                    std::optional<AnalysisSnapshot> pending;
-                    {
-                        const std::lock_guard lock(impl_->progressMutex);
-                        pending = std::exchange(impl_->pendingProgress, std::nullopt);
-                        impl_->progressQueued = false;
-                    }
-                    if (pending) {
-                        emit analysisUpdated(*pending);
-                    }
-                },
-                Qt::QueuedConnection);
+                this, [this, epoch] { deliverProgress(epoch); }, Qt::QueuedConnection);
+        },
+        Qt::DirectConnection);
+    connect(
+        impl_->coordinator, &SupervisorCoordinator::analysisFinished, this,
+        [this](const AnalysisResult& result) {
+            if (result.outcome == AnalysisOutcome::Rejected) {
+                return;
+            }
+            {
+                const std::lock_guard lock(impl_->progressMutex);
+                const auto& pending = impl_->pendingProgress;
+                if (pending && pending->session == result.evidence.session &&
+                    pending->request == result.evidence.request) {
+                    impl_->pendingProgress.reset();
+                    ++impl_->progressEpoch;
+                }
+            }
+            // Final evidence cannot live in a latest-only mailbox. Queue it before
+            // the terminal connection below; Qt cancels both if the receiver dies.
+            if (result.evidence.provenance) {
+                QMetaObject::invokeMethod(
+                    this, [this, evidence = result.evidence] { emit analysisUpdated(evidence); },
+                    Qt::QueuedConnection);
+            }
         },
         Qt::DirectConnection);
     connect(impl_->coordinator, &SupervisorCoordinator::analysisFinished, this,
@@ -135,6 +150,29 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
     impl_->thread.start();
 }
 EngineSupervisor::~EngineSupervisor() { Q_ASSERT(!impl_->thread.isRunning()); }
+void EngineSupervisor::deliverProgress(std::uint64_t epoch) {
+    std::optional<AnalysisSnapshot> pending;
+    bool repost = false;
+    std::uint64_t nextEpoch = 0;
+    {
+        const std::lock_guard lock(impl_->progressMutex);
+        if (epoch != impl_->progressEpoch && impl_->pendingProgress) {
+            // A completed request's notification must not deliver a newer request
+            // ahead of that request's already-posted phase notifications.
+            repost = true;
+            nextEpoch = impl_->progressEpoch;
+        } else {
+            pending = std::exchange(impl_->pendingProgress, std::nullopt);
+            impl_->progressQueued = false;
+        }
+    }
+    if (repost) {
+        QMetaObject::invokeMethod(
+            this, [this, nextEpoch] { deliverProgress(nextEpoch); }, Qt::QueuedConnection);
+    } else if (pending) {
+        emit analysisUpdated(*pending);
+    }
+}
 void EngineSupervisor::deliverScheduledProgress(std::uint64_t epoch) {
     std::optional<ScheduledEvidence> pending;
     bool repost = false;
