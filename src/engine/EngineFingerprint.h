@@ -14,7 +14,10 @@ struct EffectiveOption {
     QString value;
     bool operator==(const EffectiveOption&) const = default;
 };
-enum class ResourceVerification : std::uint32_t { ExternalResourcesUnverified = 0 };
+enum class ResourceVerification : std::uint32_t {
+    ExternalResourcesUnverified = 0,
+    EmbeddedResourcesVerified = 1
+};
 // Captured configuration identity only. Equality never authorizes cache reuse.
 struct EngineFingerprint {
     std::uint32_t schemaVersion = 1;
@@ -24,6 +27,7 @@ struct EngineFingerprint {
     std::optional<QString> reportedAuthor;
     std::vector<EffectiveOption> options;
     ResourceVerification resources = ResourceVerification::ExternalResourcesUnverified;
+    std::uint32_t resourcePolicyVersion = 0; // Schema v2; zero means unverified.
     QByteArray digest;
     bool operator==(const EngineFingerprint&) const = default;
 };

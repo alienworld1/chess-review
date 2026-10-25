@@ -752,3 +752,31 @@ Duplicate and unrelated Busy rejections must leave active progress intact.
 A process-free fixture measures 256 admissions with 1,007 legal advertised options;
 full capture at dispatch still includes all 1,006 non-button effective values.
 Timings are observations rather than portable pass/fail latency thresholds.
+
+
+## Strict analysis cache
+
+Run `ctest --preset dev -R '^(analysis_repository|engine_fingerprint|persistence)$'`.
+The cache suite covers compatibility and resource policy, exact history and root
+sets, node/depth dominance, budget overshoot, width downgrade, WDL, bounded and
+mixed-depth scores, legal PVs, codec truncation and unsigned integer boundaries,
+reopen durability, deterministic result selection, idempotency/conflicts,
+retention, corrupt-row fallback, rollback after failed writes/commit/cleanup,
+upgrade backup/rollback, asynchronous admission/drainage, and lock-contention
+heartbeats. SQL fixtures stay under `src/persistence/tests`.
+
+A deterministic fake UCI conversation produces and persists real Completed
+provenance, then confirms its unknown executable remains ineligible for hits.
+The optional `pinnedEngineRoundTrip` case runs only with `CHESS_REVIEW_STOCKFISH`
+set to an explicitly selected executable. It validates, searches, stores and
+retrieves a hit only for the pinned build; the normal suite skips this case.
+It does not download or discover binaries automatically. Example from the repo:
+
+```sh
+CHESS_REVIEW_STOCKFISH=/absolute/path/to/stockfish \
+  build/dev/src/persistence/tests/analysis_repository_tests pinnedEngineRoundTrip
+```
+
+The independently encoded empty-option v2 fingerprint golden vector complements
+the unchanged v1 vectors. Resource-policy changes require new versioned fixtures
+and a renewed source/runtime review of the pinned build.

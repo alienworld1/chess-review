@@ -400,3 +400,53 @@ SQL, migrations, SQLite handles, and SQL fixture tests remain exclusively in
 `src/persistence`. Engine/application/UI code exchanges values and request IDs.
 Shutdown stops engine registration and import producers before closing storage;
 accepted writes finish and deliver their outcomes before storage closure.
+
+
+## Analysis cache
+
+Migration 005 adds independent analysis records to the existing local database.
+No game/profile deletion cascades into cache data, and removing corrupt cache rows
+never removes library records. Existing migration backups and rollback rules apply.
+
+`Database::storeAnalysis(requestId, result)` accepts completed attempts and emits
+`analysisStored` with `AnalysisStored{id, duplicate}` or `CacheError`. Repeating the
+same canonical evidence for a session/attempt returns the existing ID without
+refreshing its age; conflicting evidence returns `Conflict`. An acknowledgment
+means the transaction committed. It does not promise a reusable hit.
+
+`Database::findAnalysis(requestId, query)` emits `analysisFound` with a
+`CacheLookup` or `CacheError`. `CacheLookup::hit` is optional; `discardedRecords`
+counts individually invalid/unsupported matching rows removed by this lookup.
+A hit retains the engine's original session/request/provenance, independently of
+the storage operation's correlation ID. The strongest eligible measured result
+wins; newest insertion breaks ties. Unverified configurations return a normal miss.
+
+Both calls run on the owning application thread and queue CPU/database work onto
+the existing storage worker. They share the 16-request repository admission bound;
+errors distinguish invalid input, conflict, busy, closing, unavailable and storage
+failure. Accepted operations drain and deliver outcomes before `closed()`. There
+is no automatic scheduler interception or analysis UI integration yet.
+
+Payload format 1 uses pinned Qt_6_0 big-endian QDataStream primitives with bounded
+length/count framing, explicit optional presence and fixed numeric tags. It retains
+raw scores/bounds, WDL, PVs, statistics (including full unsigned 64-bit values),
+limits, configuration and attempt provenance. The position identity format stores
+its version, context version, variant, root provenance, exact canonical root FEN
+and complete legal move history. Board identity and halfmove clock are reconstructed
+and compared during validation; no history-equivalence shortcuts are used.
+
+Readers bound database projections before allocation, validate UTF-8 and primitive
+ranges, replay legal history/PVs, recompute fingerprints and position SHA-256,
+compare indexed identity with decoded evidence, and require canonical re-encoding.
+Malformed or unsupported matching records are deleted transactionally and lookup
+continues. A bounded numeric diagnostic reports committed cleanup counts. Failure
+to delete or commit returns a storage error and rolls back cleanup; a failed
+rollback disables the session. A corrupt index key may make a row unreachable by
+that lookup; it never authorizes a match and remains subject to normal eviction.
+These checks detect inconsistent data, not malicious rewriting by the database owner.
+
+Retention is oldest-insertion-first, with a 256 MiB logical budget for encoded
+payload plus position identity, 16 MiB per payload, and 100,000 records. Retention
+and insertion share one transaction. SQLite pages, indexes and WAL overhead are
+outside the logical budget; eviction does not shrink the physical database file,
+and no automatic VACUUM runs. No settings UI or total-file-size guarantee is added.

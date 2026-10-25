@@ -301,7 +301,7 @@ that stopped attempt is synchronizing. Protocol and cleanup failures remain fail
 submissions with that ID until reconnect. Use a fresh non-null job UUID for a rerun;
 omit the optional job for independent requests. Cancelling a job never retracts
 completed results. Useful partial evidence is delivered to callers, but this
-increment does not cache or persist it.
+scheduler does not automatically cache or persist it; explicit cache APIs are described below.
 
 Failure finishes queued work as Failed after worker retirement. Explicit disconnect
 or close cancels queued work and drains the active attempt; active cleanup errors
@@ -348,14 +348,48 @@ missing author remains distinct from a present empty author. This internal diges
 format is not a persisted result codec. Adapter-policy version changes are required
 when engine interaction or evidence semantics materially change.
 
-Every fingerprint explicitly carries `ExternalResourcesUnverified`. UCI discovery
-cannot prove the identity of external networks, tablebases, or other dependencies.
-Equal digests establish captured configuration identity only; they never authorize
-cache reuse. This increment does not hash external resources, persist results, or
-implement cache compatibility/dominance.
+New runtime fingerprints use schema version 2, which appends a resource-policy
+uint32 after the options. Version 1 framing and golden vectors remain unchanged.
+Resource policy zero is unverified. Policy 1 permits `EmbeddedResourcesVerified`
+only for the reviewed Linux Stockfish 19 binary with SHA-256
+`0f83d24cc46d2c66c60f16001af5444873bc112b7d028594513426894c12da19`, its
+known identity and complete non-button option names/types, default embedded
+`nn-1a298aa575a0.nnue`, empty Syzygy/debug-log paths, Threads=1, nodestime=0,
+Ponder=false and standard chess. Unknown builds/options, external networks and
+tablebases remain unverified. This pin does not install, select or ship an engine.
+
+UCI discovery alone cannot establish external-resource identity. Equal digests
+still do not authorize reuse: the cache rechecks the resource policy and evidence
+compatibility. Version 1 and unverified fingerprints never produce reusable hits.
+The pin identifies a reviewed resource-loading configuration; it does not
+sandbox executables or authenticate evaluation truth.
 
 Scheduled evidence retains its originating attempt's provenance across preemption
 and cancellation. A restarted attempt gets a new immutable object and creation
 time; its fingerprint may remain equal. Snapshots remain valid after disconnect
 or supervisor destruction. Raw scores, bounds, WDL, PVs and measured coverage
 retain their existing semantics and remain independent of review interpretation.
+
+
+## Strict analysis cache
+
+`engine::CacheQuery` supplies the exact history-bearing position context, expected
+effective fingerprint, limit, required MultiPV width, WDL requirement and optional
+allowed root moves. Lookup uses no engine process. Callers must supply the intended
+configuration rather than substituting saved profile labels or trusting a digest.
+
+A reusable hit requires a completed, error-free, started attempt; exact position
+and fingerprint identity; identical allowed root-move sets (order independent);
+full requested width; contiguous distinct legal root PVs; exact scores; and one
+coherent depth across the full effective width. Required WDL must exist on every
+required rank. Downgraded width, missing measurements, mixed depths, bounded scores
+and terminal positions without PV evidence miss. These remain storable when valid.
+
+Node requests compare only with node results, and depth requests only with depth
+results. Both the original budget and measured nodes/coherent depth must meet the
+new request. Incidental overshoot does not expand the original budget. Time and
+infinite modes may be stored when completed but cannot satisfy lookups. Exact
+fingerprints include MultiPV/WDL: differing option values do not match even if the
+result appears wider or contains more capabilities. Purpose and scheduling
+metadata do not affect compatibility. See [storage](storage.md#analysis-cache)
+for persistence APIs and retention.

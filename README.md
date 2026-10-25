@@ -13,7 +13,10 @@ handshake and persists their profiles. Explicit Connect/Disconnect controls keep
 an engine Ready and expose its advertised options without starting a search.
 The engine infrastructure now supports position searches, MultiPV, optional WDL,
 validated candidate lines, asynchronous stop, and bounded priority scheduling with
-request/job cancellation through its typed C++ API.
+request/job cancellation through its typed C++ API. Explicit asynchronous SQLite
+cache APIs retain completed evidence and reuse only strictly compatible results
+under a verified engine-resource policy; automatic analysis integration remains
+future work.
 Home offers import actions; Puzzles remains
 a placeholder.
 

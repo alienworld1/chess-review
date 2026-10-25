@@ -31,7 +31,7 @@ target_compile_definitions(chess_review_diagnostics PUBLIC CHESS_REVIEW_VERSION=
 
 add_library(chess_review_engine STATIC src/engine/EngineProfile.cpp src/engine/EngineSupervisor.cpp
     src/engine/private/EngineProcessWorker.cpp src/engine/private/EngineProcessWorker.h
-    src/engine/Analysis.h src/engine/private/Fingerprint.cpp src/engine/private/SearchProtocol.cpp
+    src/engine/Analysis.h src/engine/AnalysisCache.cpp src/engine/private/Fingerprint.cpp src/engine/private/SearchProtocol.cpp
     src/engine/private/EngineProcessWorkerSearch.cpp
     src/engine/private/SupervisorCoordinator.cpp src/engine/private/SupervisorCoordinator.h
     src/engine/private/SupervisorScheduling.cpp)
@@ -40,6 +40,9 @@ target_link_libraries(chess_review_engine PUBLIC Qt6::Core chess_review_chess)
 chess_review_apply_options(chess_review_engine)
 
 add_library(chess_review_persistence STATIC
+    src/persistence/private/AnalysisCodec.cpp
+    src/persistence/private/AnalysisRepository.cpp
+    src/persistence/migrations/005_analysis.cpp
     src/persistence/private/EngineRepository.cpp
     src/persistence/migrations/004_engines.cpp
     src/persistence/GameRepository.h

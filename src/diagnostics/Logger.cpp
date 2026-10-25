@@ -71,6 +71,8 @@ const char* eventName(Event event) {
         return "engine.validation_succeeded";
     case Event::EngineValidationFailed:
         return "engine.validation_failed";
+    case Event::CacheRecordsDiscarded:
+        return "cache_records_discarded";
     case Event::EngineRegistrationFinished:
         return "engine.registration_finished";
     case Event::EngineRuntimeChanged:

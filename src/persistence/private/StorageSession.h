@@ -2,6 +2,7 @@
 
 #include "persistence/Database.h"
 #include "persistence/GameRepository.h"
+#include "persistence/private/AnalysisCodec.h"
 #include "persistence/private/Migrations.h"
 
 #include <QSqlDatabase>
@@ -26,6 +27,11 @@ class StorageSession final {
     std::optional<DatabaseError> initialize(const QString& path,
                                             std::span<const Migration> registry,
                                             const Progress& progress, const Observe& observe = {});
+
+    StoreAnalysisResult storeAnalysis(const engine::AnalysisResult& result,
+                                      qint64 budget = analysisBudgetBytes,
+                                      qint64 recordLimit = maxAnalysisRecords);
+    FindAnalysisResult findAnalysis(const engine::CacheQuery& query);
 
     RegisterEngineResult registerEngine(const engine::ValidatedEngine& engine);
     ListEnginesResult listEngines(std::int64_t offset, int limit);

@@ -9,6 +9,8 @@
 #include <QThread>
 #include <QTimer>
 #include <exception>
+#include <type_traits>
+#include <utility>
 
 namespace chess_review::persistence {
 namespace detail {
@@ -104,6 +106,28 @@ class StorageWorker final : public QObject {
         } catch (const std::exception&) {
             return engine::Error{engine::ErrorCode::Storage,
                                  QStringLiteral("Engine storage could not complete the request.")};
+        }
+    }
+    template <typename Result, typename Operation> Result executeCache(Operation operation) {
+        if (!session_) {
+            return CacheError{CacheErrorCode::Unavailable,
+                              QStringLiteral("Analysis cache is unavailable.")};
+        }
+        try {
+            auto result = operation(*session_);
+            if constexpr (std::is_same_v<Result, FindAnalysisResult>) {
+                const auto* lookup = std::get_if<CacheLookup>(&result);
+                if (lookup && lookup->discardedRecords && logger_) {
+                    diagnostics::Context context;
+                    context.count = static_cast<quint64>(lookup->discardedRecords);
+                    logger_->record(diagnostics::Event::CacheRecordsDiscarded, context,
+                                    diagnostics::Severity::Warning);
+                }
+            }
+            return result;
+        } catch (const std::exception&) {
+            return CacheError{CacheErrorCode::Storage,
+                              QStringLiteral("Analysis cache could not complete the request.")};
         }
     }
     void close() {
@@ -324,6 +348,68 @@ void Database::listEngines(RequestId request, std::int64_t offset, int limit) {
                 [this, request, result] {
                     --impl_->pending;
                     emit enginesListed(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
+void Database::storeAnalysis(RequestId request, engine::AnalysisResult result) {
+    if (auto error = acceptRequest()) {
+        CacheErrorCode code = CacheErrorCode::Unavailable;
+        if (error->code == GameErrorCode::Busy) {
+            code = CacheErrorCode::Busy;
+        }
+        if (error->code == GameErrorCode::Closing) {
+            code = CacheErrorCode::Closing;
+        }
+        const CacheError failure{
+            code, QStringLiteral("Analysis cache is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, request, failure] { emit analysisStored(request, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, input = std::move(result)] {
+            const auto outcome = impl_->worker->executeCache<StoreAnalysisResult>(
+                [&](detail::StorageSession& session) { return session.storeAnalysis(input); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, outcome] {
+                    --impl_->pending;
+                    emit analysisStored(request, outcome);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
+void Database::findAnalysis(RequestId request, engine::CacheQuery query) {
+    if (auto error = acceptRequest()) {
+        CacheErrorCode code = CacheErrorCode::Unavailable;
+        if (error->code == GameErrorCode::Busy) {
+            code = CacheErrorCode::Busy;
+        }
+        if (error->code == GameErrorCode::Closing) {
+            code = CacheErrorCode::Closing;
+        }
+        const CacheError failure{
+            code, QStringLiteral("Analysis cache is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, request, failure] { emit analysisFound(request, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, input = std::move(query)] {
+            const auto outcome = impl_->worker->executeCache<FindAnalysisResult>(
+                [&](detail::StorageSession& session) { return session.findAnalysis(input); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, outcome] {
+                    --impl_->pending;
+                    emit analysisFound(request, outcome);
                 },
                 Qt::QueuedConnection);
         },

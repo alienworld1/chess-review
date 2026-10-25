@@ -1,4 +1,5 @@
 #include "engine/private/Fingerprint.h"
+#include "engine/AnalysisCache.h"
 #include <QCryptographicHash>
 #include <QDataStream>
 #include <QIODevice>
@@ -30,6 +31,9 @@ QByteArray fingerprintDigest(const EngineFingerprint& fingerprint) {
         stream << static_cast<quint32>(option.type);
         text(option.value);
     }
+    if (fingerprint.schemaVersion >= 2) {
+        stream << static_cast<quint32>(fingerprint.resourcePolicyVersion);
+    }
     return QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
 }
 EngineFingerprint makeFingerprint(const ValidatedEngine& engine,
@@ -39,6 +43,13 @@ EngineFingerprint makeFingerprint(const ValidatedEngine& engine,
     fingerprint.reportedName = engine.reportedName;
     fingerprint.reportedAuthor = engine.reportedAuthor;
     fingerprint.options = std::move(options);
+    fingerprint.schemaVersion = 2;
+    fingerprint.resourcePolicyVersion = 1;
+    fingerprint.resources = ResourceVerification::EmbeddedResourcesVerified;
+    if (!verifiedResources(fingerprint)) {
+        fingerprint.resourcePolicyVersion = 0;
+        fingerprint.resources = ResourceVerification::ExternalResourcesUnverified;
+    }
     fingerprint.digest = fingerprintDigest(fingerprint);
     return fingerprint;
 }

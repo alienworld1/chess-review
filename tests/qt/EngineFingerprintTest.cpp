@@ -36,7 +36,12 @@ EngineFingerprint fingerprint(const ValidatedEngine& engine, int width = 1, bool
     request.multiPv = width;
     request.wantWdl = wdl;
     auto prepared = std::get<PreparedSearch>(prepareSearch(request, engine.capabilities));
-    return makeFingerprint(engine, std::move(prepared.effectiveOptions));
+    auto value = makeFingerprint(engine, std::move(prepared.effectiveOptions));
+    value.schemaVersion = 1;
+    value.resourcePolicyVersion = 0;
+    value.resources = ResourceVerification::ExternalResourcesUnverified;
+    value.digest = fingerprintDigest(value);
+    return value;
 }
 } // namespace
 class EngineFingerprintTest final : public QObject {
@@ -128,6 +133,10 @@ class EngineFingerprintTest final : public QObject {
         value.reportedName = QStringLiteral("Engine");
         QCOMPARE(fingerprintDigest(value).toHex(),
                  QByteArray("4dbede299dcad7943f52475f946a8b60bf8922b96291c6f236e4c3dc6a58e874"));
+        auto v2 = value;
+        v2.schemaVersion = 2;
+        QCOMPARE(fingerprintDigest(v2).toHex(),
+                 QByteArray("e759c1ffaa53dca57636a3ed6441e8950519a91c5439b6b73b3e3e9f9acf3170"));
         auto other = value;
         value.reportedName = QStringLiteral("ab");
         value.reportedAuthor = QStringLiteral("c");

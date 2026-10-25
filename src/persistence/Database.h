@@ -1,5 +1,6 @@
 #pragma once
 
+#include "persistence/AnalysisRepository.h"
 #include "persistence/EngineRepository.h"
 #include "persistence/GameRepository.h"
 #include <QMetaType>
@@ -52,6 +53,10 @@ class Database final : public QObject {
     void close();
     // Repository calls are asynchronous, on this object's owning thread. IDs are caller-owned.
     // At most 16 accepted repository requests may be pending; otherwise returns Busy.
+    // Completed attempts only. Cache calls share repository admission and shutdown drainage.
+    // Results retain original engine identities; request only correlates the storage operation.
+    void storeAnalysis(RequestId request, engine::AnalysisResult result);
+    void findAnalysis(RequestId request, engine::CacheQuery query);
     void registerEngine(RequestId request, engine::ValidatedEngine engine);
     void listEngines(RequestId request, std::int64_t offset = 0, int limit = 50);
     void insertGame(RequestId request, std::shared_ptr<const pgn::PgnDocument> document,
@@ -60,6 +65,10 @@ class Database final : public QObject {
     void listGames(RequestId request, std::int64_t offset = 0, int limit = 50);
 
   signals:
+    void analysisStored(chess_review::persistence::RequestId request,
+                        const chess_review::persistence::StoreAnalysisResult& result);
+    void analysisFound(chess_review::persistence::RequestId request,
+                       const chess_review::persistence::FindAnalysisResult& result);
     void engineRegistered(chess_review::persistence::RequestId request,
                           const chess_review::persistence::RegisterEngineResult& result);
     void enginesListed(chess_review::persistence::RequestId request,

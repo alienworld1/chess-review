@@ -31,7 +31,8 @@ enum class Event {
     EngineValidationSucceeded,
     EngineValidationFailed,
     EngineRegistrationFinished,
-    EngineRuntimeChanged
+    EngineRuntimeChanged,
+    CacheRecordsDiscarded
 };
 
 enum class Severity { Debug, Info, Warning, Error, Fatal };
