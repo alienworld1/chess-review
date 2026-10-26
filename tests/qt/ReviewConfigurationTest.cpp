@@ -13,11 +13,16 @@
 #include <QFile>
 #include <QLabel>
 #include <QPlainTextEdit>
+#include <QProcess>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#ifdef Q_OS_UNIX
+#include <sys/stat.h>
+#endif
 
 using namespace chess_review;
 namespace {
@@ -70,6 +75,114 @@ class ReviewConfigurationTest final : public QObject {
     Q_OBJECT
   private slots:
     void init() { QTest::failOnWarning(); }
+    void hostileConfigIsRejectedWithoutCrashing() {
+        QProcess process;
+        process.start(QCoreApplication::applicationFilePath(),
+                      {QStringLiteral("--hostile-config-probe")});
+        QVERIFY(process.waitForStarted(1000));
+        const bool finished = process.waitForFinished(5000);
+        if (!finished) {
+            process.kill();
+            process.waitForFinished(1000);
+        }
+        QVERIFY2(finished, "Hostile configuration must not hang parsing or destruction");
+        QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+        QCOMPARE(process.exitCode(), 0);
+    }
+    void unreadableAncestorIsNotMissingConfiguration() {
+#ifdef Q_OS_UNIX
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto folder = directory.filePath("hidden");
+        QVERIFY(QDir().mkdir(folder));
+        const auto filename = folder + QStringLiteral("/config.toml");
+        write(filename, "[review]\nquality='fast'");
+        const auto restore = qScopeGuard([&] {
+            QFile::setPermissions(folder, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                              QFileDevice::ExeOwner);
+        });
+        QVERIFY(QFile::setPermissions(folder, QFileDevice::ReadOwner));
+        QFile probe(filename);
+        if (probe.open(QIODevice::ReadOnly)) {
+            QSKIP("Current identity bypasses directory search permissions");
+        }
+        const auto result = config::load(filename);
+        QVERIFY(std::holds_alternative<config::Diagnostics>(result));
+#else
+        QSKIP("Unix directory search permission regression");
+#endif
+    }
+    void specialFilesAreRejectedWithoutBlocking() {
+#ifdef Q_OS_UNIX
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto filename = directory.filePath("config.toml");
+        const auto link = directory.filePath("link.toml");
+        const auto fifo = directory.filePath("fifo.toml");
+        write(filename, "version=1");
+        QVERIFY(QFile::link(filename, link));
+        QVERIFY(std::holds_alternative<config::Diagnostics>(config::load(link)));
+        QVERIFY(QFile::remove(filename));
+        QVERIFY(std::holds_alternative<config::Diagnostics>(config::load(link)));
+        QCOMPARE(::mkfifo(QFile::encodeName(fifo).constData(), 0600), 0);
+        QProcess process;
+        process.start(QCoreApplication::applicationFilePath(),
+                      {QStringLiteral("--reject-config-file"), fifo});
+        QVERIFY(process.waitForStarted(1000));
+        const bool finished = process.waitForFinished(2000);
+        if (!finished) {
+            process.kill();
+            process.waitForFinished(1000);
+        }
+        QVERIFY2(finished, "FIFO configuration must never wait for a writer");
+        QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+        QCOMPARE(process.exitCode(), 0);
+        write(filename, "version=1");
+        QVERIFY(std::holds_alternative<config::Diagnostics>(
+            config::load(filename + "/child/config.toml")));
+#else
+        QSKIP("Unix file descriptor boundary regression");
+#endif
+    }
+    void repeatedErrorsDoNotLeakFileDescriptors() {
+#ifdef Q_OS_LINUX
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto filename = directory.filePath("config.toml");
+        const auto count = [] {
+            return QDir(QStringLiteral("/proc/self/fd"))
+                .entryList(QDir::AllEntries | QDir::NoDotAndDotDot)
+                .size();
+        };
+        if (!QDir(QStringLiteral("/proc/self/fd")).isReadable()) {
+            QSKIP("Descriptor accounting is unavailable");
+        }
+        const auto before = count();
+        for (int i = 0; i < 200; ++i) {
+            write(filename, i % 2 == 0 ? QByteArray("version=") : QByteArray(65537, '#'));
+            QVERIFY(std::holds_alternative<config::Diagnostics>(config::load(filename)));
+        }
+        QCOMPARE(count(), before);
+#else
+        QSKIP("Linux descriptor accounting regression");
+#endif
+    }
+    void manyErrorsKeepTheNoticeCompact() {
+        app::NavigationController navigation;
+        ui::MainWindow window(navigation);
+        QString details;
+        for (int i = 0; i < 32; ++i) {
+            details +=
+                QStringLiteral("configuration: Unknown configuration key (line %1, column 1)\n")
+                    .arg(i + 1);
+        }
+        window.showConfigurationFailure(details);
+        const auto* notice = window.findChild<QLabel*>("configurationNotice");
+        QVERIFY(notice);
+        QVERIFY(notice->text().size() < 700);
+        QVERIFY(notice->text().contains("Diagnostics"));
+        QVERIFY(notice->text().contains("line 1"));
+    }
     void exampleMatchesDefaults() {
         const auto result = config::load(QString::fromUtf8(CHESS_REVIEW_CONFIG_EXAMPLE));
         QVERIFY(
@@ -141,6 +254,16 @@ class ReviewConfigurationTest final : public QObject {
             text += "key" + std::to_string(i) + "=0\n";
         }
         QCOMPARE(std::get<config::Diagnostics>(config::parse(text)).size(), 32U);
+    }
+    void canonicalGoldenVectors() {
+        const auto parsed = valid("");
+        QVERIFY(parsed);
+        QCOMPARE(parsed->identities.classification.toHex(),
+                 QByteArray("08ff820351ea33c4027ace720ad8f1c26b12df7eaaada02520143f8a4eb6a36d"));
+        QCOMPARE(parsed->identities.conversion.toHex(),
+                 QByteArray("5136a1ae0435b81fc247490dd783b0a2949ef6c1030f17f407e12c26f5d48162"));
+        QCOMPARE(parsed->identities.analysis.toHex(),
+                 QByteArray("cfade89abac9aa3dd679a8bbc3847e84c6bfcfe816674bddfd59459afac4da7c"));
     }
     void identitiesSeparateSemantics() {
         const auto a = valid("");
@@ -278,6 +401,16 @@ class ReviewConfigurationTest final : public QObject {
         startup.shutdown();
         QTRY_COMPARE(finished.count(), 1);
     }
+    void adapterUsesScoreSetDepth() {
+        auto raw = analysisResult();
+        raw.evidence.statistics.depth = 13;
+        const auto adapted = analysis::reviewEvidence(raw);
+        QVERIFY(std::holds_alternative<analysis::ReviewEvidenceRecord>(adapted));
+        const auto& evidence = std::get<analysis::ReviewEvidenceRecord>(adapted).evidence;
+        QVERIFY(evidence.complete);
+        QCOMPARE(evidence.strength.depth, raw.evidence.commonDepth);
+        QCOMPARE(evidence.strength.depth, std::optional<int>(12));
+    }
     void adapterTerminalPreservesRawClaim() {
         auto raw = analysisResult();
         auto provenance = std::make_shared<engine::AnalysisProvenance>(*raw.evidence.provenance);
@@ -336,6 +469,32 @@ class ReviewConfigurationTest final : public QObject {
     }
 };
 int main(int argc, char** argv) {
+    if (argc == 3 && QByteArray(argv[1]) == "--reject-config-file") {
+        return std::holds_alternative<config::Diagnostics>(
+                   config::load(QString::fromLocal8Bit(argv[2])))
+                   ? 0
+                   : 2;
+    }
+    if (argc == 2 && QByteArray(argv[1]) == "--hostile-config-probe") {
+        std::string dotted;
+        for (int i = 0; i < 30000; ++i) {
+            dotted += "a.";
+        }
+        dotted += "a=1";
+        if (!std::holds_alternative<config::Diagnostics>(config::parse(dotted))) {
+            return 2;
+        }
+        const std::string arrays = "unknown=" + std::string(200, '[') + "0" + std::string(200, ']');
+        if (!std::holds_alternative<config::Diagnostics>(config::parse(arrays))) {
+            return 3;
+        }
+        std::string tables = "unknown=";
+        for (int i = 0; i < 200; ++i) {
+            tables += "{a=";
+        }
+        tables += "0" + std::string(200, '}');
+        return std::holds_alternative<config::Diagnostics>(config::parse(tables)) ? 0 : 4;
+    }
     const TestEnvironment environment;
     if (!environment.isValid()) {
         return 1;

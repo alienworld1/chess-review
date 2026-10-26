@@ -29,42 +29,76 @@ std::optional<RawScore> mateScore(const RawEvaluation& raw, chess::Color perspec
     }
     return result;
 }
-bool validCandidates(const chess::Position& position, const PositionEvidence& evidence) {
+std::optional<TerminalOutcome> terminalOutcome(const chess::Position& position) {
+    if (!position.legalMoves().empty()) {
+        return std::nullopt;
+    }
+    return position.inCheck() ? TerminalOutcome::Checkmate : TerminalOutcome::Stalemate;
+}
+std::optional<EvidenceIssue> candidateIssue(const chess::Position& position,
+                                            const PositionEvidence& evidence,
+                                            const ConversionConfig& config) {
     if (evidence.terminal) {
-        return evidence.candidates.empty();
+        return evidence.candidates.empty() ? std::nullopt : std::optional{EvidenceIssue::Invalid};
+    }
+    if (!evidence.complete) {
+        return EvidenceIssue::Incomplete;
+    }
+    if (evidence.restricted) {
+        return EvidenceIssue::RestrictedSearch;
     }
     if (evidence.candidates.empty() || evidence.candidates.size() > 256 ||
-        evidence.candidates.front().evaluation != evidence.evaluation) {
-        return false;
+        evidence.candidates.front().evaluation != evidence.evaluation ||
+        (evidence.strength.depth && *evidence.strength.depth < 0)) {
+        return EvidenceIssue::Invalid;
+    }
+    if (!evidence.strength.depth || *evidence.strength.depth == 0) {
+        return EvidenceIssue::Incomplete;
     }
     std::vector<chess::Move> roots;
     int rank = 0;
+    std::optional<ExpectedScore> previous;
+    std::optional<std::int64_t> previousCp;
     for (const auto& candidate : evidence.candidates) {
         if (candidate.rank != ++rank || candidate.continuation.empty() ||
             candidate.continuation.size() > 1024 ||
             candidate.evaluation.perspective != position.sideToMove() ||
-            !candidate.evaluation.score) {
-            return false;
+            !candidate.evaluation.score ||
+            (candidate.strength.depth && *candidate.strength.depth < 0)) {
+            return EvidenceIssue::Invalid;
         }
-        const auto converted = convertEvaluation(candidate.evaluation, position.sideToMove());
-        if (converted.issue == EvidenceIssue::Invalid) {
-            return false;
+        if (candidate.strength.depth != evidence.strength.depth) {
+            return EvidenceIssue::Incomplete;
         }
+        const auto converted =
+            convertEvaluation(candidate.evaluation, position.sideToMove(), config);
+        if (converted.issue) {
+            return converted.issue;
+        }
+        if (previous && previous->source != converted.expected->source) {
+            return EvidenceIssue::MixedConversion;
+        }
+        if ((previous && previous->value < converted.expected->value) ||
+            (previousCp && *previousCp < candidate.evaluation.score->value)) {
+            return EvidenceIssue::ContradictoryCandidates;
+        }
+        previous = converted.expected;
+        previousCp = candidate.evaluation.score->value;
         auto replay = position;
         for (const auto& move : candidate.continuation) {
             if (std::holds_alternative<chess::Error>(replay.play(move))) {
-                return false;
+                return EvidenceIssue::Invalid;
             }
         }
         const auto root = candidate.continuation.front();
         for (const auto& seen : roots) {
             if (seen == root) {
-                return false;
+                return EvidenceIssue::Invalid;
             }
         }
         roots.push_back(root);
     }
-    return true;
+    return std::nullopt;
 }
 EvaluationResult positionEvaluation(const PositionEvidence& evidence, chess::Color perspective,
                                     const ConversionConfig& config) {
@@ -112,19 +146,18 @@ EvaluationResult convertEvaluation(const RawEvaluation& raw, chess::Color perspe
     double value;
     ConversionSource source;
     if (config.preferWdl && raw.wdl) {
-        value = (raw.wdl->wins + raw.wdl->draws / 2.0) / 1000.0;
+        const int wins = raw.perspective == perspective ? raw.wdl->wins : raw.wdl->losses;
+        value = (wins + raw.wdl->draws / 2.0) / 1000.0;
         source = ConversionSource::NativeWdl;
     } else if (raw.score) {
-        const double x =
-            std::log(3.0) * static_cast<double>(raw.score->value) / config.fallbackScaleCp;
+        const double cp =
+            static_cast<double>(raw.score->value) * (raw.perspective == perspective ? 1.0 : -1.0);
+        const double x = std::log(3.0) * cp / config.fallbackScaleCp;
         const double e = std::exp(-std::abs(x));
         value = x >= 0 ? 1.0 / (1.0 + e) : e / (1.0 + e);
         source = ConversionSource::ApproximateCentipawns;
     } else {
         return fail(EvidenceIssue::MissingEvaluation);
-    }
-    if (raw.perspective != perspective) {
-        value = 1 - value;
     }
     return {ExpectedScore{value, perspective, source, expectedScoreModelVersion, config},
             std::nullopt};
@@ -133,11 +166,8 @@ PositionEvidence terminalEvidence(const chess::Position& position) {
     PositionEvidence evidence;
     evidence.position = position.context();
     evidence.evaluation.perspective = position.sideToMove();
-    if (position.legalMoves().empty()) {
-        evidence.complete = true;
-        evidence.terminal =
-            position.inCheck() ? TerminalOutcome::Checkmate : TerminalOutcome::Stalemate;
-    }
+    evidence.terminal = terminalOutcome(position);
+    evidence.complete = evidence.terminal.has_value();
     return evidence;
 }
 MoveEvidence pairEvidence(const chess::Position& position, chess::Move playedMove,
@@ -162,8 +192,8 @@ MoveEvidence pairEvidence(const chess::Position& position, chess::Move playedMov
         result.issue = EvidenceIssue::ContextMismatch;
         return result;
     }
-    const auto beforeTerminal = terminalEvidence(position).terminal;
-    const auto afterTerminal = terminalEvidence(next).terminal;
+    const auto beforeTerminal = terminalOutcome(position);
+    const auto afterTerminal = terminalOutcome(next);
     if (!validConfig(config) || result.before.terminal != beforeTerminal ||
         result.after.terminal != afterTerminal || result.before.evaluation.perspective != mover ||
         result.after.evaluation.perspective != next.sideToMove()) {
@@ -172,51 +202,48 @@ MoveEvidence pairEvidence(const chess::Position& position, chess::Move playedMov
     }
     result.mate.before = mateScore(result.before.evaluation, mover);
     result.mate.after = mateScore(result.after.evaluation, mover);
-    result.beforeEvaluation = positionEvaluation(result.before, mover, config);
-    result.afterEvaluation = positionEvaluation(result.after, mover, config);
     if (result.before.modelVersion != evidenceModelVersion ||
         result.after.modelVersion != evidenceModelVersion) {
         result.issue = EvidenceIssue::IncompatibleModel;
-    } else if (result.before.engineIdentity.empty() ||
-               (!afterTerminal && result.before.engineIdentity != result.after.engineIdentity)) {
-        result.issue = EvidenceIssue::IncompatibleEngine;
-    } else if (result.beforeEvaluation.issue || result.afterEvaluation.issue) {
-        result.issue = result.beforeEvaluation.issue ? result.beforeEvaluation.issue
-                                                     : result.afterEvaluation.issue;
-    } else {
-        const auto& a = *result.beforeEvaluation.expected;
-        const auto& b = *result.afterEvaluation.expected;
-        if (a.source != b.source && a.source != ConversionSource::Terminal &&
-            b.source != ConversionSource::Terminal) {
-            result.issue = EvidenceIssue::MixedConversion;
-        } else {
-            result.signedDelta = a.value - b.value;
-            if (*result.signedDelta < 0) {
-                result.issue = EvidenceIssue::NegativeLoss;
-            } else {
-                result.loss = result.signedDelta;
-            }
-        }
-    }
-    // Invalid candidate payloads cannot support a loss or a verified rank.
-    if ((result.before.complete && !validCandidates(position, result.before)) ||
-        (result.after.complete && !validCandidates(next, result.after))) {
-        result.loss.reset();
-        result.issue = EvidenceIssue::Invalid;
         return result;
     }
-    bool exactCandidates = true;
-    for (const auto& candidate : result.before.candidates) {
-        if (!candidate.evaluation.score || candidate.evaluation.score->bound != Bound::Exact) {
-            exactCandidates = false;
-        }
+    if (result.before.engineIdentity.empty() ||
+        (!afterTerminal && result.before.engineIdentity != result.after.engineIdentity)) {
+        result.issue = EvidenceIssue::IncompatibleEngine;
+        return result;
     }
-    if (result.before.complete && !result.before.restricted && exactCandidates &&
-        !result.beforeEvaluation.issue) {
-        for (const auto& candidate : result.before.candidates) {
-            if (candidate.continuation.front() == playedMove) {
-                result.playedMoveRank = candidate.rank;
-            }
+    const auto beforeIssue = candidateIssue(position, result.before, config);
+    const auto afterIssue = candidateIssue(next, result.after, config);
+    if (beforeIssue || afterIssue) {
+        result.beforeEvaluation.issue = beforeIssue;
+        result.afterEvaluation.issue = afterIssue;
+        result.issue = beforeIssue ? beforeIssue : afterIssue;
+        return result;
+    }
+    result.beforeEvaluation = positionEvaluation(result.before, mover, config);
+    result.afterEvaluation = positionEvaluation(result.after, mover, config);
+    if (result.beforeEvaluation.issue || result.afterEvaluation.issue) {
+        result.issue = result.beforeEvaluation.issue ? result.beforeEvaluation.issue
+                                                     : result.afterEvaluation.issue;
+        return result;
+    }
+    const auto& beforeExpected = *result.beforeEvaluation.expected;
+    const auto& afterExpected = *result.afterEvaluation.expected;
+    if (beforeExpected.source != afterExpected.source &&
+        beforeExpected.source != ConversionSource::Terminal &&
+        afterExpected.source != ConversionSource::Terminal) {
+        result.issue = EvidenceIssue::MixedConversion;
+        return result;
+    }
+    result.signedDelta = beforeExpected.value - afterExpected.value;
+    if (*result.signedDelta < 0) {
+        result.issue = EvidenceIssue::NegativeLoss;
+        return result;
+    }
+    result.loss = result.signedDelta;
+    for (const auto& candidate : result.before.candidates) {
+        if (candidate.continuation.front() == playedMove) {
+            result.playedMoveRank = candidate.rank;
         }
     }
     return result;

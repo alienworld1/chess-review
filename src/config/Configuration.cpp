@@ -4,6 +4,17 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QScopeGuard>
+#include <algorithm>
+#ifdef Q_OS_UNIX
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#else
+#include <filesystem>
+#include <system_error>
+#endif
 #include <cmath>
 #include <initializer_list>
 #include <toml++/toml.hpp>
@@ -94,16 +105,22 @@ Identities identities(const review::Configuration& config) {
     QByteArray classification;
     QDataStream c(&classification, QIODevice::WriteOnly);
     c.setVersion(QDataStream::Qt_6_0);
+    c.setByteOrder(QDataStream::BigEndian);
+    c.setFloatingPointPrecision(QDataStream::DoublePrecision);
     c << QStringLiteral("classification/v1") << config.classification.inaccuracyLoss
       << config.classification.mistakeLoss << config.classification.blunderLoss;
     QByteArray conversion;
     QDataStream e(&conversion, QIODevice::WriteOnly);
     e.setVersion(QDataStream::Qt_6_0);
+    e.setByteOrder(QDataStream::BigEndian);
+    e.setFloatingPointPrecision(QDataStream::DoublePrecision);
     e << QStringLiteral("expected-score/v1") << config.conversion.fallbackScaleCp
       << config.conversion.preferWdl;
     QByteArray analysis;
     QDataStream a(&analysis, QIODevice::WriteOnly);
     a.setVersion(QDataStream::Qt_6_0);
+    a.setByteOrder(QDataStream::BigEndian);
+    a.setFloatingPointPrecision(QDataStream::DoublePrecision);
     a << QStringLiteral("analysis/v1") << static_cast<quint32>(config.quality)
       << config.conversion.preferWdl;
     for (const auto& budget : config.budgets) {
@@ -118,6 +135,13 @@ Result failure(const char* message) { return Diagnostics{{"configuration", messa
 Result parse(std::string_view contents) {
     if (contents.size() > maxBytes) {
         return failure("Configuration exceeds 64 KiB");
+    }
+    // toml++ bounds array/inline-table recursion, but not dotted-key table depth.
+    // A conservative raw punctuation budget bounds that depth before constructing
+    // an AST; counting dots in comments/strings too deliberately fails closed.
+    if (std::count(contents.begin(), contents.end(), '.') > 256) {
+        return failure(
+            "Configuration exceeds the 256-dot complexity limit (including comments and strings)");
     }
     auto parsed = toml::parse(contents);
     if (!parsed) {
@@ -203,15 +227,12 @@ Result parse(std::string_view contents) {
         ValidatedConfiguration{config, identities(config)});
 }
 Result load(const QString& filename) {
-    if (!QDir::isAbsolutePath(filename) || filename.contains(QChar::Null)) {
+    if (!QDir::isAbsolutePath(filename) || filename.contains(QChar::Null) ||
+        !filename.isValidUtf16()) {
         return failure("Configuration location is unavailable");
     }
-    QFileInfo info(filename);
-    if (info.isSymLink() || (info.exists() && !info.isFile())) {
-        return failure("Configuration must be a regular file");
-    }
-    if (!info.exists()) {
-        QFileInfo ancestor(info.absolutePath());
+    const auto missing = [&]() -> Result {
+        QFileInfo ancestor(QFileInfo(filename).absolutePath());
         while (!ancestor.exists() && !ancestor.isSymLink()) {
             const auto parent = ancestor.absolutePath();
             if (parent == ancestor.absoluteFilePath()) {
@@ -223,11 +244,59 @@ Result load(const QString& filename) {
             return failure("Configuration location is unavailable");
         }
         return parse({});
+    };
+    QFile file;
+#ifdef Q_OS_UNIX
+    // Open the actual target without following a leaf symlink or blocking on a FIFO,
+    // then validate the descriptor. A path-only stat followed by QFile::open races
+    // with replacements, and QFileInfo::exists conflates EACCES with absence.
+    const auto native = QFile::encodeName(filename);
+    const int descriptor =
+        ::open(native.constData(), O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) {
+        if (errno == ENOENT) {
+            return missing();
+        }
+        if (errno == EACCES || errno == EPERM) {
+            return failure("Configuration could not be read; check file and directory permissions");
+        }
+        if (errno == ELOOP) {
+            return failure("Configuration cannot be a symbolic link");
+        }
+        return failure("Configuration could not be opened safely");
     }
-    QFile file(filename);
+    auto closeDescriptor = qScopeGuard([descriptor] { ::close(descriptor); });
+    struct stat status {};
+    if (::fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode)) {
+        return failure("Configuration must be a regular file");
+    }
+    if (status.st_size < 0 || static_cast<std::uint64_t>(status.st_size) > maxBytes) {
+        return failure("Configuration exceeds 64 KiB");
+    }
+    if (!file.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
+        return failure("Configuration could not be read");
+    }
+    closeDescriptor.dismiss(); // QFile now owns the descriptor, including error paths below.
+#else
+    std::error_code error;
+    const auto status =
+        std::filesystem::symlink_status(std::filesystem::path(filename.toStdU16String()), error);
+    if (error) {
+        return error == std::errc::no_such_file_or_directory
+                   ? missing()
+                   : failure("Configuration could not be inspected");
+    }
+    if (status.type() == std::filesystem::file_type::not_found) {
+        return missing();
+    }
+    if (QFileInfo(filename).isSymLink() || !std::filesystem::is_regular_file(status)) {
+        return failure("Configuration must be a regular file");
+    }
+    file.setFileName(filename);
     if (!file.open(QIODevice::ReadOnly)) {
         return failure("Configuration could not be read");
     }
+#endif
     const auto bytes = file.read(static_cast<qint64>(maxBytes + 1));
     if (file.error() != QFileDevice::NoError) {
         return failure("Configuration could not be read");

@@ -41,7 +41,7 @@ add_library(chess_review_config STATIC src/config/Configuration.cpp)
 set_target_properties(chess_review_config PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 target_include_directories(chess_review_config PUBLIC src)
 target_link_libraries(chess_review_config PUBLIC chess_review_review Qt6::Core PRIVATE tomlplusplus::tomlplusplus)
-target_compile_definitions(chess_review_config PRIVATE TOML_EXCEPTIONS=0)
+target_compile_definitions(chess_review_config PRIVATE TOML_EXCEPTIONS=0 TOML_MAX_NESTED_VALUES=16)
 chess_review_apply_options(chess_review_config)
 
 add_library(chess_review_diagnostics STATIC src/diagnostics/Logger.cpp)

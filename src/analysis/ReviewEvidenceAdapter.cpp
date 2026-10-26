@@ -30,16 +30,19 @@ EvidenceResult reviewEvidence(const engine::AnalysisResult& result) {
     if (result.outcome != engine::AnalysisOutcome::Completed) {
         return EvidenceAdapterIssue::IncompleteAttempt;
     }
-    if (engine::validateCacheResult(result)) {
+    const auto& snapshot = result.evidence;
+    if (!snapshot.provenance) {
         return EvidenceAdapterIssue::InvalidAnalysis;
     }
-    const auto& snapshot = result.evidence;
     const auto& provenance = *snapshot.provenance;
     auto restored = engine::restorePosition(provenance.position);
     if (std::holds_alternative<chess::Error>(restored)) {
         return EvidenceAdapterIssue::InvalidAnalysis;
     }
     const auto& position = std::get<chess::Position>(restored);
+    if (engine::validateCacheResult(result, &position)) {
+        return EvidenceAdapterIssue::InvalidAnalysis;
+    }
     auto evidence = review::terminalEvidence(position);
     evidence.engineIdentity = provenance.fingerprint.digest.toHex().toStdString();
     evidence.sessionIdentity = snapshot.session.toString(QUuid::WithoutBraces).toStdString();
@@ -59,6 +62,7 @@ EvidenceResult reviewEvidence(const engine::AnalysisResult& result) {
     if (evidence.terminal) {
         return record();
     }
+    evidence.strength.depth = snapshot.commonDepth;
     evidence.complete = snapshot.achievedWidth == snapshot.requestedMultiPv &&
                         snapshot.commonDepth && *snapshot.commonDepth > 0;
     if (const auto* nodes = std::get_if<engine::NodeLimit>(&snapshot.limit)) {

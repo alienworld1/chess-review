@@ -8,7 +8,10 @@ time from the upstream release archive:
 - SHA-256: `8517f65938a4faae9ccf8ebb36631a38c1cadfb5efa85d9a72e15b9e97d25155`
 
 CMake verifies the archive checksum. Only `chess_review_config` includes the
-parser, with `TOML_EXCEPTIONS=0` for explicit parse results. Parser types do not
+parser, with `TOML_EXCEPTIONS=0` for explicit parse results and
+`TOML_MAX_NESTED_VALUES=16` for bounded array/inline-table recursion. The product
+also caps raw input dots at 256 before parsing: upstream's nested-value limit does
+not bound dotted-key table depth or recursive table destruction. Parser types do not
 cross the configuration API. No engine or network activity occurs at runtime.
 
 For offline builds, extract the verified archive and configure with

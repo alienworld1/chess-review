@@ -154,16 +154,16 @@ void StartupPanel::showClosing() {
     exit_->setEnabled(false);
 }
 
-} // namespace chess_review::ui
-
-void chess_review::ui::StartupPanel::showConfigurationFailure(const QString& safeDetails) {
-    configurationReport_ =
+void StartupPanel::showConfigurationFailure(const QString& safeDetails) {
+    const auto summary =
         tr("Review configuration is invalid. Reviews are unavailable. "
            "Correct config.toml in the application configuration directory and restart. "
-           "Import and manual analysis remain available.\n") +
-        safeDetails;
-    configurationNotice_->setText(configurationReport_);
-    configurationNotice_->setAccessibleName(configurationReport_);
+           "Import and manual analysis remain available.");
+    configurationReport_ = summary + u'\n' + safeDetails;
+    configurationNotice_->setText(summary + u'\n' + safeDetails.section(u'\n', 0, 0) + u'\n' +
+                                  tr("See Help → Diagnostics for all configuration details."));
+    configurationNotice_->setAccessibleName(configurationNotice_->text());
     configurationNotice_->show();
     show();
 }
+} // namespace chess_review::ui

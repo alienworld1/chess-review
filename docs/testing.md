@@ -861,7 +861,10 @@ perspectives, WDL/fallback conversion, history-aware pairing, mate/bound/termina
 handling, incompatible evidence, candidate ranks, and negative deltas.
 `review_configuration` exercises strict TOML validation, canonical identities,
 synthetic engine adaptation, asynchronous startup and shutdown, and invalid-config
-availability and diagnostic privacy. Run the focused set with:
+availability and diagnostic privacy. Adversarial regressions cover contradictory
+candidate sets, mirrored-score roundoff, unreadable paths, bounded-depth TOML in a
+subprocess, Unix special-file handling, descriptor leaks, compact notices, and
+independent configuration identity golden vectors. Run the focused set with:
 
 ```sh
 ctest --test-dir build/dev -L review --output-on-failure

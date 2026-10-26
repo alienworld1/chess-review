@@ -15,6 +15,7 @@ PositionEvidence evidence(const chess::Position& position, std::int64_t cp = 0) 
         return result;
     }
     result.complete = true;
+    result.strength = {12, 100000, {}};
     result.engineIdentity = "engine-a";
     result.evaluation = {
         position.sideToMove(), RawScore{ScoreKind::Centipawns, cp, Bound::Exact}, {}};
@@ -139,7 +140,7 @@ TEST_CASE("Evidence pairing rejects incompatible and insufficient evidence", "[u
               EvidenceIssue::RestrictedSearch);
     }
     SECTION("rank") {
-        before.candidates = {{1, before.evaluation, {played}, {}}};
+        before.candidates = {{1, before.evaluation, {played}, before.strength}};
         CHECK(pairEvidence(position, played, before, after).playedMoveRank == 1);
         before.candidates.push_back(before.candidates.front());
         const auto result = pairEvidence(position, played, before, after);
@@ -174,4 +175,72 @@ TEST_CASE("Board-proven terminal evidence needs no engine claim", "[unit][review
         CHECK(pairEvidence(position, played, missingIdentity, after).issue ==
               EvidenceIssue::IncompatibleEngine);
     }
+}
+
+TEST_CASE("Contradictory candidate evidence cannot support loss or rank", "[unit][review]") {
+    const auto position = chess::Position::initial();
+    const auto played = move(position, "e2e4");
+    auto next = position;
+    REQUIRE(std::holds_alternative<std::monostate>(next.play(played)));
+    auto before = evidence(position, 300);
+    before.candidates.front().continuation = {played};
+    auto alternative = before.candidates.front();
+    alternative.rank = 2;
+    alternative.continuation = {move(position, "d2d4")};
+    before.candidates.push_back(alternative);
+    auto after = evidence(next, 0);
+    SECTION("a lower rank claims a better exact score") {
+        before.candidates[1].evaluation.score->value = 500;
+    }
+    SECTION("secondary bound cannot prove a best baseline") {
+        before.candidates[1].evaluation.score->bound = Bound::Lower;
+    }
+    SECTION("secondary mate requires mate verification") {
+        before.candidates[1].evaluation.score = RawScore{ScoreKind::Mate, 2, Bound::Exact};
+    }
+    SECTION("unsupported model cannot publish a verified rank") { before.modelVersion = 99; }
+    SECTION("malformed after candidates invalidate all derived quantities") {
+        after.candidates[0].continuation = {played};
+    }
+    SECTION("negative candidate strength is invalid") { before.candidates[1].strength.depth = -1; }
+    const auto result = pairEvidence(position, played, before, after);
+    CHECK(result.issue.has_value());
+    CHECK(!result.loss);
+    CHECK(!result.playedMoveRank);
+    CHECK(!result.signedDelta);
+}
+
+TEST_CASE("Mirrored raw evaluations normalize identically without phantom loss", "[unit][review]") {
+    for (std::int64_t cp = -500; cp <= 500; ++cp) {
+        const RawEvaluation white{
+            chess::Color::White, RawScore{ScoreKind::Centipawns, cp, Bound::Exact}, {}};
+        const RawEvaluation black{
+            chess::Color::Black, RawScore{ScoreKind::Centipawns, -cp, Bound::Exact}, {}};
+        CHECK(convertEvaluation(white, chess::Color::White).expected->value ==
+              convertEvaluation(black, chess::Color::White).expected->value);
+    }
+    const RawEvaluation white{chess::Color::White, {}, Wdl{300, 0, 700}};
+    const RawEvaluation black{chess::Color::Black, {}, Wdl{700, 0, 300}};
+    CHECK(convertEvaluation(white, chess::Color::White).expected->value ==
+          convertEvaluation(black, chess::Color::White).expected->value);
+    for (const std::int64_t cp : {-499, -123, 0, 123, 499}) {
+        const auto result = pair(cp, -cp);
+        CHECK(!result.issue);
+        REQUIRE(result.loss);
+        CHECK(*result.loss == 0.0);
+    }
+    const auto root = chess::Position::initial();
+    auto next = root;
+    const auto played = move(root, "e2e4");
+    REQUIRE(std::holds_alternative<std::monostate>(next.play(played)));
+    auto before = evidence(root);
+    auto after = evidence(next);
+    before.evaluation.wdl = white.wdl;
+    after.evaluation.wdl = black.wdl;
+    before.candidates.front().evaluation = before.evaluation;
+    after.candidates.front().evaluation = after.evaluation;
+    const auto result = pairEvidence(root, played, before, after);
+    CHECK(!result.issue);
+    REQUIRE(result.loss);
+    CHECK(*result.loss == 0.0);
 }

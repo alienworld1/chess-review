@@ -52,7 +52,8 @@ enum class EvidenceIssue {
     IncompatibleModel,
     MixedConversion,
     NegativeLoss,
-    RestrictedSearch
+    RestrictedSearch,
+    ContradictoryCandidates
 };
 struct EvaluationResult {
     std::optional<ExpectedScore> expected;
@@ -79,6 +80,7 @@ struct PositionEvidence {
     std::string sessionIdentity;
     std::string attemptIdentity;
     std::string createdAtUtc;
+    // Coverage/strength claim from the adapter, not a certificate of valid interpretation.
     bool complete = false;
     bool restricted = false;
     std::optional<TerminalOutcome> terminal;
