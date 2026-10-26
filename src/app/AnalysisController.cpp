@@ -35,7 +35,6 @@ struct AnalysisController::Snapshot {
 AnalysisController::AnalysisController(QObject* parent)
     : QObject(parent), session_(std::make_unique<Session>()) {
     pool_.setMaxThreadCount(1);
-    pool_.setExpiryTimeout(0);
 }
 AnalysisController::~AnalysisController() {
     Q_ASSERT_X(pool_.waitForDone(0), "AnalysisController", "Await closed() before destruction");
