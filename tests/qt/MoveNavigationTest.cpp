@@ -533,7 +533,7 @@ void MoveNavigationTest::longAndBroadTree() {
             }
         },
         Qt::QueuedConnection);
-    deadline.start(15000);
+    deadline.start(30000);
     controller_->clearSelection(); // Starts the queued driver without a production-only batch API.
     // Let worker deliveries drive the chain directly instead of QTRY polling sleeps.
     loop.exec();

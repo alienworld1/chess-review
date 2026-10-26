@@ -718,6 +718,17 @@ terminal evidence and interruption snapshots remain lossless. Owning-thread
 callbacks and no progress after terminal completion are also checked. Existing
 engine lifecycle and production-main exit probes remain part of regression testing.
 
+The crash-propagation case allows two seconds for an instrumented child's fatal
+signal to be reported, rather than racing its usual 500 ms injected stop deadline.
+The separate stop/synchronization timeout cases retain their shorter deadlines;
+production search-response deadlines are unchanged.
+
+Navigation and engine-analysis suites also have 60-second CTest guards for their
+long-history, layout, and real-process cases under sanitizers. The navigation
+fixture allows 30 seconds to construct 512 moves asynchronously and still checks
+event-loop heartbeats. These are test completion guards, not responsiveness SLAs;
+production behavior and engine timeout tests retain their existing limits.
+
 Scheduling adversarial regressions stall the receiver across unrelated queue
 changes, duplicate rejection and attempt replacement, requiring one latest update
 with state-before-progress ordering. Terminal-root restarts followed by close or

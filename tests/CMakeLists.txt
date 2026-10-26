@@ -53,6 +53,8 @@ chess_review_add_qt_test(analysis_tests analysis INTEGRATION WIDGETS
 chess_review_add_qt_test(move_navigation_tests move_navigation INTEGRATION WIDGETS
     SOURCES qt/MoveNavigationTest.cpp
     LIBRARIES chess_review_ui)
+# Includes 512 asynchronous edits and layout cases; allow sanitizer overhead.
+set_tests_properties(move_navigation PROPERTIES TIMEOUT 60)
 
 chess_review_add_qt_test(move_navigation_state_tests move_navigation_state
     SOURCES qt/MoveNavigationStateTest.cpp
@@ -124,6 +126,8 @@ if(UNIX)
 
     chess_review_add_qt_test(engine_analysis_tests engine_analysis INTEGRATION
         SOURCES qt/EngineAnalysisTest.cpp LIBRARIES chess_review_engine)
+    # Real-process timeout cases plus long-history stress exceed 30 seconds under sanitizers.
+    set_tests_properties(engine_analysis PROPERTIES TIMEOUT 60)
     add_dependencies(engine_analysis_tests fake_uci_engine)
     target_compile_definitions(engine_analysis_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
 

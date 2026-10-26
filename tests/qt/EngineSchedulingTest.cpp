@@ -434,6 +434,11 @@ class EngineSchedulingTest final : public QObject {
         QFETCH(QString, failure);
         QFETCH(bool, closeDuringCleanup);
         Conversation c;
+        if (failure == QStringLiteral("crash")) {
+            // Instrumented children can take longer to report their fatal signal.
+            // This case tests crash propagation, not the separate stop-timeout path.
+            ValidatorTestAccess::configureSearch(c.service(), 10000, 2000);
+        }
         QJsonArray steps;
         search(steps, QStringLiteral("go infinite"),
                {engine_test::write(QStringLiteral("info depth 1 score cp 5 pv e2e4\n"))});
