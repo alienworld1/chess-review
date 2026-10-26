@@ -127,6 +127,13 @@ if(UNIX)
     add_dependencies(engine_analysis_tests fake_uci_engine)
     target_compile_definitions(engine_analysis_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
 
+    chess_review_add_qt_test(live_analysis_tests live_analysis INTEGRATION WIDGETS
+        SOURCES qt/LiveAnalysisTest.cpp LIBRARIES chess_review_ui)
+    set_tests_properties(live_analysis PROPERTIES ENVIRONMENT
+        "QT_QPA_PLATFORM=offscreen:configfile=${PROJECT_SOURCE_DIR}/tests/support/desktop-screen.json")
+    add_dependencies(live_analysis_tests fake_uci_engine)
+    target_compile_definitions(live_analysis_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
+
     chess_review_add_qt_test(engine_settings_tests engine_settings INTEGRATION WIDGETS
         SOURCES qt/EngineSettingsTest.cpp LIBRARIES chess_review_ui)
     add_dependencies(engine_settings_tests fake_uci_engine)

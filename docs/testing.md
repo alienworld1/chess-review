@@ -72,8 +72,9 @@ QT_QPA_PLATFORM=offscreen ./build/dev/tests/startup_tests unusableDataDirectoryF
 ./build/dev/src/persistence/tests/persistence_tests closeDuringInitialization
 ```
 
-CTest sets the offscreen platform only for the startup, shell, analysis, and move-navigation widget suites. Direct
-widget invocation must supply it when there is no desktop display. Use absolute
+CTest sets the offscreen platform for widget suites, including startup, shell,
+analysis, move navigation, engine settings and live analysis. Direct widget
+invocation must supply it when there is no desktop display. Use absolute
 paths for Qt Test `-o` reports: temporary working directories are removed at exit.
 No global
 platform override is needed for Qt Core suites.
@@ -798,3 +799,31 @@ CHESS_REVIEW_CACHE_BENCH=1 \
 
 It measures lookup over 64 matching 2,000-ply histories and five inserts alongside
 32 MiB of cache BLOBs. These are host-specific observations, not timing assertions.
+
+
+### Live engine Analysis panel
+
+`ctest --preset dev -R '^live_analysis$'` exercises the application controller and
+panel against the deterministic fake UCI engine. Cases cover explicit start/stop,
+history-preserving position changes, rapid navigation, stale logical IDs,
+selection/annotation/flip stability, retained stopped/failed evidence, page exit,
+reset, explicit reconnect, configuration/active-search shutdown, and unsolicited
+infinite-search completion. Formatting cases cover White/Black perspective,
+score bounds, integer extremes, missing scores, mates, SAN numbering, castling,
+en passant, promotion, invalid PV rejection and line-specific depth.
+
+The test uses `tests/support/desktop-screen.json` for a large virtual desktop;
+otherwise Qt's default 800×800 offscreen screen constrains requested window sizes.
+`layouts` renders live light/dark panels at 1100×720, 1360×850 and 1800×1000,
+including enlarged fonts. To capture images, set `CHESS_REVIEW_SCREENSHOT_DIR` to
+an existing absolute directory and use
+`QT_QPA_PLATFORM=offscreen:configfile=$PWD/tests/support/desktop-screen.json`.
+Repeat with `QT_SCALE_FACTOR=1`, `1.25`, `1.5` and `2`. Screenshots are inspection
+artifacts, not pixel-perfect golden tests.
+
+Set `CHESS_REVIEW_STOCKFISH` to an explicitly selected local executable to enable
+`live_analysis_tests stockfishPanel`. This validates and connects the executable,
+starts real infinite analysis, receives SAN/evaluation/depth, stops it, optionally
+captures `stockfish-stopped.png`, and shuts down the application services. No
+engine is downloaded or selected by production code. Offscreen checks do not
+certify native screen readers, physical mixed-DPI monitors, or Windows behavior.

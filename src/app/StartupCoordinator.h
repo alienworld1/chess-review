@@ -1,6 +1,7 @@
 #pragma once
 #include "app/AnalysisController.h"
 #include "app/Diagnostic.h"
+#include "app/EngineAnalysisController.h"
 #include "app/EngineSettingsController.h"
 #include "app/GameImportService.h"
 #include "app/GameLibraryController.h"
@@ -30,6 +31,7 @@ class StartupCoordinator final : public QObject {
     Lifecycle state() const;
     EngineSettingsController& engines() { return engines_; }
     AnalysisController& analysis() { return analysis_; }
+    EngineAnalysisController& engineAnalysis() { return engineAnalysis_; }
     // Production composition routes application Quit through the UI's discard gate.
     void requireQuitConfirmation() { confirmQuit_ = true; }
     GameImportService& gameImports() { return imports_; }
@@ -58,6 +60,7 @@ class StartupCoordinator final : public QObject {
     persistence::Database database_;
     engine::EngineSupervisor engineSupervisor_;
     EngineSettingsController engines_{database_, engineSupervisor_, logger_};
+    EngineAnalysisController engineAnalysis_{analysis_, engines_, engineSupervisor_};
     GameImportService imports_{database_};
     ImportController localImports_{imports_};
     GameLibraryController library_{database_};

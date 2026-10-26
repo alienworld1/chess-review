@@ -2,8 +2,10 @@
 #include "EngineTestSupport.h"
 #include "ui/settings/EngineSettingsPage.h"
 #include "ui/shell/MainWindow.h"
+#include <QAction>
 #include <QApplication>
 #include <QFileInfo>
+#include <QPushButton>
 #include <QTimer>
 #include <cstdio>
 namespace chess_review::ui {
@@ -50,9 +52,21 @@ void installDriver() {
                 chess_review::engine::ValidatorTestAccess::configure(
                     chess_review::app::EngineControllerTestAccess::validator(controller),
                     qEnvironmentVariable("CHESS_REVIEW_ENGINE_PROBE_SCENARIO"), 10000);
-                if (mode == QStringLiteral("analyzing")) {
+                if (mode.endsWith(QStringLiteral("analyzing"))) {
                     auto& supervisor =
                         chess_review::app::EngineControllerTestAccess::validator(controller);
+                    if (mode == QStringLiteral("live-analyzing")) {
+                        QObject::connect(
+                            &supervisor, &chess_review::engine::EngineSupervisor::scheduledChanged,
+                            window, [window](const chess_review::engine::ScheduledState& state) {
+                                if (state.phase ==
+                                    chess_review::engine::ScheduledPhase::Analyzing) {
+                                    std::fputs("engine-close-requested\n", stdout);
+                                    std::fflush(stdout);
+                                    window->close();
+                                }
+                            });
+                    }
                     QObject::connect(
                         &supervisor, &chess_review::engine::EngineSupervisor::searchChanged, window,
                         [window](const chess_review::engine::SearchState& state) {
@@ -69,10 +83,10 @@ void installDriver() {
                         using State = chess_review::app::EngineRegistrationState;
                         const auto state = controller.state().registration;
                         if ((mode == QStringLiteral("connected") ||
-                             mode == QStringLiteral("analyzing")) &&
+                             mode.endsWith(QStringLiteral("analyzing"))) &&
                             controller.state().profiles.size() == 1 &&
                             controller.state().runtime.session.isNull()) {
-                            if (mode == QStringLiteral("analyzing")) {
+                            if (mode.endsWith(QStringLiteral("analyzing"))) {
                                 chess_review::engine::ValidatorTestAccess::configure(
                                     chess_review::app::EngineControllerTestAccess::validator(
                                         controller),
@@ -83,9 +97,29 @@ void installDriver() {
                             controller.connectEngine(controller.state().profiles.front().id);
                             return;
                         }
-                        if (mode == QStringLiteral("analyzing") &&
+                        if (mode.endsWith(QStringLiteral("analyzing")) &&
                             controller.state().runtime.phase ==
                                 chess_review::engine::RuntimePhase::Ready) {
+                            if (mode == QStringLiteral("live-analyzing")) {
+                                auto* analyze =
+                                    window->findChild<QAction*>(QStringLiteral("analyzeAction"));
+                                auto* start = window->findChild<QPushButton*>(
+                                    QStringLiteral("startEngineAnalysis"));
+                                if (!analyze || !start) {
+                                    qFatal("Missing live analysis controls");
+                                }
+                                analyze->trigger();
+                                auto* startPoll = new QTimer(window);
+                                QObject::connect(startPoll, &QTimer::timeout, startPoll,
+                                                 [startPoll, start] {
+                                                     if (start->isEnabled()) {
+                                                         startPoll->stop();
+                                                         start->click();
+                                                     }
+                                                 });
+                                startPoll->start(5);
+                                return;
+                            }
                             chess_review::engine::AnalysisRequest request;
                             request.id = QUuid::createUuid();
                             request.limit = chess_review::engine::InfiniteLimit{};

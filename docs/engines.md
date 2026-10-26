@@ -94,9 +94,9 @@ limits, exit-status validation and forced-cleanup failures still apply.
 ## Position-search infrastructure
 
 The C++ `engine::EngineSupervisor` now supports searches on an explicitly connected
-Ready session. This API is not yet wired to the Analyze board or a Settings test
-button. Connecting in Settings still performs only the handshake/integrity check.
-No search is launched automatically, and no evidence is saved to the database.
+Ready session. Analyze now uses its scheduled API through an application controller.
+Connecting in Settings still performs only the handshake/integrity check.
+No search is launched automatically, and the live panel saves no evidence to the database.
 
 ```cpp
 engine::AnalysisRequest request;
@@ -312,8 +312,8 @@ The direct `analyze`/`stopAnalysis` API retains its existing rejection and stop
 semantics and legacy signals. Direct requests reject while the scheduler owns
 capacity. Scheduled work waits for an active direct search and never preempts it.
 Scheduled attempt events use only the scheduled signals; legacy stop calls cannot
-cancel scheduled work. Settings remains the only application consumer and retains
-its existing shutdown ownership until a future analysis UI consumer is integrated.
+cancel scheduled work. The live Analysis controller consumes the scheduled API;
+StartupCoordinator owns shared-supervisor closure after producers stop.
 
 ## Raw evidence provenance and fingerprints
 
@@ -395,3 +395,40 @@ fingerprints include MultiPV/WDL: differing option values do not match even if t
 result appears wider or contains more capabilities. Purpose and scheduling
 metadata do not affect compatibility. See [storage](storage.md#analysis-cache)
 for persistence APIs and retention.
+
+
+## Live Analysis panel
+
+Connect an engine in Settings, return to Analyze, and click **Start**. The panel
+analyzes the displayed position continuously with one principal variation. Legal
+moves and history navigation retarget the search; annotations, selections, and
+board flips do not. Previous work is cancelled before the latest position is
+submitted, preserving the position's full original history.
+
+**Stop**, leaving Analyze, or accepting New Analysis stops computation. Returning
+to Analyze and reconnecting an engine both require another explicit Start. Manage
+Engines opens the existing Settings page; no engine is automatically chosen or
+connected. Starting requires a ready connection and a fully published board position.
+
+The numeric score is always labeled **White perspective**: positive pawn scores
+favor White, negative scores favor Black, and mate text names the mating side.
+Bounds remain explicit and reverse correctly when converting Black-to-move scores.
+The adjacent evaluation bar uses a clamped −10 to +10 pawn visual scale, with mate
+at the favored extreme. It is not a win probability. Missing and bounded scores
+leave the bar unavailable. Flipping the board moves its light/dark ends without
+changing numeric perspective.
+
+The read-only, copyable PV uses numbered SAN; depth belongs to that exact line,
+not a newer global statistics update. SAN replay runs off the GUI thread. The
+panel distinguishes preparation, active analysis, stopping, disconnected and
+failed states. Last usable evidence remains labeled after Stop or failure only
+while its position remains displayed; moving to another position or connecting
+a new engine session clears it. Errors appear inline and reconnect stays explicit.
+An unsolicited bestmove during infinite search remains a protocol error under
+the existing engine contract.
+
+This increment has no MultiPV editor, PV interaction, review classifications,
+search-budget editor, or cache lookup/write. Infinite analysis is in-memory only.
+The application coordinator now closes the shared supervisor after its analysis
+producer drains cancellation and formatting; Settings stops accepting work and
+awaits supervisor closure and outstanding profile saves.

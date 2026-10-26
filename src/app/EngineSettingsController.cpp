@@ -270,7 +270,6 @@ void EngineSettingsController::close() {
         state_.runtime.phase = engine::RuntimePhase::Disconnecting;
         state_.runtime.discovery.reset();
     }
-    supervisor_.close();
     emit changed();
 }
 void EngineSettingsController::finishClose() {

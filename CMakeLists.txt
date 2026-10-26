@@ -68,6 +68,7 @@ target_link_libraries(chess_review_app_paths PUBLIC Qt6::Core)
 chess_review_apply_options(chess_review_app_paths)
 
 add_library(chess_review_startup STATIC
+    src/app/EngineAnalysisController.cpp
     src/app/EngineSettingsController.cpp
     src/app/AnalysisController.cpp
     src/app/MoveNavigationState.cpp
@@ -84,9 +85,11 @@ target_link_libraries(chess_review_startup PUBLIC chess_review_persistence chess
 chess_review_apply_options(chess_review_startup)
 
 add_library(chess_review_ui STATIC
+    src/ui/EngineText.cpp
     src/ui/settings/EngineSettingsPage.cpp
     src/ui/chess/ChessBoardWidget.cpp
     src/ui/chess/BoardAccessibility.cpp
+    src/ui/analysis/EngineAnalysisPanel.cpp
     src/ui/analysis/AnalysisPage.cpp
     src/ui/analysis/MoveNavigation.cpp
     src/ui/analysis/MoveNavigationAccessibility.cpp

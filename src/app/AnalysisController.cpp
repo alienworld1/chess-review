@@ -18,6 +18,7 @@ struct AnalysisController::Session {
 };
 struct AnalysisController::Snapshot {
     BoardViewState board;
+    std::shared_ptr<const chess::Position> position;
     std::shared_ptr<const NavigationTree> navigation;
     std::vector<HistoryEntry> history;
     std::vector<HistoryEntry> continuations;
@@ -75,6 +76,7 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
                 auto resolved = tree.position(session_->current);
                 if (node && std::holds_alternative<chess::Position>(resolved)) {
                     const auto& position = std::get<chess::Position>(resolved);
+                    snapshot.position = std::make_shared<const chess::Position>(position);
                     snapshot.board.sideToMove = position.sideToMove();
                     snapshot.board.legalMoves = position.legalMoves();
                     const bool inCheck = position.inCheck();
@@ -226,6 +228,7 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
     blackPlayer_ = std::move(snapshot.black);
     gameDescription_ = std::move(snapshot.description);
     positionNotes_ = std::move(snapshot.notes);
+    position_ = std::move(snapshot.position);
     board_ = std::move(snapshot.board);
     board_.blackAtBottom = orientation;
     board_.revision = request;
@@ -273,6 +276,7 @@ void AnalysisController::requestReset(ResetRequest reset) {
         return;
     }
     ++sessionGeneration_;
+    emit sessionResetRequested();
     pendingNavigation_.reset();
     pendingMoveChoice_.reset();
     requested_ = current_;

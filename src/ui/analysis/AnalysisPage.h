@@ -7,6 +7,10 @@ class QComboBox;
 class QLabel;
 class QSplitter;
 class QPlainTextEdit;
+class QVBoxLayout;
+namespace chess_review::app {
+class EngineAnalysisController;
+}
 namespace chess_review::ui {
 class ChessBoardWidget;
 class MoveTimelineView;
@@ -20,6 +24,9 @@ class AnalysisPage final : public QWidget {
     void requestDiscard(std::function<void()> onDiscard);
     app::AnalysisController& controller() { return controller_; }
     void deactivate();
+    void installEngineAnalysis(app::EngineAnalysisController& engine);
+  signals:
+    void manageEnginesRequested();
 
   protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -38,6 +45,7 @@ class AnalysisPage final : public QWidget {
     QSplitter* splitter_;
     MoveTimelineView* timeline_;
     GameTreeView* tree_;
+    QVBoxLayout* boardLayout_;
     QComboBox* input_;
     QComboBox* color_;
     QAction* coordinates_;

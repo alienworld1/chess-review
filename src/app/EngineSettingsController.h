@@ -40,6 +40,7 @@ class EngineSettingsController final : public QObject {
     void refresh(std::int64_t offset = 0);
     void connectEngine(std::int64_t profileId);
     void disconnectEngine();
+    // Stops submissions; composition must then close the shared supervisor.
     void close();
   signals:
     void changed();

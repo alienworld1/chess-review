@@ -1,4 +1,5 @@
 #include "ui/shell/MainWindow.h"
+#include "app/EngineAnalysisController.h"
 #include "ui/analysis/AnalysisPage.h"
 #include "ui/games/GamesPage.h"
 #include "ui/games/PgnTextEdit.h"
@@ -180,6 +181,24 @@ MainWindow::MainWindow(app::NavigationController& navigation, app::AnalysisContr
                        QWidget* parent)
     : MainWindow(navigation, parent) {
     installAnalysis(analysis);
+}
+void MainWindow::installEngineAnalysis(app::EngineAnalysisController& engine) {
+    Q_ASSERT(analysis_);
+    analysis_->installEngineAnalysis(engine);
+    if (auto* duplicate =
+            analysis_->findChild<QPushButton*>(QStringLiteral("analysisEngineSettings"))) {
+        delete duplicate; // The live panel now owns the visible Manage Engines affordance.
+    }
+    connect(analysis_, &AnalysisPage::manageEnginesRequested, this, [this] {
+        if (!closing_) {
+            navigation_.navigate(app::Destination::Settings);
+        }
+    });
+    connect(&navigation_, &app::NavigationController::destinationChanged, &engine,
+            [&engine](app::Destination destination) {
+                engine.setVisible(destination == app::Destination::Analyze);
+            });
+    engine.setVisible(navigation_.current() == app::Destination::Analyze);
 }
 void MainWindow::installEngines(app::EngineSettingsController& engines) {
     auto* placeholder =

@@ -116,3 +116,13 @@ from SQLite, even if its source PGN has been moved or deleted. A temporary branc
 resumes at the saved game's starting position. New Analysis clears the saved-game
 resume pointer on the next orderly exit. Damaged or missing games show a load
 error and leave the previous workspace intact; select another game to continue.
+
+
+## Live engine evidence
+
+Connect a local engine in Settings, then use Start in Analyze to follow the current
+board with continuous analysis. Stop, leaving Analyze, and New Analysis stop the
+search. The panel shows a White-perspective evaluation, adjacent bar, one numbered
+read-only SAN line, its depth, and textual engine status. Stopped/failed evidence
+remains visible for the same position; navigation clears it. See
+[Local UCI engines](engines.md#live-analysis-panel) for score semantics and limits.

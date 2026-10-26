@@ -15,6 +15,8 @@ StartupCoordinator::StartupCoordinator(diagnostics::Logger& logger, QObject* par
     });
 }
 void StartupCoordinator::connectServices() {
+    connect(&engineAnalysis_, &EngineAnalysisController::closed, &engineSupervisor_,
+            &engine::EngineSupervisor::close);
     connect(&library_, &GameLibraryController::opened, &analysis_, &AnalysisController::openGame);
     connect(&library_, &GameLibraryController::openFailed, this, [this] { resume_.reset(); });
     connect(&analysis_, &AnalysisController::gameOpened, this, [this] {
@@ -149,6 +151,7 @@ void StartupCoordinator::shutdown() {
     analysis_.close();
     library_.setReady(false);
     engines_.close();
+    engineAnalysis_.close();
     localImports_.close();
     uiState_.saveAndClose(finalUiState_);
 }

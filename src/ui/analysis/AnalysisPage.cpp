@@ -1,4 +1,5 @@
 #include "ui/analysis/AnalysisPage.h"
+#include "ui/analysis/EngineAnalysisPanel.h"
 #include "ui/analysis/MoveNavigation.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include <QAccessible>
@@ -171,6 +172,7 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     splitter_->setChildrenCollapsible(false);
     auto* boardPane = new QWidget(splitter_);
     auto* boardLayout = new QVBoxLayout(boardPane);
+    boardLayout_ = boardLayout;
     boardLayout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(splitter_, 1);
     topPlayer_ = new QLabel(boardPane);
@@ -276,6 +278,31 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     preferences_.blackAtBottom = controller_.board().blackAtBottom;
     setPreferences(preferences_);
     refresh();
+}
+void AnalysisPage::installEngineAnalysis(app::EngineAnalysisController& engine) {
+    auto* rightPane = new QWidget(this);
+    auto* rightLayout = new QVBoxLayout(rightPane);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
+    splitter_->replaceWidget(splitter_->indexOf(tree_), rightPane);
+    auto* panel = new EngineAnalysisPanel(engine, rightPane);
+    rightLayout->addWidget(panel);
+    rightLayout->addWidget(tree_, 1);
+    auto* boardFrame = new QWidget(this);
+    boardFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    boardFrame->setMinimumHeight(248);
+    auto* bar = new EvaluationBarWidget(*board_, boardFrame);
+    const int boardIndex = boardLayout_->indexOf(board_);
+    boardLayout_->removeWidget(board_);
+    auto* boardRow = new QHBoxLayout(boardFrame);
+    boardRow->setContentsMargins(28, 0, 0, 0);
+    boardRow->addWidget(board_, 1);
+    boardLayout_->insertWidget(boardIndex, boardFrame, 1);
+    connect(panel, &EngineAnalysisPanel::manageEnginesRequested, this,
+            &AnalysisPage::manageEnginesRequested);
+    connect(&engine, &app::EngineAnalysisController::changed, bar,
+            [&engine, bar] { bar->setEvaluation(engine.state().line); });
+    connect(&controller_, &app::AnalysisController::changed, bar, [bar] { bar->update(); });
+    bar->setEvaluation(engine.state().line);
 }
 void AnalysisPage::setPreferences(const app::BoardPreferences& preferences) {
     const QSignalBlocker inputBlock(input_);

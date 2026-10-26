@@ -16,6 +16,7 @@ class EngineExitTest final : public QObject {
         QTest::newRow("after-add") << QStringLiteral("add");
         QTest::newRow("connected-ready") << QStringLiteral("connected");
         QTest::newRow("during-analysis") << QStringLiteral("analyzing");
+        QTest::newRow("during-live-panel-analysis") << QStringLiteral("live-analyzing");
     }
     void actualExit() {
 #ifndef Q_OS_LINUX

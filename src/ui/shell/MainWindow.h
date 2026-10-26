@@ -13,6 +13,7 @@ class QStackedWidget;
 namespace chess_review::app {
 class AnalysisController;
 class EngineSettingsController;
+class EngineAnalysisController;
 class ImportController;
 class GameLibraryController;
 } // namespace chess_review::app
@@ -34,6 +35,7 @@ class MainWindow final : public QMainWindow {
     // Both application-owned controllers must outlive this window.
     MainWindow(app::NavigationController& navigation, app::AnalysisController& analysis,
                QWidget* parent = nullptr);
+    void installEngineAnalysis(app::EngineAnalysisController& engine);
     void installEngines(app::EngineSettingsController& engines);
     void installImports(app::ImportController& imports, app::GameLibraryController& library);
     void showProgress(const QString& message);

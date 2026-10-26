@@ -7,16 +7,18 @@ and annotations. Board orientation and the analysis split survive orderly exit.
 Saved games open in Analyze with their full history, variations, comments, and NAGs.
 The last opened game and selected stored move resume after orderly exit.
 Exploratory moves and new board annotations are session-only; a discard confirmation
-protects against accidental loss. Live analysis controls and guided review remain
-future work. Settings now registers local UCI executables through a nonblocking validation
+protects against accidental loss. An explicit Start/Stop engine panel shows a
+White-perspective evaluation and bar, one read-only SAN principal variation, depth,
+and engine status while following the board. Guided review remains future work.
+Settings registers local UCI executables through a nonblocking validation
 handshake and persists their profiles. Explicit Connect/Disconnect controls keep
 an engine Ready and expose its advertised options without starting a search.
 The engine infrastructure now supports position searches, MultiPV, optional WDL,
 validated candidate lines, asynchronous stop, and bounded priority scheduling with
 request/job cancellation through its typed C++ API. Explicit asynchronous SQLite
 cache APIs retain completed evidence and reuse only strictly compatible results
-under a verified engine-resource policy; automatic analysis integration remains
-future work.
+under a verified engine-resource policy; live infinite analysis remains in memory
+and does not use the cache.
 Home offers import actions; Puzzles remains
 a placeholder.
 

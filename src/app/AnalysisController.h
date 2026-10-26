@@ -35,6 +35,7 @@ class AnalysisController final : public QObject {
     bool hasContent() const { return hasMoves_ || !annotations_.empty(); }
     bool canUndoAnnotation() const;
     bool canRedoAnnotation() const;
+    const std::shared_ptr<const chess::Position>& position() const { return position_; }
     void start();
     void openGame(const persistence::StoredGame& game);
     std::optional<persistence::GameId> gameId() const { return gameId_; }
@@ -67,6 +68,7 @@ class AnalysisController final : public QObject {
     void failed(const QString& message);
     void closed();
     void gameOpened();
+    void sessionResetRequested();
 
   private:
     struct Session;
@@ -92,6 +94,7 @@ class AnalysisController final : public QObject {
     QThreadPool pool_;
     std::unique_ptr<Session> session_;
     BoardViewState board_;
+    std::shared_ptr<const chess::Position> position_;
     std::vector<HistoryEntry> history_;
     std::vector<HistoryEntry> continuations_;
     std::shared_ptr<const NavigationTree> navigationTree_;

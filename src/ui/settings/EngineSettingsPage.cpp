@@ -1,4 +1,5 @@
 #include "ui/settings/EngineSettingsPage.h"
+#include "ui/EngineText.h"
 #include <QComboBox>
 #include <QFileDialog>
 #include <QHBoxLayout>
@@ -27,34 +28,6 @@ QLabel* plainLabel(QWidget* parent, const QString& text = {}) {
     policy.setHorizontalPolicy(QSizePolicy::Ignored);
     label->setSizePolicy(policy);
     return label;
-}
-QString presented(const QString& text) {
-    QString result;
-    for (qsizetype index = 0; index < text.size();) {
-        const auto character = text[index];
-        const bool pair = character.isHighSurrogate() && index + 1 < text.size() &&
-                          text[index + 1].isLowSurrogate();
-        const auto code = pair ? QChar::surrogateToUcs4(character, text[index + 1])
-                               : static_cast<char32_t>(character.unicode());
-        const auto category = QChar::category(code);
-        if (category == QChar::Other_Control || category == QChar::Other_Format ||
-            category == QChar::Other_Surrogate || category == QChar::Separator_Line ||
-            category == QChar::Separator_Paragraph) {
-            result += (pair ? QStringLiteral("\\U%1") : QStringLiteral("\\u%1"))
-                          .arg(static_cast<uint>(code), pair ? 8 : 4, 16, QLatin1Char('0'));
-        } else {
-            result += QStringView(text).sliced(index, pair ? 2 : 1);
-        }
-        index += pair ? 2 : 1;
-    }
-    return result;
-}
-QString clipped(const QString& text) {
-    if (text.size() <= 256) {
-        return text;
-    }
-    const qsizetype length = text.at(255).isHighSurrogate() ? 255 : 256;
-    return text.left(length) + QChar(0x2026);
 }
 } // namespace
 EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller, QWidget* parent)
@@ -209,7 +182,7 @@ void EngineSettingsPage::updateState() {
                      state.registration == EngineRegistrationState::Selected);
     cancel_->setEnabled(state.ready && state.registration != EngineRegistrationState::Idle &&
                         state.registration != EngineRegistrationState::Saving);
-    const auto path = presented(state.selectedPath);
+    const auto path = presentedEngineText(state.selectedPath);
     if (path_->toPlainText() != path) {
         path_->setPlainText(path);
     }
@@ -239,8 +212,8 @@ void EngineSettingsPage::updateState() {
     int row = 0;
     for (const auto& profile : state.profiles) {
         const QStringList values{
-            clipped(presented(profile.displayName)),
-            clipped(presented(profile.engine.executablePath)),
+            clippedEngineText(presentedEngineText(profile.displayName)),
+            clippedEngineText(presentedEngineText(profile.engine.executablePath)),
             profile.isDefault ? tr("Yes") : QString(),
             profile.engine.lastValidatedAt.toUTC().toString(Qt::ISODateWithMs)};
         for (int column = 0; column < values.size(); ++column) {
@@ -261,9 +234,9 @@ void EngineSettingsPage::updateDetails() {
         details_->clear();
         return;
     }
-    details_->setPlainText(
-        tr("Engine: %1\nExecutable: %2")
-            .arg(presented(profile->displayName), presented(profile->engine.executablePath)));
+    details_->setPlainText(tr("Engine: %1\nExecutable: %2")
+                               .arg(presentedEngineText(profile->displayName),
+                                    presentedEngineText(profile->engine.executablePath)));
 }
 const engine::EngineProfile* EngineSettingsPage::selectedProfile() const {
     const auto rows = profiles_->selectionModel()->selectedRows();
@@ -317,7 +290,8 @@ void EngineSettingsPage::updateRuntime() {
         break;
     }
     if (!state.connectedDisplayName.isEmpty()) {
-        status.prepend(presented(clipped(state.connectedDisplayName)) + QStringLiteral(": "));
+        status.prepend(presentedEngineText(clippedEngineText(state.connectedDisplayName)) +
+                       QStringLiteral(": "));
     }
     if (state.runtime.error) {
         status += QStringLiteral("\n") + state.runtime.error->message;
@@ -342,7 +316,7 @@ void EngineSettingsPage::updateRuntime() {
     options_->clear();
     if (discovery_) {
         for (const auto& option : discovery_->capabilities.options) {
-            options_->addItem(clipped(presented(option.name)));
+            options_->addItem(clippedEngineText(presentedEngineText(option.name)));
         }
     }
     options_->setEnabled(options_->count() > 0);
@@ -357,9 +331,9 @@ void EngineSettingsPage::updateOption() {
     }
     const auto identity =
         tr("Reported name: %1\nAuthor: %2\nExecutable: %3")
-            .arg(presented(discovery_->reportedName),
-                 presented(discovery_->reportedAuthor.value_or(tr("Not provided"))),
-                 presented(discovery_->executablePath));
+            .arg(presentedEngineText(discovery_->reportedName),
+                 presentedEngineText(discovery_->reportedAuthor.value_or(tr("Not provided"))),
+                 presentedEngineText(discovery_->executablePath));
     if (index < 0) {
         optionDetails_->setPlainText(identity + tr("\nNo UCI options advertised."));
         return;
@@ -383,16 +357,17 @@ void EngineSettingsPage::updateOption() {
         type = QStringLiteral("string");
         break;
     }
-    QString text = identity + QStringLiteral("\n\n") +
-                   tr("Name: %1\nType: %2\nDefault: %3")
-                       .arg(presented(value.name), type, presented(value.defaultValue));
+    QString text =
+        identity + QStringLiteral("\n\n") +
+        tr("Name: %1\nType: %2\nDefault: %3")
+            .arg(presentedEngineText(value.name), type, presentedEngineText(value.defaultValue));
     if (value.minimum && value.maximum) {
         text += tr("\nMinimum: %1\nMaximum: %2").arg(*value.minimum).arg(*value.maximum);
     }
     if (!value.choices.isEmpty()) {
         QStringList choices;
         for (const auto& choice : value.choices) {
-            choices.append(presented(choice));
+            choices.append(presentedEngineText(choice));
         }
         text += tr("\nChoices:\n%1").arg(choices.join(u'\n'));
     }
