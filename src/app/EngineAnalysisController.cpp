@@ -1,5 +1,6 @@
 #include "app/EngineAnalysisController.h"
 #include <QMetaObject>
+#include <QStringList>
 #include <QTimer>
 #include <algorithm>
 #include <exception>
@@ -29,12 +30,17 @@ EngineLinePresentation presentEngineLine(const chess::Position& root,
         if (score.type == engine::ScoreType::Mate) {
             // UCI mate 0 describes the already-mated root side.
             const bool blackFavored = magnitude == 0 ? !reverse : negative;
-            result.evaluation =
-                prefix + QObject::tr("%1 mates in %2")
-                             .arg(blackFavored ? QObject::tr("Black") : QObject::tr("White"))
-                             .arg(magnitude);
+            const auto side = blackFavored ? QObject::tr("Black") : QObject::tr("White");
             if (bound == engine::ScoreBound::Exact) {
+                result.evaluation = QObject::tr("%1 mates in %2").arg(side).arg(magnitude);
                 result.whiteShare = blackFavored ? 0.0 : 1.0;
+            } else {
+                // A bound may include draw/loss scores; it is not a guaranteed mating result.
+                result.evaluation =
+                    prefix + QObject::tr("%1M%2 (%3 mating score)")
+                                 .arg(blackFavored ? QStringLiteral("−") : QStringLiteral("+"))
+                                 .arg(magnitude)
+                                 .arg(side);
             }
         } else {
             const bool signedNegative = magnitude != 0 && negative;
@@ -78,27 +84,24 @@ EngineAnalysisController::EngineAnalysisController(AnalysisController& board,
                                                    QObject* parent)
     : QObject(parent), board_(board), settings_(settings), supervisor_(supervisor) {
     formatting_.setMaxThreadCount(1);
-    formatting_.setExpiryTimeout(0);
     connect(&board_, &AnalysisController::changed, this, &EngineAnalysisController::boardChanged);
-    connect(&board_, &AnalysisController::sessionResetRequested, this, [this] {
-        stop();
-        ++epoch_;
-        revision_ = 0;
-        pending_.reset();
-        state_.line = {};
-        emit changed();
-    });
     connect(&settings_, &EngineSettingsController::changed, this,
             &EngineAnalysisController::runtimeChanged);
     connect(&supervisor_, &engine::EngineSupervisor::scheduledChanged, this,
             [this](const engine::ScheduledState& state) {
-                if (state.session != session_ || state.request != request_ || cancelling_) {
+                if (request_.isNull() || state.session != session_ || state.request != request_) {
                     return;
                 }
+                admitted_ = true;
                 if (attempt_ != state.attempt) {
                     attempt_ = state.attempt;
                     ++epoch_;
                     pending_.reset();
+                }
+                // Cancellation changes control state, but queued phases still identify
+                // the attempt whose lossless terminal evidence must be consumed.
+                if (cancelling_) {
+                    return;
                 }
                 switch (state.phase) {
                 case engine::ScheduledPhase::Queued:
@@ -123,13 +126,19 @@ EngineAnalysisController::EngineAnalysisController(AnalysisController& board,
             &EngineAnalysisController::acceptEvidence);
     connect(&supervisor_, &engine::EngineSupervisor::scheduledFinished, this,
             [this](const engine::ScheduledResult& result) {
-                if (result.identity.session != session_ || result.identity.request != request_) {
+                if (request_.isNull() || result.identity.session != session_ ||
+                    result.identity.request != request_) {
+                    return;
+                }
+                // Rejected duplicate submissions do not terminate the admitted request.
+                if (admitted_ && result.outcome == engine::ScheduledOutcome::Rejected) {
                     return;
                 }
                 if (result.evidence) {
                     acceptEvidence(*result.evidence);
                 }
                 request_ = {};
+                admitted_ = false;
                 attempt_.reset();
                 cancelling_ = false;
                 if (result.outcome == engine::ScheduledOutcome::Failed ||
@@ -144,11 +153,14 @@ EngineAnalysisController::EngineAnalysisController(AnalysisController& board,
                 } else if (!following_) {
                     state_.status = tr("Stopped");
                 }
-                reconcile();
+                // Queue continuation before notifying observers. Qt cancels it if a
+                // nested event loop retires this consumer during changed().
+                QTimer::singleShot(0, this, &EngineAnalysisController::finishClose);
                 if (settings_.state().runtime.phase != engine::RuntimePhase::Ready) {
                     runtimeChanged();
+                } else {
+                    reconcile();
                 }
-                finishClose();
             });
     runtimeChanged();
 }
@@ -157,7 +169,7 @@ EngineAnalysisController::~EngineAnalysisController() {
 }
 void EngineAnalysisController::updateControls() {
     state_.canStart = !closing_ && visible_ && !following_ && request_.isNull() && !board_.busy() &&
-                      board_.position() &&
+                      board_.canNavigate() && board_.board().interactive && board_.position() &&
                       settings_.state().runtime.phase == engine::RuntimePhase::Ready;
     state_.canStop = !closing_ && (following_ || !request_.isNull());
     emit changed();
@@ -195,7 +207,11 @@ void EngineAnalysisController::runtimeChanged() {
     updateControls();
 }
 void EngineAnalysisController::boardChanged() {
-    if (board_.busy() || revision_ != board_.board().revision) {
+    if (!board_.canNavigate()) {
+        following_ = false;
+    }
+    if (!board_.canNavigate() || !board_.board().interactive || board_.busy() ||
+        revision_ != board_.board().revision) {
         if (revision_ != 0) {
             ++epoch_;
             revision_ = 0;
@@ -215,7 +231,8 @@ void EngineAnalysisController::cancel() {
 }
 void EngineAnalysisController::reconcile() {
     if (!closing_ && following_ && visible_ && request_.isNull() && !board_.busy() &&
-        board_.position() && settings_.state().runtime.phase == engine::RuntimePhase::Ready) {
+        board_.canNavigate() && board_.board().interactive && board_.position() &&
+        settings_.state().runtime.phase == engine::RuntimePhase::Ready) {
         root_ = board_.position();
         revision_ = board_.board().revision;
         ++epoch_;
@@ -224,6 +241,7 @@ void EngineAnalysisController::reconcile() {
         state_.error.clear();
         session_ = settings_.state().runtime.session;
         request_ = QUuid::createUuid();
+        admitted_ = false;
         engine::AnalysisRequest request;
         request.id = request_;
         request.position = *root_;
@@ -252,12 +270,14 @@ void EngineAnalysisController::setVisible(bool visible) {
     visible_ = visible;
     if (!visible) {
         stop();
+        return;
     }
     updateControls();
 }
 void EngineAnalysisController::acceptEvidence(const engine::ScheduledEvidence& evidence) {
-    if (closing_ || evidence.identity.session != session_ ||
+    if (closing_ || request_.isNull() || !attempt_ || evidence.identity.session != session_ ||
         evidence.identity.request != request_ || evidence.identity.attempt != attempt_ ||
+        evidence.evidence.session != session_ || evidence.evidence.request != *attempt_ ||
         revision_ == 0 || revision_ != board_.board().revision || board_.busy()) {
         return;
     }
@@ -288,12 +308,14 @@ void EngineAnalysisController::formatNext() {
             this,
             [this, epoch, presentation = std::move(presentation)] {
                 formattingBusy_ = false;
+                QTimer::singleShot(0, this, [this] {
+                    formatNext();
+                    finishClose();
+                });
                 if (!closing_ && epoch == epoch_) {
                     state_.line = presentation;
                     emit changed();
                 }
-                formatNext();
-                finishClose();
             },
             Qt::QueuedConnection);
     });
@@ -305,8 +327,8 @@ void EngineAnalysisController::close() {
     closing_ = true;
     ++epoch_;
     pending_.reset();
-    stop();
-    finishClose();
+    QTimer::singleShot(0, this, &EngineAnalysisController::finishClose);
+    stop(); // Last: changed() can run a nested event loop and deliver closed().
 }
 void EngineAnalysisController::finishClose() {
     if (!closing_ || closed_ || !request_.isNull() || formattingBusy_) {

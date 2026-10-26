@@ -65,6 +65,7 @@ class EngineAnalysisController final : public QObject {
     std::uint64_t epoch_ = 0;
     bool visible_ = false;
     bool following_ = false;
+    bool admitted_ = false;
     bool cancelling_ = false;
     bool formattingBusy_ = false;
     bool closing_ = false;

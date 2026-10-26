@@ -142,6 +142,7 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
             snapshot.current = session_->current;
             snapshot.error = tr("Analysis could not complete. The position was not displayed.");
             snapshot.board.interactive = false;
+            snapshot.position.reset();
         }
         QMetaObject::invokeMethod(
             this,
@@ -276,13 +277,14 @@ void AnalysisController::requestReset(ResetRequest reset) {
         return;
     }
     ++sessionGeneration_;
-    emit sessionResetRequested();
     pendingNavigation_.reset();
     pendingMoveChoice_.reset();
     requested_ = current_;
+    resetting_ = true;
+    board_.interactive = false;
+    board_.selection.reset();
     if (busy_) {
         pendingReset_ = std::move(reset);
-        resetting_ = true;
         emit changed();
         return;
     }

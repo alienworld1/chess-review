@@ -7,6 +7,7 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QTextDocument>
 #include <QVBoxLayout>
 
 namespace chess_review::ui {
@@ -82,7 +83,6 @@ EngineAnalysisPanel::EngineAnalysisPanel(app::EngineAnalysisController& controll
     engine_ = label(QStringLiteral("analysisEngineName"));
     engine_->setWordWrap(false);
     status_ = label(QStringLiteral("engineAnalysisStatus"));
-    status_->setAccessibleName(tr("Engine status"));
     auto* buttons = new QHBoxLayout;
     start_ = new QPushButton(tr("Start"), this);
     start_->setObjectName(QStringLiteral("startEngineAnalysis"));
@@ -117,7 +117,8 @@ void EngineAnalysisPanel::refresh() {
     engine_->setText(state.engineName.isEmpty()
                          ? tr("Engine analysis")
                          : presentedEngineText(clippedEngineText(state.engineName)));
-    engine_->setToolTip(presentedEngineText(clippedEngineText(state.engineName)));
+    engine_->setToolTip(
+        Qt::convertFromPlainText(presentedEngineText(clippedEngineText(state.engineName))));
     status_->setText(state.status);
     evaluation_->setText(
         tr("White perspective: %1")

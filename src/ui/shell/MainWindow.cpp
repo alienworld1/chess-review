@@ -194,10 +194,10 @@ void MainWindow::installEngineAnalysis(app::EngineAnalysisController& engine) {
             navigation_.navigate(app::Destination::Settings);
         }
     });
-    connect(&navigation_, &app::NavigationController::destinationChanged, &engine,
-            [&engine](app::Destination destination) {
-                engine.setVisible(destination == app::Destination::Analyze);
-            });
+    connect(&navigation_, &app::NavigationController::destinationChanged, this, [this, &engine] {
+        // Earlier subscribers may have synchronously redirected this navigation.
+        engine.setVisible(!closing_ && navigation_.current() == app::Destination::Analyze);
+    });
     engine.setVisible(navigation_.current() == app::Destination::Analyze);
 }
 void MainWindow::installEngines(app::EngineSettingsController& engines) {

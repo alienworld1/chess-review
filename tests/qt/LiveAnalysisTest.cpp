@@ -5,6 +5,7 @@
 #include "ui/analysis/EngineAnalysisPanel.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include "ui/shell/MainWindow.h"
+#include <QAccessible>
 #include <QApplication>
 #include <QDir>
 #include <QLabel>
@@ -15,6 +16,8 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextDocument>
+#include <QThread>
 #include <limits>
 
 using namespace chess_review;
@@ -44,9 +47,11 @@ void stop(QJsonArray& steps, const QString& bestMove, int delay = 0) {
 }
 class Application final {
   public:
-    Application() : window(navigation, startup.analysis()) {
+    explicit Application(bool installLive = true) : window(navigation, startup.analysis()) {
         window.installEngines(startup.engines());
-        window.installEngineAnalysis(startup.engineAnalysis());
+        if (installLive) {
+            window.installEngineAnalysis(startup.engineAnalysis());
+        }
         QObject::connect(&startup, &app::StartupCoordinator::ready, &window,
                          &ui::MainWindow::showReady);
         startup.start(directory.filePath(QStringLiteral("library.sqlite3")));
@@ -68,7 +73,8 @@ class Application final {
     engine::EngineSupervisor& supervisor() {
         return app::EngineControllerTestAccess::validator(startup.engines());
     }
-    bool prepare(const QJsonArray& searches) {
+    bool prepare(const QJsonArray& searches,
+                 const QString& displayName = QStringLiteral("Test engine")) {
         if (!QTest::qWaitFor([this] {
                 return startup.engines().state().ready && !startup.engines().state().listing &&
                        !startup.analysis().busy() && startup.analysis().position();
@@ -89,7 +95,7 @@ class Application final {
         }
         engine::EngineProfile profile;
         profile.id = 1;
-        profile.displayName = QStringLiteral("Test engine");
+        profile.displayName = displayName;
         profile.engine = std::get<engine::ValidatedEngine>(result);
         app::EngineControllerTestAccess::replaceProfiles(startup.engines(), {profile});
         return reconnect(searches);
@@ -211,6 +217,212 @@ class LiveAnalysisTest final : public QObject {
         QVERIFY(a.startup.engineAnalysis().state().line.evaluation.isEmpty());
         a.window.findChild<QPushButton*>(QStringLiteral("manageAnalysisEngines"))->click();
         QCOMPARE(a.navigation.current(), app::Destination::Settings);
+    }
+    void stopBeforePhaseDeliveryRetainsTerminalEvidence() {
+        Application a;
+        QJsonArray steps;
+        search(steps, QStringLiteral("position startpos"), QStringLiteral("e2e4 e7e5"));
+        stop(steps, QStringLiteral("e2e4"));
+        QVERIFY(a.prepare(steps));
+        auto& live = a.startup.engineAnalysis();
+        QSignalSpy finished(&a.supervisor(), &engine::EngineSupervisor::scheduledFinished);
+        live.start();
+        // Simulate a busy GUI while the independent engine thread starts its search.
+        // No queued phase/progress event is delivered to the presentation controller yet.
+        QThread::msleep(250);
+        live.stop();
+        QTRY_VERIFY(live.state().canStart);
+        QCOMPARE(finished.size(), 1);
+        const auto terminal = qvariant_cast<engine::ScheduledResult>(finished.front()[0]);
+        QVERIFY(terminal.evidence && terminal.evidence->evidence.searchStarted);
+        QVERIFY(!terminal.evidence->evidence.lines.empty());
+        QVERIFY(QTest::qWaitFor([&] { return live.state().line.pv == QStringLiteral("1. e4 e5"); },
+                                1500));
+        QCOMPARE(live.state().status, QStringLiteral("Stopped"));
+    }
+    void closedBoardCannotStartAnalysis() {
+        Application a;
+        QVERIFY(a.prepare({}));
+        auto& board = a.startup.analysis();
+        QSignalSpy closed(&board, &app::AnalysisController::closed);
+        board.close();
+        QTRY_COMPARE(closed.size(), 1);
+        QVERIFY(!a.startup.engineAnalysis().state().canStart);
+    }
+    void engineTooltipIsLiteralText() {
+        Application a;
+        const auto name = QStringLiteral("<b>Forged complete status</b>");
+        QVERIFY(a.prepare({}, name));
+        auto* label = a.window.findChild<QLabel*>(QStringLiteral("analysisEngineName"));
+        QVERIFY(label);
+        QCOMPARE(label->textFormat(), Qt::PlainText);
+        QCOMPARE(label->text(), name);
+        QTextDocument tooltip;
+        tooltip.setHtml(label->toolTip());
+        QCOMPARE(tooltip.toPlainText(), name);
+    }
+    void redirectedNavigationCannotEnableHiddenAnalysis() {
+        Application a(false);
+        a.navigation.navigate(app::Destination::Home);
+        connect(&a.navigation, &app::NavigationController::destinationChanged, &a.window,
+                [&](app::Destination destination) {
+                    if (destination == app::Destination::Analyze) {
+                        a.navigation.navigate(app::Destination::Home);
+                    }
+                });
+        a.window.installEngineAnalysis(a.startup.engineAnalysis());
+        QVERIFY(a.prepare({}));
+        a.navigation.navigate(app::Destination::Analyze);
+        QCOMPARE(a.navigation.current(), app::Destination::Home);
+        QVERIFY(!a.startup.engineAnalysis().state().canStart);
+    }
+    void reentrantCloseAllowsDeletionAfterClosed() {
+        Application a;
+        QVERIFY(a.prepare({}));
+        auto* consumer = new app::EngineAnalysisController(
+            a.startup.analysis(), a.startup.engines(), a.supervisor(), &a.window);
+        QSignalSpy retired(consumer, &QObject::destroyed);
+        QObject observer;
+        bool requested = false;
+        connect(consumer, &app::EngineAnalysisController::closed, &a.window,
+                [consumer] { delete consumer; });
+        connect(consumer, &app::EngineAnalysisController::changed, &observer, [&] {
+            if (!requested) {
+                requested = true;
+                consumer->close();
+            }
+        });
+        // A reset makes the position unavailable; observers may retire their consumer.
+        a.startup.analysis().reset();
+        QTRY_COMPARE(retired.size(), 1);
+    }
+    void nestedRetirement_data() {
+        QTest::addColumn<QString>("during");
+        QTest::newRow("formatted-progress") << QStringLiteral("format");
+        QTest::newRow("terminal-notification") << QStringLiteral("terminal");
+        QTest::newRow("visibility-change") << QStringLiteral("hide");
+    }
+    void nestedRetirement() {
+        QFETCH(QString, during);
+        Application a;
+        QJsonArray steps;
+        search(steps, QStringLiteral("position startpos"), QStringLiteral("e2e4"));
+        stop(steps, QStringLiteral("e2e4"));
+        QVERIFY(a.prepare(steps));
+        auto* consumer = new app::EngineAnalysisController(
+            a.startup.analysis(), a.startup.engines(), a.supervisor(), &a.window);
+        QSignalSpy retired(consumer, &QObject::destroyed);
+        QObject observer;
+        bool requested = false;
+        bool retiredInsideNotification = false;
+        connect(consumer, &app::EngineAnalysisController::closed, &a.window,
+                [consumer] { delete consumer; });
+        connect(consumer, &app::EngineAnalysisController::changed, &observer, [&] {
+            const bool retire = during == QStringLiteral("format")
+                                    ? !consumer->state().line.pv.isEmpty()
+                                : during == QStringLiteral("terminal")
+                                    ? consumer->state().status == QStringLiteral("Stopped")
+                                    : consumer->state().status == QStringLiteral("Stopping");
+            if (!requested && retire) {
+                requested = true;
+                consumer->close();
+                // A modal observer can run an event loop until the consumer closes.
+                retiredInsideNotification =
+                    QTest::qWaitFor([&] { return !retired.isEmpty(); }, 2500);
+            }
+        });
+        consumer->setVisible(true);
+        consumer->start();
+        if (during != QStringLiteral("format")) {
+            QTRY_VERIFY(!consumer->state().line.pv.isEmpty());
+            if (during == QStringLiteral("hide")) {
+                consumer->setVisible(false);
+            } else {
+                consumer->stop();
+            }
+        }
+        QTRY_COMPARE(retired.size(), 1);
+        QVERIFY(retiredInsideNotification);
+    }
+    void boundedMateDoesNotClaimACertainWinner() {
+        engine::AnalysisLine line;
+        line.score = engine::AnalysisScore{engine::ScoreType::Mate, 3, engine::ScoreBound::Upper};
+        const auto shown = app::presentEngineLine(chess::Position::initial(), line);
+        QCOMPARE(shown.evaluation, QStringLiteral("≤ +M3 (White mating score)"));
+        QVERIFY(!shown.whiteShare);
+    }
+    void unrelatedRejectionCannotFailAnIdlePanel() {
+        Application a;
+        QVERIFY(a.prepare({}));
+        QSignalSpy finished(&a.supervisor(), &engine::EngineSupervisor::scheduledFinished);
+        engine::AnalysisRequest invalid;
+        a.supervisor().scheduleAnalysis(a.startup.engines().state().runtime.session, invalid,
+                                        engine::AnalysisPriority::InteractiveAnalysis);
+        QTRY_COMPARE(finished.size(), 1);
+        QCOMPARE(qvariant_cast<engine::ScheduledResult>(finished.front()[0]).outcome,
+                 engine::ScheduledOutcome::Rejected);
+        QCOMPARE(a.startup.engineAnalysis().state().status, QStringLiteral("Ready"));
+        QVERIFY(a.startup.engineAnalysis().state().error.isEmpty());
+    }
+    void duplicateRejectionCannotRetireOwnedRequest_data() {
+        QTest::addColumn<bool>("queued");
+        QTest::newRow("running") << false;
+        QTest::newRow("queued-behind-direct") << true;
+    }
+    void duplicateRejectionCannotRetireOwnedRequest() {
+        QFETCH(bool, queued);
+        Application a;
+        QJsonArray steps;
+        search(steps, QStringLiteral("position startpos"), QStringLiteral("e2e4"));
+        stop(steps, QStringLiteral("e2e4"));
+        QVERIFY(a.prepare(steps));
+        const auto session = a.startup.engines().state().runtime.session;
+        engine::AnalysisRequest direct;
+        direct.id = QUuid::createUuid();
+        direct.limit = engine::InfiniteLimit{};
+        QSignalSpy directStates(&a.supervisor(), &engine::EngineSupervisor::searchChanged);
+        QSignalSpy directDone(&a.supervisor(), &engine::EngineSupervisor::analysisFinished);
+        if (queued) {
+            a.supervisor().analyze(session, direct);
+            QTRY_VERIFY(!directStates.empty() &&
+                        qvariant_cast<engine::SearchState>(directStates.last()[0]).phase ==
+                            engine::SearchPhase::Analyzing);
+        }
+        QSignalSpy states(&a.supervisor(), &engine::EngineSupervisor::scheduledChanged);
+        QSignalSpy finished(&a.supervisor(), &engine::EngineSupervisor::scheduledFinished);
+        auto& live = a.startup.engineAnalysis();
+        live.start();
+        QTRY_VERIFY(!states.empty());
+        if (!queued) {
+            QTRY_COMPARE(live.state().line.pv, QStringLiteral("1. e4"));
+        }
+        engine::AnalysisRequest duplicate;
+        duplicate.id = qvariant_cast<engine::ScheduledState>(states.front()[0]).request;
+        duplicate.limit = engine::InfiniteLimit{};
+        a.supervisor().scheduleAnalysis(session, duplicate,
+                                        engine::AnalysisPriority::InteractiveAnalysis);
+        QTRY_COMPARE(finished.size(), 1);
+        QCOMPARE(qvariant_cast<engine::ScheduledResult>(finished.front()[0]).outcome,
+                 engine::ScheduledOutcome::Rejected);
+        QVERIFY(live.state().canStop);
+        QCOMPARE(live.state().status,
+                 queued ? QStringLiteral("Queued") : QStringLiteral("Analyzing"));
+        live.stop();
+        QTRY_COMPARE(finished.size(), 2);
+        QCOMPARE(live.state().status, QStringLiteral("Stopped"));
+        if (queued) {
+            a.supervisor().stopAnalysis(session, direct.id);
+            QTRY_COMPARE(directDone.size(), 1);
+        }
+    }
+    void engineStatusIsExposedToAccessibility() {
+        Application a;
+        QVERIFY(a.prepare({}));
+        auto* status = a.window.findChild<QLabel*>(QStringLiteral("engineAnalysisStatus"));
+        QVERIFY(status);
+        auto* accessible = QAccessible::queryAccessibleInterface(status);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->text(QAccessible::Name), a.startup.engineAnalysis().state().status);
     }
     void followsPositionAndRetainsStoppedEvidence() {
         Application a;

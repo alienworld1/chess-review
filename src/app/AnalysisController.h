@@ -68,7 +68,6 @@ class AnalysisController final : public QObject {
     void failed(const QString& message);
     void closed();
     void gameOpened();
-    void sessionResetRequested();
 
   private:
     struct Session;

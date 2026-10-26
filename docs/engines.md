@@ -413,6 +413,8 @@ connected. Starting requires a ready connection and a fully published board posi
 The numeric score is always labeled **White perspective**: positive pawn scores
 favor White, negative scores favor Black, and mate text names the mating side.
 Bounds remain explicit and reverse correctly when converting Black-to-move scores.
+Bounded mate evaluations use signed M notation (for example, ≤ +M3) instead of
+claiming a certain winner; the light/dark bar remains unavailable for these bounds.
 The adjacent evaluation bar uses a clamped −10 to +10 pawn visual scale, with mate
 at the favored extreme. It is not a win probability. Missing and bounded scores
 leave the bar unavailable. Flipping the board moves its light/dark ends without

@@ -827,3 +827,12 @@ starts real infinite analysis, receives SAN/evaluation/depth, stops it, optional
 captures `stockfish-stopped.png`, and shuts down the application services. No
 engine is downloaded or selected by production code. Offscreen checks do not
 certify native screen readers, physical mixed-DPI monitors, or Windows behavior.
+
+
+Live-panel regressions additionally exercise Stop before GUI delivery of queued
+attempt phases, closed-board admission, unrelated null-ID and duplicate-submission rejections, redirected
+navigation, literal engine-name tooltips, accessible status text, and mate
+bounds that must not claim a certain winner. Retirement tests delete consumers
+after closed(), including during reset notifications and nested event loops in
+progress, terminal and visibility notifications. These tests use the same real
+supervisor/fake-process boundary; no alternate production scheduler is added.
