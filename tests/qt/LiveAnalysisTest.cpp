@@ -513,6 +513,52 @@ class LiveAnalysisTest final : public QObject {
             QVERIFY(!live.state().canStart);
         }
     }
+    void terminalPositionCompletes_data() {
+        QTest::addColumn<QString>("fen");
+        QTest::addColumn<QString>("score");
+        QTest::addColumn<QString>("evaluation");
+        QTest::newRow("checkmate")
+            << QStringLiteral("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1") << QStringLiteral("mate 0")
+            << QStringLiteral("White mates in 0");
+        QTest::newRow("stalemate") << QStringLiteral("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
+                                   << QStringLiteral("cp 0") << QStringLiteral("+0.00");
+    }
+    void terminalPositionCompletes() {
+        QFETCH(QString, fen);
+        QFETCH(QString, score);
+        QFETCH(QString, evaluation);
+        Application a;
+        QJsonArray steps{
+            engine_test::step(QStringLiteral("ucinewgame"), {}), ready(),
+            engine_test::step(QStringLiteral("position fen ") + fen, {}),
+            engine_test::step(QStringLiteral("go depth 1"),
+                              {engine_test::write(QStringLiteral("info depth 0 score %1\n"
+                                                                 "bestmove (none)\n")
+                                                      .arg(score))}),
+            ready()};
+        search(steps, QStringLiteral("position startpos"), QStringLiteral("e2e4"));
+        stop(steps, QStringLiteral("e2e4"));
+        QVERIFY(a.prepare(steps));
+        auto& board = a.startup.analysis();
+        board.reset(fen.toStdString());
+        QTRY_VERIFY(!board.busy() && board.board().interactive);
+        QVERIFY(board.board().legalMoves.empty());
+        auto& live = a.startup.engineAnalysis();
+        QTRY_VERIFY(live.state().canStart);
+        live.start();
+        QTRY_COMPARE(live.state().status, QStringLiteral("Completed"));
+        QTRY_COMPARE(live.state().line.evaluation, evaluation);
+        QVERIFY(live.state().line.pv.isEmpty());
+        QVERIFY(live.state().error.isEmpty());
+        QCOMPARE(a.startup.engines().state().runtime.phase, engine::RuntimePhase::Ready);
+        QVERIFY(!live.state().canStop);
+        board.reset();
+        QTRY_VERIFY(live.state().canStart);
+        live.start();
+        QTRY_VERIFY(!live.state().line.pv.isEmpty());
+        live.stop();
+        QTRY_COMPARE(live.state().status, QStringLiteral("Stopped"));
+    }
     void unsolicitedInfiniteCompletionFails() {
         Application a;
         QJsonArray steps;
@@ -656,12 +702,28 @@ class LiveAnalysisTest final : public QObject {
         QTRY_VERIFY_WITH_TIMEOUT(live.state().line.depth && *live.state().line.depth >= 8, 15000);
         QVERIFY(!live.state().line.pv.isEmpty());
         QVERIFY(!live.state().line.evaluation.isEmpty());
+        auto& board = a.startup.analysis();
+        const auto revision = board.board().revision;
+        board.attemptMove(std::get<chess::Move>(board.position()->parseUci("e2e4")), revision);
+        QTRY_VERIFY(board.board().revision != revision && !board.busy());
+        QTRY_VERIFY_WITH_TIMEOUT(live.state().line.pv.startsWith(QStringLiteral("1...")), 15000);
         live.stop();
         QTRY_VERIFY_WITH_TIMEOUT(live.state().canStart, 15000);
         QCOMPARE(live.state().status, QStringLiteral("Stopped"));
         if (qEnvironmentVariableIsSet("CHESS_REVIEW_SCREENSHOT_DIR")) {
             QVERIFY(a.window.grab().save(qEnvironmentVariable("CHESS_REVIEW_SCREENSHOT_DIR") +
                                          QStringLiteral("/stockfish-stopped.png")));
+        }
+        for (const auto& fen :
+             {"7k/6Q1/6K1/8/8/8/8/8 b - - 0 1", "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"}) {
+            board.reset(std::string(fen));
+            QTRY_VERIFY(live.state().canStart);
+            live.start();
+            QTRY_COMPARE_WITH_TIMEOUT(live.state().status, QStringLiteral("Completed"), 15000);
+            QTRY_VERIFY(!live.state().line.evaluation.isEmpty());
+            QVERIFY(live.state().line.pv.isEmpty());
+            QVERIFY(live.state().error.isEmpty());
+            QCOMPARE(a.startup.engines().state().runtime.phase, engine::RuntimePhase::Ready);
         }
     }
 };

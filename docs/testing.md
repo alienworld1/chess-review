@@ -828,6 +828,11 @@ captures `stockfish-stopped.png`, and shuts down the application services. No
 engine is downloaded or selected by production code. Offscreen checks do not
 certify native screen readers, physical mixed-DPI monitors, or Windows behavior.
 
+Terminal-position regressions cover checkmate and stalemate completion through a
+depth-one search, retained score without a PV, and a subsequent ordinary infinite
+search on the same connection. The optional Stockfish panel probe also exercises
+these terminal positions with the real executable.
+
 
 Live-panel regressions additionally exercise Stop before GUI delivery of queued
 attempt phases, closed-board admission, unrelated null-ID and duplicate-submission rejections, redirected

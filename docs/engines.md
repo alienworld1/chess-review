@@ -405,6 +405,11 @@ moves and history navigation retarget the search; annotations, selections, and
 board flips do not. Previous work is cancelled before the latest position is
 submitted, preserving the position's full original history.
 
+Checkmate and stalemate positions use a depth-one search and finish as Completed,
+with no principal variation. This accommodates engines that immediately return a
+null bestmove for terminal positions, including Stockfish, and keeps the connection
+ready for the next position.
+
 **Stop**, leaving Analyze, or accepting New Analysis stops computation. Returning
 to Analyze and reconnecting an engine both require another explicit Start. Manage
 Engines opens the existing Settings page; no engine is automatically chosen or

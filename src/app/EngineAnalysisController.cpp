@@ -245,7 +245,11 @@ void EngineAnalysisController::reconcile() {
         engine::AnalysisRequest request;
         request.id = request_;
         request.position = *root_;
-        request.limit = engine::InfiniteLimit{};
+        // Stockfish completes terminal roots immediately even for go infinite.
+        // Use a bounded search there so its legal null bestmove can complete normally.
+        request.limit = board_.board().legalMoves.empty()
+                            ? engine::SearchLimit{engine::DepthLimit{1}}
+                            : engine::SearchLimit{engine::InfiniteLimit{}};
         state_.status = tr("Queued");
         supervisor_.scheduleAnalysis(session_, request,
                                      engine::AnalysisPriority::InteractiveAnalysis);
