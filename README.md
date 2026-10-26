@@ -36,8 +36,8 @@ file selection, paste confirmation, and drag-and-drop. Select a game and choose
 - C++20 compiler (GCC or Clang on Linux)
 - Qt **6.12+** with Widgets, SVG, SQL, and the QSQLITE driver
 - CMake **3.24+**, Ninja, and GNU Make
-- Qt Test for tests (enabled by default); initial test configuration needs network
-  access to fetch pinned Catch2
+- Initial configuration needs network access to fetch pinned toml++ (or an offline source override)
+- Qt Test for tests (enabled by default); initial test configuration also fetches pinned Catch2
 - clang-format 18 and clang-tidy 18 for formatting and static analysis
 
 ## Build and run
@@ -79,3 +79,6 @@ libraries separate. Automated tests use temporary storage.
 - [Chess core](docs/chess-core.md): adapter API, FEN policy, moves, and identity
 - [Importing games](docs/import.md): local files, paste, drops, limits, and results
 - [PGN parsing](docs/pgn.md): documents, compatibility, recovery, limits, and cancellation
+
+Advanced product settings and the first review-domain increment are documented in
+[Review evidence and configuration](docs/review-evidence.md).

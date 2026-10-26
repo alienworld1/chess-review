@@ -15,6 +15,15 @@ StartupCoordinator::StartupCoordinator(diagnostics::Logger& logger, QObject* par
     });
 }
 void StartupCoordinator::connectServices() {
+    connect(&configuration_, &ReviewConfiguration::changed, this, [this] {
+        if (state_ == Lifecycle::Ready) {
+            engines_.setReady(true);
+        }
+    });
+    connect(&configuration_, &ReviewConfiguration::closed, this, [this] {
+        configurationClosed_ = true;
+        finishServices();
+    });
     connect(&engineAnalysis_, &EngineAnalysisController::closed, &engineSupervisor_,
             &engine::EngineSupervisor::close);
     connect(&library_, &GameLibraryController::opened, &analysis_, &AnalysisController::openGame);
@@ -46,7 +55,7 @@ void StartupCoordinator::connectServices() {
     connect(&database_, &persistence::Database::ready, this, [this] {
         state_ = Lifecycle::Ready;
         localImports_.setReady(true);
-        engines_.setReady(true);
+        engines_.setReady(configuration_.state() != ConfigurationState::Loading);
         library_.setReady(true);
         // A user may start exploring while storage is still initializing. Do not
         // replace that work when a delayed automatic recovery becomes available.
@@ -87,7 +96,8 @@ void StartupCoordinator::closeStorageWhenProducersFinish() {
     }
 }
 void StartupCoordinator::finishServices() {
-    if (!analysisClosed_ || !storageClosed_ || !preferencesClosed_ || closingLogger_) {
+    if (!analysisClosed_ || !storageClosed_ || !preferencesClosed_ || !configurationClosed_ ||
+        closingLogger_) {
         return;
     }
     closingLogger_ = true;
@@ -111,11 +121,13 @@ bool StartupCoordinator::eventFilter(QObject* watched, QEvent* event) {
     return QObject::eventFilter(watched, event);
 }
 void StartupCoordinator::start(const QString& databasePath,
-                               const std::optional<QString>& uiStateFilename) {
+                               const std::optional<QString>& uiStateFilename,
+                               const std::optional<QString>& configFilename) {
     if (started_ || state_ == Lifecycle::Stopping || state_ == Lifecycle::Stopped) {
         return;
     }
     started_ = true;
+    configuration_.load(configFilename);
     if (!uiStateFilename) {
         emit initialUiState({});
         if (state_ != Lifecycle::Stopping) {
@@ -148,6 +160,7 @@ void StartupCoordinator::shutdown() {
     }
     state_ = Lifecycle::Stopping;
     emit stopping();
+    configuration_.close();
     analysis_.close();
     library_.setReady(false);
     engines_.close();

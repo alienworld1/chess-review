@@ -154,3 +154,14 @@ if(UNIX)
         FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>"
         ENGINE_EXIT_PROBE="$<TARGET_FILE:engine_exit_probe>")
 endif()
+
+add_executable(review_evidence_tests unit/ReviewEvidenceTest.cpp)
+set_target_properties(review_evidence_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+target_link_libraries(review_evidence_tests PRIVATE chess_review_review Catch2::Catch2WithMain)
+chess_review_apply_options(review_evidence_tests)
+catch_discover_tests(review_evidence_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)
+
+chess_review_add_qt_test(review_configuration_tests review_configuration INTEGRATION WIDGETS
+    SOURCES qt/ReviewConfigurationTest.cpp LIBRARIES chess_review_ui chess_review_analysis)
+target_compile_definitions(review_configuration_tests PRIVATE
+    CHESS_REVIEW_CONFIG_EXAMPLE="${PROJECT_SOURCE_DIR}/docs/config.example.toml")

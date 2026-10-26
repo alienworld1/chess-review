@@ -37,6 +37,13 @@ StartupPanel::StartupPanel(QWidget* parent) : QWidget(parent) {
     notice_->setTextFormat(Qt::PlainText);
     notice_->setWordWrap(true);
     notice_->hide();
+    configurationNotice_ = new QLabel(content);
+    configurationNotice_->setObjectName(QStringLiteral("configurationNotice"));
+    configurationNotice_->setTextFormat(Qt::PlainText);
+    configurationNotice_->setWordWrap(true);
+    configurationNotice_->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                                  Qt::TextSelectableByKeyboard);
+    configurationNotice_->hide();
     reveal_ = new QPushButton(tr("Show technical &details (may contain private paths)"), content);
     reveal_->setObjectName(QStringLiteral("revealDetails"));
     reveal_->setCheckable(true);
@@ -61,6 +68,7 @@ StartupPanel::StartupPanel(QWidget* parent) : QWidget(parent) {
     layout->addWidget(status_);
     layout->addWidget(progress_);
     layout->addWidget(notice_);
+    layout->addWidget(configurationNotice_);
     layout->addWidget(summary_);
     layout->addWidget(reveal_, 0, Qt::AlignLeft);
     layout->addWidget(diagnostic_);
@@ -74,7 +82,7 @@ void StartupPanel::showReady() {
     status_->setText(QStringLiteral("Ready"));
     progress_->hide();
     status_->hide();
-    setVisible(loggingNoticeShown_);
+    setVisible(loggingNoticeShown_ || !configurationReport_.isEmpty());
 }
 
 void StartupPanel::showFailure(const app::Diagnostic& diagnostic) {
@@ -94,7 +102,7 @@ void StartupPanel::showFailure(const app::Diagnostic& diagnostic) {
 }
 
 QString StartupPanel::safeReport() const {
-    return (failure_.code.isEmpty() ? QString() : failure_.safeReport()) +
+    return configurationReport_ + (failure_.code.isEmpty() ? QString() : failure_.safeReport()) +
            (logger_ ? logger_->report() : tr("Local logging is not configured.\n"));
 }
 
@@ -147,3 +155,15 @@ void StartupPanel::showClosing() {
 }
 
 } // namespace chess_review::ui
+
+void chess_review::ui::StartupPanel::showConfigurationFailure(const QString& safeDetails) {
+    configurationReport_ =
+        tr("Review configuration is invalid. Reviews are unavailable. "
+           "Correct config.toml in the application configuration directory and restart. "
+           "Import and manual analysis remain available.\n") +
+        safeDetails;
+    configurationNotice_->setText(configurationReport_);
+    configurationNotice_->setAccessibleName(configurationReport_);
+    configurationNotice_->show();
+    show();
+}

@@ -41,6 +41,7 @@ class MainWindow final : public QMainWindow {
     void showProgress(const QString& message);
     void showReady();
     void showFailure(const app::Diagnostic& diagnostic);
+    void showConfigurationFailure(const QString& safeDetails);
     void setDiagnostics(diagnostics::Logger& logger);
     void showUiStateFailure(app::UiStateError error = app::UiStateError::Invalid);
     void restoreUiState(const app::UiState& state);

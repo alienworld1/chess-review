@@ -24,6 +24,7 @@ class StartupPanel final : public QWidget {
     void showProgress(const QString& message);
     void showReady();
     void showFailure(const app::Diagnostic& diagnostic);
+    void showConfigurationFailure(const QString& safeDetails);
     void setDiagnostics(diagnostics::Logger& logger);
 
     void showDiagnostics();
@@ -39,6 +40,8 @@ class StartupPanel final : public QWidget {
     QPushButton* exit_;
     QLabel* summary_;
     QLabel* notice_;
+    QLabel* configurationNotice_;
+    QString configurationReport_;
     QPushButton* reveal_;
     QPushButton* copy_;
     bool loggingNoticeShown_ = false;

@@ -71,7 +71,15 @@ int main(int argc, char* argv[]) {
                      &chess_review::ui::MainWindow::completeShutdown);
     QObject::connect(&startup, &chess_review::app::StartupCoordinator::finished, &application,
                      &QApplication::quit);
-    startup.start(paths.databasePath(), paths.uiStateFilePath());
+    QObject::connect(
+        &startup.reviewConfiguration(), &chess_review::app::ReviewConfiguration::changed, &window,
+        [&window, &startup] {
+            if (startup.reviewConfiguration().state() ==
+                chess_review::app::ConfigurationState::Invalid) {
+                window.showConfigurationFailure(startup.reviewConfiguration().safeReport());
+            }
+        });
+    startup.start(paths.databasePath(), paths.uiStateFilePath(), paths.configFilePath());
 
     return application.exec();
 }

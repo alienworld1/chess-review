@@ -852,3 +852,22 @@ bounds that must not claim a certain winner. Retirement tests delete consumers
 after closed(), including during reset notifications and nested event loops in
 progress, terminal and visibility notifications. These tests use the same real
 supervisor/fake-process boundary; no alternate production scheduler is added.
+
+
+## Review evidence and configuration
+
+`review_evidence_tests` links only the review/chess domain and Catch2. It covers
+perspectives, WDL/fallback conversion, history-aware pairing, mate/bound/terminal
+handling, incompatible evidence, candidate ranks, and negative deltas.
+`review_configuration` exercises strict TOML validation, canonical identities,
+synthetic engine adaptation, asynchronous startup and shutdown, and invalid-config
+availability and diagnostic privacy. Run the focused set with:
+
+```sh
+ctest --test-dir build/dev -L review --output-on-failure
+```
+
+The app now also builds with pinned toml++ 3.4.0. For offline configuration use
+`-DFETCHCONTENT_SOURCE_DIR_TOMLPLUSPLUS=/absolute/path/to/tomlplusplus-3.4.0`
+after verifying the source against the archive/checksum in
+[third_party/tomlplusplus](../third_party/tomlplusplus/README.md).

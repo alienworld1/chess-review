@@ -11,7 +11,7 @@ On Linux the layout is:
 | Purpose | Qt location | Linux default | Contents |
 | --- | --- | --- | --- |
 | Durable data | `AppLocalDataLocation` | `~/.local/share/chess-review/` | `chess-review.sqlite3`, migration `backups/` |
-| Configuration | `AppConfigLocation` | `~/.config/chess-review/` | `ui-state.ini`; reserved `config.toml` |
+| Configuration | `AppConfigLocation` | `~/.config/chess-review/` | `ui-state.ini`; optional `config.toml` (see [configuration](review-evidence.md)) |
 | Disposable cache | `CacheLocation` | `~/.cache/chess-review/` | Rotating `logs/`; reserved `transient/` |
 
 Qt honors `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME`, using its

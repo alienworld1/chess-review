@@ -6,6 +6,7 @@
 #include "app/GameImportService.h"
 #include "app/GameLibraryController.h"
 #include "app/ImportController.h"
+#include "app/ReviewConfiguration.h"
 #include "app/UiStateStore.h"
 #include "persistence/Database.h"
 #include <QObject>
@@ -24,11 +25,13 @@ class StartupCoordinator final : public QObject {
     // Logger must outlive finished(). Omitting the UI-state filename disables preferences.
     explicit StartupCoordinator(diagnostics::Logger& logger, QObject* parent = nullptr);
     void start(const QString& databasePath,
-               const std::optional<QString>& uiStateFilename = std::nullopt);
+               const std::optional<QString>& uiStateFilename = std::nullopt,
+               const std::optional<QString>& configFilename = std::nullopt);
     void shutdown();
     // Called synchronously by the composition root on stopping(), before saving begins.
     void setFinalUiState(const UiState& state);
     Lifecycle state() const;
+    ReviewConfiguration& reviewConfiguration() { return configuration_; }
     EngineSettingsController& engines() { return engines_; }
     AnalysisController& analysis() { return analysis_; }
     EngineAnalysisController& engineAnalysis() { return engineAnalysis_; }
@@ -65,6 +68,7 @@ class StartupCoordinator final : public QObject {
     ImportController localImports_{imports_};
     GameLibraryController library_{database_};
     UiStateStore uiState_;
+    ReviewConfiguration configuration_;
     std::optional<UiState> finalUiState_;
     std::optional<GameResume> resume_;
     Lifecycle state_ = Lifecycle::Loading;
@@ -75,6 +79,7 @@ class StartupCoordinator final : public QObject {
     bool importsClosed_ = false;
     bool enginesClosed_ = false;
     bool preferencesClosed_ = false;
+    bool configurationClosed_ = false;
     bool closingLogger_ = false;
 };
 } // namespace chess_review::app

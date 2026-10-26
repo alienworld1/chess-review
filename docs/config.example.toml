@@ -1,0 +1,31 @@
+# Optional advanced product configuration. Copy to your application configuration
+# directory as config.toml and restart to apply. Missing fields use these defaults.
+# Budgets and thresholds are provisional tuning values, not calibrated guarantees.
+version = 1
+
+[analysis.fast]
+quickScanNodes = 50000
+deepeningNodes = 500000
+verificationNodes = 2000000
+
+[analysis.standard]
+quickScanNodes = 100000
+deepeningNodes = 1000000
+verificationNodes = 5000000
+
+[analysis.thorough]
+quickScanNodes = 250000
+deepeningNodes = 3000000
+verificationNodes = 10000000
+
+[classification]
+inaccuracyLoss = 0.05
+mistakeLoss = 0.10
+blunderLoss = 0.20
+
+[review]
+quality = "standard"
+preferWdl = true
+
+[expectedScore]
+fallbackScaleCp = 300

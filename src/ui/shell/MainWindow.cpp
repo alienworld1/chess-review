@@ -625,3 +625,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     }
 }
 } // namespace chess_review::ui
+
+void chess_review::ui::MainWindow::showConfigurationFailure(const QString& safeDetails) {
+    startup_->showConfigurationFailure(safeDetails);
+}
