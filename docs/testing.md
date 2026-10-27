@@ -937,3 +937,13 @@ Select the reviewed pinned Stockfish executable for this test. It compares actua
 compatible cache hits with searches submitted by a second run, then verifies
 cache-independent evidence and reopening without an engine. Completed searches
 with insufficient strength or non-exact evidence are expected to miss reuse.
+
+
+Adversarial quick-review regressions cover destruction after closing from a
+`changed()` notification (including a nested event loop), resume during delayed
+engine disconnect, malformed fingerprint input, bounded PGN/engine labels,
+invisible engine-character escaping, rapid run-selection coalescing, history page
+reset and accidental setup changes from wheel input. The 81-position heartbeat
+case reports elapsed time and cache-lookup count; an unverified fake engine must
+issue no cache lookups. Timing output is observational, not a portable performance
+assertion. Public cache APIs still validate and gate all compatible hits.

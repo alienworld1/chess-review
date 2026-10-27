@@ -2,7 +2,8 @@
 
 Select a saved game in **Games** and choose **Review…**. Choose **White** or
 **Black**, a registered engine, and **Fast**, **Standard**, or **Thorough**, then
-choose **Run Review**. The quality defaults to the review configuration; changing
+choose **Run Review**. Scrolling over the setup controls leaves their selections
+unchanged; open a selector or use the keyboard to change a choice. The quality defaults to the review configuration; changing
 it here affects only this run. Each new run keeps its own evidence and history.
 
 Run Review connects the chosen local engine when necessary. If another engine is
@@ -39,7 +40,8 @@ quality, complete configuration and supported evidence-model versions, even if t
 current valid configuration uses a different quality.
 
 Resume freshly reconnects the original engine and compares its full effective
-configuration fingerprint. A changed executable or configuration blocks continuation;
+configuration fingerprint. If the original engine is already disconnecting, resume
+waits for that disconnect before reconnecting. A changed executable or configuration blocks continuation;
 use the original engine or start a new independent run. If the original profile is
 on another engine page, load that page in Settings first. Invalid current TOML
 configuration blocks starting and resuming until corrected and the app restarted.

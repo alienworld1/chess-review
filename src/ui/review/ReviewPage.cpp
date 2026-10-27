@@ -1,6 +1,8 @@
 #include "ui/review/ReviewPage.h"
+#include "ui/EngineText.h"
 #include <QAbstractTableModel>
 #include <QComboBox>
+#include <QEvent>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -138,6 +140,8 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     side_->addItems({tr("Choose player…"), tr("White"), tr("Black")});
     engine_ = new QComboBox(this);
     engine_->setObjectName(QStringLiteral("reviewEngine"));
+    engine_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    engine_->setMinimumContentsLength(20);
     quality_ = new QComboBox(this);
     quality_->setObjectName(QStringLiteral("reviewQuality"));
     quality_->addItems({tr("Fast"), tr("Standard"), tr("Thorough")});
@@ -146,6 +150,9 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     form->addRow(tr("&Engine:"), engine_);
     form->addRow(tr("&Quality:"), quality_);
     layout->addLayout(form);
+    for (auto* control : {side_, engine_, quality_}) {
+        control->installEventFilter(this);
+    }
     reason_ = new QLabel(this);
     reason_->setTextFormat(Qt::PlainText);
     reason_->setWordWrap(true);
@@ -233,6 +240,14 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     connect(&controller_, &app::ReviewGameController::changed, this, &ReviewPage::update);
     update();
 }
+bool ReviewPage::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::Wheel &&
+        (watched == side_ || watched == engine_ || watched == quality_)) {
+        event->ignore();
+        return true;
+    }
+    return QWidget::eventFilter(watched, event);
+}
 void ReviewPage::update() {
     const auto& state = controller_.state();
     if (gameId_ != state.gameId) {
@@ -248,7 +263,8 @@ void ReviewPage::update() {
         const QSignalBlocker blocker(engine_);
         engine_->clear();
         for (const auto& profile : engines.profiles) {
-            engine_->addItem(profile.displayName, QVariant::fromValue<qlonglong>(profile.id));
+            engine_->addItem(clippedEngineText(presentedEngineText(profile.displayName)),
+                             QVariant::fromValue<qlonglong>(profile.id));
         }
         const auto index = engine_->findData(selected);
         if (index >= 0) {
@@ -276,7 +292,7 @@ void ReviewPage::update() {
     }
     const auto engineName = state.engine;
     if (!engineName.isEmpty()) {
-        status += tr("\nRun engine: %1").arg(engineName);
+        status += tr("\nRun engine: %1").arg(clippedEngineText(presentedEngineText(engineName)));
     }
     if (state.cancelling) {
         status = tr("Cancelling; saving completed evidence…\n") + status;
@@ -286,6 +302,7 @@ void ReviewPage::update() {
     progress_->setValue(state.run ? state.run->completedPositions : 0);
     error_->setText(state.error +
                     (state.notice.isEmpty() ? QString{} : QLatin1Char('\n') + state.notice));
+    runs_->setEnabled(!state.active);
     model_->reload(state.runs);
     const auto selected = model_->row(runs_->currentIndex().row());
     resume_->setEnabled(!state.busy && selected && !selected->metadataError &&

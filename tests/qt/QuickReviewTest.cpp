@@ -8,6 +8,9 @@
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QLabel>
 #include <QMessageBox>
@@ -18,9 +21,11 @@
 #include <QSignalSpy>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QTableView>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QWheelEvent>
 using namespace chess_review;
 namespace {
 QJsonObject ready() {
@@ -121,7 +126,7 @@ class Fixture {
     }
     void script(int first = 0, int end = -1, int delay = 0, bool weak = false, bool crash = false,
                 const QString& score = QStringLiteral("cp 25"),
-                const QString& identity = QStringLiteral("Test engine")) {
+                const QString& identity = QStringLiteral("Test engine"), int quitDelay = 0) {
         QJsonArray steps{
             engine_test::step(
                 QStringLiteral("uci"),
@@ -168,7 +173,9 @@ class Fixture {
                 (void)position.play(moves[static_cast<std::size_t>(index)]);
             }
         }
-        steps.append(quit());
+        steps.append(engine_test::step(
+            QStringLiteral("quit"), {QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")},
+                                                 {QStringLiteral("afterMs"), quitDelay}}}));
         engine::ValidatorTestAccess::configure(
             supervisor(),
             engine_test::scenario(directory.filePath(QStringLiteral("runtime.json")), steps), 1000);
@@ -214,6 +221,148 @@ class QuickReviewTest final : public QObject {
     void init() {
         QTest::failOnWarning(QRegularExpression(
             QStringLiteral("^(?!This plugin does not support propagateSizeHints\\(\\)$).*")));
+    }
+    void fingerprintRejectsInvalidEngineValues() {
+        QVERIFY(std::holds_alternative<engine::Error>(
+            engine::quickReviewFingerprint(engine::ValidatedEngine{})));
+    }
+    void reviewHeaderBoundsUntrustedNames() {
+        Fixture f;
+        const auto name = std::string("<b>") + std::string(8192, 'x') + "</b>";
+        QVERIFY(f.seed("[White \"" + name + "\"]\n[Black \"" + name + "\"]\n*"));
+        QVERIFY(f.startup.reviewGame().state().game.size() <= 600);
+        QVERIFY(f.startup.reviewGame().state().game.contains(QStringLiteral("<b>")));
+    }
+    void selectingGameResetsHistoryPage() {
+        Fixture f;
+        QVERIFY(f.seed());
+        QTRY_VERIFY(!f.startup.reviewGame().state().listing);
+        f.startup.reviewGame().refreshRuns(1);
+        QTRY_VERIFY(!f.startup.reviewGame().state().listing);
+        QCOMPARE(f.startup.reviewGame().state().page, 1);
+        f.startup.reviewGame().selectGame(f.gameId);
+        QCOMPARE(f.startup.reviewGame().state().page, 0);
+        QVERIFY(!f.startup.reviewGame().state().hasNext);
+    }
+    void resumeDuringDisconnectCompletes() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script(0, 1, 0, false, false, QStringLiteral("cp 25"), QStringLiteral("Test engine"),
+                 300);
+        const auto connection =
+            connect(&f.startup.reviewGame(), &app::ReviewGameController::changed,
+                    &f.startup.reviewGame(), [&] {
+                        const auto& state = f.startup.reviewGame().state();
+                        if (state.active && state.run && state.run->completedPositions == 1) {
+                            f.startup.reviewGame().cancel();
+                        }
+                    });
+        f.run();
+        QVERIFY(f.done());
+        disconnect(connection);
+        const auto run = *f.startup.reviewGame().state().run;
+        f.script(1);
+        f.startup.engines().disconnectEngine();
+        QCOMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnecting);
+        f.startup.reviewGame().resume(run.id);
+        QTRY_VERIFY_WITH_TIMEOUT(!f.startup.reviewGame().state().active, 4000);
+        QCOMPARE(f.startup.reviewGame().state().run->status, review::JobStatus::Complete);
+    }
+    void closingFromNotificationAllowsDestruction() {
+        Fixture f;
+        QVERIFY(f.seed());
+        auto controller = std::make_unique<app::ReviewGameController>(
+            f.startup.gameRepository(), f.startup.engines(), f.supervisor(),
+            f.startup.reviewConfiguration());
+        controller->setReady(true);
+        bool closing = false;
+        bool survivedNestedNotification = false;
+        connect(controller.get(), &app::ReviewGameController::changed, &f.window, [&] {
+            if (controller && controller->state().phase == app::ReviewPhase::Idle && !closing) {
+                closing = true;
+                controller->close();
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                survivedNestedNotification = static_cast<bool>(controller);
+            }
+        });
+        connect(controller.get(), &app::ReviewGameController::closed, &f.window,
+                [&] { controller.reset(); });
+        controller->selectGame(f.gameId);
+        QTRY_VERIFY(!controller);
+        QVERIFY(survivedNestedNotification);
+    }
+    void closingDuringEngineNotificationAllowsDestruction() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script(0, 0);
+        auto controller = std::make_unique<app::ReviewGameController>(
+            f.startup.gameRepository(), f.startup.engines(), f.supervisor(),
+            f.startup.reviewConfiguration());
+        controller->setReady(true);
+        controller->selectGame(f.gameId);
+        QTRY_VERIFY(!controller->state().busy);
+        bool closing = false;
+        bool inspected = false;
+        bool survivedNestedNotification = false;
+        connect(controller.get(), &app::ReviewGameController::changed, &f.window, [&] {
+            if (controller && controller->state().phase == app::ReviewPhase::Connecting &&
+                !closing) {
+                closing = true;
+                controller->close();
+            }
+        });
+        connect(controller.get(), &app::ReviewGameController::closed, &f.window,
+                [&] { controller.reset(); });
+        const auto observer =
+            connect(&f.startup.engines(), &app::EngineSettingsController::changed, &f.window, [&] {
+                if (closing && !inspected) {
+                    inspected = true;
+                    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                    survivedNestedNotification = static_cast<bool>(controller);
+                }
+            });
+        controller->start(chess::Color::White, f.profileId, review::Quality::Standard);
+        QTRY_VERIFY(!controller);
+        disconnect(observer);
+        QVERIFY(inspected);
+        QVERIFY(survivedNestedNotification);
+    }
+    void rapidInspectionShowsLatestSelection() {
+        Fixture f;
+        QVERIFY(f.seed("[SetUp \"1\"]\n[FEN \"7k/6Q1/6K1/8/8/8/8/8 b - - 0 1\"]\n*"));
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        const auto first = f.startup.reviewGame().state().run->id;
+        f.run();
+        QVERIFY(f.done());
+        const auto second = f.startup.reviewGame().state().run->id;
+        QVERIFY(first != second);
+        f.startup.reviewGame().inspect(first);
+        f.startup.reviewGame().inspect(second);
+        QTRY_VERIFY(!f.startup.reviewGame().state().busy);
+        QCOMPARE(f.startup.reviewGame().state().run->id, second);
+    }
+    void engineChooserBoundsAndEscapesNames() {
+        Fixture f;
+        QVERIFY(f.seed());
+        auto profiles = f.startup.engines().state().profiles;
+        profiles.front().displayName = QString(QChar(0x202e)) + QString(4095, u'x');
+        app::EngineControllerTestAccess::replaceProfiles(f.startup.engines(), std::move(profiles));
+        const auto* engines = f.window.findChild<QComboBox*>(QStringLiteral("reviewEngine"));
+        QVERIFY(engines->currentText().startsWith(QStringLiteral("\\u202e")));
+        QVERIFY(engines->currentText().size() <= 257);
+        QVERIFY(engines->sizeHint().width() < 600);
+    }
+    void wheelDoesNotChangeReviewSetup() {
+        Fixture f;
+        QVERIFY(f.seed());
+        auto* quality = f.window.findChild<QComboBox*>(QStringLiteral("reviewQuality"));
+        const auto selected = quality->currentIndex();
+        QWheelEvent wheel(QPointF(5, 5), quality->mapToGlobal(QPoint(5, 5)), {}, QPoint(0, -120),
+                          Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(quality, &wheel);
+        QCOMPARE(quality->currentIndex(), selected);
     }
     void wholeGame_data() {
         QTest::addColumn<QString>("pgn");
@@ -396,13 +545,19 @@ class QuickReviewTest final : public QObject {
         QTimer heartbeat;
         connect(&heartbeat, &QTimer::timeout, &heartbeat, [&] { ++heartbeats; });
         heartbeat.start(1);
+        QSignalSpy lookups(&f.startup.gameRepository(), &persistence::Database::analysisFound);
+        QElapsedTimer elapsed;
+        elapsed.start();
         f.run();
         QVERIFY(f.done());
         heartbeat.stop();
+        qInfo("81-position scan: %lld ms; %lld cache lookups",
+              static_cast<long long>(elapsed.elapsed()), static_cast<long long>(lookups.size()));
         QVERIFY2(f.startup.reviewGame().state().error.isEmpty(),
                  qPrintable(f.startup.reviewGame().state().error));
         QCOMPARE(f.startup.reviewGame().state().run->completedPositions, 81);
         QVERIFY(heartbeats > 10);
+        QCOMPARE(lookups.size(), 0); // This fake engine's resources never authorize reuse.
     }
     void restartUsesOriginalConfiguration() {
         QTemporaryDir directory;

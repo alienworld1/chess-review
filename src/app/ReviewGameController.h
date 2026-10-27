@@ -44,6 +44,7 @@ struct ReviewGameState {
 };
 QString reviewStatusText(review::JobStatus status);
 // GUI-thread facade. Injected services outlive closed(). Only the serial worker owns Cursor.
+// closed() is delivered asynchronously outside changed() notifications; then destruction is safe.
 class ReviewGameController final : public QObject {
     Q_OBJECT
   public:
@@ -88,6 +89,8 @@ class ReviewGameController final : public QObject {
     void finish();
     void fail(const QString& message, review::JobFailure failure);
     void finishClose();
+    void deliverClose();
+    void loadInspection(review::ReviewId id);
     persistence::Database& database_;
     EngineSettingsController& settings_;
     engine::EngineSupervisor& supervisor_;
@@ -104,6 +107,7 @@ class ReviewGameController final : public QObject {
     QTimer listRetry_;
     std::function<void(QUuid)> operation_;
     QUuid pending_;
+    std::optional<review::ReviewId> nextInspection_;
     QUuid listing_;
     QUuid cacheWrite_;
     QUuid session_;
@@ -124,6 +128,8 @@ class ReviewGameController final : public QObject {
     bool durableOperation_ = false;
     bool closing_ = false;
     bool closed_ = false;
+    bool notifying_ = false;
+    bool closeQueued_ = false;
     bool failurePending_ = false;
     review::JobFailure failure_ = review::JobFailure::None;
 };

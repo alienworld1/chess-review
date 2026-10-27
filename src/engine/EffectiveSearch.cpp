@@ -5,6 +5,10 @@
 
 namespace chess_review::engine {
 std::variant<EngineFingerprint, Error> quickReviewFingerprint(const ValidatedEngine& engine) {
+    if (!validEngine(engine)) {
+        return Error{ErrorCode::InvalidRecord,
+                     QStringLiteral("Invalid review engine configuration.")};
+    }
     AnalysisRequest request;
     request.id = QUuid::createUuid();
     request.wantWdl = true;

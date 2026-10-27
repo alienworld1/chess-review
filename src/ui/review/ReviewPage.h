@@ -16,6 +16,9 @@ class ReviewPage final : public QWidget {
     void backRequested();
     void settingsRequested();
 
+  protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
   private:
     void update();
     app::ReviewGameController& controller_;
