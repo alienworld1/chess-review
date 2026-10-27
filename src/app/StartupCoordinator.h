@@ -7,6 +7,7 @@
 #include "app/GameLibraryController.h"
 #include "app/ImportController.h"
 #include "app/ReviewConfiguration.h"
+#include "app/ReviewGameController.h"
 #include "app/UiStateStore.h"
 #include "persistence/Database.h"
 #include <QObject>
@@ -31,6 +32,7 @@ class StartupCoordinator final : public QObject {
     // Called synchronously by the composition root on stopping(), before saving begins.
     void setFinalUiState(const UiState& state);
     Lifecycle state() const;
+    ReviewGameController& reviewGame() { return reviewGame_; }
     ReviewConfiguration& reviewConfiguration() { return configuration_; }
     EngineSettingsController& engines() { return engines_; }
     AnalysisController& analysis() { return analysis_; }
@@ -69,6 +71,10 @@ class StartupCoordinator final : public QObject {
     GameLibraryController library_{database_};
     UiStateStore uiState_;
     ReviewConfiguration configuration_;
+    ReviewGameController reviewGame_{database_, engines_, engineSupervisor_, configuration_};
+    bool reviewClosed_ = false;
+    bool liveClosed_ = false;
+    void closeSupervisorWhenProducersFinish();
     std::optional<UiState> finalUiState_;
     std::optional<GameResume> resume_;
     Lifecycle state_ = Lifecycle::Loading;

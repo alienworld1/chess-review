@@ -21,6 +21,7 @@ class GamesPage final : public QWidget {
               QAction& fileAction, QAction& pasteAction, QWidget* parent = nullptr);
 
   signals:
+    void reviewRequested(chess_review::persistence::GameId id);
     void openRequested(chess_review::persistence::GameId id);
 
   protected:
@@ -45,6 +46,7 @@ class GamesPage final : public QWidget {
     QPushButton* next_;
     QPushButton* refresh_;
     QPushButton* open_;
+    QPushButton* review_;
     QPushButton* cancel_;
     QPlainTextEdit* details_;
     QString detailText_;

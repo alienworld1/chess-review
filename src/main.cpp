@@ -34,6 +34,7 @@ int main(int argc, char* argv[]) {
     window.installEngines(startup.engines());
     window.installEngineAnalysis(startup.engineAnalysis());
     window.installImports(startup.localImports(), startup.library());
+    window.installReview(startup.reviewGame());
     window.setDiagnostics(logger);
     startup.requireQuitConfirmation();
     QObject::connect(&startup, &chess_review::app::StartupCoordinator::quitRequested, &window,

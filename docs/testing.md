@@ -899,3 +899,41 @@ CHESS_REVIEW_REVIEW_STORAGE_BENCHMARK=1 build/dev/src/persistence/tests/review_r
 
 Run timing probes without competing builds. Their timings are observations, not
 CTest latency assertions or portable performance guarantees.
+
+## Quick-review journey
+
+`ctest --preset dev -R '^quick_review$' --output-on-failure` exercises the real
+application controller, database, scheduler and deterministic fake UCI process.
+Cases cover full mainline/final-position scans, FEN and terminal roots, weak/bounded
+results without WDL, committed coverage, cancellation/resume and independent runs,
+restart with changed current quality, storage failure, conflicting revisions,
+damaged evidence, engine failure, shared-service shutdown, admission backpressure
+and background-navigation controls. The fake executable has unverified resources:
+it must not qualify for compatible-cache reuse. Existing analysis-repository and
+fingerprint suites cover cache dominance and the pinned-resource policy.
+
+For local visual inspection, create a destination directory and run:
+
+```sh
+mkdir -p /tmp/quick-review-renders
+QT_QPA_PLATFORM=offscreen:configfile=tests/support/desktop-screen.json \
+  CHESS_REVIEW_QUICK_RENDER_DIR=/tmp/quick-review-renders \
+  build/dev/tests/quick_review_tests renderWorkspace
+```
+
+This writes light, dark and enlarged-font workspace PNGs. Repeat with
+`QT_SCALE_FACTOR=1.25`, `1.5` and `2` for scaling probes. The renderer case skips
+when no directory is supplied. These offscreen checks do not establish physical
+mixed-DPI or native screen-reader acceptance.
+
+`pinnedEngineCacheReuse` is an optional end-to-end probe:
+
+```sh
+QT_QPA_PLATFORM=offscreen CHESS_REVIEW_STOCKFISH=/absolute/path/to/stockfish \
+  build/dev/tests/quick_review_tests pinnedEngineCacheReuse
+```
+
+Select the reviewed pinned Stockfish executable for this test. It compares actual
+compatible cache hits with searches submitted by a second run, then verifies
+cache-independent evidence and reopening without an engine. Completed searches
+with insufficient strength or non-exact evidence are expected to miss reuse.

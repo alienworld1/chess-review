@@ -296,6 +296,15 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     open_->setObjectName(QStringLiteral("openGameButton"));
     open_->setToolTip(tr("Select a saved game, then open its moves and variations."));
     toolbar->addWidget(open_);
+    review_ = new QPushButton(tr("Review…"), this);
+    review_->setObjectName(QStringLiteral("reviewGameButton"));
+    toolbar->addWidget(review_);
+    connect(review_, &QPushButton::clicked, this, [this] {
+        if (const auto id = libraryModel_->gameId(games_->currentIndex().row());
+            id && review_->isEnabled()) {
+            emit reviewRequested(*id);
+        }
+    });
     connect(open_, &QPushButton::clicked, this, &GamesPage::requestOpen);
     toolbar->addStretch();
     layout->addLayout(toolbar);
@@ -393,6 +402,8 @@ void GamesPage::requestOpen() {
     }
 }
 void GamesPage::updateOpenAction() {
+    review_->setEnabled(library_.ready() && !library_.busy() &&
+                        libraryModel_->gameId(games_->currentIndex().row()).has_value());
     open_->setEnabled(library_.ready() && !library_.opening() && !library_.busy() &&
                       libraryModel_->gameId(games_->currentIndex().row()).has_value());
 }

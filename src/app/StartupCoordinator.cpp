@@ -24,8 +24,15 @@ void StartupCoordinator::connectServices() {
         configurationClosed_ = true;
         finishServices();
     });
-    connect(&engineAnalysis_, &EngineAnalysisController::closed, &engineSupervisor_,
-            &engine::EngineSupervisor::close);
+    connect(&engineAnalysis_, &EngineAnalysisController::closed, this, [this] {
+        liveClosed_ = true;
+        closeSupervisorWhenProducersFinish();
+    });
+    connect(&reviewGame_, &ReviewGameController::closed, this, [this] {
+        reviewClosed_ = true;
+        closeSupervisorWhenProducersFinish();
+        closeStorageWhenProducersFinish();
+    });
     connect(&library_, &GameLibraryController::opened, &analysis_, &AnalysisController::openGame);
     connect(&library_, &GameLibraryController::openFailed, this, [this] { resume_.reset(); });
     connect(&analysis_, &AnalysisController::gameOpened, this, [this] {
@@ -57,6 +64,7 @@ void StartupCoordinator::connectServices() {
         localImports_.setReady(true);
         engines_.setReady(configuration_.state() != ConfigurationState::Loading);
         library_.setReady(true);
+        reviewGame_.setReady(true);
         // A user may start exploring while storage is still initializing. Do not
         // replace that work when a delayed automatic recovery becomes available.
         if (analysis_.hasContent() || (analysis_.busy() && !analysis_.history().empty())) {
@@ -90,8 +98,13 @@ void StartupCoordinator::connectServices() {
         emit uiStateFailed(error);
     });
 }
+void StartupCoordinator::closeSupervisorWhenProducersFinish() {
+    if (liveClosed_ && reviewClosed_) {
+        engineSupervisor_.close();
+    }
+}
 void StartupCoordinator::closeStorageWhenProducersFinish() {
-    if (importsClosed_ && enginesClosed_) {
+    if (importsClosed_ && enginesClosed_ && reviewClosed_) {
         database_.close();
     }
 }
@@ -165,6 +178,7 @@ void StartupCoordinator::shutdown() {
     library_.setReady(false);
     engines_.close();
     engineAnalysis_.close();
+    reviewGame_.close();
     localImports_.close();
     uiState_.saveAndClose(finalUiState_);
 }

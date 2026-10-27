@@ -14,6 +14,7 @@ namespace chess_review::app {
 class AnalysisController;
 class EngineSettingsController;
 class EngineAnalysisController;
+class ReviewGameController;
 class ImportController;
 class GameLibraryController;
 } // namespace chess_review::app
@@ -23,6 +24,7 @@ class Logger;
 namespace chess_review::ui {
 class StartupPanel;
 class AnalysisPage;
+class ReviewPage;
 
 // Pure geometry policy, also used to validate unavailable/removed monitor cases.
 QRect fittedWindowGeometry(const QRect& desired, const QRect& available);
@@ -35,6 +37,7 @@ class MainWindow final : public QMainWindow {
     // Both application-owned controllers must outlive this window.
     MainWindow(app::NavigationController& navigation, app::AnalysisController& analysis,
                QWidget* parent = nullptr);
+    void installReview(app::ReviewGameController& review);
     void installEngineAnalysis(app::EngineAnalysisController& engine);
     void installEngines(app::EngineSettingsController& engines);
     void installImports(app::ImportController& imports, app::GameLibraryController& library);
@@ -62,10 +65,16 @@ class MainWindow final : public QMainWindow {
   private:
     void installAnalysis(app::AnalysisController& controller);
     void selectDestination();
+    void showReview();
     void resetWindowGeometry();
     void fitToScreen();
     void watchScreen(QScreen* screen);
     app::NavigationController& navigation_;
+    ReviewPage* reviewPage_ = nullptr;
+    app::ReviewGameController* reviewController_ = nullptr;
+    bool reviewLeaveAllowed_ = false;
+    bool reviewLeavePending_ = false;
+    bool reviewWasActive_ = false;
     AnalysisPage* analysis_ = nullptr;
     QAction* importFile_ = nullptr;
     QAction* pastePgn_ = nullptr;

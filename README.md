@@ -9,7 +9,10 @@ The last opened game and selected stored move resume after orderly exit.
 Exploratory moves and new board annotations are session-only; a discard confirmation
 protects against accidental loss. An explicit Start/Stop engine panel shows a
 White-perspective evaluation and bar, one read-only SAN principal variation, depth,
-and engine status while following the board. Guided review remains future work.
+and engine status while following the board. Games → Review now runs a bounded
+full-game quick scan with player/engine/quality selection, durable progress,
+cancellation, background continuation and explicit resume. Classifications,
+accuracy and guided board review remain future work.
 Settings registers local UCI executables through a nonblocking validation
 handshake and persists their profiles. Explicit Connect/Disconnect controls keep
 an engine Ready and expose its advertised options without starting a search.
@@ -75,6 +78,7 @@ libraries separate. Automated tests use temporary storage.
 - [Storage](docs/storage.md): paths, UI preferences, database lifecycle, and migrations
 - [Local UCI engines](docs/engines.md): registration, connections, position-search API, and limits
 - [Diagnostics](docs/diagnostics.md): troubleshooting, local logs, and privacy
+- [Quick review](docs/quick-review.md): running, cancelling, background work, and resuming scans
 - [Analyze board](docs/analysis-board.md): moves, navigation, annotations, and preferences
 - [Chess core](docs/chess-core.md): adapter API, FEN policy, moves, and identity
 - [Importing games](docs/import.md): local files, paste, drops, limits, and results

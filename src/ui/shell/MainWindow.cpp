@@ -3,6 +3,7 @@
 #include "ui/analysis/AnalysisPage.h"
 #include "ui/games/GamesPage.h"
 #include "ui/games/PgnTextEdit.h"
+#include "ui/review/ReviewPage.h"
 #include "ui/settings/EngineSettingsPage.h"
 #include "ui/shell/StartupPanel.h"
 #include <QAction>
@@ -98,7 +99,11 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
         destinations_[i] = action;
         connect(action, &QAction::triggered, this, [this, destination = values[i]] {
             if (!closing_) {
-                navigation_.navigate(destination);
+                if (navigation_.current() == destination) {
+                    selectDestination();
+                } else {
+                    navigation_.navigate(destination);
+                }
             }
         });
         auto* button = new QToolButton(sidebar);
@@ -181,6 +186,56 @@ MainWindow::MainWindow(app::NavigationController& navigation, app::AnalysisContr
                        QWidget* parent)
     : MainWindow(navigation, parent) {
     installAnalysis(analysis);
+}
+void MainWindow::installReview(app::ReviewGameController& review) {
+    reviewController_ = &review;
+    reviewPage_ = new ReviewPage(review, pages_);
+    pages_->addWidget(reviewPage_);
+    auto* games = pages_->findChild<GamesPage*>();
+    Q_ASSERT(games);
+    connect(games, &GamesPage::reviewRequested, this, [this, &review](persistence::GameId id) {
+        if (closing_) {
+            return;
+        }
+        if (!review.state().busy) {
+            review.selectGame(id);
+        }
+        showReview();
+    });
+    connect(reviewPage_, &ReviewPage::backRequested, this, [this] {
+        navigation_.navigate(app::Destination::Games);
+        selectDestination();
+    });
+    connect(reviewPage_, &ReviewPage::settingsRequested, this,
+            [this] { navigation_.navigate(app::Destination::Settings); });
+    auto* scroll = qobject_cast<QScrollArea*>(centralWidget());
+    auto* task = new QPushButton(scroll->widget());
+    task->setObjectName(QStringLiteral("reviewTaskStatus"));
+    task->setAccessibleName(tr("Background review status; return to review"));
+    qobject_cast<QVBoxLayout*>(scroll->widget()->layout())->insertWidget(2, task);
+    task->hide();
+    connect(task, &QPushButton::clicked, this, &MainWindow::showReview);
+    connect(&review, &app::ReviewGameController::changed, this, [this, task, &review] {
+        const auto& state = review.state();
+        if (state.active && !reviewWasActive_) {
+            reviewLeaveAllowed_ = false;
+        }
+        reviewWasActive_ = state.active;
+        task->setVisible(state.active || state.run.has_value() || !state.error.isEmpty());
+        task->setText(tr("Review: %1 — %2 / %3 positions saved · Return to Review")
+                          .arg(state.active ? tr("In progress")
+                               : state.run  ? app::reviewStatusText(state.run->status)
+                                            : tr("Stopped"))
+                          .arg(state.run ? state.run->completedPositions : 0)
+                          .arg(state.run ? state.run->totalPositions : 0));
+    });
+}
+void MainWindow::showReview() {
+    if (closing_ || !reviewPage_) {
+        return;
+    }
+    navigation_.navigate(app::Destination::Games);
+    pages_->setCurrentWidget(reviewPage_);
 }
 void MainWindow::installEngineAnalysis(app::EngineAnalysisController& engine) {
     Q_ASSERT(analysis_);
@@ -451,6 +506,41 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     return QMainWindow::eventFilter(watched, event);
 }
 void MainWindow::selectDestination() {
+    if (!closing_ && reviewPage_ && pages_->currentWidget() == reviewPage_ &&
+        reviewController_->state().active && !reviewLeaveAllowed_) {
+        if (reviewLeavePending_) {
+            return;
+        }
+        reviewLeavePending_ = true;
+        auto* dialog =
+            new QMessageBox(QMessageBox::Question, tr("Leave active review?"),
+                            tr("The quick scan is still running."), QMessageBox::NoButton, this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setObjectName(QStringLiteral("leaveReviewDialog"));
+        auto* background = dialog->addButton(tr("Continue in background"), QMessageBox::AcceptRole);
+        auto* stay = dialog->addButton(tr("Stay"), QMessageBox::RejectRole);
+        auto* cancel = dialog->addButton(tr("Cancel task"), QMessageBox::DestructiveRole);
+        dialog->setDefaultButton(stay);
+        connect(dialog, &QDialog::finished, this, [this, dialog, background, cancel] {
+            reviewLeavePending_ = false;
+            if (closing_) {
+                return;
+            }
+            if (dialog->clickedButton() == background || dialog->clickedButton() == cancel) {
+                reviewLeaveAllowed_ = true;
+                if (dialog->clickedButton() == cancel) {
+                    reviewController_->cancel();
+                }
+                selectDestination();
+            } else {
+                reviewLeaveAllowed_ = true;
+                showReview();
+                reviewLeaveAllowed_ = false;
+            }
+        });
+        dialog->open();
+        return;
+    }
     if (library_ && navigation_.current() == app::Destination::Games && !closing_) {
         library_->activate();
     }

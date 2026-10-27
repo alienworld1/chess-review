@@ -165,3 +165,12 @@ chess_review_add_qt_test(review_configuration_tests review_configuration INTEGRA
     SOURCES qt/ReviewConfigurationTest.cpp LIBRARIES chess_review_ui chess_review_analysis)
 target_compile_definitions(review_configuration_tests PRIVATE
     CHESS_REVIEW_CONFIG_EXAMPLE="${PROJECT_SOURCE_DIR}/docs/config.example.toml")
+
+if(UNIX)
+    chess_review_add_qt_test(quick_review_tests quick_review INTEGRATION WIDGETS
+        SOURCES qt/QuickReviewTest.cpp LIBRARIES chess_review_ui Qt6::Sql)
+    set_tests_properties(quick_review PROPERTIES TIMEOUT 90 ENVIRONMENT
+        "QT_QPA_PLATFORM=offscreen:configfile=${PROJECT_SOURCE_DIR}/tests/support/desktop-screen.json")
+    add_dependencies(quick_review_tests fake_uci_engine)
+    target_compile_definitions(quick_review_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
+endif()

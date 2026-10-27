@@ -52,7 +52,7 @@ target_compile_definitions(chess_review_diagnostics PUBLIC CHESS_REVIEW_VERSION=
 
 add_library(chess_review_engine STATIC src/engine/EngineProfile.cpp src/engine/EngineSupervisor.cpp
     src/engine/private/EngineProcessWorker.cpp src/engine/private/EngineProcessWorker.h
-    src/engine/Analysis.h src/engine/AnalysisCache.cpp src/engine/private/Fingerprint.cpp src/engine/private/SearchProtocol.cpp
+    src/engine/EffectiveSearch.cpp src/engine/Analysis.h src/engine/AnalysisCache.cpp src/engine/private/Fingerprint.cpp src/engine/private/SearchProtocol.cpp
     src/engine/private/EngineProcessWorkerSearch.cpp
     src/engine/private/SupervisorCoordinator.cpp src/engine/private/SupervisorCoordinator.h
     src/engine/private/SupervisorScheduling.cpp)
@@ -98,6 +98,7 @@ target_link_libraries(chess_review_app_paths PUBLIC Qt6::Core)
 chess_review_apply_options(chess_review_app_paths)
 
 add_library(chess_review_startup STATIC
+    src/app/ReviewGameController.cpp
     src/app/ReviewConfiguration.cpp
     src/app/EngineAnalysisController.cpp
     src/app/EngineSettingsController.cpp
@@ -116,6 +117,7 @@ target_link_libraries(chess_review_startup PUBLIC chess_review_persistence chess
 chess_review_apply_options(chess_review_startup)
 
 add_library(chess_review_ui STATIC
+    src/ui/review/ReviewPage.cpp
     src/ui/EngineText.cpp
     src/ui/settings/EngineSettingsPage.cpp
     src/ui/chess/ChessBoardWidget.cpp
