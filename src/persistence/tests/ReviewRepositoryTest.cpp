@@ -128,6 +128,147 @@ class ReviewRepositoryTest final : public QObject {
     Q_OBJECT
   private slots:
     void init() { QTest::failOnWarning(); }
+    void orphanedJobRemainsVisibleAsDamaged() {
+        Fixture f;
+        const auto request = seed(f.session);
+        const auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        QVERIFY(f.exec(QStringLiteral("DELETE FROM review_jobs")));
+        const auto loaded = f.session.loadReview(run.id);
+        QVERIFY(std::holds_alternative<ReviewError>(loaded));
+        QCOMPARE(std::get<ReviewError>(loaded).code, ReviewErrorCode::InvalidRecord);
+        const auto rows =
+            std::get<std::vector<ReviewSummary>>(f.session.listReviews(request.gameId, 0, 50));
+        QCOMPARE(rows.size(), std::size_t(1));
+        QCOMPARE(rows[0].id, run.id);
+        QVERIFY(rows[0].metadataError.has_value());
+    }
+    void orphanedEvidenceIsNotOrdinaryAbsence() {
+        Fixture f;
+        const auto doc = document();
+        const auto request = seed(f.session, doc);
+        const auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        QVERIFY(std::holds_alternative<ReviewSummary>(
+            f.session.checkpointReview(checkpoint(run.id, 0, 0, resultAt(request, *doc, 0)))));
+        QVERIFY(f.exec(QStringLiteral("PRAGMA foreign_keys=OFF")));
+        QVERIFY(f.exec(QStringLiteral("UPDATE review_positions SET evidence_id=999999")));
+        const auto loaded = f.session.loadReviewEvidence(run.id, 0);
+        QVERIFY(std::holds_alternative<ReviewError>(loaded));
+        QCOMPARE(std::get<ReviewError>(loaded).code, ReviewErrorCode::InvalidRecord);
+    }
+    void malformedCurrentTransitionCannotBeHidden_data() {
+        QTest::addColumn<QString>("sql");
+        QTest::newRow("cause without failure")
+            << QStringLiteral("UPDATE review_transitions SET failure=1");
+        QTest::newRow("initial predecessor")
+            << QStringLiteral("UPDATE review_transitions SET previous=3");
+        QTest::newRow("extra future transition")
+            << QStringLiteral("INSERT INTO review_transitions SELECT review_id,1,0,1,0,created_at "
+                              "FROM review_transitions WHERE revision=0");
+    }
+    void malformedCurrentTransitionCannotBeHidden() {
+        QFETCH(QString, sql);
+        Fixture f;
+        const auto request = seed(f.session);
+        const auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        QVERIFY(f.exec(sql));
+        const auto loaded = f.session.loadReview(run.id);
+        QVERIFY(std::holds_alternative<ReviewError>(loaded));
+        QCOMPARE(std::get<ReviewError>(loaded).code, ReviewErrorCode::InvalidRecord);
+    }
+    void recoveryPreservesInvalidMetadata_data() {
+        QTest::addColumn<QString>("sql");
+        QTest::newRow("unknown review format")
+            << QStringLiteral("UPDATE reviews SET format_version=99");
+        QTest::newRow("damaged settings")
+            << QStringLiteral("UPDATE reviews SET settings=zeroblob(128)");
+        QTest::newRow("inconsistent transition")
+            << QStringLiteral("UPDATE review_transitions SET status=9,failure=1");
+    }
+    void recoveryPreservesInvalidMetadata() {
+        QFETCH(QString, sql);
+        QTemporaryDir directory;
+        const auto path = directory.filePath(QStringLiteral("db"));
+        {
+            StorageSession session;
+            QVERIFY(!session.initialize(path, migrations(), ignore));
+            const auto request = seed(session);
+            QVERIFY(std::holds_alternative<ReviewSummary>(session.createReview(request)));
+            QSqlQuery query(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+            QVERIFY(query.exec(sql));
+        }
+        StorageSession reopened;
+        const auto failure = reopened.initialize(path, migrations(), ignore);
+        QVERIFY(failure.has_value());
+        QSqlQuery query(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+        QVERIFY(query.exec(QStringLiteral("SELECT status,revision FROM review_jobs")));
+        QVERIFY(query.next());
+        QCOMPARE(query.value(0).toInt(), 0);
+        QCOMPARE(query.value(1).toLongLong(), qint64(0));
+    }
+    void historyPageChecksTransitionSemantics() {
+        Fixture f;
+        const auto request = seed(f.session);
+        const auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        QVERIFY(f.exec(QStringLiteral("UPDATE review_transitions SET failure=1")));
+        const auto history = f.session.listReviewTransitions(run.id, 0, 50);
+        QVERIFY(std::holds_alternative<ReviewError>(history));
+    }
+    void historyChecksPredecessorsAcrossPageBoundaries() {
+        Fixture f;
+        const auto request = seed(f.session);
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        for (auto status : {JobStatus::QuickScanning, JobStatus::Reviewable, JobStatus::Failed}) {
+            ReviewCheckpoint cp;
+            cp.reviewId = run.id;
+            cp.expectedRevision = run.revision;
+            cp.status = status;
+            if (status == JobStatus::Failed) {
+                cp.failure = review::JobFailure::Engine;
+            }
+            run = std::get<ReviewSummary>(f.session.checkpointReview(cp));
+        }
+        run = std::get<ReviewSummary>(f.session.continueReview(
+            {run.id, run.revision, request.fingerprint, request.configuration}));
+        ReviewCheckpoint cp;
+        cp.reviewId = run.id;
+        cp.expectedRevision = run.revision;
+        run = std::get<ReviewSummary>(f.session.checkpointReview(cp));
+        const auto page = f.session.listReviewTransitions(run.id, 3, 2);
+        QVERIFY(std::holds_alternative<std::vector<ReviewTransition>>(page));
+        QCOMPARE(std::get<std::vector<ReviewTransition>>(page).size(), std::size_t(2));
+        QVERIFY(f.exec(QStringLiteral("DELETE FROM review_transitions WHERE revision=2")));
+        QCOMPARE(std::get<ReviewError>(f.session.listReviewTransitions(run.id, 2, 2)).code,
+                 ReviewErrorCode::InvalidRecord);
+        QVERIFY(f.exec(QStringLiteral("DELETE FROM review_transitions WHERE revision=4")));
+        QCOMPARE(std::get<ReviewError>(f.session.loadReview(run.id)).code,
+                 ReviewErrorCode::InvalidRecord);
+    }
+    void reviewStorageWorkloadMeasurement() {
+        if (!qEnvironmentVariableIsSet("CHESS_REVIEW_REVIEW_STORAGE_BENCHMARK")) {
+            QSKIP("Optional review storage workload measurement.");
+        }
+        std::string pgn;
+        for (int turn = 1; turn <= 1000; turn += 2) {
+            pgn += std::to_string(turn) + ". Nf3 Nf6 " + std::to_string(turn + 1) + ". Ng1 Ng8 ";
+        }
+        pgn += "*";
+        Fixture f;
+        const auto doc = document(pgn);
+        const auto request = seed(f.session, doc);
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        const int finalIndex = static_cast<int>(doc->originalMainline().size());
+        const auto result = resultAt(request, *doc, finalIndex);
+        QElapsedTimer timer;
+        timer.start();
+        for (int i = 0; i < 20; ++i) {
+            const auto saved =
+                f.session.checkpointReview(checkpoint(run.id, run.revision, finalIndex, result));
+            QVERIFY(std::holds_alternative<ReviewSummary>(saved));
+            run = std::get<ReviewSummary>(saved);
+        }
+        qInfo("Twenty checkpoints at ply %d: %lld ms", finalIndex,
+              static_cast<long long>(timer.elapsed()));
+    }
     void runsKeepSettingsAndSides() {
         Fixture f;
         auto request = seed(f.session);

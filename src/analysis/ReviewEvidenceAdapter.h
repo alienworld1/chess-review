@@ -16,5 +16,8 @@ struct ReviewEvidenceRecord {
 enum class EvidenceAdapterIssue { InvalidAnalysis, IncompleteAttempt };
 using EvidenceResult = std::variant<ReviewEvidenceRecord, EvidenceAdapterIssue>;
 // CPU-only; replay/validation belongs off the GUI thread. Does not authorize cache reuse.
-[[nodiscard]] EvidenceResult reviewEvidence(const engine::AnalysisResult& result);
+// A borrowed board witness is used only after complete history equality; mismatch falls back to
+// replay.
+[[nodiscard]] EvidenceResult reviewEvidence(const engine::AnalysisResult& result,
+                                            const chess::Position* knownRoot = nullptr);
 } // namespace chess_review::analysis

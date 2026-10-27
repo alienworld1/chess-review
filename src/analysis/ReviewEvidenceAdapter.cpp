@@ -26,7 +26,8 @@ review::AnalysisStrength strength(const engine::SearchStatistics& stats) {
     return {stats.depth, stats.nodes, stats.timeMs};
 }
 } // namespace
-EvidenceResult reviewEvidence(const engine::AnalysisResult& result) {
+EvidenceResult reviewEvidence(const engine::AnalysisResult& result,
+                              const chess::Position* knownRoot) {
     if (result.outcome != engine::AnalysisOutcome::Completed) {
         return EvidenceAdapterIssue::IncompleteAttempt;
     }
@@ -35,7 +36,9 @@ EvidenceResult reviewEvidence(const engine::AnalysisResult& result) {
         return EvidenceAdapterIssue::InvalidAnalysis;
     }
     const auto& provenance = *snapshot.provenance;
-    auto restored = engine::restorePosition(provenance.position);
+    auto restored = knownRoot && knownRoot->context() == provenance.position
+                        ? chess::Result<chess::Position>(*knownRoot)
+                        : engine::restorePosition(provenance.position);
     if (std::holds_alternative<chess::Error>(restored)) {
         return EvidenceAdapterIssue::InvalidAnalysis;
     }

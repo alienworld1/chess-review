@@ -116,3 +116,10 @@ Whitespace, comments, key order, and omitted versus explicit defaults do not aff
 identity. Threshold changes do not change conversion or analysis identities.
 Future review storage must retain the applicable identities, model versions, and
 source evidence. Accuracy remains a separate future methodology.
+
+The analysis adapter optionally accepts a borrowed `Position` replay witness.
+It reuses that board only when the complete history-aware context matches; a
+mismatch falls back to reconstruction. Independent context size/version and
+analysis validation still apply, and the pointer is never retained. This avoids
+replaying a history already validated by storage without changing cache eligibility
+or evidence sufficiency.

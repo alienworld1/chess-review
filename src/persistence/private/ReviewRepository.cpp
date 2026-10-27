@@ -97,7 +97,7 @@ const QString summaryProjection = QStringLiteral(
     "typeof(j.revision)='integer' AND typeof(j.completed_positions)='integer' AND "
     "typeof(j.total_positions)='integer' AND "
     "typeof(r.created_at)='integer' AND typeof(j.updated_at)='integer' "
-    "FROM reviews r JOIN review_jobs j ON j.review_id=r.id ");
+    "FROM reviews r LEFT JOIN review_jobs j ON j.review_id=r.id ");
 std::optional<ReviewSummary> summary(const QSqlQuery& q) {
     if (!q.value(11).toBool() || q.value(0).toLongLong() <= 0 || q.value(1).toLongLong() <= 0 ||
         q.value(2).toLongLong() <= 0 || q.value(3).toLongLong() < 0 ||
@@ -122,6 +122,57 @@ std::optional<ReviewSummary> summary(const QSqlQuery& q) {
                          timestamp(q.value(10).toLongLong()),
                          {}};
 }
+std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
+                                                         const ReviewSummary& snapshot) {
+    QSqlQuery q(db);
+    const auto* s = &snapshot;
+    const auto id = s->id;
+    if (!exec(q,
+              QStringLiteral(
+                  "SELECT substr(CAST(settings AS BLOB),1,2097153),substr(CAST(mainline_identity "
+                  "AS BLOB),1,1048577),"
+                  "CASE WHEN typeof(engine_profile_id)='integer' THEN engine_profile_id END,CASE "
+                  "WHEN typeof(format_version)='integer' THEN format_version "
+                  "END,typeof(settings)='blob' AND "
+                  "typeof(mainline_identity)='blob' AND typeof(engine_profile_id)='integer' AND "
+                  "typeof(format_version)='integer' FROM reviews WHERE id=?"),
+              {static_cast<qint64>(id)}) ||
+        !q.next()) {
+        return storage();
+    }
+    if (!q.value(4).toBool()) {
+        return invalid();
+    }
+    if (q.value(3).toLongLong() != reviewFormatVersion) {
+        return error(ReviewErrorCode::UnsupportedVersion);
+    }
+    const auto bytes = q.value(0).toByteArray();
+    const auto doc = readReviewDocument(bytes, maxReviewSettingsBytes);
+    if (!doc) {
+        return invalid();
+    }
+    if ((*doc)["formatVersion"].toInt(-1) != reviewFormatVersion ||
+        (*doc)["configurationVersion"].toInt(-1) != 1 ||
+        (*doc)["evidenceModelVersion"].toInt(-1) !=
+            static_cast<int>(review::evidenceModelVersion) ||
+        (*doc)["expectedScoreModelVersion"].toInt(-1) !=
+            static_cast<int>(review::expectedScoreModelVersion)) {
+        return error(ReviewErrorCode::UnsupportedVersion);
+    }
+    auto settings = decodeReviewSettings(bytes);
+    if (!settings || settings->gameId != s->gameId ||
+        settings->engineProfileId != q.value(2).toLongLong() ||
+        settings->selectedSide != s->selectedSide ||
+        settings->configuration.values.quality != s->quality) {
+        return invalid();
+    }
+    const auto identity = q.value(1).toByteArray();
+    if (identity.isEmpty() || identity.size() > 1024 * 1024) {
+        return invalid();
+    }
+    q.finish();
+    return StoredReview{snapshot, std::move(*settings), identity};
+}
 chess::Result<chess::Position> gamePosition(const StoredGame& game, int index) {
     auto root = game.document->tree.position(game.document->tree.rootId());
     if (!std::holds_alternative<chess::Position>(root)) {
@@ -139,6 +190,76 @@ chess::Result<chess::Position> gamePosition(const StoredGame& game, int index) {
         }
     }
     return position;
+}
+bool validTransition(JobStatus previous, JobStatus status) {
+    if (active(previous)) {
+        return validStatus(status) && status != JobStatus::Queued &&
+               (!active(status) || status >= previous);
+    }
+    return resumable(previous) && status == JobStatus::Queued;
+}
+const QString transitionProjection = QStringLiteral(
+    "SELECT CASE WHEN typeof(t.revision)='integer' THEN t.revision END,"
+    "CASE WHEN typeof(t.previous)='integer' THEN t.previous END,"
+    "CASE WHEN typeof(t.status)='integer' THEN t.status END,"
+    "CASE WHEN typeof(t.failure)='integer' THEN t.failure END,"
+    "CASE WHEN typeof(t.created_at)='integer' THEN t.created_at END,"
+    "typeof(t.revision)='integer' AND (t.previous IS NULL OR typeof(t.previous)='integer') AND "
+    "typeof(t.status)='integer' AND typeof(t.failure)='integer' AND typeof(t.created_at)='integer',"
+    "CASE WHEN typeof(p.status)='integer' THEN p.status END,"
+    "CASE WHEN typeof(p.created_at)='integer' THEN p.created_at END,"
+    "typeof(p.revision)='integer' AND typeof(p.status)='integer' AND "
+    "typeof(p.created_at)='integer' "
+    "FROM review_transitions t LEFT JOIN review_transitions p ON p.review_id=t.review_id AND "
+    "p.revision=t.revision-1 ");
+std::optional<ReviewTransition> readTransition(const QSqlQuery& q) {
+    if (!q.value(5).toBool() || q.value(0).toLongLong() < 0 ||
+        (!q.value(1).isNull() && (q.value(1).toLongLong() < 0 || q.value(1).toLongLong() > 9)) ||
+        q.value(2).toLongLong() < 0 || q.value(2).toLongLong() > 9 || q.value(3).toLongLong() < 0 ||
+        q.value(3).toLongLong() > 4 || q.value(4).toLongLong() < 1 ||
+        q.value(4).toLongLong() > 253402300799999LL) {
+        return std::nullopt;
+    }
+    ReviewTransition out{
+        q.value(0).toLongLong(),
+        q.value(1).isNull() ? std::nullopt
+                            : std::optional(static_cast<JobStatus>(q.value(1).toInt())),
+        static_cast<JobStatus>(q.value(2).toInt()), static_cast<JobFailure>(q.value(3).toInt()),
+        timestamp(q.value(4).toLongLong())};
+    if ((out.status == JobStatus::Failed) != (out.failure != JobFailure::None)) {
+        return std::nullopt;
+    }
+    if (out.revision == 0) {
+        if (out.previous || out.status != JobStatus::Queued) {
+            return std::nullopt;
+        }
+    } else if (!out.previous || !q.value(8).toBool() ||
+               q.value(6).toLongLong() != static_cast<int>(*out.previous) ||
+               q.value(7).toLongLong() < 1 || q.value(7).toLongLong() > q.value(4).toLongLong() ||
+               !validTransition(*out.previous, out.status)) {
+        return std::nullopt;
+    }
+    return out;
+}
+std::optional<ReviewError> checkCurrentTransition(QSqlDatabase& db, const ReviewSummary& snapshot) {
+    QSqlQuery q(db);
+    // Descending key lookup also rejects unexpected future revisions without scanning history.
+    if (!exec(q,
+              transitionProjection +
+                  QStringLiteral("WHERE t.review_id=? ORDER BY t.revision DESC LIMIT 1"),
+              {static_cast<qint64>(snapshot.id)})) {
+        return storage();
+    }
+    if (!q.next()) {
+        return q.lastError().isValid() ? storage() : invalid();
+    }
+    const auto current = readTransition(q);
+    if (!current || current->revision != snapshot.revision || current->status != snapshot.status ||
+        current->createdAt != snapshot.updatedAt ||
+        (current->revision == 0 && current->createdAt != snapshot.createdAt)) {
+        return invalid();
+    }
+    return std::nullopt;
 }
 bool transition(QSqlDatabase& db, ReviewId id, std::int64_t revision,
                 std::optional<JobStatus> previous, JobStatus status, JobFailure failure,
@@ -172,7 +293,7 @@ std::variant<StoredReviewEvidence, ReviewError> readEvidence(QSqlDatabase& db,
                              "NULL AND e.attempt IS NULL) OR "
                              "(typeof(e.analysis)='blob' AND typeof(e.session)='blob' AND "
                              "typeof(e.attempt)='blob')) "
-                             "FROM review_positions p JOIN review_evidence e ON "
+                             "FROM review_positions p LEFT JOIN review_evidence e ON "
                              "e.review_id=p.review_id AND e.id=p.evidence_id "
                              "WHERE p.review_id=? AND p.position_index=?"),
               {static_cast<qint64>(run.summary.id), index})) {
@@ -190,6 +311,15 @@ std::variant<StoredReviewEvidence, ReviewError> readEvidence(QSqlDatabase& db,
     if (q.value(0).toLongLong() <= 0 || q.value(1).toLongLong() != index) {
         return invalid();
     }
+    const auto adaptedSnapshot = readReviewDocument(q.value(5).toByteArray(), maxAnalysisBytes);
+    if (!adaptedSnapshot) {
+        return invalid();
+    }
+    if ((*adaptedSnapshot)["formatVersion"].toInt(-1) != reviewFormatVersion ||
+        (*adaptedSnapshot)["evidence"].toObject()["modelVersion"].toInt(-1) !=
+            static_cast<int>(review::evidenceModelVersion)) {
+        return error(ReviewErrorCode::UnsupportedVersion);
+    }
     StoredReviewEvidence out;
     out.positionIndex = index;
     out.evidenceId = q.value(0).toLongLong();
@@ -206,22 +336,13 @@ std::variant<StoredReviewEvidence, ReviewError> readEvidence(QSqlDatabase& db,
             decoded->evidence.request.toRfc4122() != q.value(3).toByteArray()) {
             return invalid();
         }
-        auto adapted = analysis::reviewEvidence(*decoded);
+        auto adapted = analysis::reviewEvidence(*decoded, &position);
         const auto* value = std::get_if<analysis::ReviewEvidenceRecord>(&adapted);
         if (!value) {
             return invalid();
         }
         out.evidence = value->evidence;
         out.analysis = std::move(*decoded);
-    }
-    const auto adapted = readReviewDocument(q.value(5).toByteArray(), maxAnalysisBytes);
-    if (!adapted) {
-        return invalid();
-    }
-    if ((*adapted)["formatVersion"].toInt(-1) != reviewFormatVersion ||
-        (*adapted)["evidence"].toObject()["modelVersion"].toInt(-1) !=
-            static_cast<int>(review::evidenceModelVersion)) {
-        return error(ReviewErrorCode::UnsupportedVersion);
     }
     if (adaptedDocument(out.evidence, run.settings.configuration.values.conversion) !=
         q.value(5).toByteArray()) {
@@ -237,8 +358,6 @@ std::variant<review::MoveEvidence, ReviewError> readPair(QSqlDatabase& db, const
                                                          chess::Move move, int index,
                                                          const StoredReviewEvidence& before,
                                                          const StoredReviewEvidence& after) {
-    auto paired = review::pairEvidence(beforePosition, move, before.evidence, after.evidence,
-                                       run.settings.configuration.values.conversion);
     QSqlQuery q(db);
     if (!exec(q,
               QStringLiteral("SELECT CASE WHEN typeof(before_id)='integer' THEN before_id END,CASE "
@@ -265,6 +384,8 @@ std::variant<review::MoveEvidence, ReviewError> readPair(QSqlDatabase& db, const
     if ((*document)["formatVersion"].toInt(-1) != reviewFormatVersion) {
         return error(ReviewErrorCode::UnsupportedVersion);
     }
+    auto paired = review::pairEvidence(beforePosition, move, before.evidence, after.evidence,
+                                       run.settings.configuration.values.conversion);
     if (bytes != pairedDocument(paired)) {
         return invalid();
     }
@@ -274,6 +395,21 @@ bool updatePair(QSqlDatabase& db, const StoredReview& run, const StoredGame& gam
     if (index <= 0 || index >= run.summary.totalPositions) {
         return true;
     }
+    QSqlQuery coverage(db);
+    if (!exec(coverage,
+              QStringLiteral("SELECT count(*) FROM review_positions WHERE review_id=? AND "
+                             "position_index IN (?,?)"),
+              {static_cast<qint64>(run.summary.id), index - 1, index}) ||
+        !coverage.next()) {
+        return false;
+    }
+    // One member is the newly validated checkpoint. Do not replay history or decode it again
+    // until the neighbour is actually present; an orphaned reference still counts and is rejected
+    // below.
+    if (coverage.value(0).toInt() != 2) {
+        return true;
+    }
+    coverage.finish();
     auto restored = gamePosition(game, index - 1);
     const auto* position = std::get_if<chess::Position>(&restored);
     if (!position) {
@@ -412,47 +548,14 @@ LoadReviewResult StorageSession::loadReviewRecord(ReviewId id, StoredGame* ownin
     if (!s) {
         return invalid();
     }
-    if (!exec(q,
-              QStringLiteral(
-                  "SELECT substr(CAST(settings AS BLOB),1,2097153),substr(CAST(mainline_identity "
-                  "AS BLOB),1,1048577),"
-                  "CASE WHEN typeof(engine_profile_id)='integer' THEN engine_profile_id END,CASE "
-                  "WHEN typeof(format_version)='integer' THEN format_version "
-                  "END,typeof(settings)='blob' AND "
-                  "typeof(mainline_identity)='blob' AND typeof(engine_profile_id)='integer' AND "
-                  "typeof(format_version)='integer' FROM reviews WHERE id=?"),
-              {static_cast<qint64>(id)}) ||
-        !q.next()) {
-        return storage();
+    auto header = readReviewHeader(database_, *s);
+    if (const auto* issue = std::get_if<ReviewError>(&header)) {
+        return *issue;
     }
-    if (!q.value(4).toBool()) {
+    auto* run = std::get_if<StoredReview>(&header);
+    if (!run) {
         return invalid();
     }
-    if (q.value(3).toLongLong() != reviewFormatVersion) {
-        return error(ReviewErrorCode::UnsupportedVersion);
-    }
-    const auto bytes = q.value(0).toByteArray();
-    const auto doc = readReviewDocument(bytes, maxReviewSettingsBytes);
-    if (!doc) {
-        return invalid();
-    }
-    if ((*doc)["formatVersion"].toInt(-1) != reviewFormatVersion ||
-        (*doc)["configurationVersion"].toInt(-1) != 1 ||
-        (*doc)["evidenceModelVersion"].toInt(-1) !=
-            static_cast<int>(review::evidenceModelVersion) ||
-        (*doc)["expectedScoreModelVersion"].toInt(-1) !=
-            static_cast<int>(review::expectedScoreModelVersion)) {
-        return error(ReviewErrorCode::UnsupportedVersion);
-    }
-    auto settings = decodeReviewSettings(bytes);
-    if (!settings || settings->gameId != s->gameId ||
-        settings->engineProfileId != q.value(2).toLongLong() ||
-        settings->selectedSide != s->selectedSide ||
-        settings->configuration.values.quality != s->quality) {
-        return invalid();
-    }
-    const auto identity = q.value(1).toByteArray();
-    q.finish();
     const auto loaded = loadGame(s->gameId);
     const auto* game = std::get_if<StoredGame>(&loaded);
     if (!game ||
@@ -461,7 +564,7 @@ LoadReviewResult StorageSession::loadReviewRecord(ReviewId id, StoredGame* ownin
     }
     auto final = gamePosition(*game, s->totalPositions - 1);
     if (!std::holds_alternative<chess::Position>(final) ||
-        positionIdentity(std::get<chess::Position>(final).context()) != identity) {
+        positionIdentity(std::get<chess::Position>(final).context()) != run->mainlineIdentity) {
         return invalid();
     }
     if (!exec(
@@ -481,22 +584,13 @@ LoadReviewResult StorageSession::loadReviewRecord(ReviewId id, StoredGame* ownin
         return invalid();
     }
     q.finish();
-    if (!exec(q,
-              QStringLiteral(
-                  "SELECT status,created_at FROM review_transitions WHERE review_id=? "
-                  "AND revision=? AND typeof(status)='integer' AND typeof(created_at)='integer'"),
-              {static_cast<qint64>(id), static_cast<qint64>(s->revision)}) ||
-        !q.next()) {
-        return invalid();
-    }
-    if (q.value(0).toLongLong() != static_cast<int>(s->status) ||
-        q.value(1).toLongLong() != s->updatedAt.toMSecsSinceEpoch()) {
-        return invalid();
+    if (const auto failure = checkCurrentTransition(database_, *s)) {
+        return *failure;
     }
     if (owningGame) {
         *owningGame = *game;
     }
-    return StoredReview{*s, std::move(*settings), identity};
+    return std::move(*run);
 }
 ListReviewsResult StorageSession::listReviews(GameId gameId, std::int64_t offset, int limit) {
     if (!usable_) {
@@ -586,7 +680,7 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
             }
             auto encoded = encodeAnalysis(*request.analysis);
             const auto* value = std::get_if<QByteArray>(&encoded);
-            auto adapted = analysis::reviewEvidence(*request.analysis);
+            auto adapted = analysis::reviewEvidence(*request.analysis, position);
             const auto* record = std::get_if<analysis::ReviewEvidenceRecord>(&adapted);
             if (!value || !record) {
                 return error(ReviewErrorCode::InvalidInput);
@@ -834,37 +928,19 @@ ListReviewTransitionsResult StorageSession::listReviewTransitions(ReviewId id, s
         return error(ReviewErrorCode::InvalidInput);
     }
     QSqlQuery q(database_);
-    if (!exec(
-            q,
-            QStringLiteral(
-                "SELECT CASE WHEN typeof(revision)='integer' THEN revision END,"
-                "CASE WHEN typeof(previous)='integer' THEN previous END,"
-                "CASE WHEN typeof(status)='integer' THEN status END,"
-                "CASE WHEN typeof(failure)='integer' THEN failure END,"
-                "CASE WHEN typeof(created_at)='integer' THEN created_at "
-                "END,typeof(revision)='integer' AND "
-                "(previous IS NULL OR typeof(previous)='integer') AND typeof(status)='integer' AND "
-                "typeof(failure)='integer' AND typeof(created_at)='integer' FROM "
-                "review_transitions WHERE review_id=? ORDER BY revision LIMIT ? OFFSET ?"),
-            {static_cast<qint64>(id), limit, static_cast<qint64>(offset)})) {
+    if (!exec(q,
+              transitionProjection +
+                  QStringLiteral("WHERE t.review_id=? ORDER BY t.revision LIMIT ? OFFSET ?"),
+              {static_cast<qint64>(id), limit, static_cast<qint64>(offset)})) {
         return storage();
     }
     std::vector<ReviewTransition> rows;
     while (q.next()) {
-        if (!q.value(5).toBool() || q.value(0).toLongLong() < 0 ||
-            (!q.value(1).isNull() &&
-             (q.value(1).toLongLong() < 0 || q.value(1).toLongLong() > 9)) ||
-            q.value(2).toLongLong() < 0 || q.value(2).toLongLong() > 9 ||
-            q.value(3).toLongLong() < 0 || q.value(3).toLongLong() > 4 ||
-            q.value(4).toLongLong() < 1 || q.value(4).toLongLong() > 253402300799999LL) {
+        auto value = readTransition(q);
+        if (!value) {
             return invalid();
         }
-        rows.push_back(
-            {q.value(0).toLongLong(),
-             q.value(1).isNull() ? std::nullopt
-                                 : std::optional(static_cast<JobStatus>(q.value(1).toInt())),
-             static_cast<JobStatus>(q.value(2).toInt()),
-             static_cast<JobFailure>(q.value(3).toInt()), timestamp(q.value(4).toLongLong())});
+        rows.push_back(*value);
     }
     if (q.lastError().isValid()) {
         return storage();
@@ -907,6 +983,21 @@ std::optional<DatabaseError> StorageSession::interruptReviewJobs(const QString& 
         q.finish();
         if (!s || s->revision == std::numeric_limits<std::int64_t>::max()) {
             return failure();
+        }
+        // Recovery must not hide an unsupported header or inconsistent history beneath a fresh
+        // valid tail.
+        const auto header = readReviewHeader(database_, *s);
+        std::optional<ReviewError> metadataFailure;
+        if (const auto* issue = std::get_if<ReviewError>(&header)) {
+            metadataFailure = *issue;
+        } else {
+            metadataFailure = checkCurrentTransition(database_, *s);
+        }
+        if (metadataFailure) {
+            auto result = failure();
+            result.operation = QStringLiteral("Validate unfinished review metadata");
+            result.detail = metadataFailure->message + QStringLiteral(" Saved data is preserved.");
+            return result;
         }
         after = s->id;
         const auto time = std::max(now(), s->updatedAt.toMSecsSinceEpoch());

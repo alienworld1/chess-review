@@ -401,6 +401,35 @@ class ReviewConfigurationTest final : public QObject {
         startup.shutdown();
         QTRY_COMPARE(finished.count(), 1);
     }
+    void adapterWitnessNeverBypassesHistoryOrBounds() {
+        auto raw = analysisResult();
+        auto root = chess::Position::initial();
+        const auto direct = analysis::reviewEvidence(raw);
+        const auto witnessed = analysis::reviewEvidence(raw, &root);
+        QVERIFY(std::holds_alternative<analysis::ReviewEvidenceRecord>(witnessed));
+        QCOMPARE(std::get<analysis::ReviewEvidenceRecord>(witnessed).evidence.position,
+                 std::get<analysis::ReviewEvidenceRecord>(direct).evidence.position);
+        QVERIFY(std::holds_alternative<std::monostate>(
+            root.play(std::get<chess::Move>(root.parseUci("e2e4")))));
+        const auto wrongWitness = analysis::reviewEvidence(raw, &root);
+        QVERIFY(std::holds_alternative<analysis::ReviewEvidenceRecord>(wrongWitness));
+        QCOMPARE(std::get<analysis::ReviewEvidenceRecord>(wrongWitness).evidence.position,
+                 raw.evidence.provenance->position);
+        root = chess::Position::initial();
+        for (int i = 0; i < 3277; ++i) {
+            for (const auto* uci : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
+                QVERIFY(std::holds_alternative<std::monostate>(
+                    root.play(std::get<chess::Move>(root.parseUci(uci)))));
+            }
+        }
+        auto provenance = std::make_shared<engine::AnalysisProvenance>(*raw.evidence.provenance);
+        provenance->position = root.context();
+        raw.evidence.provenance = provenance;
+        // The board exactly matches this oversized context; independent structural limits still
+        // reject it.
+        QVERIFY(std::holds_alternative<analysis::EvidenceAdapterIssue>(
+            analysis::reviewEvidence(raw, &root)));
+    }
     void adapterUsesScoreSetDepth() {
         auto raw = analysisResult();
         raw.evidence.statistics.depth = 13;

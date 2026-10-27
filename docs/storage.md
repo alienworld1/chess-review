@@ -483,7 +483,10 @@ three configuration hashes. Evidence and expected-score model versions are retai
 classification, accuracy, motif, explanation and opening versions remain explicitly
 absent until those features exist. Configuration identities are recomputed on the
 worker. Changing settings creates another run; old runs are retained indefinitely.
-No engine executable is needed to read a saved run.
+No engine executable is needed to read a saved run. A missing owning review or
+position is ordinary absence; a retained review without its job, or a retained
+position reference without its evidence, is damaged data. Listings keep damaged
+reviews identifiable instead of dropping them through an inner join.
 
 Position index 0 is the root; the last index is the position after the final
 original mainline move. A checkpoint stores at most one completed analysis or a
@@ -518,8 +521,12 @@ whole-library size cap, automatic review eviction or silent retry on disk failur
 Before database readiness on every launch, a transaction marks Queued,
 QuickScanning, Reviewable, Deepening and Deriving jobs Interrupted, increments
 revisions and records their previous phase. Previously terminal jobs remain as
-stored. A failed recovery transaction blocks storage readiness and rolls back all
-its changes. Explicit continuation of Interrupted, Cancelled, Partial or Failed
+stored. Recovery checks the supported settings envelope and the latest transition before
+writing a new history entry. Transition validation checks lifecycle/failure
+semantics, predecessor identity and timestamp order, including predecessors outside
+a requested history page. Unsupported or inconsistent active-job metadata blocks
+readiness with an explicit diagnostic and preserves saved data. A failed recovery
+transaction rolls back all its changes. Explicit continuation of Interrupted, Cancelled, Partial or Failed
 jobs preserves evidence/history and returns the job to Queued. It requires the
 saved configuration, supported models and the same full engine fingerprint; it
 never starts an engine. Future scheduling should checkpoint every completed

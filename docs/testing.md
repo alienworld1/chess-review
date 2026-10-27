@@ -885,3 +885,17 @@ explicit continuation, bounded corrupt-record reads, asynchronous admission and
 shutdown drainage. A child process is killed after a committed checkpoint; reopening
 must retain that evidence and mark its job Interrupted without starting an engine.
 All database fixtures remain inside the persistence module and use temporary storage.
+
+Durable review regressions also distinguish broken job/evidence relationships from
+ordinary absence, reject impossible or disconnected history entries across page
+boundaries, and verify that restart cannot hide unsupported settings or damaged
+history beneath a new Interrupted entry. Adapter witness tests cover matching and
+mismatching histories and an exactly matching context exceeding the engine history
+limit. An optional local workload probe measures twenty checkpoints at ply 2,000:
+
+```sh
+CHESS_REVIEW_REVIEW_STORAGE_BENCHMARK=1 build/dev/src/persistence/tests/review_repository_tests reviewStorageWorkloadMeasurement
+```
+
+Run timing probes without competing builds. Their timings are observations, not
+CTest latency assertions or portable performance guarantees.
