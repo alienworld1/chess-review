@@ -3,6 +3,7 @@
 #include "persistence/AnalysisRepository.h"
 #include "persistence/EngineRepository.h"
 #include "persistence/GameRepository.h"
+#include "persistence/ReviewRepository.h"
 #include <QMetaType>
 #include <QObject>
 #include <QString>
@@ -64,7 +65,33 @@ class Database final : public QObject {
     void loadGame(RequestId request, GameId id);
     void listGames(RequestId request, std::int64_t offset = 0, int limit = 50);
 
+    // Durable review operations share repository admission and accepted-write drainage.
+    void createReview(RequestId requestId, CreateReview request);
+    void loadReview(RequestId requestId, ReviewId id);
+    void listReviews(RequestId requestId, GameId gameId, std::int64_t offset = 0, int limit = 50);
+    void checkpointReview(RequestId requestId, ReviewCheckpoint checkpoint);
+    void continueReview(RequestId requestId, ContinueReview continuation);
+    void loadReviewEvidence(RequestId requestId, ReviewId id, int positionIndex);
+    void listReviewTransitions(RequestId requestId, ReviewId id, std::int64_t offset = 0,
+                               int limit = 50);
+
   signals:
+    void reviewCreated(chess_review::persistence::RequestId requestId,
+                       const chess_review::persistence::CreateReviewResult& result);
+    void reviewLoaded(chess_review::persistence::RequestId requestId,
+                      const chess_review::persistence::LoadReviewResult& result);
+    void reviewsListed(chess_review::persistence::RequestId requestId,
+                       const chess_review::persistence::ListReviewsResult& result);
+    void reviewCheckpointed(chess_review::persistence::RequestId requestId,
+                            const chess_review::persistence::CheckpointReviewResult& result);
+    void reviewContinued(chess_review::persistence::RequestId requestId,
+                         const chess_review::persistence::ContinueReviewResult& result);
+    void reviewEvidenceLoaded(chess_review::persistence::RequestId requestId,
+                              const chess_review::persistence::LoadReviewEvidenceResult& result);
+    void
+    reviewTransitionsListed(chess_review::persistence::RequestId requestId,
+                            const chess_review::persistence::ListReviewTransitionsResult& result);
+
     void analysisStored(chess_review::persistence::RequestId request,
                         const chess_review::persistence::StoreAnalysisResult& result);
     void analysisFound(chess_review::persistence::RequestId request,

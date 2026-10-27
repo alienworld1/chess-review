@@ -223,8 +223,28 @@ Result parse(std::string_view contents) {
     if (!reader.errors.empty()) {
         return reader.errors;
     }
+    return validate(config);
+}
+Result validate(const review::Configuration& values) {
+    const auto& c = values.classification;
+    const auto& e = values.conversion;
+    if (values.version != 1 ||
+        (values.quality != review::Quality::Fast && values.quality != review::Quality::Standard &&
+         values.quality != review::Quality::Thorough) ||
+        !std::isfinite(c.inaccuracyLoss) || !std::isfinite(c.mistakeLoss) ||
+        !std::isfinite(c.blunderLoss) || c.inaccuracyLoss <= 0 ||
+        c.inaccuracyLoss >= c.mistakeLoss || c.mistakeLoss >= c.blunderLoss || c.blunderLoss >= 1 ||
+        !std::isfinite(e.fallbackScaleCp) || e.fallbackScaleCp < 1 || e.fallbackScaleCp > 10000) {
+        return failure("Invalid review configuration values");
+    }
+    for (const auto& b : values.budgets) {
+        if (b.quickScanNodes < 1 || b.quickScanNodes > b.deepeningNodes ||
+            b.deepeningNodes > b.verificationNodes || b.verificationNodes > 1000000000000ULL) {
+            return failure("Invalid analysis budgets");
+        }
+    }
     return std::make_shared<const ValidatedConfiguration>(
-        ValidatedConfiguration{config, identities(config)});
+        ValidatedConfiguration{values, identities(values)});
 }
 Result load(const QString& filename) {
     if (!QDir::isAbsolutePath(filename) || filename.contains(QChar::Null) ||

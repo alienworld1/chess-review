@@ -874,3 +874,14 @@ The app now also builds with pinned toml++ 3.4.0. For offline configuration use
 `-DFETCHCONTENT_SOURCE_DIR_TOMLPLUSPLUS=/absolute/path/to/tomlplusplus-3.4.0`
 after verifying the source against the archive/checksum in
 [third_party/tomlplusplus](../third_party/tomlplusplus/README.md).
+
+## Durable review storage
+
+The `review_repository` integration suite covers separate runs/perspectives,
+configuration and model validation, evidence/pairing round trips, cache eviction,
+local terminal proof, stale/conflicting checkpoints, replacement evidence,
+transaction and COMMIT rollback, migration 005→006, startup recovery and its rollback,
+explicit continuation, bounded corrupt-record reads, asynchronous admission and
+shutdown drainage. A child process is killed after a committed checkpoint; reopening
+must retain that evidence and mark its job Interrupted without starting an engine.
+All database fixtures remain inside the persistence module and use temporary storage.

@@ -34,6 +34,15 @@ class StorageSession final {
     FindAnalysisResult findAnalysis(const engine::CacheQuery& query,
                                     qint64 scanLimit = maxAnalysisRecords);
 
+    CreateReviewResult createReview(const CreateReview& request);
+    LoadReviewResult loadReview(ReviewId id);
+    ListReviewsResult listReviews(GameId gameId, std::int64_t offset, int limit);
+    CheckpointReviewResult checkpointReview(const ReviewCheckpoint& request);
+    ContinueReviewResult continueReview(const ContinueReview& request);
+    LoadReviewEvidenceResult loadReviewEvidence(ReviewId id, int positionIndex);
+    ListReviewTransitionsResult listReviewTransitions(ReviewId id, std::int64_t offset, int limit);
+    std::optional<DatabaseError> interruptReviewJobs(const QString& path);
+
     RegisterEngineResult registerEngine(const engine::ValidatedEngine& engine);
     ListEnginesResult listEngines(std::int64_t offset, int limit);
 
@@ -42,6 +51,7 @@ class StorageSession final {
     ListGamesResult listGames(std::int64_t offset, int limit);
 
   private:
+    LoadReviewResult loadReviewRecord(ReviewId id, StoredGame* owningGame);
     bool refreshGameValidationCache();
     bool usable_ = true;
     std::optional<std::pair<std::int64_t, std::int64_t>> validationStamp_;

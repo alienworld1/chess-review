@@ -126,8 +126,9 @@ registry and runner are private to the module. Version 1 creates only the
 002 creates `games` and its import-order index. Migration 003 upgrades healthy
 games to snapshot/identity v2 while preserving IDs, original PGN, source metadata,
 and import times. Damaged records are copied unchanged and remain individually
-unreadable. Migration 004 adds engine profiles. Review and puzzle tables remain
-future work.
+unreadable. Migration 004 adds engine profiles. Migration 005 adds the disposable analysis cache. Migration 006 adds durable review
+runs, jobs, evidence, current-position references, paired interpretations and transition
+history. Puzzle tables remain future work.
 
 To add a migration:
 
@@ -464,3 +465,64 @@ configuration, coverage and legal PVs. At most 100,000 candidates are examined;
 exceeding the supported retention bound returns an explicit error and rolls back
 cleanup rather than returning a potentially weaker partial hit. Retention scans
 use BLOB length metadata, with exact byte-counting fallbacks for damaged TEXT data.
+
+## Durable review runs
+
+`Database` exposes request-correlated `createReview`, `loadReview`, `listReviews`,
+`checkpointReview`, `continueReview`, `loadReviewEvidence` and
+`listReviewTransitions` operations. Inputs and results are defined in
+`persistence/ReviewRepository.h`. They use the existing storage worker, shared
+16-request admission limit and asynchronous shutdown drainage. Shared analysis
+provenance must remain immutable through all aliases until request completion.
+The review journey
+and its UI are not implemented by this storage increment.
+
+Each run owns its immutable game/mainline identity, selected White or Black player,
+engine profile reference and full fingerprint, quality, configuration values and
+three configuration hashes. Evidence and expected-score model versions are retained;
+classification, accuracy, motif, explanation and opening versions remain explicitly
+absent until those features exist. Configuration identities are recomputed on the
+worker. Changing settings creates another run; old runs are retained indefinitely.
+No engine executable is needed to read a saved run.
+
+Position index 0 is the root; the last index is the position after the final
+original mainline move. A checkpoint stores at most one completed analysis or a
+locally proved terminal position, updates adjacent before/after interpretations,
+and commits job progress and transition history in one transaction. Status-only
+checkpoints support cancellation and failure. An expected revision rejects stale
+writers. Identical attempts can be referenced again, but their evidence cannot be
+changed; a new attempt can replace the current reference while previous attempts
+remain owned by the run. Both players' positions are retained independently of
+the selected learning perspective. Completed processing does not certify sufficient
+chess evidence: callers must inspect evidence issues, pairing and coverage.
+
+Raw completed analyses use the existing checksummed analysis format. Adapted
+position evidence, raw score conversions and paired interpretation use version-1
+JSON documents followed by SHA-256 checksums. Pairing retains conversion models,
+perspectives, loss/delta, ranks, mate information and reasons for withheld claims.
+Readers replay legal history, validate provenance and compare stored derived values
+against their source evidence. Checksums detect accidental corruption, not forgery
+by a database owner. Durable records are never deleted on validation failure.
+Future format/model changes must preserve a supported legacy decoder or migrate
+transactionally through the backed-up migration runner; disposable-cache invalidation
+must never be applied to these records.
+
+Reads materialize bounded byte projections: settings at most 2 MiB, mainline identity
+at most 1 MiB, and individual raw/adapted/paired evidence at most 16 MiB each.
+Mainlines retain the imported tree depth limit of 16,384 plies; engine evidence also
+must meet the existing analysis validator's history limits. Lists default to 50 and
+allow 1–200 metadata/history rows with nonnegative offsets; evidence loads are
+individual. Invalid summary rows retain their ID and `metadataError`. There is no
+whole-library size cap, automatic review eviction or silent retry on disk failure.
+
+Before database readiness on every launch, a transaction marks Queued,
+QuickScanning, Reviewable, Deepening and Deriving jobs Interrupted, increments
+revisions and records their previous phase. Previously terminal jobs remain as
+stored. A failed recovery transaction blocks storage readiness and rolls back all
+its changes. Explicit continuation of Interrupted, Cancelled, Partial or Failed
+jobs preserves evidence/history and returns the job to Queued. It requires the
+saved configuration, supported models and the same full engine fingerprint; it
+never starts an engine. Future scheduling should checkpoint every completed
+position before acknowledging durable progress. A crash can repeat uncommitted
+work; unfinished search snapshots are not retained. Orderly shutdown drains
+accepted writes, and remaining active jobs become Interrupted on the next launch.

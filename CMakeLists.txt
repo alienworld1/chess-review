@@ -67,6 +67,9 @@ target_link_libraries(chess_review_analysis PUBLIC chess_review_engine chess_rev
 chess_review_apply_options(chess_review_analysis)
 
 add_library(chess_review_persistence STATIC
+    src/persistence/private/ReviewCodec.cpp
+    src/persistence/private/ReviewRepository.cpp
+    src/persistence/migrations/006_reviews.cpp
     src/persistence/private/AnalysisCodec.cpp
     src/persistence/private/AnalysisRepository.cpp
     src/persistence/migrations/005_analysis.cpp
@@ -86,7 +89,7 @@ add_library(chess_review_persistence STATIC
     src/persistence/migrations/001_initial.cpp
 )
 target_include_directories(chess_review_persistence PUBLIC src)
-target_link_libraries(chess_review_persistence PUBLIC Qt6::Core chess_review_pgn chess_review_engine PRIVATE Qt6::Sql chess_review_diagnostics)
+target_link_libraries(chess_review_persistence PUBLIC Qt6::Core chess_review_pgn chess_review_engine chess_review_config chess_review_analysis PRIVATE Qt6::Sql chess_review_diagnostics)
 chess_review_apply_options(chess_review_persistence)
 
 add_library(chess_review_app_paths STATIC src/app/AppPaths.cpp)

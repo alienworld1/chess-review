@@ -670,7 +670,7 @@ class AnalysisRepositoryTest final : public QObject {
             QVERIFY(!old.initialize(path, std::span(migrations()).first(4), [](const QString&) {}));
         }
         auto broken = migrations();
-        broken.back().statements.push_back(
+        broken[4].statements.push_back(
             QStringLiteral("INSERT INTO nonexistent_cache_table VALUES(1)"));
         {
             StorageSession upgrade;

@@ -130,6 +130,18 @@ class StorageWorker final : public QObject {
                               QStringLiteral("Analysis cache could not complete the request.")};
         }
     }
+    template <typename Result, typename Operation> Result executeReview(Operation operation) {
+        if (!session_) {
+            return ReviewError{ReviewErrorCode::Unavailable,
+                               QStringLiteral("Review storage is unavailable.")};
+        }
+        try {
+            return operation(*session_);
+        } catch (const std::exception&) {
+            return ReviewError{ReviewErrorCode::Storage,
+                               QStringLiteral("Review storage could not complete the request.")};
+        }
+    }
     void close() {
         session_.reset();
         if (logger_) {
@@ -410,6 +422,215 @@ void Database::findAnalysis(RequestId request, engine::CacheQuery query) {
                 [this, request, outcome] {
                     --impl_->pending;
                     emit analysisFound(request, outcome);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
+void Database::createReview(RequestId requestId, CreateReview request) {
+    if (auto error = acceptRequest()) {
+        const auto code =
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable);
+        const ReviewError failure{
+            code, QStringLiteral("Review storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, requestId, failure] { emit reviewCreated(requestId, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, requestId, request = std::move(request)] {
+            const auto result = impl_->worker->executeReview<CreateReviewResult>(
+                [&](detail::StorageSession& session) { return session.createReview(request); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, requestId, result] {
+                    --impl_->pending;
+                    emit reviewCreated(requestId, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::loadReview(RequestId requestId, ReviewId id) {
+    if (auto error = acceptRequest()) {
+        const auto code =
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable);
+        const ReviewError failure{
+            code, QStringLiteral("Review storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, requestId, failure] { emit reviewLoaded(requestId, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, requestId, id] {
+            const auto result = impl_->worker->executeReview<LoadReviewResult>(
+                [&](detail::StorageSession& session) { return session.loadReview(id); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, requestId, result] {
+                    --impl_->pending;
+                    emit reviewLoaded(requestId, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::listReviews(RequestId requestId, GameId gameId, std::int64_t offset, int limit) {
+    if (auto error = acceptRequest()) {
+        const auto code =
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable);
+        const ReviewError failure{
+            code, QStringLiteral("Review storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, requestId, failure] { emit reviewsListed(requestId, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, requestId, gameId, offset, limit] {
+            const auto result = impl_->worker->executeReview<ListReviewsResult>(
+                [&](detail::StorageSession& session) {
+                    return session.listReviews(gameId, offset, limit);
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, requestId, result] {
+                    --impl_->pending;
+                    emit reviewsListed(requestId, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::checkpointReview(RequestId requestId, ReviewCheckpoint checkpoint) {
+    if (auto error = acceptRequest()) {
+        const auto code =
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable);
+        const ReviewError failure{
+            code, QStringLiteral("Review storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(
+            0, this, [this, requestId, failure] { emit reviewCheckpointed(requestId, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, requestId, checkpoint = std::move(checkpoint)] {
+            const auto result = impl_->worker->executeReview<CheckpointReviewResult>(
+                [&](detail::StorageSession& session) {
+                    return session.checkpointReview(checkpoint);
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, requestId, result] {
+                    --impl_->pending;
+                    emit reviewCheckpointed(requestId, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::continueReview(RequestId requestId, ContinueReview continuation) {
+    if (auto error = acceptRequest()) {
+        const auto code =
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable);
+        const ReviewError failure{
+            code, QStringLiteral("Review storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(
+            0, this, [this, requestId, failure] { emit reviewContinued(requestId, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, requestId, continuation = std::move(continuation)] {
+            const auto result = impl_->worker->executeReview<ContinueReviewResult>(
+                [&](detail::StorageSession& session) {
+                    return session.continueReview(continuation);
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, requestId, result] {
+                    --impl_->pending;
+                    emit reviewContinued(requestId, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::loadReviewEvidence(RequestId requestId, ReviewId id, int positionIndex) {
+    if (auto error = acceptRequest()) {
+        const auto code =
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable);
+        const ReviewError failure{
+            code, QStringLiteral("Review storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(
+            0, this, [this, requestId, failure] { emit reviewEvidenceLoaded(requestId, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, requestId, id, positionIndex] {
+            const auto result = impl_->worker->executeReview<LoadReviewEvidenceResult>(
+                [&](detail::StorageSession& session) {
+                    return session.loadReviewEvidence(id, positionIndex);
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, requestId, result] {
+                    --impl_->pending;
+                    emit reviewEvidenceLoaded(requestId, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::listReviewTransitions(RequestId requestId, ReviewId id, std::int64_t offset,
+                                     int limit) {
+    if (auto error = acceptRequest()) {
+        const auto code =
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable);
+        const ReviewError failure{
+            code, QStringLiteral("Review storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this, [this, requestId, failure] {
+            emit reviewTransitionsListed(requestId, failure);
+        });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, requestId, id, offset, limit] {
+            const auto result = impl_->worker->executeReview<ListReviewTransitionsResult>(
+                [&](detail::StorageSession& session) {
+                    return session.listReviewTransitions(id, offset, limit);
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, requestId, result] {
+                    --impl_->pending;
+                    emit reviewTransitionsListed(requestId, result);
                 },
                 Qt::QueuedConnection);
         },

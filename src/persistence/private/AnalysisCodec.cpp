@@ -299,6 +299,26 @@ SearchLimit readLimit(Reader& r) {
     return InfiniteLimit{};
 }
 } // namespace
+QByteArray encodeFingerprint(const engine::EngineFingerprint& fingerprint) {
+    if (!engine::validFingerprint(fingerprint)) {
+        return {};
+    }
+    Writer writer;
+    writeFingerprint(writer, fingerprint);
+    return writer.bytes;
+}
+std::optional<engine::EngineFingerprint> decodeFingerprint(const QByteArray& bytes) {
+    if (bytes.size() > 1024 * 1024) {
+        return std::nullopt;
+    }
+    Reader reader(bytes);
+    auto fingerprint = readFingerprint(reader);
+    if (!reader.finished() || !engine::validFingerprint(fingerprint) ||
+        encodeFingerprint(fingerprint) != bytes) {
+        return std::nullopt;
+    }
+    return fingerprint;
+}
 QByteArray positionIdentity(const chess::PositionContext& context) {
     Writer w;
     w.context(context);

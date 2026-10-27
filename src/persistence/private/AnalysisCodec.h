@@ -6,6 +6,8 @@ constexpr std::uint32_t analysisFormatVersion = 2;
 constexpr qsizetype maxAnalysisBytes = 16 * 1024 * 1024;
 constexpr qint64 analysisBudgetBytes = 256 * 1024 * 1024;
 constexpr qint64 maxAnalysisRecords = 100000;
+QByteArray encodeFingerprint(const engine::EngineFingerprint& fingerprint);
+std::optional<engine::EngineFingerprint> decodeFingerprint(const QByteArray& bytes);
 // Canonical version-1 position encoding, reconstructing derived board fields from legal history.
 QByteArray positionIdentity(const chess::PositionContext& context);
 std::variant<QByteArray, CacheError> encodeAnalysis(const engine::AnalysisResult& result);

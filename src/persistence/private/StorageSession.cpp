@@ -172,7 +172,15 @@ std::optional<DatabaseError> StorageSession::initialize(const QString& path,
                        QStringLiteral("The application database must use UTF-8 text encoding."));
     }
     encoding.finish();
-    return migrate(database_, canonicalPath, registry, progress, observe);
+    if (auto error = migrate(database_, canonicalPath, registry, progress, observe)) {
+        return error;
+    }
+    // Custom historical registries are used only by persistence migration fixtures.
+    if (registry.back().version >= 6) {
+        progress(QStringLiteral("Recovering unfinished reviews…"));
+        return interruptReviewJobs(canonicalPath);
+    }
+    return std::nullopt;
 }
 
 } // namespace chess_review::persistence::detail

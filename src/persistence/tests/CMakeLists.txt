@@ -17,3 +17,7 @@ if(TARGET fake_uci_engine)
     add_dependencies(analysis_repository_tests fake_uci_engine)
     target_compile_definitions(analysis_repository_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
 endif()
+
+chess_review_add_qt_test(review_repository_tests review_repository INTEGRATION
+    SOURCES ReviewRepositoryTest.cpp
+    LIBRARIES chess_review_persistence Qt6::Sql)

@@ -185,7 +185,7 @@ class EngineRepositoryTest final : public QObject {
             QStringLiteral("preserved"));
         QCOMPARE(
             fixture.scalar(QStringLiteral("SELECT max(version) FROM schema_migrations")).toInt(),
-            5);
+            6);
         QCOMPARE(QDir(directory.filePath(QStringLiteral("backups")))
                      .entryList({QStringLiteral("*.sqlite3")}, QDir::Files)
                      .size(),
