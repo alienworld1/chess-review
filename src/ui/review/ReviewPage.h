@@ -6,8 +6,10 @@ class QLabel;
 class QPushButton;
 class QProgressBar;
 class QTableView;
+class QPlainTextEdit;
 namespace chess_review::ui {
 class ReviewRunsModel;
+class ReviewMovesModel;
 class ReviewPage final : public QWidget {
     Q_OBJECT
   public:
@@ -37,6 +39,12 @@ class ReviewPage final : public QWidget {
     QPushButton* next_;
     QTableView* runs_;
     ReviewRunsModel* model_;
+    QTableView* moves_;
+    ReviewMovesModel* movesModel_;
+    QPlainTextEdit* details_;
+    QLabel* moveStatus_;
+    QPushButton* previousMoves_;
+    QPushButton* nextMoves_;
     std::uint64_t profilesRevision_ = 0;
     persistence::GameId gameId_ = 0;
 };

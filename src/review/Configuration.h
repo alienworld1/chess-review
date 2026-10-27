@@ -14,6 +14,7 @@ struct ClassificationConfig {
     double inaccuracyLoss = 0.05;
     double mistakeLoss = 0.10;
     double blunderLoss = 0.20;
+    double excellentLoss = 0.01;
     bool operator==(const ClassificationConfig&) const = default;
 };
 struct Configuration {

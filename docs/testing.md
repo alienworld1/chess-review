@@ -947,3 +947,20 @@ reset and accidental setup changes from wheel input. The 81-position heartbeat
 case reports elapsed time and cache-lookup count; an unverified fake engine must
 issue no cache lookups. Timing output is observational, not a portable performance
 assertion. Public cache APIs still validate and gate all compatible hits.
+
+## Normal classifications and transparency
+
+`review_classification_tests` exercises normal labels, inclusive thresholds and
+adjacent floating-point values, error-band precedence, verified rank conflicts,
+measured alternatives, malformed/weak/bounded/mate evidence, explicit perspectives,
+and locally proven terminal outcomes. Run it directly or use CTest label
+`classification`.
+
+`review_configuration` verifies Excellent validation, identity separation, and
+independently encoded legacy/current golden hashes. `review_repository` covers
+atomic classification checkpoints, rollback, idempotent backfill, revision conflicts,
+corrupt/future derived records, legacy settings, and migration 7 with a verified
+backup. `quick_review` covers native move-row keyboard selection, inspectable
+provisional rationale, rapid paging with unprocessed moves, and existing lifecycle,
+shutdown and event-loop responsiveness scenarios. Its optional `renderWorkspace`
+probe now includes the move list and evidence inspector.

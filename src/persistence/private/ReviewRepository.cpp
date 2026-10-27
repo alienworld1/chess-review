@@ -151,7 +151,7 @@ std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
     if (!doc) {
         return invalid();
     }
-    if ((*doc)["formatVersion"].toInt(-1) != reviewFormatVersion ||
+    if (((*doc)["formatVersion"].toInt(-1) != 1 && (*doc)["formatVersion"].toInt(-1) != 2) ||
         (*doc)["configurationVersion"].toInt(-1) != 1 ||
         (*doc)["evidenceModelVersion"].toInt(-1) !=
             static_cast<int>(review::evidenceModelVersion) ||
@@ -391,6 +391,82 @@ std::variant<review::MoveEvidence, ReviewError> readPair(QSqlDatabase& db, const
     }
     return paired;
 }
+// A record is derived only from a validated pair. Existing records are never silently repaired.
+std::optional<ReviewError> retainClassification(QSqlDatabase& db, const StoredReview& run,
+                                                const chess::Position& position,
+                                                const review::MoveEvidence& pair, int index,
+                                                std::int64_t beforeId, std::int64_t afterId,
+                                                bool replace, review::ClassificationResult& out) {
+    out = review::classify(position, pair, run.settings.configuration.values.classification,
+                           run.settings.configuration.values.conversion);
+    // Legacy settings retain their released identity; interpretation explicitly includes the new
+    // default.
+    const auto validated = config::validate(run.settings.configuration.values);
+    const auto* configuration =
+        std::get_if<std::shared_ptr<const config::ValidatedConfiguration>>(&validated);
+    if (!configuration) {
+        return invalid();
+    }
+    const auto bytes =
+        classificationDocument(out, beforeId, afterId, (*configuration)->identities.classification);
+    QSqlQuery q(db);
+    if (!exec(q,
+              QStringLiteral("SELECT CASE WHEN typeof(before_id)='integer' THEN before_id END, "
+                             "CASE WHEN typeof(after_id)='integer' THEN after_id END, "
+                             "substr(CAST(document AS BLOB),1,65537), typeof(document)='blob' "
+                             "FROM review_classifications WHERE review_id=? AND position_index=?"),
+              {static_cast<qint64>(run.summary.id), index})) {
+        return storage();
+    }
+    bool present = false;
+    if (q.next()) {
+        present = true;
+        const auto document = readReviewDocument(q.value(2).toByteArray(), 65536);
+        if (!q.value(3).toBool() || !document) {
+            return invalid();
+        }
+        if ((*document)["formatVersion"].toInt(-1) != 1 ||
+            (*document)["modelVersion"].toInt(-1) !=
+                static_cast<int>(review::classificationModelVersion)) {
+            return error(ReviewErrorCode::UnsupportedVersion);
+        }
+        const bool sameEvidence =
+            q.value(0).toLongLong() == beforeId && q.value(1).toLongLong() == afterId;
+        if ((!replace || sameEvidence) && (!sameEvidence || q.value(2).toByteArray() != bytes)) {
+            return invalid();
+        }
+        if (sameEvidence) {
+            return std::nullopt;
+        }
+    } else if (q.lastError().isValid()) {
+        return storage();
+    }
+    q.finish();
+    if (!exec(q,
+              present ? QStringLiteral(
+                            "UPDATE review_classifications SET before_id=?,after_id=?,document=? "
+                            "WHERE review_id=? AND position_index=?")
+                      : QStringLiteral("INSERT INTO "
+                                       "review_classifications(before_id,after_id,document,review_"
+                                       "id,position_index) VALUES(?,?,?,?,?)"),
+              {static_cast<qint64>(beforeId), static_cast<qint64>(afterId), bytes,
+               static_cast<qint64>(run.summary.id), index}) ||
+        q.numRowsAffected() != 1) {
+        return storage();
+    }
+    // Detect triggers substituting a document before authorizing a committed label.
+    q.finish();
+    if (!exec(q,
+              QStringLiteral("SELECT before_id,after_id,substr(CAST(document AS "
+                             "BLOB),1,65537),typeof(document)='blob' FROM review_classifications "
+                             "WHERE review_id=? AND position_index=?"),
+              {static_cast<qint64>(run.summary.id), index}) ||
+        !q.next() || !q.value(3).toBool() || q.value(0).toLongLong() != beforeId ||
+        q.value(1).toLongLong() != afterId || q.value(2).toByteArray() != bytes) {
+        return storage();
+    }
+    return std::nullopt;
+}
 bool updatePair(QSqlDatabase& db, const StoredReview& run, const StoredGame& game, int index) {
     if (index <= 0 || index >= run.summary.totalPositions) {
         return true;
@@ -437,17 +513,80 @@ bool updatePair(QSqlDatabase& db, const StoredReview& run, const StoredGame& gam
         return false;
     }
     QSqlQuery q(db);
-    return exec(q,
-                QStringLiteral(
-                    "INSERT INTO review_pairs(review_id,position_index,before_id,after_id,paired) "
-                    "VALUES(?,?,?,?,?) "
-                    "ON CONFLICT(review_id,position_index) DO UPDATE SET "
-                    "before_id=excluded.before_id,after_id=excluded.after_id,paired=excluded."
-                    "paired"),
-                {static_cast<qint64>(run.summary.id), index, static_cast<qint64>(b.evidenceId),
-                 static_cast<qint64>(a.evidenceId), bytes}) &&
-           q.numRowsAffected() == 1;
+    const bool saved =
+        exec(q,
+             QStringLiteral(
+                 "INSERT INTO review_pairs(review_id,position_index,before_id,after_id,paired) "
+                 "VALUES(?,?,?,?,?) "
+                 "ON CONFLICT(review_id,position_index) DO UPDATE SET "
+                 "before_id=excluded.before_id,after_id=excluded.after_id,paired=excluded."
+                 "paired"),
+             {static_cast<qint64>(run.summary.id), index, static_cast<qint64>(b.evidenceId),
+              static_cast<qint64>(a.evidenceId), bytes}) &&
+        q.numRowsAffected() == 1;
+    if (!saved) {
+        return false;
+    }
+    q.finish();
+    review::ClassificationResult classification;
+    return !retainClassification(db, run, *position, paired, index, b.evidenceId, a.evidenceId,
+                                 true, classification);
 }
+// Validate any existing interpretation while its original position mapping is still intact.
+// A replacement must not conceal damaged derived records from the previous attempts.
+std::optional<ReviewError> validateReplacedClassifications(QSqlDatabase& db,
+                                                           const StoredReview& run,
+                                                           const StoredGame& game, int index) {
+    for (const int end : {index, index + 1}) {
+        if (end <= 0 || end >= run.summary.totalPositions) {
+            continue;
+        }
+        QSqlQuery q(db);
+        if (!exec(
+                q,
+                QStringLiteral(
+                    "SELECT 1 FROM review_classifications WHERE review_id=? AND position_index=?"),
+                {static_cast<qint64>(run.summary.id), end})) {
+            return storage();
+        }
+        if (!q.next()) {
+            if (q.lastError().isValid()) {
+                return storage();
+            }
+            continue;
+        }
+        q.finish();
+        auto restored = gamePosition(game, end - 1);
+        const auto* position = std::get_if<chess::Position>(&restored);
+        if (!position) {
+            return invalid();
+        }
+        auto before = readEvidence(db, run, *position, end - 1);
+        auto next = *position;
+        const auto move = game.document->originalMainline()[static_cast<std::size_t>(end - 1)];
+        if (std::holds_alternative<chess::Error>(next.play(move))) {
+            return invalid();
+        }
+        auto after = readEvidence(db, run, next, end);
+        const auto* b = std::get_if<StoredReviewEvidence>(&before);
+        const auto* a = std::get_if<StoredReviewEvidence>(&after);
+        if (!b || !a) {
+            return invalid();
+        }
+        const auto pair = readPair(db, run, *position, move, end, *b, *a);
+        if (const auto* e = std::get_if<ReviewError>(&pair)) {
+            return *e;
+        }
+        review::ClassificationResult result;
+        if (const auto e =
+                retainClassification(db, run, *position, std::get<review::MoveEvidence>(pair), end,
+                                     b->evidenceId, a->evidenceId, false, result)) {
+            return e;
+        }
+    }
+    return std::nullopt;
+}
+
 } // namespace
 CreateReviewResult StorageSession::createReview(const CreateReview& request) {
     if (!usable_) {
@@ -743,6 +882,10 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
             evidenceId = q.lastInsertId().toLongLong();
             q.finish();
         }
+        if (const auto e = validateReplacedClassifications(database_, run, owningGame,
+                                                           *request.positionIndex)) {
+            return *e;
+        }
         if (!exec(
                 q,
                 QStringLiteral("INSERT INTO review_positions(review_id,position_index,evidence_id) "
@@ -877,6 +1020,126 @@ ContinueReviewResult StorageSession::continueReview(const ContinueReview& reques
     run.summary.status = JobStatus::Queued;
     run.summary.updatedAt = timestamp(time);
     return run.summary;
+}
+LoadReviewMovesResult StorageSession::deriveReviewMoves(ReviewId id, std::int64_t expectedRevision,
+                                                        int offset, int limit) {
+    if (!usable_) {
+        return storage();
+    }
+    if (offset < 0 || limit < 1 || limit > 50) {
+        return error(ReviewErrorCode::InvalidInput);
+    }
+    ReviewTransaction tx(database_, usable_);
+    if (!tx.begin()) {
+        return storage();
+    }
+    StoredGame game;
+    const auto loaded = loadReviewRecord(id, &game);
+    if (const auto* e = std::get_if<ReviewError>(&loaded)) {
+        return *e;
+    }
+    const auto& run = std::get<StoredReview>(loaded);
+    if (run.summary.revision != expectedRevision) {
+        return error(ReviewErrorCode::Conflict);
+    }
+    const int total = run.summary.totalPositions - 1;
+    if (offset > total) {
+        return error(ReviewErrorCode::InvalidInput);
+    }
+    ReviewMovePage page{id, expectedRevision, offset, total, {}};
+    auto restored = gamePosition(game, offset);
+    auto* position = std::get_if<chess::Position>(&restored);
+    if (!position) {
+        return invalid();
+    }
+    auto before = readEvidence(database_, run, *position, offset);
+    for (int ply = offset; ply < total && ply - offset < limit; ++ply) {
+        const auto move = game.document->originalMainline()[static_cast<std::size_t>(ply)];
+        const auto san = position->san(move);
+        const auto* text = std::get_if<std::string>(&san);
+        if (!text) {
+            return invalid();
+        }
+        ReviewMove row;
+        row.positionIndex = ply + 1;
+        row.moveNumber = position->fullmoveNumber();
+        row.mover = position->sideToMove();
+        row.san = QString::fromStdString(*text);
+        auto afterPosition = *position;
+        if (std::holds_alternative<chess::Error>(afterPosition.play(move))) {
+            return invalid();
+        }
+        auto after = readEvidence(database_, run, afterPosition, ply + 1);
+        for (const auto* value : {&before, &after}) {
+            if (const auto* e = std::get_if<ReviewError>(value);
+                e && e->code != ReviewErrorCode::Missing) {
+                return *e;
+            }
+        }
+        const auto* b = std::get_if<StoredReviewEvidence>(&before);
+        const auto* a = std::get_if<StoredReviewEvidence>(&after);
+        if (b && a) {
+            const auto pair = readPair(database_, run, *position, move, ply + 1, *b, *a);
+            if (const auto* e = std::get_if<ReviewError>(&pair)) {
+                return *e;
+            }
+            review::ClassificationResult result;
+            if (const auto e = retainClassification(database_, run, *position,
+                                                    std::get<review::MoveEvidence>(pair), ply + 1,
+                                                    b->evidenceId, a->evidenceId, false, result)) {
+                return *e;
+            }
+            row.classification = std::move(result);
+            row.beforeEvidenceId = b->evidenceId;
+            row.afterEvidenceId = a->evidenceId;
+            row.rawBefore = b->evidence.evaluation;
+            row.rawAfter = a->evidence.evaluation;
+            row.beforeStrength = b->evidence.strength;
+            row.afterStrength = a->evidence.strength;
+            row.beforeAttempt = QString::fromStdString(b->evidence.attemptIdentity);
+            row.afterAttempt = QString::fromStdString(a->evidence.attemptIdentity);
+            row.beforeSession = QString::fromStdString(b->evidence.sessionIdentity);
+            row.afterSession = QString::fromStdString(a->evidence.sessionIdentity);
+            row.engineIdentity = QString::fromStdString(b->evidence.engineIdentity);
+            if (row.classification->bestMove) {
+                const auto best = position->san(*row.classification->bestMove);
+                if (const auto* t = std::get_if<std::string>(&best)) {
+                    row.bestSan = QString::fromStdString(*t);
+                } else {
+                    return invalid();
+                }
+            }
+            for (const auto& alternative : row.classification->alternatives) {
+                const auto alternativeSan = position->san(alternative.move);
+                if (const auto* t = std::get_if<std::string>(&alternativeSan)) {
+                    row.alternativeSans.push_back(QString::fromStdString(*t));
+                } else {
+                    return invalid();
+                }
+            }
+        } else {
+            QSqlQuery q(database_);
+            if (!exec(q,
+                      QStringLiteral("SELECT 1 FROM review_classifications WHERE review_id=? AND "
+                                     "position_index=?"),
+                      {static_cast<qint64>(id), ply + 1})) {
+                return storage();
+            }
+            if (q.next()) {
+                return invalid();
+            }
+            if (q.lastError().isValid()) {
+                return storage();
+            }
+        }
+        page.moves.push_back(std::move(row));
+        *position = std::move(afterPosition);
+        before = std::move(after);
+    }
+    if (!tx.commit()) {
+        return storage();
+    }
+    return page;
 }
 LoadReviewEvidenceResult StorageSession::loadReviewEvidence(ReviewId id, int index) {
     StoredGame owningGame;

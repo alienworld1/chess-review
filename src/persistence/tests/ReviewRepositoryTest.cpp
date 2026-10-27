@@ -128,6 +128,195 @@ class ReviewRepositoryTest final : public QObject {
     Q_OBJECT
   private slots:
     void init() { QTest::failOnWarning(); }
+    void classificationsCommitWithEvidenceAndBackfillWithoutChangingProgress() {
+        Fixture f;
+        const auto doc = document();
+        const auto request = seed(f.session, doc);
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        run = std::get<ReviewSummary>(
+            f.session.checkpointReview(checkpoint(run.id, 0, 0, resultAt(request, *doc, 0))));
+        auto rootOnly =
+            std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50));
+        QCOMPARE(rootOnly.moves.size(), std::size_t(2));
+        QVERIFY(!rootOnly.moves[0].classification);
+        run = std::get<ReviewSummary>(
+            f.session.checkpointReview(checkpoint(run.id, 1, 1, resultAt(request, *doc, 1))));
+        QCOMPARE(f.scalar(QStringLiteral("SELECT count(*) FROM review_classifications")).toInt(),
+                 1);
+        const auto page =
+            std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50));
+        QVERIFY(page.moves[0].classification);
+        QCOMPARE(page.moves[0].classification->label, review::Classification::Excellent);
+        QVERIFY(!page.moves[0].classification->playedMoveRank);
+        QVERIFY(page.moves[0].classification->alternatives.empty());
+        QCOMPARE(page.moves[0].san, QStringLiteral("e4"));
+        QVERIFY(!page.moves[1].classification);
+        const auto saved =
+            f.scalar(QStringLiteral("SELECT document FROM review_classifications")).toByteArray();
+        QVERIFY(f.exec(QStringLiteral("DELETE FROM review_classifications")));
+        const auto backfilled = f.session.deriveReviewMoves(run.id, run.revision, 0, 50);
+        QVERIFY(std::holds_alternative<ReviewMovePage>(backfilled));
+        QCOMPARE(
+            f.scalar(QStringLiteral("SELECT document FROM review_classifications")).toByteArray(),
+            saved);
+        QVERIFY(std::holds_alternative<ReviewMovePage>(
+            f.session.deriveReviewMoves(run.id, run.revision, 0, 50)));
+        QCOMPARE(f.scalar(QStringLiteral("SELECT count(*) FROM review_classifications")).toInt(),
+                 1);
+        const auto loaded = std::get<StoredReview>(f.session.loadReview(run.id));
+        QCOMPARE(loaded.summary.revision, run.revision);
+        QCOMPARE(loaded.summary.completedPositions, 2);
+        QCOMPARE(loaded.summary.status, run.status);
+        QCOMPARE(std::get<ReviewError>(f.session.deriveReviewMoves(run.id, 0, 0, 50)).code,
+                 ReviewErrorCode::Conflict);
+        QCOMPARE(
+            std::get<ReviewError>(f.session.deriveReviewMoves(run.id, run.revision, 0, 51)).code,
+            ReviewErrorCode::InvalidInput);
+    }
+    void classificationFailureRollsBackCheckpoint() {
+        Fixture f;
+        const auto doc = document();
+        const auto request = seed(f.session, doc);
+        const auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        QVERIFY(std::holds_alternative<ReviewSummary>(
+            f.session.checkpointReview(checkpoint(run.id, 0, 0, resultAt(request, *doc, 0)))));
+        QVERIFY(f.exec(
+            QStringLiteral("CREATE TRIGGER prevent_classification BEFORE INSERT ON "
+                           "review_classifications BEGIN SELECT RAISE(ABORT,'fixture'); END")));
+        QVERIFY(std::holds_alternative<ReviewError>(
+            f.session.checkpointReview(checkpoint(run.id, 1, 1, resultAt(request, *doc, 1)))));
+        const auto loaded = std::get<StoredReview>(f.session.loadReview(run.id));
+        QCOMPARE(loaded.summary.revision, 1);
+        QCOMPARE(loaded.summary.completedPositions, 1);
+        QCOMPARE(f.scalar(QStringLiteral("SELECT count(*) FROM review_pairs")).toInt(), 0);
+    }
+    void corruptClassificationsAreNotRegenerated_data() {
+        QTest::addColumn<bool>("unsupported");
+        QTest::newRow("damaged") << false;
+        QTest::newRow("future model") << true;
+    }
+    void corruptClassificationsAreNotRegenerated() {
+        QFETCH(bool, unsupported);
+        Fixture f;
+        const auto doc = document();
+        const auto request = seed(f.session, doc);
+        const auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        QVERIFY(std::holds_alternative<ReviewSummary>(
+            f.session.checkpointReview(checkpoint(run.id, 0, 0, resultAt(request, *doc, 0)))));
+        QVERIFY(std::holds_alternative<ReviewSummary>(
+            f.session.checkpointReview(checkpoint(run.id, 1, 1, resultAt(request, *doc, 1)))));
+        if (unsupported) {
+            auto document = *readReviewDocument(
+                f.scalar(QStringLiteral("SELECT document FROM review_classifications"))
+                    .toByteArray(),
+                65536);
+            document["modelVersion"] = 999;
+            QSqlQuery q(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+            QVERIFY(q.prepare(QStringLiteral("UPDATE review_classifications SET document=?")));
+            q.addBindValue(reviewDocument(document));
+            QVERIFY(q.exec());
+        } else {
+            QVERIFY(
+                f.exec(QStringLiteral("UPDATE review_classifications SET document=zeroblob(128)")));
+        }
+        const auto saved =
+            f.scalar(QStringLiteral("SELECT document FROM review_classifications")).toByteArray();
+        const auto result = f.session.deriveReviewMoves(run.id, 2, 0, 50);
+        QVERIFY(std::holds_alternative<ReviewError>(result));
+        QCOMPARE(std::get<ReviewError>(result).code, unsupported
+                                                         ? ReviewErrorCode::UnsupportedVersion
+                                                         : ReviewErrorCode::InvalidRecord);
+        QCOMPARE(
+            f.scalar(QStringLiteral("SELECT document FROM review_classifications")).toByteArray(),
+            saved);
+    }
+    void replacementCannotHideDamagedInterpretation() {
+        Fixture f;
+        const auto doc = document();
+        const auto request = seed(f.session, doc);
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        for (int index = 0; index < 3; ++index) {
+            run = std::get<ReviewSummary>(f.session.checkpointReview(
+                checkpoint(run.id, run.revision, index, resultAt(request, *doc, index))));
+        }
+        auto document = *readReviewDocument(
+            f.scalar(QStringLiteral(
+                         "SELECT document FROM review_classifications WHERE position_index=2"))
+                .toByteArray(),
+            65536);
+        document["ruleId"] = QStringLiteral("forged.rule");
+        const auto bytes = reviewDocument(document);
+        QSqlQuery q(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+        QVERIFY(q.prepare(
+            QStringLiteral("UPDATE review_classifications SET document=? WHERE position_index=2")));
+        q.addBindValue(bytes);
+        QVERIFY(q.exec());
+        q.finish();
+        const auto result = f.session.checkpointReview(
+            checkpoint(run.id, run.revision, 1, resultAt(request, *doc, 1)));
+        QVERIFY(std::holds_alternative<ReviewError>(result));
+        QCOMPARE(std::get<ReviewError>(result).code, ReviewErrorCode::InvalidRecord);
+        QCOMPARE(std::get<StoredReview>(f.session.loadReview(run.id)).summary.revision,
+                 run.revision);
+        QCOMPARE(f.scalar(QStringLiteral(
+                              "SELECT document FROM review_classifications WHERE position_index=2"))
+                     .toByteArray(),
+                 bytes);
+        QCOMPARE(f.scalar(QStringLiteral("SELECT count(*) FROM review_evidence")).toInt(), 3);
+    }
+    void legacySettingsAndMigrationPreserveEvidence() {
+        QTemporaryDir directory;
+        const auto path = directory.filePath(QStringLiteral("legacy.sqlite3"));
+        ReviewId id = 0;
+        QByteArray settings;
+        {
+            StorageSession session;
+            QVERIFY(!session.initialize(path, migrations(), ignore));
+            const auto doc = document();
+            auto request = seed(session, doc);
+            request.configuration =
+                *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
+                    config::validate(request.configuration.values, 1));
+            settings = encodeReviewSettings(request);
+            QVERIFY(!settings.isEmpty());
+            const auto decoded = decodeReviewSettings(settings);
+            QVERIFY(decoded);
+            QCOMPARE(decoded->configuration.classificationIdentityVersion, 1U);
+            QCOMPARE(encodeReviewSettings(*decoded), settings);
+            auto run = std::get<ReviewSummary>(session.createReview(request));
+            id = run.id;
+            for (int index = 0; index < 3; ++index) {
+                run = std::get<ReviewSummary>(session.checkpointReview(
+                    checkpoint(id, run.revision, index, resultAt(request, *doc, index))));
+            }
+            ReviewCheckpoint complete;
+            complete.reviewId = id;
+            complete.expectedRevision = run.revision;
+            complete.status = JobStatus::Complete;
+            QVERIFY(std::holds_alternative<ReviewSummary>(session.checkpointReview(complete)));
+            QSqlQuery q(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+            QVERIFY(q.exec(QStringLiteral("DROP TABLE review_classifications")));
+            QVERIFY(q.exec(QStringLiteral("DELETE FROM schema_migrations WHERE version=7")));
+        }
+        StorageSession reopened;
+        QVERIFY(!reopened.initialize(path, migrations(), ignore));
+        const auto loaded = std::get<StoredReview>(reopened.loadReview(id));
+        QCOMPARE(encodeReviewSettings(loaded.settings), settings);
+        QCOMPARE(loaded.summary.status, JobStatus::Complete);
+        const auto page = std::get<ReviewMovePage>(
+            reopened.deriveReviewMoves(id, loaded.summary.revision, 0, 50));
+        QCOMPARE(page.moves.size(), std::size_t(2));
+        for (const auto& move : page.moves) {
+            QVERIFY(move.classification);
+            QCOMPARE(move.classification->thresholds.excellentLoss, .01);
+        }
+        QVERIFY(std::holds_alternative<StoredReviewEvidence>(reopened.loadReviewEvidence(id, 2)));
+        QCOMPARE(QDir(directory.filePath(QStringLiteral("backups")))
+                     .entryList({QStringLiteral("*.sqlite3")}, QDir::Files)
+                     .size(),
+                 1);
+    }
+
     void orphanedJobRemainsVisibleAsDamaged() {
         Fixture f;
         const auto request = seed(f.session);
@@ -673,7 +862,7 @@ class ReviewRepositoryTest final : public QObject {
             request = seed(session);
         }
         auto broken = migrations();
-        broken.back().statements.append(
+        broken[5].statements.append(
             QStringLiteral("INSERT INTO nonexistent_review_table VALUES(1)"));
         {
             StorageSession session;
@@ -805,7 +994,7 @@ class ReviewRepositoryTest final : public QObject {
                  ReviewErrorCode::Unavailable);
         db.value.initialize(path);
         QTRY_COMPARE(ready.size(), 1);
-        QCOMPARE(ready[0][0].toInt(), 6);
+        QCOMPARE(ready[0][0].toInt(), 7);
         std::vector<QUuid> ids;
         for (int i = 0; i < 17; ++i) {
             ids.push_back(QUuid::createUuid());

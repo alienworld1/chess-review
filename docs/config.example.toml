@@ -19,6 +19,7 @@ deepeningNodes = 3000000
 verificationNodes = 10000000
 
 [classification]
+excellentLoss = 0.01
 inaccuracyLoss = 0.05
 mistakeLoss = 0.10
 blunderLoss = 0.20

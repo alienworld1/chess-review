@@ -39,6 +39,8 @@ class StorageSession final {
     ListReviewsResult listReviews(GameId gameId, std::int64_t offset, int limit);
     CheckpointReviewResult checkpointReview(const ReviewCheckpoint& request);
     ContinueReviewResult continueReview(const ContinueReview& request);
+    LoadReviewMovesResult deriveReviewMoves(ReviewId id, std::int64_t expectedRevision, int offset,
+                                            int limit);
     LoadReviewEvidenceResult loadReviewEvidence(ReviewId id, int positionIndex);
     ListReviewTransitionsResult listReviewTransitions(ReviewId id, std::int64_t offset, int limit);
     std::optional<DatabaseError> interruptReviewJobs(const QString& path);

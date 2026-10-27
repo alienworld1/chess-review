@@ -116,12 +116,14 @@ std::optional<QJsonObject> readReviewDocument(const QByteArray& bytes, qsizetype
 }
 bool sameConfiguration(const config::ValidatedConfiguration& a,
                        const config::ValidatedConfiguration& b) {
-    return a.values == b.values && a.identities.classification == b.identities.classification &&
+    return a.classificationIdentityVersion == b.classificationIdentityVersion &&
+           a.values == b.values && a.identities.classification == b.identities.classification &&
            a.identities.conversion == b.identities.conversion &&
            a.identities.analysis == b.identities.analysis;
 }
 QByteArray encodeReviewSettings(const CreateReview& settings) {
-    const auto validated = config::validate(settings.configuration.values);
+    const auto validated = config::validate(settings.configuration.values,
+                                            settings.configuration.classificationIdentityVersion);
     const auto* config =
         std::get_if<std::shared_ptr<const config::ValidatedConfiguration>>(&validated);
     if (!config || !sameConfiguration(**config, settings.configuration)) {
@@ -141,29 +143,33 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
     }
     const auto& c = settings.configuration.values;
     const auto& ids = settings.configuration.identities;
-    return reviewDocument(
-        {{"formatVersion", reviewFormatVersion},
-         {"evidenceModelVersion", static_cast<int>(review::evidenceModelVersion)},
-         {"expectedScoreModelVersion", static_cast<int>(review::expectedScoreModelVersion)},
-         {"gameId", QString::number(settings.gameId)},
-         {"engineProfileId", QString::number(settings.engineProfileId)},
-         {"selectedSide", static_cast<int>(settings.selectedSide)},
-         {"fingerprint", QString::fromLatin1(fingerprint.toBase64())},
-         {"configurationVersion", static_cast<int>(c.version)},
-         {"quality", static_cast<int>(c.quality)},
-         {"budgets", budgets},
-         {"thresholds", QJsonArray{c.classification.inaccuracyLoss, c.classification.mistakeLoss,
-                                   c.classification.blunderLoss}},
-         {"fallbackScaleCp", c.conversion.fallbackScaleCp},
-         {"preferWdl", c.conversion.preferWdl},
-         {"classificationIdentity", QString::fromLatin1(ids.classification.toHex())},
-         {"conversionIdentity", QString::fromLatin1(ids.conversion.toHex())},
-         {"analysisIdentity", QString::fromLatin1(ids.analysis.toHex())},
-         {"reviewModelVersion", QJsonValue()},
-         {"accuracyModelVersion", QJsonValue()},
-         {"motifModelVersion", QJsonValue()},
-         {"explanationModelVersion", QJsonValue()},
-         {"openingDatasetVersion", QJsonValue()}});
+    auto document = QJsonObject{
+        {"formatVersion", settings.configuration.classificationIdentityVersion == 1 ? 1 : 2},
+        {"evidenceModelVersion", static_cast<int>(review::evidenceModelVersion)},
+        {"expectedScoreModelVersion", static_cast<int>(review::expectedScoreModelVersion)},
+        {"gameId", QString::number(settings.gameId)},
+        {"engineProfileId", QString::number(settings.engineProfileId)},
+        {"selectedSide", static_cast<int>(settings.selectedSide)},
+        {"fingerprint", QString::fromLatin1(fingerprint.toBase64())},
+        {"configurationVersion", static_cast<int>(c.version)},
+        {"quality", static_cast<int>(c.quality)},
+        {"budgets", budgets},
+        {"thresholds", QJsonArray{c.classification.inaccuracyLoss, c.classification.mistakeLoss,
+                                  c.classification.blunderLoss}},
+        {"fallbackScaleCp", c.conversion.fallbackScaleCp},
+        {"preferWdl", c.conversion.preferWdl},
+        {"classificationIdentity", QString::fromLatin1(ids.classification.toHex())},
+        {"conversionIdentity", QString::fromLatin1(ids.conversion.toHex())},
+        {"analysisIdentity", QString::fromLatin1(ids.analysis.toHex())},
+        {"reviewModelVersion", QJsonValue()},
+        {"accuracyModelVersion", QJsonValue()},
+        {"motifModelVersion", QJsonValue()},
+        {"explanationModelVersion", QJsonValue()},
+        {"openingDatasetVersion", QJsonValue()}};
+    if (settings.configuration.classificationIdentityVersion == 2) {
+        document["excellentLoss"] = c.classification.excellentLoss;
+    }
+    return reviewDocument(document);
 }
 std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
     const auto parsed = readReviewDocument(bytes, maxReviewSettingsBytes);
@@ -172,6 +178,11 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
     }
     const auto& o = *parsed;
     CreateReview out;
+    const int format = o["formatVersion"].toInt(-1);
+    if (format != 1 && format != 2) {
+        return std::nullopt;
+    }
+    out.configuration.classificationIdentityVersion = static_cast<std::uint32_t>(format);
     out.gameId = o["gameId"].toString().toLongLong();
     out.engineProfileId = o["engineProfileId"].toString().toLongLong();
     out.selectedSide = static_cast<chess::Color>(o["selectedSide"].toInt(-1));
@@ -203,6 +214,9 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
     }
     c.classification = {thresholds[0].toDouble(), thresholds[1].toDouble(),
                         thresholds[2].toDouble()};
+    if (format == 2) {
+        c.classification.excellentLoss = o["excellentLoss"].toDouble(-1);
+    }
     c.conversion = {o["fallbackScaleCp"].toDouble(), o["preferWdl"].toBool()};
     out.configuration.identities = {
         QByteArray::fromHex(o["classificationIdentity"].toString().toLatin1()),
@@ -222,6 +236,40 @@ QByteArray adaptedDocument(const review::PositionEvidence& evidence,
          {"evidence", position(evidence)},
          {"rawConversion", evaluation(review::convertEvaluation(
                                evidence.evaluation, evidence.evaluation.perspective, config))}});
+}
+QByteArray classificationDocument(const review::ClassificationResult& result, std::int64_t beforeId,
+                                  std::int64_t afterId, const QByteArray& configurationIdentity) {
+    QJsonArray alternatives;
+    for (const auto& a : result.alternatives) {
+        alternatives.append(QJsonObject{{"move", move(a.move)},
+                                        {"rank", a.rank},
+                                        {"gap", a.gap},
+                                        {"nearlyEquivalent", a.nearlyEquivalent}});
+    }
+    return reviewDocument(
+        {{"formatVersion", 1},
+         {"modelVersion", static_cast<int>(result.modelVersion)},
+         {"beforeId", QString::number(beforeId)},
+         {"afterId", QString::number(afterId)},
+         {"configurationIdentity", QString::fromLatin1(configurationIdentity.toHex())},
+         {"label", result.label ? QJsonValue(static_cast<int>(*result.label)) : QJsonValue()},
+         {"issue", result.issue ? QJsonValue(static_cast<int>(*result.issue)) : QJsonValue()},
+         {"evidenceIssue", result.evidenceIssue
+                               ? QJsonValue(static_cast<int>(*result.evidenceIssue))
+                               : QJsonValue()},
+         {"ruleId", QString::fromStdString(result.ruleId)},
+         {"stable", result.stable},
+         {"mover", static_cast<int>(result.mover)},
+         {"thresholds", QJsonArray{result.thresholds.inaccuracyLoss, result.thresholds.mistakeLoss,
+                                   result.thresholds.blunderLoss, result.thresholds.excellentLoss}},
+         {"before", evaluation(result.before)},
+         {"after", evaluation(result.after)},
+         {"loss", result.loss ? QJsonValue(*result.loss) : QJsonValue()},
+         {"signedDelta", result.signedDelta ? QJsonValue(*result.signedDelta) : QJsonValue()},
+         {"bestMove", result.bestMove ? QJsonValue(move(*result.bestMove)) : QJsonValue()},
+         {"playedMoveRank",
+          result.playedMoveRank ? QJsonValue(*result.playedMoveRank) : QJsonValue()},
+         {"alternatives", alternatives}});
 }
 QByteArray pairedDocument(const review::MoveEvidence& evidence) {
     const auto optionalDouble = [](const auto& v) { return v ? QJsonValue(*v) : QJsonValue(); };

@@ -71,6 +71,8 @@ class Database final : public QObject {
     void listReviews(RequestId requestId, GameId gameId, std::int64_t offset = 0, int limit = 50);
     void checkpointReview(RequestId requestId, ReviewCheckpoint checkpoint);
     void continueReview(RequestId requestId, ContinueReview continuation);
+    void deriveReviewMoves(RequestId requestId, ReviewId id, std::int64_t expectedRevision,
+                           int offset, int limit = 50);
     void loadReviewEvidence(RequestId requestId, ReviewId id, int positionIndex);
     void listReviewTransitions(RequestId requestId, ReviewId id, std::int64_t offset = 0,
                                int limit = 50);
@@ -86,6 +88,8 @@ class Database final : public QObject {
                             const chess_review::persistence::CheckpointReviewResult& result);
     void reviewContinued(chess_review::persistence::RequestId requestId,
                          const chess_review::persistence::ContinueReviewResult& result);
+    void reviewMovesLoaded(chess_review::persistence::RequestId requestId,
+                           const chess_review::persistence::LoadReviewMovesResult& result);
     void reviewEvidenceLoaded(chess_review::persistence::RequestId requestId,
                               const chess_review::persistence::LoadReviewEvidenceResult& result);
     void

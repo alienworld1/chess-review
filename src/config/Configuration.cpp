@@ -101,14 +101,18 @@ class Reader {
 QByteArray digest(const QByteArray& data) {
     return QCryptographicHash::hash(data, QCryptographicHash::Sha256);
 }
-Identities identities(const review::Configuration& config) {
+Identities identities(const review::Configuration& config, std::uint32_t version) {
     QByteArray classification;
     QDataStream c(&classification, QIODevice::WriteOnly);
     c.setVersion(QDataStream::Qt_6_0);
     c.setByteOrder(QDataStream::BigEndian);
     c.setFloatingPointPrecision(QDataStream::DoublePrecision);
-    c << QStringLiteral("classification/v1") << config.classification.inaccuracyLoss
-      << config.classification.mistakeLoss << config.classification.blunderLoss;
+    c << (version == 1 ? QStringLiteral("classification/v1") : QStringLiteral("classification/v2"))
+      << config.classification.inaccuracyLoss << config.classification.mistakeLoss
+      << config.classification.blunderLoss;
+    if (version == 2) {
+        c << config.classification.excellentLoss;
+    }
     QByteArray conversion;
     QDataStream e(&conversion, QIODevice::WriteOnly);
     e.setVersion(QDataStream::Qt_6_0);
@@ -181,8 +185,11 @@ Result parse(std::string_view contents) {
         }
     }
     if (const auto* table = reader.table(root, "classification", "classification")) {
-        reader.keys(*table, "classification", {"inaccuracyLoss", "mistakeLoss", "blunderLoss"});
+        reader.keys(*table, "classification",
+                    {"inaccuracyLoss", "mistakeLoss", "blunderLoss", "excellentLoss"});
         auto& c = config.classification;
+        reader.number(*table, "excellentLoss", "classification.excellentLoss", c.excellentLoss, 0,
+                      1, true);
         reader.number(*table, "inaccuracyLoss", "classification.inaccuracyLoss", c.inaccuracyLoss,
                       0, 1, true);
         reader.number(*table, "mistakeLoss", "classification.mistakeLoss", c.mistakeLoss, 0, 1,
@@ -225,10 +232,13 @@ Result parse(std::string_view contents) {
     }
     return validate(config);
 }
-Result validate(const review::Configuration& values) {
+Result validate(const review::Configuration& values, std::uint32_t classificationIdentityVersion) {
     const auto& c = values.classification;
     const auto& e = values.conversion;
-    if (values.version != 1 ||
+    if ((classificationIdentityVersion != 1 && classificationIdentityVersion != 2) ||
+        (classificationIdentityVersion == 1 && c.excellentLoss != 0.01) ||
+        !std::isfinite(c.excellentLoss) || c.excellentLoss <= 0 || c.excellentLoss >= 1 ||
+        values.version != 1 ||
         (values.quality != review::Quality::Fast && values.quality != review::Quality::Standard &&
          values.quality != review::Quality::Thorough) ||
         !std::isfinite(c.inaccuracyLoss) || !std::isfinite(c.mistakeLoss) ||
@@ -243,8 +253,8 @@ Result validate(const review::Configuration& values) {
             return failure("Invalid analysis budgets");
         }
     }
-    return std::make_shared<const ValidatedConfiguration>(
-        ValidatedConfiguration{values, identities(values)});
+    return std::make_shared<const ValidatedConfiguration>(ValidatedConfiguration{
+        values, identities(values, classificationIdentityVersion), classificationIdentityVersion});
 }
 Result load(const QString& filename) {
     if (!QDir::isAbsolutePath(filename) || filename.contains(QChar::Null) ||

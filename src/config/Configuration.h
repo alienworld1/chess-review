@@ -24,9 +24,12 @@ struct Identities {
 struct ValidatedConfiguration {
     review::Configuration values;
     Identities identities;
+    // Version 1 is retained only for decoding/resuming released settings.
+    std::uint32_t classificationIdentityVersion = 2;
 };
 using Result = std::variant<std::shared_ptr<const ValidatedConfiguration>, Diagnostics>;
-[[nodiscard]] Result validate(const review::Configuration& values);
+[[nodiscard]] Result validate(const review::Configuration& values,
+                              std::uint32_t classificationIdentityVersion = 2);
 [[nodiscard]] Result parse(std::string_view contents);
 // File I/O and parsing must run on a worker. Absence selects defaults; other errors fail closed.
 [[nodiscard]] Result load(const QString& filename);

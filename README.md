@@ -11,8 +11,10 @@ protects against accidental loss. An explicit Start/Stop engine panel shows a
 White-perspective evaluation and bar, one read-only SAN principal variation, depth,
 and engine status while following the board. Games → Review now runs a bounded
 full-game quick scan with player/engine/quality selection, durable progress,
-cancellation, background continuation and explicit resume. Classifications,
-accuracy and guided board review remain future work.
+cancellation, background continuation and explicit resume. A paged move list shows
+provisional normal classifications with inspectable scores, rules, thresholds and
+evidence provenance. Older runs gain classifications from saved evidence without
+an engine. Accuracy and guided board review remain future work.
 Settings registers local UCI executables through a nonblocking validation
 handshake and persists their profiles. Explicit Connect/Disconnect controls keep
 an engine Ready and expose its advertised options without starting a search.
@@ -78,11 +80,11 @@ libraries separate. Automated tests use temporary storage.
 - [Storage](docs/storage.md): paths, UI preferences, database lifecycle, and migrations
 - [Local UCI engines](docs/engines.md): registration, connections, position-search API, and limits
 - [Diagnostics](docs/diagnostics.md): troubleshooting, local logs, and privacy
-- [Quick review](docs/quick-review.md): running, cancelling, background work, and resuming scans
+- [Quick review](docs/quick-review.md): running scans, inspecting classifications, cancellation, and resume
 - [Analyze board](docs/analysis-board.md): moves, navigation, annotations, and preferences
 - [Chess core](docs/chess-core.md): adapter API, FEN policy, moves, and identity
 - [Importing games](docs/import.md): local files, paste, drops, limits, and results
 - [PGN parsing](docs/pgn.md): documents, compatibility, recovery, limits, and cancellation
 
-Advanced product settings and the first review-domain increment are documented in
+Advanced product settings and the review evidence model are documented in
 [Review evidence and configuration](docs/review-evidence.md).

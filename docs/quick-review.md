@@ -14,8 +14,8 @@ review perspective. Checkmate and stalemate positions use local board proof.
 The progress count includes only positions whose evidence has been saved. Valid
 completed engine results can still contain weak or otherwise insufficient evidence.
 **Quick scan complete** means every position has been processed, not that every
-position supports an interpretation. Classifications, accuracy, explanations and
-the guided board review are not available yet.
+position supports an interpretation. Normal classifications are provisional; accuracy,
+guided explanations and the board-first review screen are not available yet.
 
 ## Background work and cancellation
 
@@ -33,7 +33,8 @@ Interrupted. Work never resumes automatically.
 
 ## Saved runs and resume
 
-The Review workspace lists saved runs for the selected game, with pagination.
+The Review workspace’s **Saved runs** tab lists runs for the selected game, with
+pagination. The **Moves** tab shows the inspected run’s move list and details.
 Select a run to inspect its status and coverage without starting an engine.
 Incomplete runs offer **Resume selected run**. Resume keeps the original player,
 quality, complete configuration and supported evidence-model versions, even if the
@@ -57,3 +58,53 @@ existing strict history, search-strength, configuration and verified-resource ru
 currently only the reviewed pinned Stockfish configuration qualifies. Other engines
 can collect durable review evidence but safely miss cache reuse. Clearing or failing
 to update that cache does not erase the review's own saved evidence.
+
+## Move classifications and evidence
+
+The move list includes both players and all mainline moves, in pages of 50 plies.
+Select a row with the mouse or keyboard to inspect its rationale. Labels appear
+only after both adjacent positions and the classification have been committed.
+Cancelled and partial runs retain useful classifications; unprocessed moves remain
+visible as **Awaiting evidence**. **Unclassified** means evidence was retained but
+does not support a normal label. Details explain the reason.
+
+All labels remain **provisional** until targeted deepening and stability checks
+are implemented. The rules use expected-score loss from the mover's perspective:
+
+| Rule, evaluated in order | Result |
+| --- | --- |
+| Verified rank 1, but loss reaches Inaccuracy | Withhold: searches disagree |
+| Loss ≥ Blunder threshold (default 20 percentage points) | Blunder |
+| Loss ≥ Mistake threshold (default 10 points) | Mistake |
+| Loss ≥ Inaccuracy threshold (default 5 points) | Inaccuracy |
+| Verified rank 1 below Inaccuracy | Best |
+| Loss ≤ Excellent maximum (default 1 point) | Excellent |
+| Remaining valid loss below Inaccuracy | Good |
+
+Error bands take priority even if the configured Excellent maximum exceeds
+Inaccuracy. Best means the played move matches the earlier search's verified
+first candidate, with paired loss below Inaccuracy; it is still provisional.
+A missing played-move rank remains unknown. Approximate centipawn conversion is
+identified explicitly. Display values are rounded; rules compare the unrounded
+stored values.
+
+The inspector shows before/after expected scores, loss in percentage points,
+thresholds, rule/model version, verified best move and played rank, measured
+candidate gaps, raw scores/WDL with their original perspective and bounds,
+measured analysis strength, engine identity, and evidence/session/attempt IDs.
+Nearly equivalent alternatives require comparable candidates from the same search
+within the configured Excellent maximum. MultiPV=1 says **not assessed**; no
+alternative rank or equivalence is inferred from the later-position score.
+
+Bounds, engine mate claims, insufficient strength, incompatible conversions,
+contradictory candidates, and apparent negative loss withhold normal labels.
+Locally proven terminal outcomes retain the existing conservative pairing rules.
+No Brilliant, Great, Miss or Book labels are produced by this increment.
+
+Opening an older run derives and saves classifications in background batches from
+its owned evidence, without an engine or the disposable cache. It retains the
+original thresholds and conversion settings and records a 1% Excellent maximum.
+Backfill can continue when the run is opened again after interruption; it does
+not alter scan coverage or job status. Changed current TOML settings apply to new
+runs, not existing runs. Unsupported or damaged saved records produce explicit
+errors instead of silent replacement.

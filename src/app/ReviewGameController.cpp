@@ -59,7 +59,10 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                                            engine::EngineSupervisor& supervisor,
                                            ReviewConfiguration& configuration, QObject* parent)
     : QObject(parent), database_(database), settings_(settings), supervisor_(supervisor),
-      configuration_(configuration), cursor_(std::make_unique<Cursor>()) {
+      configuration_(configuration), moves_(database), cursor_(std::make_unique<Cursor>()) {
+    connect(&moves_, &ReviewMovesController::changed, this, &ReviewGameController::publish);
+    connect(&moves_, &ReviewMovesController::drainedChanged, this,
+            &ReviewGameController::finishClose);
     worker_.setMaxThreadCount(1);
     worker_.setExpiryTimeout(-1);
     retry_.setSingleShot(true);
@@ -317,6 +320,7 @@ void ReviewGameController::publish() {
     if (closed_) {
         return;
     }
+    moves_.bind(state_.run);
     state_.busy = state_.active || workerBusy_ || !pending_.isNull() || retry_.isActive();
     const QScopedValueRollback notification(notifying_, true);
     emit changed();
@@ -838,9 +842,8 @@ void ReviewGameController::finish() {
     position_.reset();
     state_.message = state_.run ? reviewStatusText(state_.run->status) : tr("Review not started");
     if (state_.run && state_.run->status == JobStatus::Complete) {
-        state_.message =
-            tr("Quick scan complete. Positions processed; classifications and accuracy are not "
-               "available yet. Some evidence may be insufficient for interpretation.");
+        state_.message = tr("Quick scan complete. Classifications are provisional; some moves may "
+                            "lack sufficient evidence. Accuracy is not available yet.");
     }
     publish();
     if (!closing_) {
@@ -869,6 +872,7 @@ void ReviewGameController::close() {
         return;
     }
     closing_ = true;
+    moves_.close();
     nextInspection_.reset();
     listRetry_.stop();
     if (retry_.isActive() && !durableOperation_) {
@@ -879,7 +883,7 @@ void ReviewGameController::close() {
     finishClose();
 }
 void ReviewGameController::finishClose() {
-    if (!closing_ || closed_ || closeQueued_ || state_.active || workerBusy_ ||
+    if (!closing_ || closed_ || closeQueued_ || !moves_.drained() || state_.active || workerBusy_ ||
         !pending_.isNull() || !search_.isNull() || !cacheWrite_.isNull() || !listing_.isNull() ||
         retry_.isActive()) {
         return;

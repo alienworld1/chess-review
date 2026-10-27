@@ -574,6 +574,37 @@ void Database::continueReview(RequestId requestId, ContinueReview continuation) 
         },
         Qt::QueuedConnection);
 }
+void Database::deriveReviewMoves(RequestId requestId, ReviewId id, std::int64_t expectedRevision,
+                                 int offset, int limit) {
+    if (auto error = acceptRequest()) {
+        const auto code =
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable);
+        const ReviewError failure{
+            code, QStringLiteral("Review storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(
+            0, this, [this, requestId, failure] { emit reviewMovesLoaded(requestId, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, requestId, id, expectedRevision, offset, limit] {
+            const auto result = impl_->worker->executeReview<LoadReviewMovesResult>(
+                [&](detail::StorageSession& session) {
+                    return session.deriveReviewMoves(id, expectedRevision, offset, limit);
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, requestId, result] {
+                    --impl_->pending;
+                    emit reviewMovesLoaded(requestId, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
 void Database::loadReviewEvidence(RequestId requestId, ReviewId id, int positionIndex) {
     if (auto error = acceptRequest()) {
         const auto code =

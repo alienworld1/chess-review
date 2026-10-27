@@ -1,8 +1,8 @@
 # Review evidence and configuration
 
-The first game-review increment supplies evidence conversion and configuration.
-Running a game review, move classification, accuracy, and durable review storage
-are later increments. Changing settings now does not change manual analysis limits
+Game review combines evidence conversion, durable storage, quick scanning, and
+provisional normal classifications. See [Quick review](quick-review.md) for the
+workflow and classification rules. Accuracy remains a later increment. Changing settings now does not change manual analysis limits
 or launch an engine.
 
 ## Advanced configuration
@@ -27,6 +27,7 @@ activate defaults or last-known-good settings.
 | --- | --- |
 | `version` | Integer `1` |
 | `analysis.fast/standard/thorough.quickScanNodes`, `.deepeningNodes`, `.verificationNodes` | Integers in `[1, 1000000000000]`, with quick ≤ deepening ≤ verification within each preset |
+| `classification.excellentLoss` | Finite number strictly between 0 and 1; default `0.01`; independent of error-boundary ordering |
 | `classification.inaccuracyLoss`, `.mistakeLoss`, `.blunderLoss` | Finite numbers strictly between 0 and 1, strictly increasing in this order |
 | `review.quality` | `"fast"`, `"standard"` (default), `"thorough"` |
 | `review.preferWdl` | Boolean; default `true` |
@@ -45,7 +46,8 @@ the opened descriptor before reading. Permission failures are errors, never a
 reason to silently select defaults. The notice shows the first error; full details
 remain available in Help → Diagnostics. Settings are separate from UI
 preferences in QSettings. Budgets and label boundaries are provisional defaults
-pending empirical tuning; this increment defines no Excellent/Good/Best rules.
+pending empirical tuning; Excellent defaults to a maximum loss of 0.01; Best requires verified rank 1 below
+Inaccuracy. Error bands take priority over Excellent.
 
 ## Domain contract
 
@@ -110,12 +112,15 @@ external resources may supply review evidence; that does not authorize cache hit
 Configuration publishes separate SHA-256 identities for classification thresholds,
 expected-score conversion, and analysis budgets/selected preset/WDL preference.
 Canonical encoding uses Qt_6_0 QDataStream framing, explicit big-endian/double
-precision encoding and v1 domain tags. Independently computed default golden
+precision encoding and versioned domain tags. Classification identity v2 includes Excellent;
+released v1 settings retain their original identity and canonical encoding. Independently computed default golden
 vectors protect these identities against accidental encoding changes.
 Whitespace, comments, key order, and omitted versus explicit defaults do not affect
 identity. Threshold changes do not change conversion or analysis identities.
-Future review storage must retain the applicable identities, model versions, and
-source evidence. Accuracy remains a separate future methodology.
+Review storage retains the applicable identities, model versions, and source
+evidence. New settings use settings format 2; existing evidence/pair formats remain
+unchanged. A separate classification document records the effective thresholds
+and identity, including the default Excellent boundary for legacy runs. Accuracy remains a separate future methodology.
 
 The analysis adapter optionally accepts a borrowed `Position` replay witness.
 It reuses that board only when the complete history-aware context matches; a

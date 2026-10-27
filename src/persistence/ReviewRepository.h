@@ -2,6 +2,7 @@
 #include "analysis/ReviewEvidenceAdapter.h"
 #include "config/Configuration.h"
 #include "persistence/GameRepository.h"
+#include "review/Classification.h"
 #include "review/Review.h"
 #include <QByteArray>
 #include <QDateTime>
@@ -57,7 +58,7 @@ struct StoredReview {
     QByteArray mainlineIdentity;
     std::uint32_t evidenceModelVersion = review::evidenceModelVersion;
     std::uint32_t expectedScoreModelVersion = review::expectedScoreModelVersion;
-    // Future classification/accuracy/motif/explanation/opening metadata is absent in format 1.
+    // Classification metadata is stored separately; legacy settings remain unchanged.
 };
 struct ReviewCheckpoint {
     ReviewId reviewId = 0;
@@ -85,6 +86,35 @@ struct StoredReviewEvidence {
     // Pair for the move ending at positionIndex, absent until both positions exist.
     std::optional<review::MoveEvidence> precedingMove;
 };
+// Compact page values: no owning position histories or full PVs cross to the GUI.
+struct ReviewMove {
+    int positionIndex = 0;
+    std::uint32_t moveNumber = 0;
+    chess::Color mover = chess::Color::White;
+    QString san;
+    std::optional<review::ClassificationResult> classification;
+    QString bestSan;
+    std::vector<QString> alternativeSans;
+    review::RawEvaluation rawBefore;
+    review::RawEvaluation rawAfter;
+    review::AnalysisStrength beforeStrength;
+    review::AnalysisStrength afterStrength;
+    QString beforeAttempt;
+    QString afterAttempt;
+    QString beforeSession;
+    QString afterSession;
+    QString engineIdentity;
+    std::int64_t beforeEvidenceId = 0;
+    std::int64_t afterEvidenceId = 0;
+};
+struct ReviewMovePage {
+    ReviewId reviewId = 0;
+    std::int64_t revision = 0;
+    int offset = 0;
+    int totalMoves = 0;
+    std::vector<ReviewMove> moves;
+};
+using LoadReviewMovesResult = std::variant<ReviewMovePage, ReviewError>;
 struct ReviewTransition {
     std::int64_t revision = 0;
     std::optional<review::JobStatus> previous;
@@ -105,3 +135,5 @@ Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewResult)
 Q_DECLARE_METATYPE(chess_review::persistence::ListReviewsResult)
 Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewEvidenceResult)
 Q_DECLARE_METATYPE(chess_review::persistence::ListReviewTransitionsResult)
+
+Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewMovesResult)

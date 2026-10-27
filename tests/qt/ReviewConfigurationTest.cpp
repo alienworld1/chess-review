@@ -259,11 +259,30 @@ class ReviewConfigurationTest final : public QObject {
         const auto parsed = valid("");
         QVERIFY(parsed);
         QCOMPARE(parsed->identities.classification.toHex(),
-                 QByteArray("08ff820351ea33c4027ace720ad8f1c26b12df7eaaada02520143f8a4eb6a36d"));
+                 QByteArray("18cbfcc98e555dd09e919eac03d4454a377a0817cabc96b8909dbaac10a994e3"));
         QCOMPARE(parsed->identities.conversion.toHex(),
                  QByteArray("5136a1ae0435b81fc247490dd783b0a2949ef6c1030f17f407e12c26f5d48162"));
         QCOMPARE(parsed->identities.analysis.toHex(),
                  QByteArray("cfade89abac9aa3dd679a8bbc3847e84c6bfcfe816674bddfd59459afac4da7c"));
+    }
+    void excellentThresholdAndLegacyIdentity() {
+        const auto defaults = valid("");
+        const auto changed = valid("[classification]\nexcellentLoss=0.02");
+        QVERIFY(changed);
+        QVERIFY(defaults->identities.classification != changed->identities.classification);
+        QCOMPARE(defaults->identities.analysis, changed->identities.analysis);
+        QCOMPARE(defaults->identities.conversion, changed->identities.conversion);
+        QVERIFY(valid("[classification]\ninaccuracyLoss=0.005"));
+        for (const auto* text :
+             {"[classification]\nexcellentLoss=0", "[classification]\nexcellentLoss=1",
+              "[classification]\nexcellentLoss=nan"}) {
+            QVERIFY(std::holds_alternative<config::Diagnostics>(config::parse(text)));
+        }
+        const auto legacy = config::validate(defaults->values, 1);
+        const auto& value =
+            *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(legacy);
+        QCOMPARE(value.identities.classification.toHex(),
+                 QByteArray("08ff820351ea33c4027ace720ad8f1c26b12df7eaaada02520143f8a4eb6a36d"));
     }
     void identitiesSeparateSemantics() {
         const auto a = valid("");

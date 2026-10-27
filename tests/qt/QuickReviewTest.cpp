@@ -15,6 +15,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPalette>
+#include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -415,6 +416,103 @@ class QuickReviewTest final : public QObject {
             qvariant_cast<persistence::LoadReviewResult>(stored.front()[1]));
         QVERIFY(!engine::verifiedResources(run.settings.fingerprint));
         QCOMPARE(run.settings.configuration.values.quality, review::Quality::Standard);
+    }
+    void classificationsAppearBeforeTheScanFinishes() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *"));
+        f.script(0, -1, 100, false, false, QStringLiteral("cp 0"));
+        f.run();
+        auto& controller = f.startup.reviewGame();
+        QVERIFY(QTest::qWaitFor(
+            [&] {
+                const auto& state = controller.moves().state();
+                return controller.state().active && state.page && !state.page->moves.empty() &&
+                       state.page->moves.front().classification.has_value();
+            },
+            10000));
+        QVERIFY(controller.state().run->completedPositions >= 2);
+        QVERIFY(controller.state().run->completedPositions <
+                controller.state().run->totalPositions);
+        const auto label = controller.moves().state().page->moves.front().classification->label;
+        controller.cancel();
+        QVERIFY(f.done());
+        QVERIFY(QTest::qWaitFor([&] {
+            return controller.moves().state().page && !controller.moves().state().loading;
+        }));
+        QCOMPARE(controller.moves().state().page->moves.front().classification->label, label);
+        QVERIFY(!controller.moves().state().page->moves.back().classification);
+    }
+    void moveInspectionShowsProvisionalEvidenceAndKeyboardSelection() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 0"));
+        f.run();
+        QVERIFY(f.done());
+        auto& controller = f.startup.reviewGame();
+        QVERIFY(QTest::qWaitFor([&] {
+            return controller.moves().state().page && !controller.moves().state().loading;
+        }));
+        QVERIFY2(controller.moves().state().error.isEmpty(),
+                 qPrintable(controller.moves().state().error));
+        const auto& page = *controller.moves().state().page;
+        QCOMPARE(page.moves.size(), std::size_t(2));
+        QVERIFY(page.moves[0].classification);
+        QVERIFY(page.moves[0].classification->label);
+        QVERIFY(!page.moves[0].classification->stable);
+        auto* table = f.window.findChild<QTableView*>(QStringLiteral("reviewMoves"));
+        auto* details = f.window.findChild<QPlainTextEdit*>(QStringLiteral("reviewMoveDetails"));
+        QVERIFY(table);
+        QVERIFY(details);
+        QCOMPARE(table->model()->rowCount(), 2);
+        QVERIFY(details->toPlainText().contains(QStringLiteral("Rule:")));
+        QVERIFY(details->toPlainText().contains(QStringLiteral("Evidence IDs:")));
+        QVERIFY(details->toPlainText().contains(QStringLiteral("not assessed")));
+        table->setCurrentIndex(table->model()->index(0, 0));
+        QTest::keyPress(table, Qt::Key_Down);
+        QTest::keyRelease(table, Qt::Key_Down);
+        QCOMPARE(controller.moves().state().selectedPosition, 2);
+        QVERIFY(details->toPlainText().contains(QStringLiteral("Black")));
+    }
+    void classificationPagesCoalesceAndKeepUnavailableMoves() {
+        std::string text;
+        for (int i = 0; i < 30; ++i) {
+            text += "Nf3 Nf6 Ng1 Ng8 ";
+        }
+        text += "*";
+        Fixture f;
+        QVERIFY(f.seed(text));
+        f.script(0, 2);
+        f.run();
+        QVERIFY(QTest::qWaitFor(
+            [&] {
+                return f.startup.reviewGame().state().run &&
+                       f.startup.reviewGame().state().run->completedPositions >= 2;
+            },
+            10000));
+        f.startup.reviewGame().cancel();
+        QVERIFY(f.done());
+        auto& moves = f.startup.reviewGame().moves();
+        moves.showPage(50);
+        moves.showPage(100);
+        moves.showPage(50);
+        QVERIFY(QTest::qWaitFor([&] {
+            return moves.state().page && moves.state().page->offset == 50 && !moves.state().loading;
+        }));
+        QCOMPARE(moves.state().page->moves.size(), std::size_t(50));
+        QVERIFY(!moves.state().page->moves.front().classification);
+        moves.select(100);
+        QCOMPARE(moves.state().selectedPosition, 100);
+        moves.showPage(100);
+        QVERIFY(QTest::qWaitFor([&] {
+            return moves.state().page && moves.state().page->offset == 100 &&
+                   !moves.state().loading;
+        }));
+        QCOMPARE(moves.state().page->moves.size(), std::size_t(20));
+        moves.showPage(0);
+        QVERIFY(QTest::qWaitFor([&] {
+            return moves.state().page && moves.state().page->offset == 0 && !moves.state().loading;
+        }));
+        QVERIFY(moves.state().page->moves.front().classification);
     }
     void cancelResumeAndRerun() {
         Fixture f;
@@ -861,6 +959,8 @@ class QuickReviewTest final : public QObject {
         f.window.resize(1100, 720);
         f.window.show();
         QTest::qWait(30);
+        QVERIFY(QTest::qWaitFor(
+            [&] { return f.startup.reviewGame().moves().state().page.has_value(); }));
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-light.png")));
         auto palette = qApp->palette();
         palette.setColor(QPalette::Window, QColor(QStringLiteral("#202732")));

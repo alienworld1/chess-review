@@ -31,7 +31,7 @@ FetchContent_Declare(tomlplusplus
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(tomlplusplus)
 
-add_library(chess_review_review STATIC src/review/Evidence.cpp)
+add_library(chess_review_review STATIC src/review/Evidence.cpp src/review/Classification.cpp)
 set_target_properties(chess_review_review PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 target_include_directories(chess_review_review PUBLIC src)
 target_link_libraries(chess_review_review PUBLIC chess_review_chess)
@@ -70,6 +70,7 @@ add_library(chess_review_persistence STATIC
     src/persistence/private/ReviewCodec.cpp
     src/persistence/private/ReviewRepository.cpp
     src/persistence/migrations/006_reviews.cpp
+    src/persistence/migrations/007_classifications.cpp
     src/persistence/private/AnalysisCodec.cpp
     src/persistence/private/AnalysisRepository.cpp
     src/persistence/migrations/005_analysis.cpp
@@ -99,6 +100,8 @@ chess_review_apply_options(chess_review_app_paths)
 
 add_library(chess_review_startup STATIC
     src/app/ReviewGameController.cpp
+    src/app/ReviewMovesController.cpp
+    src/app/ReviewMovePresentation.cpp
     src/app/ReviewConfiguration.cpp
     src/app/EngineAnalysisController.cpp
     src/app/EngineSettingsController.cpp

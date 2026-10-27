@@ -13,5 +13,7 @@ bool sameConfiguration(const config::ValidatedConfiguration& a,
                        const config::ValidatedConfiguration& b);
 QByteArray adaptedDocument(const review::PositionEvidence& evidence,
                            const review::ConversionConfig& config);
+QByteArray classificationDocument(const review::ClassificationResult& result, std::int64_t beforeId,
+                                  std::int64_t afterId, const QByteArray& configurationIdentity);
 QByteArray pairedDocument(const review::MoveEvidence& evidence);
 } // namespace chess_review::persistence::detail
