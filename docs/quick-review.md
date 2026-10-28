@@ -108,3 +108,25 @@ Backfill can continue when the run is opened again after interruption; it does
 not alter scan coverage or job status. Changed current TOML settings apply to new
 runs, not existing runs. Unsupported or damaged saved records produce explicit
 errors instead of silent replacement.
+
+### Classification model versions and retry
+
+New classifications use model 2. Native WDL values are exact multiples of 1/2000:
+model 2 subtracts the integer win/draw counts before converting loss or candidate
+gaps to a number. An exact 5-percentage-point loss therefore reaches the 5-point
+Inaccuracy threshold; an exact 1-point loss stays within Excellent. This avoids
+floating-point cancellation at those boundaries. Approximate centipawn conversion
+and conservative evidence validation are unchanged; negative loss is not clamped.
+
+Saved model-1 classifications retain their original numeric rules, rule IDs and
+rationale, with an explanatory note in the inspector. Opening them does not
+silently rewrite historical labels. Missing classifications and genuinely replaced
+evidence use model 2. The underlying evidence/conversion models, saved thresholds,
+and configuration identities are unchanged.
+
+A failed move-evidence load offers **Retry move evidence**. Retry rechecks the
+visible page and restarts pending backfill without starting an engine; damaged or
+unsupported records remain explicit errors. Late replies from a deselected run or
+superseded page cannot replace the current view or its error state. While scanning,
+move-list refreshes coalesce over 200 ms; new classifications still commit with
+each evidence checkpoint. Background backfill continues after the scan stops.

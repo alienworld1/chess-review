@@ -69,18 +69,20 @@ TEST_CASE("Loss boundaries use exact inclusive comparisons", "[unit][review][cla
         double& threshold = which == 0   ? configuration.inaccuracyLoss
                             : which == 1 ? configuration.mistakeLoss
                                          : configuration.blunderLoss;
-        threshold = *paired.loss;
+        const double loss = *classify(position, paired, {}).loss;
+        threshold = loss;
         CHECK(classify(position, paired, configuration).label == severity);
         threshold = std::nextafter(threshold, 1.0);
         CHECK(classify(position, paired, configuration).label != severity);
-        threshold = std::nextafter(*paired.loss, 0.0);
+        threshold = std::nextafter(loss, 0.0);
         CHECK(classify(position, paired, configuration).label == severity);
     }
     const auto paired = pair(position, 10);
     auto configuration = ClassificationConfig{};
-    configuration.excellentLoss = *paired.loss;
+    const double excellentLoss = *classify(position, paired, {}).loss;
+    configuration.excellentLoss = excellentLoss;
     CHECK(classify(position, paired, configuration).label == Classification::Excellent);
-    configuration.excellentLoss = std::nextafter(*paired.loss, 0.0);
+    configuration.excellentLoss = std::nextafter(excellentLoss, 0.0);
     CHECK(classify(position, paired, configuration).label == Classification::Good);
     configuration.inaccuracyLoss = .005;
     CHECK(classify(position, paired, configuration).label == Classification::Inaccuracy);
@@ -176,4 +178,53 @@ TEST_CASE("Local terminal outcomes remain subject to conservative pairing",
     const auto result = classify(position, paired, {});
     CHECK(result.label == Classification::Blunder);
     CHECK(result.after.expected->source == ConversionSource::Terminal);
+}
+
+TEST_CASE("Native WDL respects the configured decimal boundaries",
+          "[unit][review][classification]") {
+    const auto position = chess::Position::initial();
+    CHECK(classify(position, pair(position, 10), {}).label == Classification::Excellent);
+    CHECK(classify(position, pair(position, 50), {}).label == Classification::Inaccuracy);
+    CHECK(classify(position, pair(position, 100), {}).label == Classification::Mistake);
+    CHECK(!classify(position, pair(position, 50, true), {}).label);
+    auto paired = pair(position, 0);
+    auto alternative = paired.before.candidates.front();
+    alternative.rank = 2;
+    alternative.continuation = {move(position, "e2e4")};
+    alternative.evaluation.wdl = Wdl{490, 0, 510};
+    paired.before.candidates.push_back(alternative);
+    const auto result = classify(position, paired, {});
+    REQUIRE(result.alternatives.size() == 1);
+    CHECK(result.alternatives.front().nearlyEquivalent);
+}
+
+TEST_CASE("Released classification model remains reproducible", "[unit][review][classification]") {
+    const auto position = chess::Position::initial();
+    CHECK(classify(position, pair(position, 50), {}, {}, 1).label == Classification::Good);
+    CHECK(classify(position, pair(position, 10), {}, {}, 1).label == Classification::Good);
+    CHECK(classify(position, pair(position, 50, true), {}, {}, 1).label == Classification::Best);
+    CHECK(classify(position, pair(position, 0), {}, {}, 999).issue ==
+          ClassificationIssue::Evidence);
+}
+
+TEST_CASE("Exact WDL loss is independent of baseline and includes draws",
+          "[unit][review][classification]") {
+    const auto position = chess::Position::initial();
+    for (int wins = 100; wins <= 900; wins += 100) {
+        auto paired = pair(position, 50);
+        paired.before.evaluation.wdl = Wdl{wins, 0, 1000 - wins};
+        paired.after.evaluation.wdl = Wdl{1050 - wins, 0, wins - 50};
+        paired.before.candidates.front().evaluation = paired.before.evaluation;
+        paired.after.candidates.front().evaluation = paired.after.evaluation;
+        const auto result = classify(position, paired, {});
+        CHECK(result.label == Classification::Inaccuracy);
+        CHECK(result.loss == 0.05);
+    }
+    auto paired = pair(position, 50);
+    paired.before.evaluation.wdl = Wdl{480, 40, 480};
+    paired.after.evaluation.wdl = Wdl{530, 40, 430};
+    paired.before.candidates.front().evaluation = paired.before.evaluation;
+    paired.after.candidates.front().evaluation = paired.after.evaluation;
+    CHECK(classify(position, paired, {}).loss == 0.05);
+    CHECK(classify(position, paired, {}, ConversionConfig{300, false}).loss == 0.0);
 }

@@ -1,7 +1,11 @@
 #pragma once
 #include "persistence/Database.h"
 #include <QObject>
+#include <QString>
 #include <QTimer>
+#include <QUuid>
+#include <cstdint>
+#include <optional>
 namespace chess_review::app {
 struct ReviewMovesState {
     std::optional<persistence::ReviewMovePage> page;
@@ -10,7 +14,8 @@ struct ReviewMovesState {
     bool loading = false;
     QString error;
 };
-// GUI-thread facade; database worker owns replay/derivation. Services outlive closed().
+// GUI-thread facade; database worker owns replay/derivation. The injected database
+// outlives this controller. Close and drain pending requests before destruction.
 class ReviewMovesController final : public QObject {
     Q_OBJECT
   public:
@@ -19,6 +24,7 @@ class ReviewMovesController final : public QObject {
     void bind(const std::optional<persistence::ReviewSummary>& run);
     void showPage(int offset);
     void select(int positionIndex);
+    void retry();
     void close();
     bool drained() const { return pending_.isNull(); }
   signals:
@@ -34,6 +40,9 @@ class ReviewMovesController final : public QObject {
     QTimer timer_;
     int backfillOffset_ = 0;
     int retryMs_ = 25;
+    std::uint64_t generation_ = 0;
+    std::uint64_t pendingGeneration_ = 0;
+    bool pendingVisible_ = false;
     bool dirty_ = false;
     bool closing_ = false;
 };

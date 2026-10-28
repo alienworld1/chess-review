@@ -174,6 +174,16 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
     text << QObject::tr("Rule: %1; classification model %2")
                 .arg(QString::fromStdString(r.ruleId))
                 .arg(r.modelVersion);
+    if (r.modelVersion == 1) {
+        text << QObject::tr("Saved model 1 retains its original floating-point boundary rules; new "
+                            "classifications use model 2.");
+    } else if (r.before.expected &&
+               r.before.expected->source == review::ConversionSource::NativeWdl &&
+               r.after.expected &&
+               r.after.expected->source != review::ConversionSource::ApproximateCentipawns) {
+        text << QObject::tr(
+            "Loss and candidate gaps are calculated from exact WDL counts before conversion.");
+    }
     text << QObject::tr("Raw before — %1").arg(raw(move.rawBefore));
     text << QObject::tr("Raw after — %1").arg(raw(move.rawAfter));
     text << QObject::tr("Before strength: %1").arg(strength(move.beforeStrength));

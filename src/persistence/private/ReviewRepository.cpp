@@ -397,18 +397,6 @@ std::optional<ReviewError> retainClassification(QSqlDatabase& db, const StoredRe
                                                 const review::MoveEvidence& pair, int index,
                                                 std::int64_t beforeId, std::int64_t afterId,
                                                 bool replace, review::ClassificationResult& out) {
-    out = review::classify(position, pair, run.settings.configuration.values.classification,
-                           run.settings.configuration.values.conversion);
-    // Legacy settings retain their released identity; interpretation explicitly includes the new
-    // default.
-    const auto validated = config::validate(run.settings.configuration.values);
-    const auto* configuration =
-        std::get_if<std::shared_ptr<const config::ValidatedConfiguration>>(&validated);
-    if (!configuration) {
-        return invalid();
-    }
-    const auto bytes =
-        classificationDocument(out, beforeId, afterId, (*configuration)->identities.classification);
     QSqlQuery q(db);
     if (!exec(q,
               QStringLiteral("SELECT CASE WHEN typeof(before_id)='integer' THEN before_id END, "
@@ -419,29 +407,47 @@ std::optional<ReviewError> retainClassification(QSqlDatabase& db, const StoredRe
         return storage();
     }
     bool present = false;
+    bool sameEvidence = false;
+    QByteArray previousBytes;
+    auto modelVersion = review::classificationModelVersion;
     if (q.next()) {
         present = true;
-        const auto document = readReviewDocument(q.value(2).toByteArray(), 65536);
+        previousBytes = q.value(2).toByteArray();
+        const auto document = readReviewDocument(previousBytes, 65536);
         if (!q.value(3).toBool() || !document) {
             return invalid();
         }
         if ((*document)["formatVersion"].toInt(-1) != 1 ||
-            (*document)["modelVersion"].toInt(-1) !=
-                static_cast<int>(review::classificationModelVersion)) {
+            !review::supportsClassificationModel(
+                static_cast<std::uint32_t>((*document)["modelVersion"].toInt(-1)))) {
             return error(ReviewErrorCode::UnsupportedVersion);
         }
-        const bool sameEvidence =
-            q.value(0).toLongLong() == beforeId && q.value(1).toLongLong() == afterId;
-        if ((!replace || sameEvidence) && (!sameEvidence || q.value(2).toByteArray() != bytes)) {
+        sameEvidence = q.value(0).toLongLong() == beforeId && q.value(1).toLongLong() == afterId;
+        if (!replace && !sameEvidence) {
             return invalid();
         }
         if (sameEvidence) {
-            return std::nullopt;
+            modelVersion = static_cast<std::uint32_t>((*document)["modelVersion"].toInt());
         }
     } else if (q.lastError().isValid()) {
         return storage();
     }
     q.finish();
+    out = review::classify(position, pair, run.settings.configuration.values.classification,
+                           run.settings.configuration.values.conversion, modelVersion);
+    // Legacy settings retain their released identity; interpretation explicitly includes the new
+    // default.
+    const auto validated = config::validate(run.settings.configuration.values);
+    const auto* configuration =
+        std::get_if<std::shared_ptr<const config::ValidatedConfiguration>>(&validated);
+    if (!configuration) {
+        return invalid();
+    }
+    const auto bytes =
+        classificationDocument(out, beforeId, afterId, (*configuration)->identities.classification);
+    if (sameEvidence) {
+        return previousBytes == bytes ? std::nullopt : std::optional{invalid()};
+    }
     if (!exec(q,
               present ? QStringLiteral(
                             "UPDATE review_classifications SET before_id=?,after_id=?,document=? "
@@ -1053,6 +1059,10 @@ LoadReviewMovesResult StorageSession::deriveReviewMoves(ReviewId id, std::int64_
         return invalid();
     }
     auto before = readEvidence(database_, run, *position, offset);
+    if (const auto* e = std::get_if<ReviewError>(&before);
+        e && e->code != ReviewErrorCode::Missing) {
+        return *e;
+    }
     for (int ply = offset; ply < total && ply - offset < limit; ++ply) {
         const auto move = game.document->originalMainline()[static_cast<std::size_t>(ply)];
         const auto san = position->san(move);

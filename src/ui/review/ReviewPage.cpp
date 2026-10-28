@@ -308,11 +308,17 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     nextMoves_->setObjectName(QStringLiteral("nextReviewMoves"));
     moveStatus_ = new QLabel(this);
     moveStatus_->setObjectName(QStringLiteral("reviewMoveStatus"));
+    moveStatus_->setAccessibleName(tr("Move evidence status"));
     moveStatus_->setTextFormat(Qt::PlainText);
     moveStatus_->setWordWrap(true);
     movePaging->addWidget(previousMoves_);
     movePaging->addWidget(nextMoves_);
     movePaging->addWidget(moveStatus_, 1);
+    retryMoves_ = new QPushButton(tr("Retry move evidence"), this);
+    retryMoves_->setObjectName(QStringLiteral("retryReviewMoves"));
+    movePaging->addWidget(retryMoves_);
+    connect(retryMoves_, &QPushButton::clicked, &controller_.moves(),
+            &app::ReviewMovesController::retry);
     movesLayout->addLayout(movePaging);
     connect(previousMoves_, &QPushButton::clicked, this,
             [this] { controller_.moves().showPage(controller_.moves().state().offset - 50); });
@@ -442,6 +448,8 @@ void ReviewPage::update() {
         details_->clear();
     }
     const int total = state.run ? state.run->totalPositions - 1 : 0;
+    retryMoves_->setVisible(!moveState.error.isEmpty());
+    retryMoves_->setEnabled(state.run && !moveState.loading);
     previousMoves_->setEnabled(state.run && moveState.offset > 0);
     nextMoves_->setEnabled(state.run && moveState.offset + 50 < total);
     moveStatus_->setText(!moveState.error.isEmpty() ? moveState.error

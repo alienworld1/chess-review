@@ -964,3 +964,11 @@ backup. `quick_review` covers native move-row keyboard selection, inspectable
 provisional rationale, rapid paging with unprocessed moves, and existing lifecycle,
 shutdown and event-loop responsiveness scenarios. Its optional `renderWorkspace`
 probe now includes the move list and evidence inspector.
+
+Adversarial classification regressions cover native-WDL decimal boundaries,
+baseline/draw/perspective independence, released model-1 read compatibility,
+model-2 evidence replacement, root corruption on empty pages, stale errors after
+deselection, Busy on a background page, and explicit UI retry after a failed read.
+The 81-position heartbeat fixture also reports move-page request counts. Optional
+Review render probes verify that move paging and Retry remain reachable after
+scrolling with enlarged fonts, and save enlarged-detail and error-state images.

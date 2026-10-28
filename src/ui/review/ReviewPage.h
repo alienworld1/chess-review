@@ -45,6 +45,7 @@ class ReviewPage final : public QWidget {
     QLabel* moveStatus_;
     QPushButton* previousMoves_;
     QPushButton* nextMoves_;
+    QPushButton* retryMoves_;
     std::uint64_t profilesRevision_ = 0;
     persistence::GameId gameId_ = 0;
 };

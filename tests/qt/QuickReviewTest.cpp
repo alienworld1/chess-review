@@ -19,6 +19,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QSignalSpy>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -222,6 +223,93 @@ class QuickReviewTest final : public QObject {
     void init() {
         QTest::failOnWarning(QRegularExpression(
             QStringLiteral("^(?!This plugin does not support propagateSizeHints\\(\\)$).*")));
+    }
+    void staleMoveErrorCannotReappearAfterDeselection() {
+        persistence::Database database;
+        std::unique_ptr<app::ReviewMovesController> moves;
+        bool delivered = false;
+        connect(&database, &persistence::Database::reviewMovesLoaded, &database,
+                [&](QUuid, const persistence::LoadReviewMovesResult&) {
+                    delivered = true;
+                    moves->bind(std::nullopt);
+                });
+        moves = std::make_unique<app::ReviewMovesController>(database);
+        persistence::ReviewSummary run;
+        run.id = 1;
+        run.totalPositions = 2;
+        moves->bind(run);
+        QTRY_VERIFY(delivered);
+        QCOMPARE(moves->state().error, QString{});
+        QVERIFY(!moves->state().page);
+        QVERIFY(!moves->state().loading);
+        moves->close();
+        QVERIFY(moves->drained());
+    }
+    void busyBackfillRetriesItsOwnPage() {
+        std::string text;
+        for (int i = 0; i < 13; ++i) {
+            text += "Nf3 Nf6 Ng1 Ng8 ";
+        }
+        Fixture f;
+        QVERIFY(f.seed(text + "*"));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 0"));
+        f.run();
+        QVERIFY(f.done());
+        auto& owner = f.startup.reviewGame();
+        owner.moves().close();
+        QTRY_VERIFY(owner.moves().drained());
+        std::vector<int> offsets;
+        bool rejected = false;
+        const auto intercept =
+            connect(&f.startup.gameRepository(), &persistence::Database::reviewMovesLoaded,
+                    &f.startup.gameRepository(),
+                    [&](QUuid id, const persistence::LoadReviewMovesResult& result) {
+                        if (const auto* page = std::get_if<persistence::ReviewMovePage>(&result)) {
+                            offsets.push_back(page->offset);
+                            if (page->offset == 50 && !rejected) {
+                                rejected = true;
+                                emit f.startup.gameRepository().reviewMovesLoaded(
+                                    id, persistence::ReviewError{persistence::ReviewErrorCode::Busy,
+                                                                 QStringLiteral("Fixture busy")});
+                            }
+                        }
+                    });
+        app::ReviewMovesController moves(f.startup.gameRepository());
+        moves.bind(owner.state().run);
+        const bool completed = QTest::qWaitFor([&] { return offsets.size() >= 3; });
+        moves.close();
+        QTRY_VERIFY(moves.drained());
+        disconnect(intercept);
+        QVERIFY(completed);
+        QCOMPARE(offsets[0], 0);
+        QCOMPARE(offsets[1], 50);
+        QCOMPARE(offsets[2], 50);
+    }
+    void moveEvidenceFailureHasAnExplicitRetry() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 0"));
+        f.run();
+        QVERIFY(f.done());
+        auto& moves = f.startup.reviewGame().moves();
+        QTRY_VERIFY(moves.state().page && !moves.state().loading);
+        QVERIFY(f.sql(QStringLiteral(
+            "CREATE TABLE saved_classification_fixture AS SELECT * FROM review_classifications")));
+        QVERIFY(f.sql(QStringLiteral("UPDATE review_classifications SET document=zeroblob(128)")));
+        moves.retry();
+        QTRY_VERIFY(!moves.state().error.isEmpty());
+        auto* retry = f.window.findChild<QPushButton*>(QStringLiteral("retryReviewMoves"));
+        QVERIFY(retry);
+        QVERIFY(!retry->isHidden());
+        QVERIFY(retry->isEnabled());
+        QVERIFY(f.sql(QStringLiteral(
+            "UPDATE review_classifications SET document=(SELECT document FROM "
+            "saved_classification_fixture s WHERE s.review_id=review_classifications.review_id AND "
+            "s.position_index=review_classifications.position_index)")));
+        retry->click();
+        QTRY_VERIFY(moves.state().page && !moves.state().loading && moves.state().error.isEmpty());
+        QVERIFY(retry->isHidden());
+        QVERIFY(moves.state().page->moves.front().classification->label);
     }
     void fingerprintRejectsInvalidEngineValues() {
         QVERIFY(std::holds_alternative<engine::Error>(
@@ -644,13 +732,15 @@ class QuickReviewTest final : public QObject {
         connect(&heartbeat, &QTimer::timeout, &heartbeat, [&] { ++heartbeats; });
         heartbeat.start(1);
         QSignalSpy lookups(&f.startup.gameRepository(), &persistence::Database::analysisFound);
+        QSignalSpy pages(&f.startup.gameRepository(), &persistence::Database::reviewMovesLoaded);
         QElapsedTimer elapsed;
         elapsed.start();
         f.run();
         QVERIFY(f.done());
         heartbeat.stop();
-        qInfo("81-position scan: %lld ms; %lld cache lookups",
-              static_cast<long long>(elapsed.elapsed()), static_cast<long long>(lookups.size()));
+        qInfo("81-position scan: %lld ms; %lld cache lookups; %lld move pages",
+              static_cast<long long>(elapsed.elapsed()), static_cast<long long>(lookups.size()),
+              static_cast<long long>(pages.size()));
         QVERIFY2(f.startup.reviewGame().state().error.isEmpty(),
                  qPrintable(f.startup.reviewGame().state().error));
         QCOMPARE(f.startup.reviewGame().state().run->completedPositions, 81);
@@ -941,6 +1031,14 @@ class QuickReviewTest final : public QObject {
         reopened.startup.reviewGame().inspect(first.id);
         QTRY_VERIFY(!reopened.startup.reviewGame().state().busy);
         QCOMPARE(reopened.startup.reviewGame().state().run->status, review::JobStatus::Complete);
+        auto& moves = reopened.startup.reviewGame().moves();
+        QTRY_VERIFY(moves.state().page && !moves.state().loading);
+        QCOMPARE(moves.state().error, QString{});
+        QCOMPARE(moves.state().page->moves.size(), std::size_t(2));
+        for (const auto& move : moves.state().page->moves) {
+            QVERIFY(move.classification);
+            QCOMPARE(move.classification->modelVersion, review::classificationModelVersion);
+        }
         QCOMPARE(reopened.startup.engines().state().runtime.phase,
                  engine::RuntimePhase::Disconnected);
     }
@@ -979,6 +1077,26 @@ class QuickReviewTest final : public QObject {
         f.window.resize(1100, 720);
         QTest::qWait(30);
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-enlarged.png")));
+        auto* shell = f.window.findChild<QScrollArea*>(QStringLiteral("shellScrollArea"));
+        auto* next = f.window.findChild<QPushButton*>(QStringLiteral("nextReviewMoves"));
+        QVERIFY(shell);
+        QVERIFY(next);
+        shell->ensureWidgetVisible(next);
+        QCoreApplication::processEvents();
+        QVERIFY(shell->viewport()->rect().contains(
+            next->mapTo(shell->viewport(), next->rect().center())));
+        QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-enlarged-details.png")));
+        QVERIFY(f.sql(QStringLiteral("UPDATE review_classifications SET document=zeroblob(128)")));
+        f.startup.reviewGame().moves().retry();
+        QTRY_VERIFY(!f.startup.reviewGame().moves().state().error.isEmpty());
+        auto* retry = f.window.findChild<QPushButton*>(QStringLiteral("retryReviewMoves"));
+        QVERIFY(retry);
+        QVERIFY(!retry->isHidden());
+        shell->ensureWidgetVisible(retry);
+        QCoreApplication::processEvents();
+        QVERIFY(shell->viewport()->rect().contains(
+            retry->mapTo(shell->viewport(), retry->rect().center())));
+        QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-error-retry.png")));
     }
     void uiRequiresSideAndBackgroundChoice() {
         Fixture f;

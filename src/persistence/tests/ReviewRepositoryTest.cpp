@@ -128,6 +128,71 @@ class ReviewRepositoryTest final : public QObject {
     Q_OBJECT
   private slots:
     void init() { QTest::failOnWarning(); }
+    void emptyMovePageDoesNotHideDamagedEvidence_data() {
+        QTest::addColumn<bool>("zeroMoves");
+        QTest::newRow("empty game root") << true;
+        QTest::newRow("end page") << false;
+    }
+    void emptyMovePageDoesNotHideDamagedEvidence() {
+        QFETCH(bool, zeroMoves);
+        Fixture f;
+        const auto doc = document(zeroMoves ? "*" : "1. e4 e5 *");
+        const auto request = seed(f.session, doc);
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        const int index = zeroMoves ? 0 : 2;
+        run = std::get<ReviewSummary>(f.session.checkpointReview(
+            checkpoint(run.id, 0, index, resultAt(request, *doc, index))));
+        QVERIFY(f.exec(QStringLiteral("UPDATE review_evidence SET adapted=zeroblob(128)")));
+        const auto page = f.session.deriveReviewMoves(run.id, run.revision, index, 50);
+        QVERIFY(std::holds_alternative<ReviewError>(page));
+        QCOMPARE(std::get<ReviewError>(page).code, ReviewErrorCode::InvalidRecord);
+    }
+    void savedModelOneRemainsReadableAndNewEvidenceUsesCurrentModel() {
+        Fixture f;
+        const auto doc = document();
+        const auto request = seed(f.session, doc);
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        for (int index = 0; index < 2; ++index) {
+            auto analysis = resultAt(request, *doc, index);
+            analysis.evidence.lines.front().wdl =
+                engine::Wdl{500 + 50 * index, 0, 500 - 50 * index};
+            run = std::get<ReviewSummary>(
+                f.session.checkpointReview(checkpoint(run.id, run.revision, index, analysis)));
+        }
+        auto evidence = std::get<StoredReviewEvidence>(f.session.loadReviewEvidence(run.id, 1));
+        const auto position = positionAt(*doc, 0);
+        const auto legacy = review::classify(position, *evidence.precedingMove,
+                                             request.configuration.values.classification,
+                                             request.configuration.values.conversion, 1);
+        QCOMPARE(legacy.label, review::Classification::Good);
+        const auto beforeId =
+            f.scalar(QStringLiteral("SELECT before_id FROM review_classifications")).toLongLong();
+        const auto afterId =
+            f.scalar(QStringLiteral("SELECT after_id FROM review_classifications")).toLongLong();
+        const auto bytes = classificationDocument(legacy, beforeId, afterId,
+                                                  request.configuration.identities.classification);
+        QSqlQuery q(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+        QVERIFY(q.prepare(QStringLiteral("UPDATE review_classifications SET document=?")));
+        q.addBindValue(bytes);
+        QVERIFY(q.exec());
+        q.finish();
+        const auto loaded =
+            std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50));
+        QCOMPARE(loaded.moves.front().classification->modelVersion, 1U);
+        QCOMPARE(loaded.moves.front().classification->label, review::Classification::Good);
+        QCOMPARE(
+            f.scalar(QStringLiteral("SELECT document FROM review_classifications")).toByteArray(),
+            bytes);
+        auto fresh = resultAt(request, *doc, 1);
+        fresh.evidence.lines.front().wdl = engine::Wdl{550, 0, 450};
+        run = std::get<ReviewSummary>(
+            f.session.checkpointReview(checkpoint(run.id, run.revision, 1, fresh)));
+        const auto changed =
+            std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50));
+        QCOMPARE(changed.moves.front().classification->modelVersion,
+                 review::classificationModelVersion);
+        QCOMPARE(changed.moves.front().classification->label, review::Classification::Inaccuracy);
+    }
     void classificationsCommitWithEvidenceAndBackfillWithoutChangingProgress() {
         Fixture f;
         const auto doc = document();

@@ -1,12 +1,24 @@
 #pragma once
 #include "review/Configuration.h"
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 namespace chess_review::review {
-inline constexpr std::uint32_t classificationModelVersion = 1;
-enum class Classification { Best, Excellent, Good, Inaccuracy, Mistake, Blunder };
-enum class ClassificationIssue { Evidence, InvalidConfiguration, BestMoveConflict };
+inline constexpr std::uint32_t classificationModelVersion = 2;
+inline constexpr bool supportsClassificationModel(std::uint32_t version) {
+    return version == 1 || version == 2;
+}
+// Explicit durable document tags; model 1 remains readable.
+enum class Classification {
+    Best = 0,
+    Excellent = 1,
+    Good = 2,
+    Inaccuracy = 3,
+    Mistake = 4,
+    Blunder = 5
+};
+enum class ClassificationIssue { Evidence = 0, InvalidConfiguration = 1, BestMoveConflict = 2 };
 struct AlternativeAssessment {
     chess::Move move;
     int rank = 0;
@@ -31,8 +43,8 @@ struct ClassificationResult {
     bool stable = false;
 };
 // Revalidates the pair from its original board witness; supplied derived fields are not trusted.
-[[nodiscard]] ClassificationResult classify(const chess::Position& position,
-                                            const MoveEvidence& evidence,
-                                            const ClassificationConfig& config,
-                                            const ConversionConfig& conversion = {});
+[[nodiscard]] ClassificationResult
+classify(const chess::Position& position, const MoveEvidence& evidence,
+         const ClassificationConfig& config, const ConversionConfig& conversion = {},
+         std::uint32_t modelVersion = classificationModelVersion);
 } // namespace chess_review::review
