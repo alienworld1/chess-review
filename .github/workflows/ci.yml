@@ -15,7 +15,7 @@ jobs:
   test:
     name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -25,14 +25,23 @@ jobs:
             preset: dev
             compiler: g++
             tooling: true
+            timeout: 60
           - name: Qt 6.12 Release
             qt: '6.12.0'
             preset: release
             compiler: g++
+            timeout: 60
           - name: Qt 6.12 ASan and UBSan
             qt: '6.12.0'
             preset: sanitized
             compiler: clang++-18
+            timeout: 60
+          - name: Qt 6.12 static analysis
+            qt: '6.12.0'
+            preset: dev
+            compiler: g++
+            analysis: true
+            timeout: 90
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -53,6 +62,7 @@ jobs:
       - name: Build
         run: cmake --build --preset '${{ matrix.preset }}' --parallel 2
       - name: Test
+        if: '!matrix.analysis'
         run: ctest --preset '${{ matrix.preset }}' --parallel 2 --output-junit "$GITHUB_WORKSPACE/build/${{ matrix.preset }}/junit.xml"
       - name: Build without test dependencies
         if: matrix.tooling
@@ -66,13 +76,13 @@ jobs:
         if: matrix.tooling
         run: find src tests -type f \( -name '*.cpp' -o -name '*.h' \) -exec clang-format-18 --dry-run --Werror {} +
       - name: Static analysis
-        if: matrix.tooling
-        run: find src tests -type f -name '*.cpp' -exec clang-tidy-18 -p build/dev {} +
+        if: matrix.analysis
+        run: find src tests -type f -name '*.cpp' -print0 | xargs -0 -r -n 1 -P 2 clang-tidy-18 -p build/dev
       - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: test-results-${{ matrix.qt }}-${{ matrix.preset }}
+          name: test-results-${{ matrix.name }}
           path: |
             build/${{ matrix.preset }}/Testing/Temporary/
             build/${{ matrix.preset }}/junit.xml

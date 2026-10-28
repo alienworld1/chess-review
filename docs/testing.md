@@ -160,7 +160,9 @@ warnings to errors; third-party targets do not receive these project flags.
 
 Linux CI runs GCC Debug and Release tests on Qt 6.12.0,
 and Clang 18 ASan/UBSan with leak detection on 6.12.0. Formatting and curated
-clang-tidy run with the Debug configuration. Failure artifacts include
+clang-tidy run with the Debug configuration. Static analysis runs in a separate
+job with two translation units at a time, so it has its own time budget and does
+not delay the Debug test result. Failure artifacts include
 CTest logs and JUnit output when available, retained for seven days. Debug CI also
 builds the application separately with `BUILD_TESTING=OFF` to guard against test
 dependencies leaking into the application build. New commits cancel obsolete
