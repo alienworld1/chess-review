@@ -37,12 +37,12 @@ MoveEvidence pair(const chess::Position& position, int lossPermille, bool best =
 TEST_CASE("Normal labels require verified evidence and ordered rules",
           "[unit][review][classification]") {
     const auto position = chess::Position::initial();
-    for (const auto [loss, label] : {std::pair{0, Classification::Excellent},
-                                     {5, Classification::Excellent},
-                                     {30, Classification::Good},
-                                     {75, Classification::Inaccuracy},
-                                     {150, Classification::Mistake},
-                                     {250, Classification::Blunder}}) {
+    for (const auto& [loss, label] : {std::pair{0, Classification::Excellent},
+                                      {5, Classification::Excellent},
+                                      {30, Classification::Good},
+                                      {75, Classification::Inaccuracy},
+                                      {150, Classification::Mistake},
+                                      {250, Classification::Blunder}}) {
         const auto result = classify(position, pair(position, loss), {});
         REQUIRE(result.label);
         CHECK(*result.label == label);
@@ -60,9 +60,9 @@ TEST_CASE("Normal labels require verified evidence and ordered rules",
 }
 TEST_CASE("Loss boundaries use exact inclusive comparisons", "[unit][review][classification]") {
     const auto position = chess::Position::initial();
-    for (const auto [which, severity] : {std::pair{0, Classification::Inaccuracy},
-                                         {1, Classification::Mistake},
-                                         {2, Classification::Blunder}}) {
+    for (const auto& [which, severity] : {std::pair{0, Classification::Inaccuracy},
+                                          {1, Classification::Mistake},
+                                          {2, Classification::Blunder}}) {
         auto configuration = ClassificationConfig{};
         const auto paired = pair(position, which == 0 ? 50 : which == 1 ? 100 : 200);
         REQUIRE(paired.loss);
