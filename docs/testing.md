@@ -1008,3 +1008,19 @@ workspace and expanded details in light/dark palettes and enlarged fonts. Set
 `move_navigation`, `move_navigation_adversarial`, `analysis`, and `shell` protect the
 shared timeline and shutdown behavior. Native screen-reader and Windows checks
 require their respective desktop environments.
+
+
+The completed-iteration regression in `quick_review` feeds a complete exact
+iteration followed by a bounded higher-depth result and a different final bestmove.
+It checks usable classifications, accuracy, independent raw/iteration statistics,
+and durable inspection. `search_protocol` covers coherent MultiPV retention,
+partial/bounded updates, required WDL and unchanged infinite-analysis behavior.
+`review_configuration` rejects invalid exact witnesses and retains legacy rules;
+`analysis_repository` checks format-2 compatibility, format-3 round trips,
+immutability conflicts and unchanged bounded-result cache misses.
+
+With `CHESS_REVIEW_STOCKFISH` set to an explicitly selected local executable,
+`quick_review_tests stockfishProducesUsefulReview` reviews a legal queen-blunder
+fixture through the production pipeline. It requires usable accuracy, classified
+errors/key moments and saved inspection after disconnecting the engine. This goes
+beyond checking whether engine searches merely completed.

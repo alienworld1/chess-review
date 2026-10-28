@@ -41,7 +41,9 @@ const QString projection = QStringLiteral(
     "substr(CAST(position_key AS BLOB),1,33), substr(CAST(engine_fingerprint AS BLOB),1,33), "
     "substr(CAST(position_identity AS BLOB),1,1048577), substr(CAST(raw_result_blob AS "
     "BLOB),1,16777217), "
-    "result_format_version=2 AND typeof(result_format_version)='integer' AND "
+    "((result_format_version=2 AND substr(raw_result_blob,1,4)=x'00000002') OR "
+    "(result_format_version=3 AND substr(raw_result_blob,1,4)=x'00000003')) AND "
+    "typeof(result_format_version)='integer' AND "
     "typeof(session)='blob' AND typeof(attempt)='blob' "
     "AND typeof(position_key)='blob' AND typeof(engine_fingerprint)='blob' AND "
     "typeof(position_identity)='blob' AND typeof(raw_result_blob)='blob' "
@@ -151,7 +153,7 @@ StoreAnalysisResult StorageSession::storeAnalysis(const engine::AnalysisResult& 
     insert.addBindValue(s.provenance->fingerprint.digest);
     insert.addBindValue(identity);
     insert.addBindValue(*payload);
-    insert.addBindValue(analysisFormatVersion);
+    insert.addBindValue(s.completedIteration.empty() ? 2 : analysisFormatVersion);
     if (!insert.exec() || insert.numRowsAffected() != 1) {
         return storage();
     }

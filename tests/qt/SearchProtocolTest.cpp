@@ -89,6 +89,57 @@ class SearchProtocolTest final : public QObject {
         QVERIFY(std::holds_alternative<Error>(parseSearchInfo(tokens(text), search, 1)));
         QCOMPARE(search.position.context(), before);
     }
+    void retainsWholeExactIterationWithoutChangingLatestEvidence() {
+        auto search = request();
+        search.multiPv = 2;
+        AnalysisSnapshot snapshot;
+        snapshot.limit = NodeLimit{200};
+        snapshot.requestedMultiPv = snapshot.effectiveMultiPv = 2;
+        const auto feed = [&](const char* text) {
+            auto parsed = parseSearchInfo(tokens(QString::fromLatin1(text)), search, 2);
+            QVERIFY(std::holds_alternative<InfoUpdate>(parsed));
+            updateEvidence(snapshot, std::get<InfoUpdate>(std::move(parsed)));
+        };
+        feed("info depth 4 multipv 1 score cp 30 nodes 80 pv e2e4");
+        QVERIFY(snapshot.completedIteration.empty());
+        feed("info depth 4 multipv 2 score cp 20 nodes 100 pv d2d4");
+        QCOMPARE(snapshot.completedIteration.size(), std::size_t{2});
+        feed("info depth 5 multipv 1 score cp 40 lowerbound nodes 200 pv g1f3");
+        QVERIFY(!snapshot.commonDepth);
+        QCOMPARE(snapshot.lines[0].score->bound, ScoreBound::Lower);
+        QCOMPARE(snapshot.completedIteration[0].score->value, 30);
+        QCOMPARE(snapshot.completedIteration[0].statistics.depth, 4);
+        QCOMPARE(snapshot.completedIteration[0].statistics.nodes, std::optional<std::uint64_t>{80});
+        QCOMPARE(snapshot.statistics.nodes, std::optional<std::uint64_t>{200});
+        feed("info depth 5 multipv 2 score cp 25 nodes 210 pv d2d4");
+        QCOMPARE(snapshot.completedIteration[1].statistics.depth, 4);
+        feed("info depth 5 multipv 1 score cp 35 nodes 220 pv g1f3");
+        QCOMPARE(snapshot.completedIteration[0].statistics.depth, 5);
+        QCOMPARE(snapshot.completedIteration[1].statistics.depth, 5);
+        snapshot.limit = InfiniteLimit{};
+        snapshot.completedIteration.clear();
+        feed("info depth 6 multipv 1 score cp 35 nodes 240 pv g1f3");
+        feed("info depth 6 multipv 2 score cp 25 nodes 250 pv d2d4");
+        QVERIFY(snapshot.completedIteration.empty());
+    }
+    void exactIterationRequiresCompleteWdlAndDistinctRoots() {
+        const auto search = request();
+        AnalysisSnapshot snapshot;
+        snapshot.limit = NodeLimit{200};
+        snapshot.wdlRequested = snapshot.wdlSupported = true;
+        const auto feed = [&](const char* text) {
+            auto parsed = parseSearchInfo(tokens(QString::fromLatin1(text)), search, 1);
+            QVERIFY(std::holds_alternative<InfoUpdate>(parsed));
+            updateEvidence(snapshot, std::get<InfoUpdate>(std::move(parsed)));
+        };
+        feed("info depth 4 score cp 30 nodes 80 pv e2e4");
+        QVERIFY(snapshot.completedIteration.empty());
+        feed("info depth 4 score cp 30 wdl 100 850 50 nodes 100 pv e2e4");
+        QCOMPARE(snapshot.completedIteration.size(), std::size_t{1});
+        feed("info depth 5 score cp 40 upperbound wdl 150 800 50 nodes 200 pv e2e4");
+        QCOMPARE(snapshot.completedIteration.front().score->bound, ScoreBound::Exact);
+        QCOMPARE(snapshot.lines.front().score->bound, ScoreBound::Upper);
+    }
     void auxiliaryFieldsDoNotCreateEvidence() {
         const auto search = request();
         const auto parsed = parseSearchInfo(

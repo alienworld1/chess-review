@@ -510,6 +510,36 @@ class AnalysisRepositoryTest final : public QObject {
         qInfo("Five inserts alongside 32 MiB of cache BLOBs: %lld ms",
               static_cast<long long>(timer.elapsed()));
     }
+    void completedIterationCodecAndLegacyCompatibility() {
+        auto legacy = sample();
+        const auto oldBytes = std::get<QByteArray>(encodeAnalysis(legacy));
+        QCOMPARE(static_cast<unsigned char>(oldBytes[3]), 2U);
+        QVERIFY(decodeAnalysis(oldBytes));
+        auto current = legacy;
+        current.evidence.completedIteration = current.evidence.lines;
+        current.evidence.lines.front().score->bound = ScoreBound::Lower;
+        const auto bytes = std::get<QByteArray>(encodeAnalysis(current));
+        QCOMPARE(static_cast<unsigned char>(bytes[3]), 3U);
+        auto restored = decodeAnalysis(bytes);
+        QVERIFY(restored);
+        QCOMPARE(restored->evidence.completedIteration.size(), std::size_t{1});
+        QCOMPARE(restored->evidence.completedIteration.front().score->bound, ScoreBound::Exact);
+        QCOMPARE(restored->evidence.lines.front().score->bound, ScoreBound::Lower);
+        QCOMPARE(std::get<QByteArray>(encodeAnalysis(*restored)), bytes);
+        QVERIFY(!cacheDominates(*restored,
+                                queryFor(legacy))); // Latest bounds still forbid cache reuse.
+        auto malformed = current;
+        malformed.evidence.completedIteration.front().statistics.depth = 0;
+        QVERIFY(std::holds_alternative<CacheError>(encodeAnalysis(malformed)));
+        Fixture f;
+        QVERIFY(std::holds_alternative<AnalysisStored>(f.session.storeAnalysis(current)));
+        QVERIFY(std::holds_alternative<AnalysisStored>(f.session.storeAnalysis(current)));
+        auto changed = current;
+        changed.evidence.completedIteration.front().score->value += 1;
+        const auto conflict = f.session.storeAnalysis(changed);
+        QVERIFY(std::holds_alternative<CacheError>(conflict));
+        QCOMPARE(std::get<CacheError>(conflict).code, CacheErrorCode::Conflict);
+    }
     void codec() {
         auto r = sample(2, true);
         r.evidence.statistics.nps = std::numeric_limits<std::uint64_t>::max();

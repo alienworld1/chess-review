@@ -165,3 +165,22 @@ unsupported records remain explicit errors. Late replies from a deselected run o
 superseded page cannot replace the current view or its error state. While scanning,
 move-list refreshes coalesce over 200 ms; new classifications still commit with
 each evidence checkpoint. Background backfill continues after the scan stops.
+
+
+## A finished run has no useful evaluations
+
+**Processing complete** means the scheduled searches and saves finished. It does
+not guarantee that every result supports a move classification. The summary now
+explicitly identifies a run with no usable move evaluations; evidence details
+explain bounds, mate claims, inconsistent estimates, and other withheld results.
+
+Node-limited Stockfish searches can stop during an unfinished iteration and finish
+with an upper/lower bound. New runs retain the last coherent exact iteration as
+separate evidence, rather than losing it when that partial output arrives. The
+original latest output and final bestmove remain stored. No score bound is
+relabelled as an exact score, and missing/inconsistent evidence stays unclassified.
+
+Older runs that saved only the final bounded output cannot reconstruct earlier
+iterations. After updating and restarting the app, expand **Review setup** and
+choose **Run Review** to collect a new run. Existing runs and the imported game
+remain intact; reopening an old run does not silently rewrite its evidence.

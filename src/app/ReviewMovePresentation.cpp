@@ -220,6 +220,12 @@ QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::C
     text << QObject::tr("Game summary · accuracy model %1 · expected-score evidence")
                 .arg(review::accuracyModelVersion);
     text << QObject::tr("Recorded result: %1").arg(overview.result);
+    if (overview.sides[0].total + overview.sides[1].total > 0 &&
+        overview.sides[0].evaluated + overview.sides[1].evaluated == 0) {
+        text << QObject::tr("No moves could be evaluated from the saved evidence. Finished "
+                            "processing does not establish usable accuracy or classifications. "
+                            "Inspect a move's evidence reason; Run Review collects a new run.");
+    }
     for (std::size_t index = 0; index < 2; ++index) {
         const auto& side = overview.sides[index];
         text << QObject::tr("%1%2: accuracy %3 · evaluated %4/%5 · stable %6/%5")

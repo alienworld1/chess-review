@@ -467,6 +467,48 @@ class ReviewConfigurationTest final : public QObject {
         QVERIFY(std::holds_alternative<analysis::EvidenceAdapterIssue>(
             analysis::reviewEvidence(raw, &root)));
     }
+    void adapterUsesExplicitExactWitnessAndPreservesFinalBestmove() {
+        auto raw = analysisResult();
+        raw.evidence.completedIteration = raw.evidence.lines;
+        raw.evidence.completedIteration.front().statistics.nodes = 70;
+        raw.evidence.lines.front().score->bound = engine::ScoreBound::Lower;
+        raw.evidence.lines.front().statistics.depth = 13;
+        raw.evidence.commonDepth = 13;
+        raw.evidence.statistics.depth = 13;
+        raw.evidence.bestMove = std::get<chess::Move>(chess::Position::initial().parseUci("d2d4"));
+        const auto adapted = analysis::reviewEvidence(raw);
+        QVERIFY(std::holds_alternative<analysis::ReviewEvidenceRecord>(adapted));
+        const auto& value = std::get<analysis::ReviewEvidenceRecord>(adapted).evidence;
+        QVERIFY(value.complete);
+        QCOMPARE(value.strength.depth, std::optional{12});
+        QCOMPARE(value.strength.nodes, std::optional<std::uint64_t>{100});
+        QCOMPARE(value.candidates.front().strength.nodes, std::optional<std::uint64_t>{70});
+        QCOMPARE(value.evaluation.score->bound, review::Bound::Exact);
+        QCOMPARE(raw.evidence.lines.front().score->bound, engine::ScoreBound::Lower);
+        QVERIFY(raw.evidence.bestMove != value.candidates.front().continuation.front());
+        auto inconsistentFinal = raw;
+        inconsistentFinal.evidence.lines.front().score->bound = engine::ScoreBound::Exact;
+        const auto inconsistent = analysis::reviewEvidence(inconsistentFinal);
+        QVERIFY(std::holds_alternative<analysis::ReviewEvidenceRecord>(inconsistent));
+        QVERIFY(!std::get<analysis::ReviewEvidenceRecord>(inconsistent).evidence.complete);
+        auto invalid = raw;
+        invalid.evidence.completedIteration.front().score->bound = engine::ScoreBound::Upper;
+        QVERIFY(std::holds_alternative<analysis::EvidenceAdapterIssue>(
+            analysis::reviewEvidence(invalid)));
+        invalid = raw;
+        invalid.evidence.completedIteration.front().statistics.nodes = 101;
+        QVERIFY(std::holds_alternative<analysis::EvidenceAdapterIssue>(
+            analysis::reviewEvidence(invalid)));
+        invalid = raw;
+        invalid.evidence.completedIteration.front().pv = {chess::Move{
+            *chess::Square::fromName("e2"), *chess::Square::fromName("e5"), std::nullopt}};
+        QVERIFY(std::holds_alternative<analysis::EvidenceAdapterIssue>(
+            analysis::reviewEvidence(invalid)));
+        raw.evidence.completedIteration.clear();
+        const auto legacy = analysis::reviewEvidence(raw);
+        QVERIFY(std::holds_alternative<analysis::ReviewEvidenceRecord>(legacy));
+        QVERIFY(!std::get<analysis::ReviewEvidenceRecord>(legacy).evidence.complete);
+    }
     void adapterUsesScoreSetDepth() {
         auto raw = analysisResult();
         raw.evidence.statistics.depth = 13;

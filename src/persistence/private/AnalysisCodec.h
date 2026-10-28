@@ -2,7 +2,7 @@
 #include "persistence/AnalysisRepository.h"
 #include <QByteArray>
 namespace chess_review::persistence::detail {
-constexpr std::uint32_t analysisFormatVersion = 2;
+constexpr std::uint32_t analysisFormatVersion = 3;
 constexpr qsizetype maxAnalysisBytes = 16 * 1024 * 1024;
 constexpr qint64 analysisBudgetBytes = 256 * 1024 * 1024;
 constexpr qint64 maxAnalysisRecords = 100000;

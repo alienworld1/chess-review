@@ -84,6 +84,9 @@ struct AnalysisSnapshot {
     std::optional<int> commonDepth; // Present only for a full effective-width set.
     std::optional<chess::Move> bestMove;
     std::optional<chess::Move> ponder;
+    // Last full exact score/PV set from one depth in this finite attempt.
+    // Separate from the latest (possibly bounded) lines and final bestmove.
+    std::vector<AnalysisLine> completedIteration{};
 };
 enum class SearchPhase { Configuring, Analyzing, Stopping, Synchronizing };
 struct SearchState {

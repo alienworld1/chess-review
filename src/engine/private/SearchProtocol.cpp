@@ -509,5 +509,15 @@ void updateEvidence(AnalysisSnapshot& snapshot, InfoUpdate update) {
     if (coherent && snapshot.achievedWidth == snapshot.effectiveMultiPv) {
         snapshot.commonDepth = depth;
     }
+    if (!std::holds_alternative<InfiniteLimit>(snapshot.limit) && snapshot.commonDepth &&
+        *snapshot.commonDepth > 0 &&
+        (snapshot.completedIteration.empty() ||
+         snapshot.completedIteration.front().statistics.depth <= snapshot.commonDepth) &&
+        std::all_of(snapshot.lines.begin(), snapshot.lines.end(), [&snapshot](const auto& line) {
+            return line.score && line.score->bound == ScoreBound::Exact &&
+                   (!snapshot.wdlRequested || !snapshot.wdlSupported || line.wdl);
+        })) {
+        snapshot.completedIteration = snapshot.lines;
+    }
 }
 } // namespace chess_review::engine

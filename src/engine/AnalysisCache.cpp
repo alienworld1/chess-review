@@ -270,48 +270,73 @@ std::optional<Error> validateCacheResult(const AnalysisResult& result,
     if ((!hasMultiPv && s.effectiveMultiPv != 1) || hasWdl != s.wdlSupported) {
         return invalid();
     }
-    int width = 0;
-    int previous = 0;
-    std::optional<int> depth;
-    bool coherent = true;
-    std::set<MoveKey> seen;
-    for (const auto& line : s.lines) {
-        if (line.rank <= previous || line.rank > s.effectiveMultiPv || line.pv.size() > 1024 ||
-            !validStats(line.statistics)) {
-            return invalid();
+    if (s.completedIteration.size() > static_cast<std::size_t>(s.effectiveMultiPv)) {
+        return invalid();
+    }
+    for (const bool completed : {false, true}) {
+        const auto& lines = completed ? s.completedIteration : s.lines;
+        if (completed && lines.empty()) {
+            continue;
         }
-        previous = line.rank;
-        if (line.score && (static_cast<unsigned>(line.score->type) > 1 ||
-                           static_cast<unsigned>(line.score->bound) > 2)) {
-            return invalid();
-        }
-        if (line.wdl &&
-            (line.wdl->wins < 0 || line.wdl->draws < 0 || line.wdl->losses < 0 ||
-             line.wdl->wins > 1000 || line.wdl->draws > 1000 || line.wdl->losses > 1000 ||
-             line.wdl->wins + line.wdl->draws + line.wdl->losses != 1000)) {
-            return invalid();
-        }
-        auto continuation = position;
-        for (const auto& move : line.pv) {
-            if (std::holds_alternative<chess::Error>(continuation.play(move))) {
+        int width = 0;
+        int previous = 0;
+        std::optional<int> depth;
+        bool coherent = true;
+        std::set<MoveKey> seen;
+        for (const auto& line : lines) {
+            if (line.rank <= previous || line.rank > s.effectiveMultiPv || line.pv.size() > 1024 ||
+                !validStats(line.statistics)) {
                 return invalid();
             }
+            if (completed &&
+                (!line.score || line.score->bound != ScoreBound::Exact ||
+                 (s.wdlRequested && s.wdlSupported && !line.wdl) ||
+                 (line.statistics.nodes &&
+                  (!s.statistics.nodes || *line.statistics.nodes > *s.statistics.nodes)) ||
+                 (line.statistics.timeMs &&
+                  (!s.statistics.timeMs || *line.statistics.timeMs > *s.statistics.timeMs)))) {
+                return invalid();
+            }
+            previous = line.rank;
+            if (line.score && (static_cast<unsigned>(line.score->type) > 1 ||
+                               static_cast<unsigned>(line.score->bound) > 2)) {
+                return invalid();
+            }
+            if (line.wdl &&
+                (line.wdl->wins < 0 || line.wdl->draws < 0 || line.wdl->losses < 0 ||
+                 line.wdl->wins > 1000 || line.wdl->draws > 1000 || line.wdl->losses > 1000 ||
+                 line.wdl->wins + line.wdl->draws + line.wdl->losses != 1000)) {
+                return invalid();
+            }
+            auto continuation = position;
+            for (const auto& move : line.pv) {
+                if (std::holds_alternative<chess::Error>(continuation.play(move))) {
+                    return invalid();
+                }
+            }
+            if (!line.pv.empty() && p.searchMoves && !allowed.contains(key(line.pv.front()))) {
+                return invalid();
+            }
+            if (line.rank == width + 1 && line.score && !line.pv.empty() &&
+                seen.insert(key(line.pv.front())).second) {
+                ++width;
+                if (width == 1) {
+                    depth = line.statistics.depth;
+                }
+                coherent = coherent && depth && line.statistics.depth == depth;
+            }
         }
-        if (!line.pv.empty() && p.searchMoves && !allowed.contains(key(line.pv.front()))) {
+        if (completed) {
+            if (std::holds_alternative<InfiniteLimit>(s.limit) ||
+                lines.size() != static_cast<std::size_t>(s.effectiveMultiPv) ||
+                width != s.effectiveMultiPv || !coherent || !depth || *depth <= 0) {
+                return invalid();
+            }
+        } else if (s.achievedWidth != width ||
+                   s.commonDepth !=
+                       (coherent && width == s.effectiveMultiPv ? depth : std::nullopt)) {
             return invalid();
         }
-        if (line.rank == width + 1 && line.score && !line.pv.empty() &&
-            seen.insert(key(line.pv.front())).second) {
-            ++width;
-            if (width == 1) {
-                depth = line.statistics.depth;
-            }
-            coherent = coherent && depth && line.statistics.depth == depth;
-        }
-    }
-    if (s.achievedWidth != width ||
-        s.commonDepth != (coherent && width == s.effectiveMultiPv ? depth : std::nullopt)) {
-        return invalid();
     }
     if (s.bestMove.has_value() != !position.legalMoves().empty()) {
         return invalid();

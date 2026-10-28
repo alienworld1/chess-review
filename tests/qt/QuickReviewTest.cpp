@@ -31,6 +31,7 @@
 #include <QTest>
 #include <QTimer>
 #include <QWheelEvent>
+#include <algorithm>
 using namespace chess_review;
 namespace {
 QJsonObject ready() {
@@ -137,7 +138,7 @@ class Fixture {
                 const QString& score = QStringLiteral("cp 25"),
                 const QString& identity = QStringLiteral("Test engine"), int quitDelay = 0,
                 bool multiPv = false, const QString& refinedScore = {}, int deepFirst = 0,
-                int verifyFirst = 0) {
+                int verifyFirst = 0, bool boundedFinal = false) {
         QJsonArray steps{
             engine_test::step(
                 QStringLiteral("uci"),
@@ -203,14 +204,26 @@ class Fixture {
                                     position.uci(legal[static_cast<std::size_t>(rank - 1)]));
                                 output += QStringLiteral(
                                               "info depth 7 nodes %1 multipv %2 score %3%4 pv %5\n")
-                                              .arg(weak ? 1 : budget)
+                                              .arg(weak           ? 1
+                                                   : boundedFinal ? budget / 2
+                                                                  : budget)
                                               .arg(rank)
                                               .arg(evaluation)
                                               .arg(weak ? QStringLiteral(" lowerbound") : QString{})
                                               .arg(QString::fromStdString(root));
                             }
                         }
-                        output += QStringLiteral("bestmove %1\n").arg(QString::fromStdString(best));
+                        auto finalBest = best;
+                        if (boundedFinal && !legal.empty()) {
+                            finalBest = std::get<std::string>(
+                                position.uci(legal[legal.size() > 1 ? 1 : 0]));
+                            output += QStringLiteral("info depth 8 nodes %1 multipv 1 score cp 90 "
+                                                     "lowerbound pv %2\n")
+                                          .arg(budget)
+                                          .arg(QString::fromStdString(finalBest));
+                        }
+                        output +=
+                            QStringLiteral("bestmove %1\n").arg(QString::fromStdString(finalBest));
                         steps.append(engine_test::step(QStringLiteral("go nodes %1").arg(budget),
                                                        {engine_test::write(output, delay)}));
                         steps.append(ready());
@@ -364,6 +377,53 @@ class QuickReviewTest final : public QObject {
         QVERIFY(retry->isHidden());
         QTRY_VERIFY(nav.evaluation().whiteExpected);
         QVERIFY(moves.state().page->moves.front().classification->label);
+    }
+    void boundedFinalIterationDoesNotEraseUsableReview() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 2. Nf3 Nc6 *"));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 0"), QStringLiteral("Test engine"), 0,
+                 false, {}, 0, 0, true);
+        QSignalSpy attempts(&f.supervisor(), &engine::EngineSupervisor::scheduledFinished);
+        f.run();
+        QVERIFY(f.done());
+        auto& controller = f.startup.reviewGame();
+        QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
+        QTRY_VERIFY(controller.state().overview);
+        QCOMPARE(controller.state().overview->sides[0].evaluated, 2);
+        QCOMPARE(controller.state().overview->sides[1].evaluated, 2);
+        QVERIFY(controller.state().overview->sides[1].accuracy);
+        QTRY_VERIFY(controller.moves().state().page &&
+                    controller.moves().state().page->revision == controller.state().run->revision &&
+                    std::all_of(controller.moves().state().page->moves.begin(),
+                                controller.moves().state().page->moves.end(), [](const auto& row) {
+                                    return row.classification && row.classification->label;
+                                }));
+        for (const auto& row : controller.moves().state().page->moves) {
+            QVERIFY(row.classification);
+            QVERIFY(row.classification->label);
+        }
+        bool sawBoundWithDifferentExactMove = false;
+        for (const auto& event : attempts) {
+            const auto result = qvariant_cast<engine::ScheduledResult>(event.front());
+            if (!result.evidence) {
+                continue;
+            }
+            const auto& raw = result.evidence->evidence;
+            if (!raw.completedIteration.empty() && !raw.lines.empty() &&
+                raw.lines.front().score->bound == engine::ScoreBound::Lower) {
+                sawBoundWithDifferentExactMove =
+                    sawBoundWithDifferentExactMove ||
+                    raw.bestMove != raw.completedIteration.front().pv.front();
+                QCOMPARE(raw.completedIteration.front().score->bound, engine::ScoreBound::Exact);
+                QVERIFY(raw.completedIteration.front().statistics.nodes < raw.statistics.nodes);
+            }
+        }
+        QVERIFY(sawBoundWithDifferentExactMove);
+        const auto id = controller.state().run->id;
+        controller.inspect(id);
+        QTRY_VERIFY(!controller.state().busy);
+        QTRY_VERIFY(controller.moves().state().page);
+        QCOMPARE(controller.state().overview->sides[1].evaluated, 2);
     }
     void fingerprintRejectsInvalidEngineValues() {
         QVERIFY(std::holds_alternative<engine::Error>(
@@ -1149,6 +1209,63 @@ class QuickReviewTest final : public QObject {
         lock.close();
         lock = {};
         QSqlDatabase::removeDatabase(connectionName);
+    }
+    void stockfishProducesUsefulReview() {
+        const auto executable = qEnvironmentVariable("CHESS_REVIEW_STOCKFISH");
+        if (executable.isEmpty()) {
+            QSKIP("Set CHESS_REVIEW_STOCKFISH to select the local engine for this regression.");
+        }
+        Fixture f;
+        QTRY_VERIFY(f.startup.engines().state().ready && !f.startup.engines().state().listing);
+        QSignalSpy validated(&f.supervisor(), &engine::EngineSupervisor::completed);
+        f.supervisor().validate(QUuid::createUuid(), executable);
+        QTRY_COMPARE_WITH_TIMEOUT(validated.size(), 1, 15000);
+        const auto validation = qvariant_cast<engine::ValidationResult>(validated.front()[1]);
+        QVERIFY(std::holds_alternative<engine::ValidatedEngine>(validation));
+        QSignalSpy registered(&f.startup.gameRepository(),
+                              &persistence::Database::engineRegistered);
+        f.startup.gameRepository().registerEngine(QUuid::createUuid(),
+                                                  std::get<engine::ValidatedEngine>(validation));
+        QVERIFY(registered.wait());
+        f.startup.engines().refresh();
+        QTRY_VERIFY(!f.startup.engines().state().listing &&
+                    !f.startup.engines().state().profiles.empty());
+        f.profileId = f.startup.engines().state().profiles.front().id;
+        pgn::PgnReader reader("1. e4 e5 2. Nf3 Nc6 3. Bc4 Qg5 4. Nxg5 *");
+        f.document =
+            std::make_shared<const pgn::PgnDocument>(std::get<pgn::PgnDocument>(reader.next()));
+        QSignalSpy inserted(&f.startup.gameRepository(), &persistence::Database::gameInserted);
+        f.startup.gameRepository().insertGame(QUuid::createUuid(), f.document);
+        QVERIFY(inserted.wait());
+        f.gameId = std::get<persistence::Inserted>(
+                       qvariant_cast<persistence::InsertGameResult>(inserted.front()[1]))
+                       .id;
+        f.startup.reviewGame().selectGame(f.gameId);
+        QTRY_VERIFY(!f.startup.reviewGame().state().busy);
+        f.run();
+        QVERIFY(f.done(90000));
+        auto& controller = f.startup.reviewGame();
+        QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
+        QTRY_VERIFY(controller.state().overview);
+        const auto& summary = *controller.state().overview;
+        qInfo("Stockfish review: White %d/%d evaluated; Black %d/%d evaluated; key moments %d",
+              summary.sides[0].evaluated, summary.sides[0].total, summary.sides[1].evaluated,
+              summary.sides[1].total, summary.totalKeyMoments);
+        QVERIFY(summary.sides[0].evaluated > 0);
+        QVERIFY(summary.sides[1].evaluated >= 2);
+        QVERIFY(summary.sides[1].accuracy);
+        QVERIFY(summary.totalKeyMoments > 0);
+        QVERIFY(
+            summary.sides[1].counts[static_cast<std::size_t>(review::Classification::Blunder)] +
+                summary.sides[1].counts[static_cast<std::size_t>(review::Classification::Mistake)] >
+            0);
+        const auto saved = controller.state().run->id;
+        f.startup.engines().disconnectEngine();
+        QTRY_COMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnected);
+        controller.inspect(saved);
+        QTRY_VERIFY(!controller.state().busy);
+        QTRY_VERIFY(controller.state().overview);
+        QVERIFY(controller.state().overview->sides[1].accuracy);
     }
     void pinnedEngineCacheReuse() {
         const auto executable = qEnvironmentVariable("CHESS_REVIEW_STOCKFISH");

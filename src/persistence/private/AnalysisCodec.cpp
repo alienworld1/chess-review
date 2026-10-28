@@ -327,11 +327,12 @@ QByteArray positionIdentity(const chess::PositionContext& context) {
 namespace {
 // The caller has validated the complete value. Canonical re-encoding must not
 // recursively repeat history/PV validation inside the decoder.
-QByteArray encodeValidatedAnalysis(const engine::AnalysisResult& result) {
+QByteArray encodeValidatedAnalysis(const engine::AnalysisResult& result,
+                                   std::uint32_t format = analysisFormatVersion) {
     const auto& s = result.evidence;
     const auto& p = *s.provenance;
     Writer w;
-    w.u32(analysisFormatVersion);
+    w.u32(format);
     w.data(s.session.toRfc4122());
     w.data(s.request.toRfc4122());
     w.context(p.position);
@@ -348,21 +349,27 @@ QByteArray encodeValidatedAnalysis(const engine::AnalysisResult& result) {
     w.optional(s.commonDepth, [&](int n) { w.u32(static_cast<std::uint32_t>(n)); });
     w.optional(s.bestMove, [&](const auto& m) { w.move(m); });
     w.optional(s.ponder, [&](const auto& m) { w.move(m); });
-    w.u32(static_cast<std::uint32_t>(s.lines.size()));
-    for (const auto& line : s.lines) {
-        w.u32(static_cast<std::uint32_t>(line.rank));
-        w.optional(line.score, [&](const auto& score) {
-            w.u32(static_cast<std::uint32_t>(score.type));
-            w.i64(score.value);
-            w.u32(static_cast<std::uint32_t>(score.bound));
-        });
-        w.optional(line.wdl, [&](const auto& v) {
-            w.u32(static_cast<std::uint32_t>(v.wins));
-            w.u32(static_cast<std::uint32_t>(v.draws));
-            w.u32(static_cast<std::uint32_t>(v.losses));
-        });
-        w.moves(line.pv);
-        w.stats(line.statistics);
+    const auto writeLines = [&](const std::vector<engine::AnalysisLine>& lines) {
+        w.u32(static_cast<std::uint32_t>(lines.size()));
+        for (const auto& line : lines) {
+            w.u32(static_cast<std::uint32_t>(line.rank));
+            w.optional(line.score, [&](const auto& score) {
+                w.u32(static_cast<std::uint32_t>(score.type));
+                w.i64(score.value);
+                w.u32(static_cast<std::uint32_t>(score.bound));
+            });
+            w.optional(line.wdl, [&](const auto& v) {
+                w.u32(static_cast<std::uint32_t>(v.wins));
+                w.u32(static_cast<std::uint32_t>(v.draws));
+                w.u32(static_cast<std::uint32_t>(v.losses));
+            });
+            w.moves(line.pv);
+            w.stats(line.statistics);
+        }
+    };
+    writeLines(s.lines);
+    if (format >= 3) {
+        writeLines(s.completedIteration);
     }
     if (w.bytes.size() > maxAnalysisBytes - 32 || w.stream.status() != QDataStream::Ok) {
         return {};
@@ -376,7 +383,8 @@ std::variant<QByteArray, CacheError> encodeAnalysis(const engine::AnalysisResult
         return CacheError{CacheErrorCode::InvalidInput,
                           QStringLiteral("Invalid completed analysis evidence.")};
     }
-    const auto bytes = encodeValidatedAnalysis(result);
+    const auto bytes = encodeValidatedAnalysis(
+        result, result.evidence.completedIteration.empty() ? 2 : analysisFormatVersion);
     if (bytes.isEmpty()) {
         return CacheError{CacheErrorCode::InvalidInput,
                           QStringLiteral("Analysis exceeds the cache record limit.")};
@@ -393,7 +401,8 @@ std::optional<engine::AnalysisResult> decodeAnalysis(const QByteArray& bytes,
         return std::nullopt;
     }
     Reader r(body);
-    if (r.u32() != analysisFormatVersion) {
+    const auto format = r.u32();
+    if (format != 2 && format != analysisFormatVersion) {
         return std::nullopt;
     }
     engine::AnalysisResult result;
@@ -422,30 +431,40 @@ std::optional<engine::AnalysisResult> decodeAnalysis(const QByteArray& bytes,
     s.commonDepth = r.optional([&] { return r.number(); });
     s.bestMove = r.optional([&] { return r.move(); });
     s.ponder = r.optional([&] { return r.move(); });
-    const auto count = r.u32();
-    if (count > 256) {
-        return std::nullopt;
+    const auto readLines = [&](std::vector<engine::AnalysisLine>& lines) {
+        const auto count = r.u32();
+        if (count > 256) {
+            r.good = false;
+            return;
+        }
+        for (std::uint32_t i = 0; i < count && r.good; ++i) {
+            engine::AnalysisLine line;
+            line.rank = r.number();
+            line.score = r.optional([&] {
+                engine::AnalysisScore score;
+                score.type = static_cast<engine::ScoreType>(r.u32());
+                score.value = r.i64();
+                score.bound = static_cast<engine::ScoreBound>(r.u32());
+                return score;
+            });
+            line.wdl = r.optional([&] { return engine::Wdl{r.number(), r.number(), r.number()}; });
+            line.pv = r.moves(1024);
+            line.statistics = r.stats();
+            lines.push_back(std::move(line));
+        }
+    };
+    readLines(s.lines);
+    if (format >= 3) {
+        readLines(s.completedIteration);
     }
-    for (std::uint32_t i = 0; i < count && r.good; ++i) {
-        engine::AnalysisLine line;
-        line.rank = r.number();
-        line.score = r.optional([&] {
-            engine::AnalysisScore score;
-            score.type = static_cast<engine::ScoreType>(r.u32());
-            score.value = r.i64();
-            score.bound = static_cast<engine::ScoreBound>(r.u32());
-            return score;
-        });
-        line.wdl = r.optional([&] { return engine::Wdl{r.number(), r.number(), r.number()}; });
-        line.pv = r.moves(1024);
-        line.statistics = r.stats();
-        s.lines.push_back(std::move(line));
+    if (format == 3 && s.completedIteration.empty()) {
+        return std::nullopt;
     }
     s.searchStarted = true;
     if (!r.finished() || engine::validateCacheResult(result, knownRoot)) {
         return std::nullopt;
     }
-    if (encodeValidatedAnalysis(result) != bytes) {
+    if (encodeValidatedAnalysis(result, format) != bytes) {
         return std::nullopt;
     }
     return result;

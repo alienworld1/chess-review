@@ -1,5 +1,6 @@
 #include "analysis/ReviewEvidenceAdapter.h"
 #include "engine/AnalysisCache.h"
+#include <algorithm>
 #include <utility>
 
 namespace chess_review::analysis {
@@ -53,8 +54,18 @@ EvidenceResult reviewEvidence(const engine::AnalysisResult& result,
     evidence.createdAtUtc = provenance.createdAt.toString(Qt::ISODateWithMs).toStdString();
     evidence.restricted = provenance.searchMoves.has_value();
     evidence.strength = strength(snapshot.statistics);
-    if (!snapshot.lines.empty() && snapshot.lines.front().rank == 1) {
-        evidence.evaluation = evaluation(snapshot.lines.front(), position.sideToMove());
+    const bool latestExact =
+        snapshot.commonDepth && *snapshot.commonDepth > 0 &&
+        snapshot.achievedWidth == snapshot.effectiveMultiPv &&
+        std::all_of(snapshot.lines.begin(), snapshot.lines.end(), [&snapshot](const auto& line) {
+            return line.score && line.score->bound == engine::ScoreBound::Exact &&
+                   (!snapshot.wdlRequested || !snapshot.wdlSupported || line.wdl);
+        });
+    const bool completed = !latestExact && !snapshot.completedIteration.empty();
+    const auto& lines = completed ? snapshot.completedIteration : snapshot.lines;
+    const auto depth = completed ? lines.front().statistics.depth : snapshot.commonDepth;
+    if (!lines.empty() && lines.front().rank == 1) {
+        evidence.evaluation = evaluation(lines.front(), position.sideToMove());
     }
     const auto record = [&] {
         return ReviewEvidenceRecord{
@@ -65,27 +76,31 @@ EvidenceResult reviewEvidence(const engine::AnalysisResult& result,
     if (evidence.terminal) {
         return record();
     }
-    evidence.strength.depth = snapshot.commonDepth;
-    evidence.complete = snapshot.achievedWidth == snapshot.requestedMultiPv &&
-                        snapshot.commonDepth && *snapshot.commonDepth > 0;
+    evidence.strength.depth = depth;
+    evidence.complete = (completed ? static_cast<int>(lines.size()) : snapshot.achievedWidth) ==
+                            snapshot.requestedMultiPv &&
+                        depth && *depth > 0;
     if (const auto* nodes = std::get_if<engine::NodeLimit>(&snapshot.limit)) {
         evidence.complete = evidence.complete && snapshot.statistics.nodes &&
                             *snapshot.statistics.nodes >= nodes->nodes;
-    } else if (const auto* depth = std::get_if<engine::DepthLimit>(&snapshot.limit)) {
-        evidence.complete = evidence.complete && snapshot.commonDepth &&
-                            static_cast<std::uint32_t>(*snapshot.commonDepth) >= depth->depth;
+    } else if (const auto* depthLimit = std::get_if<engine::DepthLimit>(&snapshot.limit)) {
+        evidence.complete =
+            evidence.complete && depth && static_cast<std::uint32_t>(*depth) >= depthLimit->depth;
     } else if (const auto* time = std::get_if<engine::TimeLimit>(&snapshot.limit)) {
         evidence.complete = evidence.complete && snapshot.statistics.timeMs &&
                             *snapshot.statistics.timeMs >= time->milliseconds;
     } else {
         evidence.complete = false;
     }
-    for (const auto& line : snapshot.lines) {
+    for (const auto& line : lines) {
         evidence.candidates.push_back({line.rank, evaluation(line, position.sideToMove()), line.pv,
                                        strength(line.statistics)});
     }
-    if (!snapshot.bestMove || snapshot.lines.empty() || snapshot.lines.front().pv.empty() ||
-        *snapshot.bestMove != snapshot.lines.front().pv.front()) {
+    // A captured complete iteration is its own exact ranked witness. The final
+    // bestmove can belong to a later, interrupted iteration; keep it in raw storage.
+    // Legacy records without that witness retain their original matching rule.
+    if (!completed && (!snapshot.bestMove || lines.empty() || lines.front().pv.empty() ||
+                       *snapshot.bestMove != lines.front().pv.front())) {
         evidence.complete = false;
     }
     return record();

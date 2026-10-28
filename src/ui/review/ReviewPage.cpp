@@ -915,6 +915,9 @@ void ReviewPage::updateNavigation() {
                 .arg(side.total)
                 .arg(side.stable)
                 .arg(state.overview->totalKeyMoments);
+        if (side.total > 0 && side.evaluated == 0) {
+            compact += tr(" · no usable move evaluations; inspect evidence details");
+        }
         if (state.overview->revision != state.run->revision) {
             compact += tr(" · earlier checkpoint");
         }

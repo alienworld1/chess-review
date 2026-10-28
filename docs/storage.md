@@ -436,6 +436,16 @@ its version, context version, variant, root provenance, exact canonical root FEN
 and complete legal move history. Board identity and halfmove clock are reconstructed
 and compared during validation; no history-equivalence shortcuts are used.
 
+Payload format 3 extends that encoding with the separately captured coherent exact
+iteration from the same attempt. Every retained PV, score, WDL value, rank, depth,
+and line statistic is validated; bounds or inconsistent candidate sets cannot be
+smuggled into an exact witness. Latest lines and final bestmove remain unchanged.
+Both supported versions remain readable. Records without a witness keep the
+canonical format-2 bytes, so existing immutable attempt identity/idempotence stays
+intact. Neither this extension nor its reader requires a database schema migration.
+Cache eligibility still checks the latest raw score set; the extra witness does
+not turn bounded latest output into a reusable cache hit.
+
 Readers bound database projections before allocation, validate UTF-8 and primitive
 ranges, replay legal history/PVs, recompute fingerprints and position SHA-256,
 compare indexed identity with decoded evidence, and require canonical re-encoding.

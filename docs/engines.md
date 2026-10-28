@@ -158,6 +158,21 @@ Each rank retains its latest evidence-bearing info line independently, with its
 own depth and statistics. Missing fields remain absent; unrelated partial updates
 never manufacture a score/PV pair. Global statistics accept partial updates, including depth-only progress, without
 changing the depth attached to an older PV.
+
+Finite searches additionally retain the deepest observed full exact iteration:
+all effective MultiPV ranks at one positive depth, distinct legal root PVs, and
+WDL on every rank when requested and supported. This witness keeps its original
+line statistics. It is separate from the latest lines and the final `bestmove`,
+which may belong to a later interrupted iteration. Infinite live analysis keeps
+its existing latest-output behavior.
+
+Review may interpret that exact witness after a finite search finishes. The
+requested node/time budget still requires measured total search effort; a depth
+budget requires the witness's measured depth. Exact-iteration depth and per-line
+node/time measurements are not promoted to the final partial iteration's values.
+The final move remains preserved independently, even when it differs from the
+completed iteration's first candidate. Historical records without an explicit
+witness retain their original bestmove-match and sufficiency checks.
 `achievedWidth` counts contiguous ranks with both score and PV and distinct root
 moves; duplicate candidates never count as additional width. Temporary rank overlap
 can occur while an engine updates its ordering and does not itself fail the search.
