@@ -497,6 +497,58 @@ class QuickReviewTest final : public QObject {
         QCoreApplication::sendEvent(quality, &wheel);
         QCOMPARE(quality->currentIndex(), selected);
     }
+    void summaryRefreshHonorsBusyBackoff() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        auto& controller = f.startup.reviewGame();
+        auto& database = f.startup.gameRepository();
+        bool attempted = false;
+        bool replacedBackoff = false;
+        QSignalSpy publications(&controller, &app::ReviewGameController::changed);
+        connect(&database, &persistence::Database::reviewOverviewLoaded, &database,
+                [&](QUuid, const persistence::LoadReviewOverviewResult& result) {
+                    const auto* error = std::get_if<persistence::ReviewError>(&result);
+                    if (error && error->code == persistence::ReviewErrorCode::Busy && !attempted) {
+                        attempted = true;
+                        // Saturate admission again, before the retry timer fires. A refresh
+                        // during backoff must not replace that operation or submit another read.
+                        for (int n = 0; n < 16; ++n) {
+                            database.loadGame(QUuid::createUuid(), f.gameId);
+                        }
+                        const auto before = publications.size();
+                        controller.refreshOverview();
+                        replacedBackoff = publications.size() != before;
+                    }
+                });
+        for (int n = 0; n < 16; ++n) {
+            database.loadGame(QUuid::createUuid(), f.gameId);
+        }
+        controller.refreshOverview();
+        QTRY_VERIFY(attempted);
+        QTRY_VERIFY(!controller.state().busy);
+        QVERIFY(!replacedBackoff);
+        QVERIFY(controller.state().overviewError.isEmpty());
+    }
+    void failedSummaryReadDoesNotPresentCurrentNumbers() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        auto& controller = f.startup.reviewGame();
+        QVERIFY(controller.state().overview);
+        QVERIFY(f.sql(QStringLiteral("UPDATE review_evidence SET adapted=x'01'")));
+        controller.refreshOverview();
+        QTRY_VERIFY(!controller.state().busy);
+        QVERIFY(!controller.state().overviewError.isEmpty());
+        auto* summary = f.window.findChild<QPlainTextEdit*>(QStringLiteral("reviewSummary"));
+        QVERIFY(summary);
+        QVERIFY(
+            summary->toPlainText().contains(QStringLiteral("Last successfully loaded summary")));
+    }
     void refinementComparesAlternativesAndUpdatesSummary() {
         Fixture f;
         QVERIFY(f.seed("1. e4 e5 *", true));
@@ -1259,6 +1311,18 @@ class QuickReviewTest final : public QObject {
         QVERIFY(shell->viewport()->rect().contains(
             retry->mapTo(shell->viewport(), retry->rect().center())));
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-error-retry.png")));
+        f.startup.reviewGame().refreshOverview();
+        QTRY_VERIFY(!f.startup.reviewGame().state().busy);
+        QVERIFY(!f.startup.reviewGame().state().overviewError.isEmpty());
+        tabs->setCurrentIndex(0);
+        auto* refreshSummary =
+            f.window.findChild<QPushButton*>(QStringLiteral("refreshReviewSummary"));
+        QVERIFY(refreshSummary);
+        shell->ensureWidgetVisible(refreshSummary);
+        QCoreApplication::processEvents();
+        QVERIFY(shell->viewport()->rect().contains(
+            refreshSummary->mapTo(shell->viewport(), refreshSummary->rect().center())));
+        QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-summary-error.png")));
     }
     void uiRequiresSideAndBackgroundChoice() {
         Fixture f;

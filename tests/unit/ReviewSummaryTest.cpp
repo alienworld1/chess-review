@@ -160,3 +160,46 @@ TEST_CASE("Summary facts select chronological errors and actual mate transitions
     CHECK(mates.add(move).selected);
     CHECK(mates.finish().keyMoments == 2);
 }
+TEST_CASE("Stability rejects invalid or incompatible derived evaluations",
+          "[unit][review][summary]") {
+    ClassificationResult deep;
+    deep.label = Classification::Good;
+    deep.bestMove = chess_review::chess::Move{};
+    deep.before.expected = ExpectedScore{
+        .5, chess_review::chess::Color::White, ConversionSource::ApproximateCentipawns, 1, {}};
+    deep.after.expected = deep.before.expected;
+    MoveEvidence first;
+    first.before.complete = first.after.complete = true;
+    first.before.strength = first.after.strength = {12, 1000000, {}};
+    first.before.attemptIdentity = "deep-before";
+    first.after.attemptIdentity = "deep-after";
+    auto second = first;
+    second.before.strength.nodes = second.after.strength.nodes = 5000000;
+    second.before.attemptIdentity = "verify-before";
+    second.after.attemptIdentity = "verify-after";
+    REQUIRE(assessStability(deep, deep, first, second, {}).stable);
+    auto verified = deep;
+    verified.before.expected->value = std::numeric_limits<double>::quiet_NaN();
+    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    verified = deep;
+    verified.after.expected->modelVersion = 999;
+    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    verified = deep;
+    verified.after.expected->perspective = chess_review::chess::Color::Black;
+    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    verified = deep;
+    verified.issue = ClassificationIssue::Evidence;
+    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    verified = deep;
+    verified.before.expected.reset();
+    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    verified = deep;
+    verified.after.expected->value = std::numeric_limits<double>::infinity();
+    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    verified = deep;
+    verified.thresholds.excellentLoss = .02;
+    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    verified = deep;
+    verified.modelVersion = 1;
+    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+}

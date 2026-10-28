@@ -25,6 +25,8 @@ struct StabilityAssessment {
 };
 [[nodiscard]] bool needsRefinement(const ClassificationResult& result, const MoveEvidence& pair,
                                    const RefinementConfig& config);
+// Pairs/classifications must come from validated original-board witnesses. Incompatible
+// derived values fail closed; this is not a replacement for raw evidence validation.
 [[nodiscard]] StabilityAssessment assessStability(const ClassificationResult& deep,
                                                   const ClassificationResult& verified,
                                                   const MoveEvidence& deepPair,

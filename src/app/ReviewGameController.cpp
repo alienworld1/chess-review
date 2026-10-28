@@ -817,7 +817,8 @@ std::uint64_t ReviewGameController::nodeBudget() const {
     return b.quickScanNodes;
 }
 void ReviewGameController::refreshOverview(int keyOffset) {
-    if (closing_ || !state_.run || !pending_.isNull() || !search_.isNull() || workerBusy_) {
+    if (closing_ || !state_.run || !pending_.isNull() || retry_.isActive() || !search_.isNull() ||
+        workerBusy_) {
         return;
     }
     const auto id = state_.run->id;

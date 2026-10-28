@@ -980,3 +980,11 @@ opponent context, cancellation and missing-only refinement resume. Its long-game
 heartbeat now covers the adaptive review, rather than just the initial scan.
 The render probe additionally saves light/dark Summary-tab images. Optional real
 engine cache checks count quick searches separately from fresh verification work.
+
+Adversarial summary regressions reject orphaned/out-of-mainline stage mappings,
+stages on legacy runs or incomplete quick scans, and invalid/incompatible stability
+inputs (including NaN and unsupported models). A persistence test uses identical
+owned raw evidence with different label thresholds to establish that accuracy does
+not depend on labels. Qt cases cover summary refresh during Busy backoff and clear
+last-successful labeling after a failed refresh. The render probe also saves
+`review-summary-error.png` and checks that Refresh summary remains reachable.

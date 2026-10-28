@@ -276,6 +276,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     previousMoments_ = new QPushButton(tr("Previous moments"), this);
     nextMoments_ = new QPushButton(tr("Next moments"), this);
     refreshSummary_ = new QPushButton(tr("Refresh summary"), this);
+    refreshSummary_->setObjectName(QStringLiteral("refreshReviewSummary"));
     summaryActions->addWidget(previousMoments_);
     summaryActions->addWidget(nextMoments_);
     summaryActions->addWidget(refreshSummary_);
@@ -504,8 +505,14 @@ void ReviewPage::update() {
     nextMoments_->setEnabled(state.overview &&
                              state.overview->keyOffset + 50 < state.overview->totalKeyMoments &&
                              !state.busy);
-    QString summaryText = state.overviewError;
+    QString summaryText =
+        state.overviewError.isEmpty()
+            ? QString{}
+            : tr("Summary could not be refreshed: %1\n\n").arg(state.overviewError);
     if (state.overview && state.run) {
+        if (!state.overviewError.isEmpty()) {
+            summaryText += tr("Last successfully loaded summary:\n");
+        }
         summaryText += app::reviewOverviewText(*state.overview, state.run->selectedSide);
         if (state.run && state.overview->revision != state.run->revision) {
             summaryText.prepend(tr("Updating evidence; summary reflects an earlier checkpoint.\n"));

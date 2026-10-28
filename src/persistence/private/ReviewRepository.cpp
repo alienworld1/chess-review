@@ -805,6 +805,28 @@ LoadReviewResult StorageSession::loadReviewRecord(ReviewId id, StoredGame* ownin
         return invalid();
     }
     q.finish();
+    // Stage mappings can only follow a complete quick scan. Validate their shape
+    // even when the game has no moves, so a summary cannot hide orphaned roots.
+    if (!exec(q,
+              QStringLiteral(
+                  "SELECT 1 FROM review_stage_positions p LEFT JOIN review_evidence e "
+                  "ON e.review_id=p.review_id AND e.id=p.evidence_id WHERE p.review_id=? "
+                  "AND (?=0 OR ?<>? OR typeof(p.stage)<>'integer' OR p.stage NOT IN (1,2) "
+                  "OR typeof(p.position_index)<>'integer' OR p.position_index<0 OR "
+                  "p.position_index>=? OR typeof(p.evidence_id)<>'integer' OR e.id IS NULL "
+                  "OR typeof(e.position_index)<>'integer' OR e.position_index<>p.position_index) "
+                  "LIMIT 1"),
+              {static_cast<qint64>(id), run->settings.refinement ? 1 : 0, s->completedPositions,
+               s->totalPositions, s->totalPositions})) {
+        return storage();
+    }
+    if (q.next()) {
+        return invalid();
+    }
+    if (q.lastError().isValid()) {
+        return storage();
+    }
+    q.finish();
     if (const auto failure = checkCurrentTransition(database_, *s)) {
         return *failure;
     }

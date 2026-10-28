@@ -2,7 +2,11 @@
 #include <algorithm>
 namespace chess_review::app {
 namespace {
-constexpr int liveRefreshDelayMs = 200;
+int liveRefreshDelayMs(const persistence::ReviewSummary& run) {
+    // Deeper pairs require more validation work; progress still publishes on each
+    // checkpoint, while visible interpretation refreshes at most once per second.
+    return run.status == review::JobStatus::Deepening ? 1000 : 200;
+}
 bool active(const persistence::ReviewSummary& run) {
     return run.status <= review::JobStatus::Deriving;
 }
@@ -23,7 +27,7 @@ ReviewMovesController::ReviewMovesController(persistence::Database& database)
                     return;
                 }
                 if (pendingGeneration_ != generation_) {
-                    timer_.start(dirty_ && run_ && active(*run_) ? liveRefreshDelayMs : 0);
+                    timer_.start(dirty_ && run_ && active(*run_) ? liveRefreshDelayMs(*run_) : 0);
                     return;
                 }
                 if (const auto* page = std::get_if<persistence::ReviewMovePage>(&result)) {
@@ -59,7 +63,7 @@ ReviewMovesController::ReviewMovesController(persistence::Database& database)
                     emit changed();
                     return;
                 }
-                timer_.start(dirty_ && run_ && active(*run_) ? liveRefreshDelayMs : 0);
+                timer_.start(dirty_ && run_ && active(*run_) ? liveRefreshDelayMs(*run_) : 0);
                 emit changed();
             });
 }
@@ -86,8 +90,8 @@ void ReviewMovesController::bind(const std::optional<persistence::ReviewSummary>
     // Coalesce frequent scan checkpoints into a bounded presentation cadence.
     // Background backfill waits for the scan to stop; checkpoints already derive
     // new classifications atomically, and visible pages remain progressive.
-    if (pending_.isNull() && !timer_.isActive()) {
-        timer_.start(same && run_ && active(*run_) ? liveRefreshDelayMs : 0);
+    if (pending_.isNull() && (!timer_.isActive() || (run_ && !active(*run_)))) {
+        timer_.start(same && run_ && active(*run_) ? liveRefreshDelayMs(*run_) : 0);
     }
 }
 void ReviewMovesController::showPage(int offset) {

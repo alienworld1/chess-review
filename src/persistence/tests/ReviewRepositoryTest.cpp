@@ -128,6 +128,42 @@ class ReviewRepositoryTest final : public QObject {
     Q_OBJECT
   private slots:
     void init() { QTest::failOnWarning(); }
+    void damagedStageMetadataCannotInventProgress_data() {
+        QTest::addColumn<int>("damage");
+        QTest::newRow("stage on legacy run") << 0;
+        QTest::newRow("stage outside mainline") << 1;
+        QTest::newRow("orphaned stage evidence") << 2;
+        QTest::newRow("stage without quick position") << 3;
+    }
+    void damagedStageMetadataCannotInventProgress() {
+        QFETCH(int, damage);
+        Fixture f;
+        const auto doc = document("*");
+        auto request = seed(f.session, doc);
+        request.refinement = damage != 0;
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        run = std::get<ReviewSummary>(f.session.checkpointReview(
+            checkpoint(run.id, run.revision, 0, resultAt(request, *doc, 0))));
+        QVERIFY(f.exec(QStringLiteral(
+            "INSERT INTO review_stage_positions(review_id,stage,position_index,evidence_id) SELECT "
+            "review_id,1,position_index,id FROM review_evidence")));
+        if (damage == 1) {
+            QVERIFY(f.exec(QStringLiteral("UPDATE review_stage_positions SET position_index=99")));
+        } else if (damage == 2) {
+            QVERIFY(f.exec(QStringLiteral("PRAGMA foreign_keys=OFF")));
+            QVERIFY(f.exec(QStringLiteral("UPDATE review_stage_positions SET evidence_id=999999")));
+        } else if (damage == 3) {
+            QVERIFY(f.exec(QStringLiteral("DELETE FROM review_positions")));
+            QVERIFY(f.exec(QStringLiteral("UPDATE review_jobs SET completed_positions=0")));
+        }
+        const auto result = f.session.loadReviewOverview(run.id, run.revision);
+        QVERIFY(std::holds_alternative<ReviewError>(result));
+        QCOMPARE(std::get<ReviewError>(result).code, ReviewErrorCode::InvalidRecord);
+        QCOMPARE(std::get<ReviewError>(f.session.loadReview(run.id)).code,
+                 ReviewErrorCode::InvalidRecord);
+        QCOMPARE(f.scalar(QStringLiteral("SELECT count(*) FROM review_stage_positions")).toInt(),
+                 1);
+    }
     void refinementSurvivesReopenWithIndependentAccuracy() {
         Fixture f;
         const auto doc = document();
@@ -182,6 +218,44 @@ class ReviewRepositoryTest final : public QObject {
                            "FROM review_stage_positions WHERE stage=2 AND position_index=1)")));
         QCOMPARE(std::get<ReviewError>(f.session.loadReviewOverview(run.id, run.revision)).code,
                  ReviewErrorCode::InvalidRecord);
+    }
+    void accuracyIsIndependentOfLabelsForTheSameOwnedEvidence() {
+        Fixture f;
+        const auto doc = document("1. e4 *");
+        const auto original = seed(f.session, doc);
+        std::array<engine::AnalysisResult, 2> analyses{resultAt(original, *doc, 0),
+                                                       resultAt(original, *doc, 1)};
+        analyses[0].evidence.lines.front().wdl = engine::Wdl{500, 0, 500};
+        analyses[1].evidence.lines.front().wdl = engine::Wdl{600, 0, 400};
+        std::array<ReviewOverview, 2> summaries;
+        std::array<std::optional<review::Classification>, 2> labels;
+        for (std::size_t n = 0; n < 2; ++n) {
+            auto request = original;
+            if (n == 1) {
+                auto values = request.configuration.values;
+                values.classification.inaccuracyLoss = .15;
+                values.classification.mistakeLoss = .3;
+                values.classification.blunderLoss = .4;
+                request.configuration =
+                    *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
+                        config::validate(values));
+            }
+            auto run = std::get<ReviewSummary>(f.session.createReview(request));
+            for (int index = 0; index < 2; ++index) {
+                run = std::get<ReviewSummary>(f.session.checkpointReview(checkpoint(
+                    run.id, run.revision, index, analyses[static_cast<std::size_t>(index)])));
+            }
+            summaries[n] =
+                std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+            labels[n] =
+                std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50))
+                    .moves.front()
+                    .classification->label;
+        }
+        QVERIFY(labels[0] != labels[1]);
+        QCOMPARE(summaries[0].sides[0].accuracy, summaries[1].sides[0].accuracy);
+        QCOMPARE(summaries[0].sides[0].evaluated, 1);
+        QCOMPARE(summaries[1].sides[0].evaluated, 1);
     }
     void refinedRunReopensWithoutAnEngine() {
         QTemporaryDir directory;

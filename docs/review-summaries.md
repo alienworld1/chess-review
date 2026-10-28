@@ -17,8 +17,8 @@ stronger attempts, agreement on label and best move, and no more than two
 percentage points of change in either expected score. Verification must have more
 measured nodes and no shallower common depth. Reusing one attempt never provides
 two confirmations. Equal custom budgets do not guarantee a stable result.
-Unselected moves and unresolved results remain provisional. Finishing the planned
-work does not mean every move is stable. There are no unbounded refinement retries.
+Moves with only quick-scan evidence and unresolved results remain provisional.
+Finishing the planned work does not mean every move is stable. There are no unbounded refinement retries.
 
 Engine mate claims stay separate from numeric interpretation. When both stronger
 passes report mate at the same position for the same side, the inspector reports
@@ -35,7 +35,11 @@ can change during refinement. An older checkpoint is explicitly identified.
 Summaries use owned review evidence and remain available without an engine or the
 disposable analysis cache. Existing completed quick-scan runs retain historical
 classifications; start a new run to use refinement. Refresh summary retries a
-failed summary read without silently repairing saved records.
+failed summary read without silently repairing saved records. If a refresh fails,
+the error appears above any retained numbers, which are explicitly marked as the
+last successfully loaded summary. Invalid stage mappings are rejected even for
+games with no moves. During deepening, visible move interpretations coalesce
+checkpoint updates over one second; manual paging and final results remain prompt.
 
 ## Accuracy model 1
 

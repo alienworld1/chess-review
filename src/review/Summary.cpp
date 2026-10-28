@@ -52,11 +52,16 @@ bool stronger(const PositionEvidence& first, const PositionEvidence& second) {
            second.strength.depth && *second.strength.depth >= *first.strength.depth;
 }
 bool sameMate(const std::optional<RawScore>& a, const std::optional<RawScore>& b) {
-    return a && b && a->bound == Bound::Exact && b->bound == Bound::Exact && a->value != 0 &&
-           b->value != 0 && (a->value > 0) == (b->value > 0);
+    return a && b && a->kind == ScoreKind::Mate && b->kind == ScoreKind::Mate &&
+           a->bound == Bound::Exact && b->bound == Bound::Exact && a->value != 0 && b->value != 0 &&
+           (a->value > 0) == (b->value > 0);
 }
 std::optional<int> ticks(const PositionEvidence& evidence, chess::Color perspective) {
     if (evidence.terminal) {
+        if (*evidence.terminal != TerminalOutcome::Checkmate &&
+            *evidence.terminal != TerminalOutcome::Stalemate) {
+            return std::nullopt;
+        }
         return *evidence.terminal == TerminalOutcome::Stalemate
                    ? 1000
                    : (evidence.position.board.sideToMove == perspective ? 0 : 2000);
@@ -83,6 +88,20 @@ double drift(const PositionEvidence& a, const PositionEvidence& b, const Expecte
         return static_cast<double>(std::abs(*before - *after)) / 2000;
     }
     return std::abs(first.value - second.value);
+}
+bool validExpected(const EvaluationResult& result, chess::Color mover) {
+    if (result.issue || !result.expected) {
+        return false;
+    }
+    const auto& expected = *result.expected;
+    return (mover == chess::Color::White || mover == chess::Color::Black) &&
+           expected.perspective == mover && expected.modelVersion == expectedScoreModelVersion &&
+           std::isfinite(expected.value) && expected.value >= 0 && expected.value <= 1 &&
+           std::isfinite(expected.config.fallbackScaleCp) && expected.config.fallbackScaleCp >= 1 &&
+           expected.config.fallbackScaleCp <= 10000 &&
+           (expected.source == ConversionSource::NativeWdl ||
+            expected.source == ConversionSource::ApproximateCentipawns ||
+            expected.source == ConversionSource::Terminal);
 }
 } // namespace
 std::optional<double> accuracyLoss(const MoveEvidence& pair) {
@@ -118,14 +137,25 @@ StabilityAssessment assessStability(const ClassificationResult& deep,
     out.persistentMate = (beforeMate || afterMate) &&
                          ((!deepPair.mate.before && !verifiedPair.mate.before) || beforeMate) &&
                          ((!deepPair.mate.after && !verifiedPair.mate.after) || afterMate);
-    if (!deep.bestMove || !verified.bestMove || !deep.label || !verified.label ||
-        !deep.before.expected || !deep.after.expected || !verified.before.expected ||
-        !verified.after.expected) {
+    if (deep.issue || verified.issue || !supportsClassificationModel(deep.modelVersion) ||
+        !supportsClassificationModel(verified.modelVersion) ||
+        deep.modelVersion != verified.modelVersion || deep.mover != deepPair.mover ||
+        verified.mover != verifiedPair.mover || deep.mover != verified.mover || !deep.bestMove ||
+        !verified.bestMove || !deep.label || !verified.label ||
+        *deep.label < Classification::Best || *deep.label > Classification::Blunder ||
+        *verified.label < Classification::Best || *verified.label > Classification::Blunder ||
+        !validExpected(deep.before, deep.mover) || !validExpected(deep.after, deep.mover) ||
+        !validExpected(verified.before, verified.mover) ||
+        !validExpected(verified.after, verified.mover)) {
         return out;
     }
     if (deep.label != verified.label || deep.bestMove != verified.bestMove ||
+        deep.thresholds != verified.thresholds ||
         deep.before.expected->source != verified.before.expected->source ||
-        deep.after.expected->source != verified.after.expected->source) {
+        deep.after.expected->source != verified.after.expected->source ||
+        deep.before.expected->config != deep.after.expected->config ||
+        deep.before.expected->config != verified.before.expected->config ||
+        deep.before.expected->config != verified.after.expected->config) {
         out.reason = StabilityReason::Disagreement;
         return out;
     }
