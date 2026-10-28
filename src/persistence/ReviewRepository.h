@@ -4,10 +4,12 @@
 #include "persistence/GameRepository.h"
 #include "review/Classification.h"
 #include "review/Review.h"
+#include "review/Summary.h"
 #include <QByteArray>
 #include <QDateTime>
 #include <QMetaType>
 #include <QString>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -37,6 +39,7 @@ struct CreateReview {
     engine::EngineFingerprint fingerprint;
     chess::Color selectedSide = chess::Color::White;
     config::ValidatedConfiguration configuration;
+    bool refinement = false;
 };
 struct ReviewSummary {
     ReviewId id = 0;
@@ -68,6 +71,7 @@ struct ReviewCheckpoint {
     // Absent evidence permits status-only checkpoints, including cancellation/failure.
     std::optional<int> positionIndex;
     std::optional<engine::AnalysisResult> analysis;
+    review::EvidenceStage stage = review::EvidenceStage::Quick;
     bool terminal = false; // Request local proof at positionIndex; never a caller-supplied outcome.
 };
 struct ContinueReview {
@@ -93,6 +97,13 @@ struct ReviewMove {
     chess::Color mover = chess::Color::White;
     QString san;
     std::optional<review::ClassificationResult> classification;
+    std::optional<double> accuracyLoss;
+    std::array<std::int64_t, 4> stabilityEvidenceIds{};
+    std::array<review::AnalysisStrength, 4> stabilityStrength;
+    review::StabilityAssessment stability;
+    bool refinementTarget = false;
+    review::EvidenceStage stage = review::EvidenceStage::Quick;
+    std::optional<int> contextPosition;
     QString bestSan;
     std::vector<QString> alternativeSans;
     review::RawEvaluation rawBefore;
@@ -114,6 +125,21 @@ struct ReviewMovePage {
     int totalMoves = 0;
     std::vector<ReviewMove> moves;
 };
+struct ReviewOverview {
+    ReviewId reviewId = 0;
+    std::int64_t revision = 0;
+    QString result;
+    std::array<review::SideSummary, 2> sides;
+    std::vector<int> refinementPositions;
+    int deepenedPositions = 0;
+    int verifiedPositions = 0;
+    std::vector<ReviewMove> keyMoments; // At most 50 compact entries per page.
+    int keyOffset = 0;
+    int totalKeyMoments = 0;
+    std::optional<int> largestLossPosition;
+    std::optional<double> largestLoss;
+};
+using LoadReviewOverviewResult = std::variant<ReviewOverview, ReviewError>;
 using LoadReviewMovesResult = std::variant<ReviewMovePage, ReviewError>;
 struct ReviewTransition {
     std::int64_t revision = 0;
@@ -137,3 +163,5 @@ Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewEvidenceResult)
 Q_DECLARE_METATYPE(chess_review::persistence::ListReviewTransitionsResult)
 
 Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewMovesResult)
+
+Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewOverviewResult)

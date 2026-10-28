@@ -41,7 +41,11 @@ class StorageSession final {
     ContinueReviewResult continueReview(const ContinueReview& request);
     LoadReviewMovesResult deriveReviewMoves(ReviewId id, std::int64_t expectedRevision, int offset,
                                             int limit);
-    LoadReviewEvidenceResult loadReviewEvidence(ReviewId id, int positionIndex);
+    LoadReviewOverviewResult loadReviewOverview(ReviewId id, std::int64_t expectedRevision,
+                                                int keyOffset = 0);
+    LoadReviewEvidenceResult
+    loadReviewEvidence(ReviewId id, int positionIndex,
+                       review::EvidenceStage stage = review::EvidenceStage::Quick);
     ListReviewTransitionsResult listReviewTransitions(ReviewId id, std::int64_t offset, int limit);
     std::optional<DatabaseError> interruptReviewJobs(const QString& path);
 

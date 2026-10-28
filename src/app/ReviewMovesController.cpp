@@ -108,8 +108,7 @@ void ReviewMovesController::showPage(int offset) {
     emit changed();
 }
 void ReviewMovesController::select(int positionIndex) {
-    if (!state_.page || positionIndex <= state_.page->offset ||
-        positionIndex > state_.page->offset + static_cast<int>(state_.page->moves.size())) {
+    if (!run_ || positionIndex < 1 || positionIndex >= run_->totalPositions) {
         return;
     }
     state_.selectedPosition = positionIndex;

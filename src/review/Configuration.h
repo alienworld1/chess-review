@@ -17,12 +17,19 @@ struct ClassificationConfig {
     double excellentLoss = 0.01;
     bool operator==(const ClassificationConfig&) const = default;
 };
+struct RefinementConfig {
+    double boundaryMargin = 0.01;
+    double maximumDrift = 0.02;
+    int multiPv = 3;
+    bool operator==(const RefinementConfig&) const = default;
+};
 struct Configuration {
     std::uint32_t version = 1;
     std::array<NodeBudgets, 3> budgets{
         {{50000, 500000, 2000000}, {100000, 1000000, 5000000}, {250000, 3000000, 10000000}}};
     ClassificationConfig classification;
     ConversionConfig conversion;
+    RefinementConfig refinement;
     Quality quality = Quality::Standard;
     bool operator==(const Configuration&) const = default;
 };

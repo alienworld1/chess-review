@@ -157,7 +157,7 @@ Result parse(std::string_view contents) {
     review::Configuration config;
     Reader reader;
     reader.keys(root, "configuration",
-                {"version", "analysis", "classification", "review", "expectedScore"});
+                {"version", "analysis", "classification", "review", "expectedScore", "refinement"});
     std::uint64_t version = 1;
     reader.integer(root, "version", "version", version, 1);
     if (const auto* analysis = reader.table(root, "analysis", "analysis")) {
@@ -183,6 +183,16 @@ Result parse(std::string_view contents) {
                              table);
             }
         }
+    }
+    if (const auto* table = reader.table(root, "refinement", "refinement")) {
+        reader.keys(*table, "refinement", {"boundaryMargin", "maximumDrift", "multiPv"});
+        reader.number(*table, "boundaryMargin", "refinement.boundaryMargin",
+                      config.refinement.boundaryMargin, 0, 1);
+        reader.number(*table, "maximumDrift", "refinement.maximumDrift",
+                      config.refinement.maximumDrift, 0, 1);
+        std::uint64_t width = 3;
+        reader.integer(*table, "multiPv", "refinement.multiPv", width, 256);
+        config.refinement.multiPv = static_cast<int>(width);
     }
     if (const auto* table = reader.table(root, "classification", "classification")) {
         reader.keys(*table, "classification",
@@ -235,6 +245,12 @@ Result parse(std::string_view contents) {
 Result validate(const review::Configuration& values, std::uint32_t classificationIdentityVersion) {
     const auto& c = values.classification;
     const auto& e = values.conversion;
+    const auto& r = values.refinement;
+    if (!std::isfinite(r.boundaryMargin) || r.boundaryMargin < 0 || r.boundaryMargin > 1 ||
+        !std::isfinite(r.maximumDrift) || r.maximumDrift < 0 || r.maximumDrift > 1 ||
+        r.multiPv < 1 || r.multiPv > 256) {
+        return failure("Invalid refinement configuration values");
+    }
     if ((classificationIdentityVersion != 1 && classificationIdentityVersion != 2) ||
         (classificationIdentityVersion == 1 && c.excellentLoss != 0.01) ||
         !std::isfinite(c.excellentLoss) || c.excellentLoss <= 0 || c.excellentLoss >= 1 ||

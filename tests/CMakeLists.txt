@@ -169,13 +169,14 @@ target_compile_definitions(review_configuration_tests PRIVATE
 if(UNIX)
     chess_review_add_qt_test(quick_review_tests quick_review INTEGRATION WIDGETS
         SOURCES qt/QuickReviewTest.cpp LIBRARIES chess_review_ui Qt6::Sql)
-    set_tests_properties(quick_review PROPERTIES TIMEOUT 90 ENVIRONMENT
+    # Adaptive long-game fixtures perform two stronger passes; allow sanitizer overhead.
+    set_tests_properties(quick_review PROPERTIES TIMEOUT 240 ENVIRONMENT
         "QT_QPA_PLATFORM=offscreen:configfile=${PROJECT_SOURCE_DIR}/tests/support/desktop-screen.json")
     add_dependencies(quick_review_tests fake_uci_engine)
     target_compile_definitions(quick_review_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
 endif()
 
-add_executable(review_classification_tests unit/ReviewClassificationTest.cpp)
+add_executable(review_classification_tests unit/ReviewClassificationTest.cpp unit/ReviewSummaryTest.cpp)
 set_target_properties(review_classification_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 target_link_libraries(review_classification_tests PRIVATE chess_review_review Catch2::Catch2WithMain)
 chess_review_apply_options(review_classification_tests)

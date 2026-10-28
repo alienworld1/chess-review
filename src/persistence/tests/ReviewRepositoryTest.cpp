@@ -128,6 +128,135 @@ class ReviewRepositoryTest final : public QObject {
     Q_OBJECT
   private slots:
     void init() { QTest::failOnWarning(); }
+    void refinementSurvivesReopenWithIndependentAccuracy() {
+        Fixture f;
+        const auto doc = document();
+        auto request = seed(f.session, doc);
+        request.refinement = true;
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        for (int index = 0; index < 3; ++index) {
+            auto result = resultAt(request, *doc, index);
+            run = std::get<ReviewSummary>(
+                f.session.checkpointReview(checkpoint(run.id, run.revision, index, result)));
+        }
+        auto overview =
+            std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        QCOMPARE(overview.sides[0].evaluated, 1);
+        QCOMPARE(overview.sides[1].evaluated, 1);
+        QCOMPARE(overview.sides[0].accuracy, std::optional<double>(100));
+        QCOMPARE(overview.refinementPositions.size(), std::size_t(3));
+        for (const auto stage :
+             {review::EvidenceStage::Deepening, review::EvidenceStage::Verification}) {
+            for (int index = 0; index < 3; ++index) {
+                auto result = resultAt(request, *doc, index);
+                const std::uint64_t nodes =
+                    stage == review::EvidenceStage::Deepening ? 1000000 : 5000000;
+                result.evidence.limit = engine::NodeLimit{nodes};
+                result.evidence.statistics.nodes = nodes;
+                result.evidence.lines.front().statistics.nodes = nodes;
+                auto cp = checkpoint(run.id, run.revision, index, result);
+                cp.stage = stage;
+                cp.status = JobStatus::Deepening;
+                const auto saved = f.session.checkpointReview(cp);
+                QVERIFY2(std::holds_alternative<ReviewSummary>(saved), "Stage checkpoint rejected");
+                run = std::get<ReviewSummary>(saved);
+            }
+        }
+        const auto page =
+            std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50));
+        QVERIFY(page.moves.front().classification->stable);
+        QCOMPARE(page.moves.front().stage, review::EvidenceStage::Verification);
+        overview = std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        QCOMPARE(overview.sides[0].stable, 1);
+        QCOMPARE(overview.sides[1].stable, 1);
+        QCOMPARE(overview.verifiedPositions, 3);
+        QVERIFY(f.exec(QStringLiteral("DELETE FROM analysis_results")));
+        const auto stageEvidence =
+            f.session.loadReviewEvidence(run.id, 1, review::EvidenceStage::Verification);
+        QVERIFY(std::holds_alternative<StoredReviewEvidence>(stageEvidence));
+        auto cp = checkpoint(run.id, run.revision - 1, 0, resultAt(request, *doc, 0));
+        QCOMPARE(std::get<ReviewError>(f.session.checkpointReview(cp)).code,
+                 ReviewErrorCode::Conflict);
+        QVERIFY(f.exec(
+            QStringLiteral("UPDATE review_evidence SET adapted=x'01' WHERE id=(SELECT evidence_id "
+                           "FROM review_stage_positions WHERE stage=2 AND position_index=1)")));
+        QCOMPARE(std::get<ReviewError>(f.session.loadReviewOverview(run.id, run.revision)).code,
+                 ReviewErrorCode::InvalidRecord);
+    }
+    void refinedRunReopensWithoutAnEngine() {
+        QTemporaryDir directory;
+        const auto path = directory.filePath(QStringLiteral("reopen.sqlite3"));
+        ReviewId id = 0;
+        std::int64_t revision = 0;
+        {
+            StorageSession session;
+            QVERIFY(!session.initialize(path, migrations(), ignore));
+            const auto doc = document();
+            auto request = seed(session, doc);
+            request.refinement = true;
+            auto run = std::get<ReviewSummary>(session.createReview(request));
+            for (const auto stage : {review::EvidenceStage::Quick, review::EvidenceStage::Deepening,
+                                     review::EvidenceStage::Verification}) {
+                for (int index = 0; index < 3; ++index) {
+                    auto result = resultAt(request, *doc, index);
+                    const std::uint64_t nodes = stage == review::EvidenceStage::Quick ? 100000
+                                                : stage == review::EvidenceStage::Deepening
+                                                    ? 1000000
+                                                    : 5000000;
+                    result.evidence.limit = engine::NodeLimit{nodes};
+                    result.evidence.statistics.nodes =
+                        result.evidence.lines.front().statistics.nodes = nodes;
+                    auto cp = checkpoint(run.id, run.revision, index, result);
+                    cp.stage = stage;
+                    cp.status = stage == review::EvidenceStage::Quick ? JobStatus::QuickScanning
+                                                                      : JobStatus::Deepening;
+                    run = std::get<ReviewSummary>(session.checkpointReview(cp));
+                }
+            }
+            ReviewCheckpoint complete;
+            complete.reviewId = run.id;
+            complete.expectedRevision = run.revision;
+            complete.status = JobStatus::Complete;
+            const auto result = session.checkpointReview(complete);
+            QVERIFY(std::holds_alternative<ReviewSummary>(result));
+            id = run.id;
+            revision = std::get<ReviewSummary>(result).revision;
+        }
+        StorageSession reopened;
+        QVERIFY(!reopened.initialize(path, migrations(), ignore));
+        const auto loaded = std::get<StoredReview>(reopened.loadReview(id));
+        QCOMPARE(loaded.summary.status, JobStatus::Complete);
+        QCOMPARE(loaded.summary.revision, revision);
+        const auto overview = std::get<ReviewOverview>(reopened.loadReviewOverview(id, revision));
+        QCOMPARE(overview.sides[0].stable, 1);
+        QCOMPARE(overview.sides[1].accuracy, std::optional<double>(100));
+        QCOMPARE(overview.verifiedPositions, 3);
+    }
+    void refinedEvidenceRequiresStageBudgetAndCapturedEngine() {
+        Fixture f;
+        const auto doc = document();
+        auto request = seed(f.session, doc);
+        request.refinement = true;
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        for (int index = 0; index < 3; ++index) {
+            run = std::get<ReviewSummary>(f.session.checkpointReview(
+                checkpoint(run.id, run.revision, index, resultAt(request, *doc, index))));
+        }
+        auto cp = checkpoint(run.id, run.revision, 0, resultAt(request, *doc, 0));
+        cp.stage = review::EvidenceStage::Deepening;
+        cp.status = JobStatus::Deepening;
+        QCOMPARE(std::get<ReviewError>(f.session.checkpointReview(cp)).code,
+                 ReviewErrorCode::InvalidInput);
+        QCOMPARE(f.scalar(QStringLiteral("SELECT count(*) FROM review_stage_positions")).toInt(),
+                 0);
+        cp.analysis->evidence.limit = engine::NodeLimit{1000000};
+        auto provenance =
+            std::make_shared<engine::AnalysisProvenance>(*cp.analysis->evidence.provenance);
+        provenance->fingerprint.reportedName = QStringLiteral("Different engine");
+        cp.analysis->evidence.provenance = provenance;
+        QCOMPARE(std::get<ReviewError>(f.session.checkpointReview(cp)).code,
+                 ReviewErrorCode::InvalidInput);
+    }
     void emptyMovePageDoesNotHideDamagedEvidence_data() {
         QTest::addColumn<bool>("zeroMoves");
         QTest::newRow("empty game root") << true;
@@ -361,7 +490,8 @@ class ReviewRepositoryTest final : public QObject {
             QVERIFY(std::holds_alternative<ReviewSummary>(session.checkpointReview(complete)));
             QSqlQuery q(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE review_classifications")));
-            QVERIFY(q.exec(QStringLiteral("DELETE FROM schema_migrations WHERE version=7")));
+            QVERIFY(q.exec(QStringLiteral("DROP TABLE review_stage_positions")));
+            QVERIFY(q.exec(QStringLiteral("DELETE FROM schema_migrations WHERE version>=7")));
         }
         StorageSession reopened;
         QVERIFY(!reopened.initialize(path, migrations(), ignore));
@@ -1059,7 +1189,7 @@ class ReviewRepositoryTest final : public QObject {
                  ReviewErrorCode::Unavailable);
         db.value.initialize(path);
         QTRY_COMPARE(ready.size(), 1);
-        QCOMPARE(ready[0][0].toInt(), 7);
+        QCOMPARE(ready[0][0].toInt(), 8);
         std::vector<QUuid> ids;
         for (int i = 0; i < 17; ++i) {
             ids.push_back(QUuid::createUuid());

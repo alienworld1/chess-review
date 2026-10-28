@@ -30,3 +30,9 @@ preferWdl = true
 
 [expectedScore]
 fallbackScaleCp = 300
+
+# Fractions of expected score: 0.01 means one percentage point.
+[refinement]
+boundaryMargin = 0.01
+maximumDrift = 0.02
+multiPv = 3

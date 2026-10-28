@@ -129,6 +129,10 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
     if (!config || !sameConfiguration(**config, settings.configuration)) {
         return {};
     }
+    if (!settings.refinement &&
+        settings.configuration.values.refinement != review::RefinementConfig{}) {
+        return {};
+    }
     const auto fingerprint = encodeFingerprint(settings.fingerprint);
     if (fingerprint.isEmpty() || fingerprint.size() > 1024 * 1024 || settings.gameId <= 0 ||
         settings.engineProfileId <= 0 ||
@@ -168,6 +172,14 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
         {"openingDatasetVersion", QJsonValue()}};
     if (settings.configuration.classificationIdentityVersion == 2) {
         document["excellentLoss"] = c.classification.excellentLoss;
+    }
+    if (settings.refinement) {
+        document["pipelineVersion"] = 1;
+        document["reviewModelVersion"] = 1;
+        document["stabilityModelVersion"] = 1;
+        document["accuracyModelVersion"] = 1;
+        document["refinement"] = QJsonArray{c.refinement.boundaryMargin, c.refinement.maximumDrift,
+                                            c.refinement.multiPv};
     }
     return reviewDocument(document);
 }
@@ -218,6 +230,17 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
         c.classification.excellentLoss = o["excellentLoss"].toDouble(-1);
     }
     c.conversion = {o["fallbackScaleCp"].toDouble(), o["preferWdl"].toBool()};
+    if (o.contains("pipelineVersion")) {
+        if (o["pipelineVersion"].toInt(-1) != 1) {
+            return std::nullopt;
+        }
+        out.refinement = true;
+        const auto r = o["refinement"].toArray();
+        if (r.size() != 3) {
+            return std::nullopt;
+        }
+        c.refinement = {r[0].toDouble(-1), r[1].toDouble(-1), r[2].toInt(-1)};
+    }
     out.configuration.identities = {
         QByteArray::fromHex(o["classificationIdentity"].toString().toLatin1()),
         QByteArray::fromHex(o["conversionIdentity"].toString().toLatin1()),

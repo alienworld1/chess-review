@@ -13,9 +13,11 @@ review perspective. Checkmate and stalemate positions use local board proof.
 
 The progress count includes only positions whose evidence has been saved. Valid
 completed engine results can still contain weak or otherwise insufficient evidence.
-**Quick scan complete** means every position has been processed, not that every
-position supports an interpretation. Normal classifications are provisional; accuracy,
-guided explanations and the board-first review screen are not available yet.
+New runs automatically refine selected moments after the quick scan. Processing
+completion does not certify every classification. The Summary tab shows accuracy
+with coverage, while the inspector distinguishes stable, provisional and withheld
+results. See [refinement and summaries](review-summaries.md). Guided explanations
+and the board-first review screen remain later increments.
 
 ## Background work and cancellation
 
@@ -25,7 +27,7 @@ again for that run. A persistent task button shows saved coverage and returns to
 Review. Only one review runs at a time; games and manual analysis remain usable.
 Manual engine analysis can delay a quick scan on the shared engine worker.
 
-**Cancel scan** stops further work and retains completed, committed position
+**Cancel review** stops further work and retains completed, committed position
 evidence. It waits for engine cancellation and outstanding saves before reporting
 Cancelled. Orderly app shutdown also cancels unfinished scans and drains their
 accepted writes. A forced exit leaves startup recovery to mark unfinished jobs
@@ -68,8 +70,8 @@ Cancelled and partial runs retain useful classifications; unprocessed moves rema
 visible as **Awaiting evidence**. **Unclassified** means evidence was retained but
 does not support a normal label. Details explain the reason.
 
-All labels remain **provisional** until targeted deepening and stability checks
-are implemented. The rules use expected-score loss from the mover's perspective:
+Quick-scan labels are **provisional**. Targeted refinement can establish stability
+when two stronger passes agree; unselected or unresolved moves remain provisional. The rules use expected-score loss from the mover's perspective:
 
 | Rule, evaluated in order | Result |
 | --- | --- |
@@ -83,7 +85,7 @@ are implemented. The rules use expected-score loss from the mover's perspective:
 
 Error bands take priority even if the configured Excellent maximum exceeds
 Inaccuracy. Best means the played move matches the earlier search's verified
-first candidate, with paired loss below Inaccuracy; it is still provisional.
+first candidate, with paired loss below Inaccuracy; quick-scan evidence remains provisional.
 A missing played-move rank remains unknown. Approximate centipawn conversion is
 identified explicitly. Display values are rounded; rules compare the unrounded
 stored values.

@@ -75,6 +75,24 @@ class ReviewConfigurationTest final : public QObject {
     Q_OBJECT
   private slots:
     void init() { QTest::failOnWarning(); }
+    void refinementPolicyIsValidatedAndSeparateFromLabelIdentities() {
+        const auto defaults = valid({});
+        const auto custom =
+            valid("[refinement]\nboundaryMargin=0.015\nmaximumDrift=0.03\nmultiPv=2\n");
+        QVERIFY(defaults);
+        QVERIFY(custom);
+        QCOMPARE(custom->values.refinement.boundaryMargin, .015);
+        QCOMPARE(custom->values.refinement.maximumDrift, .03);
+        QCOMPARE(custom->values.refinement.multiPv, 2);
+        QCOMPARE(custom->identities.classification, defaults->identities.classification);
+        QCOMPARE(custom->identities.conversion, defaults->identities.conversion);
+        for (const auto text :
+             {"[refinement]\nmultiPv=0", "[refinement]\nmultiPv=257",
+              "[refinement]\nmaximumDrift=nan", "[refinement]\nboundaryMargin=-0.01"}) {
+            QVERIFY(!valid(text));
+        }
+    }
+
     void hostileConfigIsRejectedWithoutCrashing() {
         QProcess process;
         process.start(QCoreApplication::applicationFilePath(),

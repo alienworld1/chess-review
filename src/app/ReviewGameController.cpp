@@ -37,7 +37,7 @@ QString reviewStatusText(JobStatus status) {
     case JobStatus::Deriving:
         return QObject::tr("Deriving");
     case JobStatus::Complete:
-        return QObject::tr("Quick scan complete");
+        return QObject::tr("Processing complete");
     case JobStatus::Partial:
         return QObject::tr("Partial");
     case JobStatus::Cancelled:
@@ -155,6 +155,7 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                     state_.phase = ReviewPhase::Finished;
                     state_.message = reviewStatusText(state_.run->status);
                     publish();
+                    refreshOverview();
                     finishClose();
                     return;
                 }
@@ -168,8 +169,62 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                 }
                 profileId_ = run.settings.engineProfileId;
                 side_ = run.settings.selectedSide;
+                refinementEnabled_ = run.settings.refinement;
                 runConfiguration_ = run.settings.configuration;
                 connectSelected(true);
+            });
+    connect(&database_, &persistence::Database::reviewOverviewLoaded, this,
+            [this](QUuid id, const persistence::LoadReviewOverviewResult& result) {
+                if (!accept(id)) {
+                    return;
+                }
+                if (!state_.active && !closing_ && nextInspection_) {
+                    const auto next = *std::exchange(nextInspection_, std::nullopt);
+                    loadInspection(next);
+                    return;
+                }
+                if (const auto* error = std::get_if<ReviewError>(&result)) {
+                    if (error->code == ReviewErrorCode::Busy) {
+                        handleError(*error);
+                        return;
+                    }
+                    operation_ = {};
+                    if (state_.active) {
+                        planning_ = false;
+                        fail(error->message, review::JobFailure::Evidence);
+                    } else {
+                        state_.overviewError = error->message;
+                        publish();
+                        finishClose();
+                    }
+                    return;
+                }
+                operation_ = {};
+                const auto& overview = std::get<persistence::ReviewOverview>(result);
+                if (!state_.run || overview.reviewId != state_.run->id ||
+                    overview.revision != state_.run->revision) {
+                    finishClose();
+                    return;
+                }
+                state_.overview = overview;
+                state_.overviewError.clear();
+                if (planning_) {
+                    planning_ = false;
+                    planned_ = true;
+                    refinementPositions_ = overview.refinementPositions;
+                    refinementIndex_ = 0;
+                    stage_ = review::EvidenceStage::Deepening;
+                    state_.refinementTotal = static_cast<int>(refinementPositions_.size()) * 2;
+                    state_.refinementDone = 0;
+                    statusWrite_ = true;
+                    checkpoint(JobStatus::Reviewable);
+                } else {
+                    publish();
+                    if (state_.active) {
+                        advance();
+                    }
+                    finishClose();
+                }
             });
     connect(&database_, &persistence::Database::reviewCreated, this,
             [this](QUuid id, const persistence::CreateReviewResult& result) {
@@ -216,8 +271,7 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                     return;
                 }
                 operation_ = {};
-                ++index_;
-                advance();
+                advancePosition();
             });
     connect(&database_, &persistence::Database::analysisFound, this,
             [this](QUuid id, const persistence::FindAnalysisResult& result) {
@@ -237,7 +291,9 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                 }
                 operation_ = {};
                 if (const auto& hit = std::get<persistence::CacheLookup>(result).hit; hit) {
-                    checkpoint(JobStatus::QuickScanning, review::JobFailure::None, *hit);
+                    checkpoint(stage_ == review::EvidenceStage::Quick ? JobStatus::QuickScanning
+                                                                      : JobStatus::Deepening,
+                               review::JobFailure::None, *hit);
                 } else {
                     search();
                 }
@@ -271,8 +327,12 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                     finish();
                     return;
                 }
-                ++index_;
-                advance();
+                if (statusWrite_) {
+                    statusWrite_ = false;
+                    advance();
+                    return;
+                }
+                advancePosition();
             });
     connect(&supervisor_, &engine::EngineSupervisor::scheduledChanged, this,
             [this](const engine::ScheduledState& value) {
@@ -296,7 +356,7 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                     result.identity.attempt == result.evidence->identity.attempt &&
                     (!attempt_ || result.identity.attempt == attempt_) &&
                     result.evidence->evidence.provenance &&
-                    result.evidence->evidence.provenance->fingerprint == fingerprint_) {
+                    result.evidence->evidence.provenance->fingerprint == searchFingerprint_) {
                     save(engine::AnalysisResult{
                         result.evidence->evidence, engine::AnalysisOutcome::Completed, {}});
                 } else if (state_.cancelling &&
@@ -387,6 +447,8 @@ void ReviewGameController::selectGame(persistence::GameId id) {
     game_.reset();
     stored_.reset();
     state_.run.reset();
+    state_.overview.reset();
+    state_.overviewError.clear();
     state_.runs.clear();
     state_.page = 0;
     state_.hasNext = false;
@@ -424,6 +486,8 @@ void ReviewGameController::inspect(review::ReviewId id) {
 }
 void ReviewGameController::loadInspection(review::ReviewId id) {
     terminalWrite_ = false;
+    state_.overview.reset();
+    state_.overviewError.clear();
     state_.run.reset();
     stored_.reset();
     state_.engine.clear();
@@ -477,6 +541,7 @@ void ReviewGameController::start(chess::Color side, std::int64_t profileId,
     runConfiguration_ = **result;
     side_ = side;
     profileId_ = profileId;
+    refinementEnabled_ = true;
     resuming_ = false;
     stored_.reset();
     state_.run.reset();
@@ -488,6 +553,15 @@ void ReviewGameController::start(chess::Color side, std::int64_t profileId,
     terminalWrite_ = false;
     identityReady_ = false;
     index_ = 0;
+    stage_ = review::EvidenceStage::Quick;
+    planned_ = false;
+    planning_ = false;
+    statusWrite_ = false;
+    refinementPositions_.clear();
+    state_.overview.reset();
+    state_.overviewError.clear();
+    state_.refinementDone = 0;
+    state_.refinementTotal = 0;
     job_ = QUuid::createUuid();
     stop_ = std::stop_source{};
     ++generation_;
@@ -505,10 +579,20 @@ void ReviewGameController::resume(review::ReviewId id) {
     failurePending_ = false;
     terminalWrite_ = false;
     identityReady_ = false;
+    state_.overview.reset();
     state_.run.reset();
     stored_.reset();
     resuming_ = true;
     index_ = 0;
+    stage_ = review::EvidenceStage::Quick;
+    planned_ = false;
+    planning_ = false;
+    statusWrite_ = false;
+    refinementPositions_.clear();
+    state_.overview.reset();
+    state_.overviewError.clear();
+    state_.refinementDone = 0;
+    state_.refinementTotal = 0;
     job_ = QUuid::createUuid();
     stop_ = std::stop_source{};
     ++generation_;
@@ -643,8 +727,9 @@ void ReviewGameController::prepareIdentity() {
                                 QUuid id) { database_.continueReview(id, continuation); },
                             true);
                 } else {
-                    persistence::CreateReview creation{state_.gameId, profileId_, fingerprint_,
-                                                       side_, runConfiguration_};
+                    persistence::CreateReview creation{state_.gameId,     profileId_,
+                                                       fingerprint_,      side_,
+                                                       runConfiguration_, refinementEnabled_};
                     request([this, creation](QUuid id) { database_.createReview(id, creation); },
                             true);
                 }
@@ -667,20 +752,87 @@ void ReviewGameController::advance() {
         }
         return;
     }
-    if (index_ >= state_.run->totalPositions) {
-        checkpoint(JobStatus::Complete);
+    if (stage_ != review::EvidenceStage::Quick) {
+        if (state_.run->status == JobStatus::Deriving) {
+            checkpoint(JobStatus::Complete);
+            return;
+        }
+        if (refinementIndex_ >= refinementPositions_.size()) {
+            if (stage_ == review::EvidenceStage::Deepening) {
+                stage_ = review::EvidenceStage::Verification;
+                refinementIndex_ = 0;
+                statusWrite_ = true;
+                checkpoint(JobStatus::Deepening);
+            } else {
+                statusWrite_ = true;
+                checkpoint(JobStatus::Deriving);
+            }
+            return;
+        }
+        index_ = refinementPositions_[refinementIndex_];
+    } else if (index_ >= state_.run->totalPositions) {
+        if (refinementEnabled_ && !planned_) {
+            planning_ = true;
+            refreshOverview();
+        } else {
+            checkpoint(JobStatus::Complete);
+        }
         return;
     }
-    if (resuming_) {
+    if (resuming_ || stage_ != review::EvidenceStage::Quick) {
         state_.phase = ReviewPhase::LookingUp;
         const auto id = state_.run->id;
         const auto index = index_;
         request([this, id, index](QUuid requestId) {
-            database_.loadReviewEvidence(requestId, id, index);
+            database_.loadReviewEvidence(requestId, id, index, stage_);
         });
     } else {
         preparePosition();
     }
+}
+void ReviewGameController::advancePosition() {
+    if (stage_ == review::EvidenceStage::Quick) {
+        ++index_;
+    } else {
+        ++refinementIndex_;
+        ++state_.refinementDone;
+    }
+    if (!state_.cancelling && !failurePending_ &&
+        ((stage_ == review::EvidenceStage::Quick && (index_ == 2 || index_ % 50 == 0)) ||
+         (stage_ != review::EvidenceStage::Quick && refinementIndex_ % 50 == 0))) {
+        refreshOverview();
+        return;
+    }
+    advance();
+}
+std::uint64_t ReviewGameController::nodeBudget() const {
+    const auto& b = runConfiguration_.values
+                        .budgets[static_cast<std::size_t>(runConfiguration_.values.quality)];
+    if (stage_ == review::EvidenceStage::Deepening) {
+        return b.deepeningNodes;
+    }
+    if (stage_ == review::EvidenceStage::Verification) {
+        return b.verificationNodes;
+    }
+    return b.quickScanNodes;
+}
+void ReviewGameController::refreshOverview(int keyOffset) {
+    if (closing_ || !state_.run || !pending_.isNull() || !search_.isNull() || workerBusy_) {
+        return;
+    }
+    const auto id = state_.run->id;
+    const auto revision = state_.run->revision;
+    request([this, id, revision, keyOffset](QUuid requestId) {
+        database_.loadReviewOverview(requestId, id, revision, keyOffset);
+    });
+}
+void ReviewGameController::selectMoment(int index) {
+    if (!state_.run || index < 1 || index >= state_.run->totalPositions) {
+        return;
+    }
+    moves_.showPage(((index - 1) / 50) * 50);
+    // Selection is retained until the requested asynchronous page arrives.
+    moves_.select(index);
 }
 void ReviewGameController::preparePosition() {
     workerBusy_ = true;
@@ -690,10 +842,21 @@ void ReviewGameController::preparePosition() {
     const auto generation = generation_;
     const auto stop = stop_.get_token();
     const auto fingerprint = fingerprint_;
-    const auto nodes =
-        runConfiguration_.values.budgets[static_cast<std::size_t>(runConfiguration_.values.quality)]
-            .quickScanNodes;
-    worker_.start([this, document, index, generation, stop, fingerprint, nodes] {
+    const auto nodes = nodeBudget();
+    const auto stage = stage_;
+    int maximumWidth = 1;
+    if (stage != review::EvidenceStage::Quick && settings_.state().runtime.discovery) {
+        const auto& capabilities = settings_.state().runtime.discovery->capabilities;
+        for (const auto& option : capabilities.options) {
+            if (option.name.compare(QStringLiteral("MultiPV"), Qt::CaseInsensitive) == 0 &&
+                option.maximum && capabilities.supportsMultiPv) {
+                maximumWidth = static_cast<int>(
+                    std::min<qint64>(*option.maximum, runConfiguration_.values.refinement.multiPv));
+            }
+        }
+    }
+    worker_.start([this, document, index, generation, stop, fingerprint, nodes, maximumWidth,
+                   stage] {
         engine::CacheQuery query;
         std::shared_ptr<const chess::Position> position;
         bool terminal = false;
@@ -722,10 +885,16 @@ void ReviewGameController::preparePosition() {
             if (error.isEmpty() && !stop.stop_requested()) {
                 terminal = cursor_->position->legalMoves().empty();
                 position = std::make_shared<const chess::Position>(*cursor_->position);
-                if (engine::verifiedResources(fingerprint)) {
-                    query = engine::CacheQuery{
-                        position->context(), fingerprint, engine::NodeLimit{nodes}, 1, true, {}};
-                }
+                const int width = std::max(
+                    1, std::min(maximumWidth, static_cast<int>(position->legalMoves().size())));
+                query = engine::CacheQuery{position->context(),
+                                           stage == review::EvidenceStage::Quick
+                                               ? fingerprint
+                                               : engine::reviewWidthFingerprint(fingerprint, width),
+                                           engine::NodeLimit{nodes},
+                                           width,
+                                           true,
+                                           {}};
             }
         } catch (const std::exception&) {
             error = tr("Position preparation failed.");
@@ -756,11 +925,14 @@ void ReviewGameController::preparePosition() {
 void ReviewGameController::positionReady(std::shared_ptr<const chess::Position> position,
                                          bool terminal, engine::CacheQuery query) {
     position_ = std::move(position);
+    searchFingerprint_ = query.fingerprint;
+    searchWidth_ = query.multiPv;
     if (terminal) {
         save({}, true);
         return;
     }
-    if (!engine::verifiedResources(fingerprint_)) {
+    if (stage_ == review::EvidenceStage::Verification ||
+        !engine::verifiedResources(searchFingerprint_)) {
         search();
         return;
     }
@@ -778,17 +950,20 @@ void ReviewGameController::search() {
              review::JobFailure::Engine);
         return;
     }
-    state_.phase = ReviewPhase::Scanning;
+    state_.phase =
+        stage_ == review::EvidenceStage::Quick ? ReviewPhase::Scanning : ReviewPhase::Refining;
     search_ = QUuid::createUuid();
     attempt_.reset();
     engine::AnalysisRequest request;
     request.id = search_;
     request.position = *position_;
-    request.limit = engine::NodeLimit{
-        runConfiguration_.values.budgets[static_cast<std::size_t>(runConfiguration_.values.quality)]
-            .quickScanNodes};
+    request.limit = engine::NodeLimit{nodeBudget()};
+    request.multiPv = searchWidth_;
     request.wantWdl = true;
-    supervisor_.scheduleAnalysis(session_, request, engine::AnalysisPriority::ReviewQuickScan,
+    supervisor_.scheduleAnalysis(session_, request,
+                                 stage_ == review::EvidenceStage::Quick
+                                     ? engine::AnalysisPriority::ReviewQuickScan
+                                     : engine::AnalysisPriority::ReviewBackgroundDeepening,
                                  job_);
     publish();
 }
@@ -797,7 +972,9 @@ void ReviewGameController::save(std::optional<engine::AnalysisResult> evidence, 
         cacheWrite_ = QUuid::createUuid();
         database_.storeAnalysis(cacheWrite_, *evidence);
     }
-    checkpoint(JobStatus::QuickScanning, review::JobFailure::None, std::move(evidence), terminal);
+    checkpoint(stage_ == review::EvidenceStage::Quick ? JobStatus::QuickScanning
+                                                      : JobStatus::Deepening,
+               review::JobFailure::None, std::move(evidence), terminal);
 }
 void ReviewGameController::checkpoint(JobStatus status, review::JobFailure failure,
                                       std::optional<engine::AnalysisResult> evidence,
@@ -812,6 +989,7 @@ void ReviewGameController::checkpoint(JobStatus status, review::JobFailure failu
         checkpoint.positionIndex = index_;
     }
     checkpoint.analysis = std::move(evidence);
+    checkpoint.stage = checkpoint.positionIndex ? stage_ : review::EvidenceStage::Quick;
     checkpoint.terminal = terminal;
     state_.phase = ReviewPhase::Saving;
     request([this, checkpoint = std::move(checkpoint)](
@@ -834,6 +1012,8 @@ void ReviewGameController::fail(const QString& message, review::JobFailure failu
     }
 }
 void ReviewGameController::finish() {
+    planning_ = false;
+    statusWrite_ = false;
     state_.active = false;
     state_.cancelling = false;
     state_.phase = ReviewPhase::Finished;
@@ -842,12 +1022,15 @@ void ReviewGameController::finish() {
     position_.reset();
     state_.message = state_.run ? reviewStatusText(state_.run->status) : tr("Review not started");
     if (state_.run && state_.run->status == JobStatus::Complete) {
-        state_.message = tr("Quick scan complete. Classifications are provisional; some moves may "
-                            "lack sufficient evidence. Accuracy is not available yet.");
+        state_.message = tr("Processing complete. Stable, provisional and withheld results are "
+                            "identified separately.");
     }
     publish();
     if (!closing_) {
         refreshRuns();
+        if (!state_.active && state_.error.isEmpty()) {
+            refreshOverview();
+        }
     }
     finishClose();
 }

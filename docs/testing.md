@@ -972,3 +972,11 @@ deselection, Busy on a background page, and explicit UI retry after a failed rea
 The 81-position heartbeat fixture also reports move-page request counts. Optional
 Review render probes verify that move paging and Retry remain reachable after
 scrolling with enlarged fonts, and save enlarged-detail and error-state images.
+
+Increment 5 adds pure-domain summary tests to `review_classification_tests` and
+schema-8 refinement/accuracy cases to `review_repository`. `quick_review` exercises
+automatic stronger passes, MultiPV alternatives, changing summaries, chronological
+opponent context, cancellation and missing-only refinement resume. Its long-game
+heartbeat now covers the adaptive review, rather than just the initial scan.
+The render probe additionally saves light/dark Summary-tab images. Optional real
+engine cache checks count quick searches separately from fresh verification work.

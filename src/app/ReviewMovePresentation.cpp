@@ -112,6 +112,49 @@ QString classificationText(const std::optional<review::ClassificationResult>& re
     }
     return {};
 }
+QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::Color selectedSide) {
+    QStringList text;
+    text << QObject::tr("Game summary · accuracy model %1 · expected-score evidence")
+                .arg(review::accuracyModelVersion);
+    text << QObject::tr("Recorded result: %1").arg(overview.result);
+    for (std::size_t index = 0; index < 2; ++index) {
+        const auto& side = overview.sides[index];
+        text << QObject::tr("%1%2: accuracy %3 · evaluated %4/%5 · stable %6/%5")
+                    .arg(index == 0 ? QObject::tr("White") : QObject::tr("Black"))
+                    .arg(index == static_cast<std::size_t>(selectedSide)
+                             ? QObject::tr(" (selected player)")
+                             : QString{})
+                    .arg(side.accuracy ? QString::number(*side.accuracy, 'f', 0) + QLatin1Char('%')
+                                       : QObject::tr("unavailable"))
+                    .arg(side.evaluated)
+                    .arg(side.total)
+                    .arg(side.stable);
+        QStringList counts;
+        for (std::size_t label = 0; label < side.counts.size(); ++label) {
+            review::ClassificationResult classification;
+            classification.label = static_cast<review::Classification>(label);
+            counts << QObject::tr("%1: %2")
+                          .arg(classificationText(classification))
+                          .arg(side.counts[label]);
+        }
+        text << counts.join(QStringLiteral(" · "));
+        text << QObject::tr("Withheld: %1 · unprocessed: %2%3")
+                    .arg(side.withheld)
+                    .arg(side.unprocessed)
+                    .arg(side.stable < side.total ? QObject::tr(" · provisional summary")
+                                                  : QString{});
+    }
+    text << QObject::tr("%1 chronological key moments for the selected player.")
+                .arg(overview.totalKeyMoments);
+    if (overview.largestLoss) {
+        text << QObject::tr("Largest measured loss: %1 percentage points at position %2.")
+                    .arg(*overview.largestLoss * 100, 0, 'f', 1)
+                    .arg(*overview.largestLossPosition);
+    }
+    text << QObject::tr("Accuracy summarizes the available move-quality evidence; it is not a "
+                        "measure of playing strength. Missing evidence is excluded.");
+    return text.join(QLatin1Char('\n'));
+}
 QString reviewMoveDetails(const persistence::ReviewMove& move) {
     QStringList text;
     text << QObject::tr("%1%2 %3 — %4")
@@ -125,8 +168,50 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
         return text.join(QLatin1Char('\n'));
     }
     const auto& r = *move.classification;
-    text << QObject::tr(
-        "Provisional — targeted deepening and stability checks are not available yet.");
+    text << (r.stable ? QObject::tr("Stable — two stronger passes agree.")
+                      : QObject::tr("Provisional — stability has not been established."));
+    switch (move.stability.reason) {
+    case review::StabilityReason::Unselected:
+        text << QObject::tr("Not selected for targeted refinement.");
+        break;
+    case review::StabilityReason::Pending:
+        text << QObject::tr("Stronger evidence is pending.");
+        break;
+    case review::StabilityReason::Insufficient:
+        text << QObject::tr("Stronger evidence does not meet stability requirements.");
+        break;
+    case review::StabilityReason::Disagreement:
+        text << QObject::tr("Stronger passes disagree on the label or best move.");
+        break;
+    case review::StabilityReason::ScoreDrift:
+        text << QObject::tr("Expected scores changed beyond the permitted drift.");
+        break;
+    case review::StabilityReason::Confirmed:
+        break;
+    }
+    text << QObject::tr("Evidence stage: %1; stability model: %2")
+                .arg(static_cast<int>(move.stage))
+                .arg(move.stability.modelVersion);
+    for (std::size_t i = 0; i < move.stabilityEvidenceIds.size(); ++i) {
+        if (move.stabilityEvidenceIds[i] > 0) {
+            const auto& strength = move.stabilityStrength[i];
+            text << QObject::tr("Stability proof %1: evidence %2 · nodes %3 · depth %4")
+                        .arg(static_cast<qulonglong>(i + 1))
+                        .arg(move.stabilityEvidenceIds[i])
+                        .arg(strength.nodes ? QString::number(*strength.nodes)
+                                            : QObject::tr("terminal"))
+                        .arg(strength.depth ? QString::number(*strength.depth)
+                                            : QObject::tr("terminal"));
+        }
+    }
+    if (move.stability.persistentMate) {
+        text << QObject::tr("Both stronger passes report a mate for the same side. Numeric "
+                            "interpretation remains withheld.");
+    }
+    if (move.contextPosition) {
+        text << QObject::tr("Opponent error context: preceding position %1.")
+                    .arg(*move.contextPosition);
+    }
     if (r.issue == review::ClassificationIssue::BestMoveConflict) {
         text << QObject::tr(
             "The earlier search ranked this move first, but the later search crosses an error "

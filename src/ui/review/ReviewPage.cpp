@@ -51,6 +51,8 @@ QString phaseText(app::ReviewPhase phase) {
         return QObject::tr("Checking saved evidence…");
     case app::ReviewPhase::Scanning:
         return QObject::tr("Quick scanning… (may wait for manual analysis)");
+    case app::ReviewPhase::Refining:
+        return QObject::tr("Refining selected moments… (may wait for manual analysis)");
     case app::ReviewPhase::Saving:
         return QObject::tr("Saving evidence…");
     case app::ReviewPhase::Finished:
@@ -144,8 +146,12 @@ class ReviewMovesModel final : public QAbstractTableModel {
                 (row.mover == chess::Color::White ? QStringLiteral(".") : QStringLiteral("...")),
             sideText(row.mover), row.san,
             app::classificationText(row.classification) +
-                (row.classification && row.classification->label ? tr(" (provisional)")
-                                                                 : QString{})}
+                (row.classification && row.classification->label
+                     ? (row.classification->stable ? tr(" (stable)") : tr(" (provisional)"))
+                     : QString{}) +
+                (row.contextPosition
+                     ? tr(" · after opponent error at position %1").arg(*row.contextPosition)
+                     : QString{})}
             .at(index.column());
     }
     void reload(const std::optional<persistence::ReviewMovePage>& page) {
@@ -188,10 +194,11 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     game_->setTextFormat(Qt::PlainText);
     game_->setWordWrap(true);
     layout->addWidget(game_);
-    auto* scope =
-        new QLabel(tr("Move classifications are provisional and depend on sufficient saved "
-                      "evidence. Accuracy and guided explanations are not available yet."),
-                   this);
+    auto* scope = new QLabel(
+        tr("Review becomes readable after the quick scan while selected moments are refined. "
+           "The Summary tab shows accuracy with coverage; move details distinguish stable and "
+           "provisional results."),
+        this);
     scope->setWordWrap(true);
     layout->addWidget(scope);
     auto* form = new QFormLayout;
@@ -220,7 +227,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     auto* actions = new QHBoxLayout;
     start_ = new QPushButton(tr("Run Review"), this);
     start_->setObjectName(QStringLiteral("runReview"));
-    cancel_ = new QPushButton(tr("Cancel scan"), this);
+    cancel_ = new QPushButton(tr("Cancel review"), this);
     cancel_->setObjectName(QStringLiteral("cancelReview"));
     actions->addWidget(start_);
     actions->addWidget(cancel_);
@@ -248,8 +255,62 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     auto* movesLayout = new QVBoxLayout(movesTab);
     auto* historyTab = new QWidget(tabs);
     auto* historyLayout = new QVBoxLayout(historyTab);
+    auto* summaryTab = new QWidget(this);
+    auto* summaryLayout = new QVBoxLayout(summaryTab);
+    summary_ = new QPlainTextEdit(this);
+    summary_->setObjectName(QStringLiteral("reviewSummary"));
+    summary_->setAccessibleName(tr("Game accuracy, coverage and factual summary"));
+    summary_->setReadOnly(true);
+    summaryLayout->addWidget(summary_, 1);
+    moments_ = new QTableView(this);
+    moments_->setObjectName(QStringLiteral("reviewKeyMoments"));
+    moments_->setAccessibleName(tr("Chronological key moments"));
+    momentsModel_ = new ReviewMovesModel(this);
+    moments_->setModel(momentsModel_);
+    moments_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    moments_->setSelectionMode(QAbstractItemView::SingleSelection);
+    moments_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    moments_->horizontalHeader()->setStretchLastSection(true);
+    summaryLayout->addWidget(moments_, 1);
+    auto* summaryActions = new QHBoxLayout;
+    previousMoments_ = new QPushButton(tr("Previous moments"), this);
+    nextMoments_ = new QPushButton(tr("Next moments"), this);
+    refreshSummary_ = new QPushButton(tr("Refresh summary"), this);
+    summaryActions->addWidget(previousMoments_);
+    summaryActions->addWidget(nextMoments_);
+    summaryActions->addWidget(refreshSummary_);
+    summaryLayout->addLayout(summaryActions);
+    tabs->addTab(summaryTab, tr("&Summary"));
+    connect(refreshSummary_, &QPushButton::clicked, this,
+            [this] { controller_.refreshOverview(); });
+    connect(previousMoments_, &QPushButton::clicked, this, [this] {
+        const auto& overview = controller_.state().overview;
+        if (overview) {
+            controller_.refreshOverview(overview->keyOffset - 50);
+        }
+    });
+    connect(nextMoments_, &QPushButton::clicked, this, [this] {
+        const auto& overview = controller_.state().overview;
+        if (overview) {
+            controller_.refreshOverview(overview->keyOffset + 50);
+        }
+    });
+    const auto openMoment = [this, tabs, movesTab](const QModelIndex& index) {
+        const auto& overview = controller_.state().overview;
+        if (!overview || !index.isValid() ||
+            index.row() >= static_cast<int>(overview->keyMoments.size())) {
+            return;
+        }
+        controller_.selectMoment(
+            overview->keyMoments[static_cast<std::size_t>(index.row())].positionIndex);
+        tabs->setCurrentWidget(movesTab);
+        moves_->setFocus();
+    };
+    connect(moments_, &QTableView::activated, this, openMoment);
+    connect(moments_, &QTableView::clicked, this, openMoment);
     tabs->addTab(movesTab, tr("&Moves"));
     tabs->addTab(historyTab, tr("Saved &runs"));
+    tabs->setCurrentWidget(movesTab);
     layout->addWidget(tabs, 1);
     auto* historyHeading = new QLabel(
         tr("Select a saved run to inspect its moves or resume its original settings."), historyTab);
@@ -393,7 +454,7 @@ void ReviewPage::update() {
             engine_->setCurrentIndex(index);
         }
     }
-    game_->setText(tr("Quick review: %1").arg(state.game));
+    game_->setText(tr("Game review: %1").arg(state.game));
     const auto blocker = controller_.startBlocker(engine_->currentData().toLongLong());
     reason_->setText(blocker.isEmpty() && side_->currentIndex() == 0
                          ? tr("Choose the player whose perspective this run will retain.")
@@ -422,6 +483,13 @@ void ReviewPage::update() {
     status_->setText(status);
     progress_->setRange(0, state.run ? state.run->totalPositions : 1);
     progress_->setValue(state.run ? state.run->completedPositions : 0);
+    if (state.active && state.refinementTotal > 0) {
+        progress_->setRange(0, state.refinementTotal);
+        progress_->setValue(state.refinementDone);
+        progress_->setFormat(tr("Refinement: %v of %m positions"));
+    } else {
+        progress_->setFormat(QStringLiteral("%p%"));
+    }
     error_->setText(state.error +
                     (state.notice.isEmpty() ? QString{} : QLatin1Char('\n') + state.notice));
     runs_->setEnabled(!state.active);
@@ -431,6 +499,31 @@ void ReviewPage::update() {
                         selected->status >= review::JobStatus::Partial);
     previous_->setEnabled(!state.listing && state.page > 0);
     next_->setEnabled(!state.listing && state.hasNext);
+    refreshSummary_->setEnabled(state.run && !state.busy);
+    previousMoments_->setEnabled(state.overview && state.overview->keyOffset > 0 && !state.busy);
+    nextMoments_->setEnabled(state.overview &&
+                             state.overview->keyOffset + 50 < state.overview->totalKeyMoments &&
+                             !state.busy);
+    QString summaryText = state.overviewError;
+    if (state.overview && state.run) {
+        summaryText += app::reviewOverviewText(*state.overview, state.run->selectedSide);
+        if (state.run && state.overview->revision != state.run->revision) {
+            summaryText.prepend(tr("Updating evidence; summary reflects an earlier checkpoint.\n"));
+        }
+        persistence::ReviewMovePage page;
+        page.reviewId = state.overview->reviewId;
+        page.revision = state.overview->revision;
+        page.offset = state.overview->keyOffset;
+        page.moves = state.overview->keyMoments;
+        momentsModel_->reload(page);
+    } else {
+        summaryText += tr(
+            "Summary is available after evidence is saved. Refresh to inspect partial coverage.");
+        momentsModel_->reload(std::nullopt);
+    }
+    if (summary_->toPlainText() != summaryText) {
+        summary_->setPlainText(summaryText);
+    }
     const auto& moveState = controller_.moves().state();
     const QSignalBlocker moveSelection(moves_->selectionModel());
     movesModel_->reload(moveState.page);

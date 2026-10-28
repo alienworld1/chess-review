@@ -42,6 +42,12 @@ class ReviewPage final : public QWidget {
     QTableView* moves_;
     ReviewMovesModel* movesModel_;
     QPlainTextEdit* details_;
+    QPlainTextEdit* summary_;
+    QTableView* moments_;
+    ReviewMovesModel* momentsModel_;
+    QPushButton* previousMoments_;
+    QPushButton* nextMoments_;
+    QPushButton* refreshSummary_;
     QLabel* moveStatus_;
     QPushButton* previousMoves_;
     QPushButton* nextMoves_;

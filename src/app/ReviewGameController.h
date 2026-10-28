@@ -22,6 +22,7 @@ enum class ReviewPhase {
     Preparing,
     LookingUp,
     Scanning,
+    Refining,
     Saving,
     Finished
 };
@@ -35,6 +36,10 @@ struct ReviewGameState {
     QString notice;
     std::optional<persistence::ReviewSummary> run;
     std::vector<persistence::ReviewSummary> runs;
+    std::optional<persistence::ReviewOverview> overview;
+    QString overviewError;
+    int refinementDone = 0;
+    int refinementTotal = 0;
     std::int64_t page = 0;
     bool hasNext = false;
     bool listing = false;
@@ -64,6 +69,8 @@ class ReviewGameController final : public QObject {
     QString startBlocker(std::int64_t profileId) const;
     void start(chess::Color side, std::int64_t profileId, review::Quality quality);
     void resume(review::ReviewId id);
+    void refreshOverview(int keyOffset = 0);
+    void selectMoment(int positionIndex);
     void cancel();
     void close();
   signals:
@@ -83,6 +90,8 @@ class ReviewGameController final : public QObject {
     void positionReady(std::shared_ptr<const chess::Position> position, bool terminal,
                        engine::CacheQuery query);
     void advance();
+    void advancePosition();
+    std::uint64_t nodeBudget() const;
     void search();
     void save(std::optional<engine::AnalysisResult> evidence = std::nullopt, bool terminal = false);
     void checkpoint(review::JobStatus status, review::JobFailure failure = review::JobFailure::None,
@@ -103,6 +112,15 @@ class ReviewGameController final : public QObject {
     std::optional<persistence::StoredReview> stored_;
     config::ValidatedConfiguration runConfiguration_;
     engine::EngineFingerprint fingerprint_;
+    engine::EngineFingerprint searchFingerprint_;
+    review::EvidenceStage stage_ = review::EvidenceStage::Quick;
+    std::vector<int> refinementPositions_;
+    std::size_t refinementIndex_ = 0;
+    bool refinementEnabled_ = true;
+    bool planned_ = false;
+    bool statusWrite_ = false;
+    bool planning_ = false;
+    int searchWidth_ = 1;
     QThreadPool worker_;
     std::unique_ptr<Cursor> cursor_;
     std::stop_source stop_;

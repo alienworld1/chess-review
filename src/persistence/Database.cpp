@@ -605,7 +605,39 @@ void Database::deriveReviewMoves(RequestId requestId, ReviewId id, std::int64_t 
         },
         Qt::QueuedConnection);
 }
-void Database::loadReviewEvidence(RequestId requestId, ReviewId id, int positionIndex) {
+void Database::loadReviewOverview(RequestId requestId, ReviewId id, std::int64_t expectedRevision,
+                                  int keyOffset) {
+    if (auto error = acceptRequest()) {
+        const auto code =
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable);
+        const ReviewError failure{
+            code, QStringLiteral("Review storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(
+            0, this, [this, requestId, failure] { emit reviewOverviewLoaded(requestId, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, requestId, id, expectedRevision, keyOffset] {
+            const auto result = impl_->worker->executeReview<LoadReviewOverviewResult>(
+                [&](detail::StorageSession& session) {
+                    return session.loadReviewOverview(id, expectedRevision, keyOffset);
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, requestId, result] {
+                    --impl_->pending;
+                    emit reviewOverviewLoaded(requestId, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::loadReviewEvidence(RequestId requestId, ReviewId id, int positionIndex,
+                                  review::EvidenceStage stage) {
     if (auto error = acceptRequest()) {
         const auto code =
             error->code == GameErrorCode::Busy
@@ -620,10 +652,10 @@ void Database::loadReviewEvidence(RequestId requestId, ReviewId id, int position
     }
     QMetaObject::invokeMethod(
         impl_->worker,
-        [this, requestId, id, positionIndex] {
+        [this, requestId, id, positionIndex, stage] {
             const auto result = impl_->worker->executeReview<LoadReviewEvidenceResult>(
                 [&](detail::StorageSession& session) {
-                    return session.loadReviewEvidence(id, positionIndex);
+                    return session.loadReviewEvidence(id, positionIndex, stage);
                 });
             QMetaObject::invokeMethod(
                 this,

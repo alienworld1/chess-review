@@ -23,6 +23,7 @@
 #include <QSignalSpy>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QTabWidget>
 #include <QTableView>
 #include <QTemporaryDir>
 #include <QTest>
@@ -66,7 +67,7 @@ class Fixture {
             qFatal("Quick review did not close");
         }
     }
-    bool seed(const std::string& text = "1. e4 e5 *") {
+    bool seed(const std::string& text = "1. e4 e5 *", bool multiPv = false) {
         if (!QTest::qWaitFor([this] {
                 return startup.state() == app::Lifecycle::Ready &&
                        startup.engines().state().ready && !startup.engines().state().listing;
@@ -94,8 +95,12 @@ class Fixture {
         auto& supervisor = this->supervisor();
         engine::ValidatorTestAccess::configure(
             supervisor,
-            engine_test::scenario(directory.filePath(QStringLiteral("validate.json")),
-                                  engine_test::handshake()),
+            engine_test::scenario(
+                directory.filePath(QStringLiteral("validate.json")),
+                engine_test::handshake(
+                    multiPv ? QStringLiteral("id name Test engine\nid author Tests\noption name "
+                                             "MultiPV type spin default 1 min 1 max 3\nuciok\n")
+                            : QStringLiteral("id name Test engine\nid author Tests\nuciok\n"))),
             1000);
         QSignalSpy validated(&supervisor, &engine::EngineSupervisor::completed);
         supervisor.validate(QUuid::createUuid(), QString::fromUtf8(FAKE_UCI_ENGINE));
@@ -128,51 +133,90 @@ class Fixture {
     }
     void script(int first = 0, int end = -1, int delay = 0, bool weak = false, bool crash = false,
                 const QString& score = QStringLiteral("cp 25"),
-                const QString& identity = QStringLiteral("Test engine"), int quitDelay = 0) {
+                const QString& identity = QStringLiteral("Test engine"), int quitDelay = 0,
+                bool multiPv = false, const QString& refinedScore = {}, int deepFirst = 0,
+                int verifyFirst = 0) {
         QJsonArray steps{
             engine_test::step(
                 QStringLiteral("uci"),
                 {engine_test::write(
-                    QStringLiteral("id name %1\nid author Tests\nuciok\n").arg(identity))}),
+                    QStringLiteral("id name %1\nid author Tests\n%2uciok\n")
+                        .arg(identity,
+                             multiPv ? QStringLiteral(
+                                           "option name MultiPV type spin default 1 min 1 max 3\n")
+                                     : QString{}))}),
             ready()};
+        engine::Capabilities capabilities;
+        if (multiPv) {
+            capabilities.supportsMultiPv = true;
+            capabilities.options.push_back({QStringLiteral("MultiPV"),
+                                            engine::OptionType::Spin,
+                                            QStringLiteral("1"),
+                                            1,
+                                            3,
+                                            {}});
+        }
         auto position = std::get<chess::Position>(document->tree.position(document->tree.rootId()));
         const auto moves = document->originalMainline();
         const int total = static_cast<int>(moves.size()) + 1;
-        for (int index = 0; index < total; ++index) {
-            if (index >= first && (end < 0 || index < end) && !position.legalMoves().empty()) {
-                engine::AnalysisRequest request;
-                request.id = QUuid::createUuid();
-                request.position = position;
-                request.wantWdl = true;
-                request.limit = engine::NodeLimit{100000};
-                const auto prepared =
-                    std::get<engine::PreparedSearch>(engine::prepareSearch(request, {}));
-                const auto best =
-                    std::get<std::string>(position.uci(position.legalMoves().front()));
-                steps.append(engine_test::step(QStringLiteral("ucinewgame"), {}));
-                steps.append(ready());
-                steps.append(engine_test::step(QString::fromUtf8(prepared.position).trimmed(), {}));
-                if (crash) {
-                    steps.append(engine_test::step(
-                        QStringLiteral("go nodes 100000"),
-                        {QJsonObject{{QStringLiteral("type"), QStringLiteral("crash")}}}));
-                } else {
-                    const auto output =
-                        score.isEmpty()
-                            ? QStringLiteral("bestmove %1\n").arg(QString::fromStdString(best))
-                            : QStringLiteral(
-                                  "info depth 7 nodes %1 score %4%2 pv %3\nbestmove %3\n")
-                                  .arg(weak ? 1 : 100000)
-                                  .arg(weak ? QStringLiteral(" lowerbound") : QString{})
-                                  .arg(QString::fromStdString(best))
-                                  .arg(score);
-                    steps.append(engine_test::step(QStringLiteral("go nodes 100000"),
-                                                   {engine_test::write(output, delay)}));
+        const int stages = end < 0 && !weak && !score.isEmpty() && total > 1 ? 3 : 1;
+        for (int stage = 0; stage < stages; ++stage) {
+            const std::uint64_t budget = stage == 0 ? 100000 : stage == 1 ? 1000000 : 5000000;
+            position = std::get<chess::Position>(document->tree.position(document->tree.rootId()));
+            for (int index = 0; index < total; ++index) {
+                if ((stage == 0 ? (index >= first && (end < 0 || index < end))
+                                : index >= (stage == 1 ? deepFirst : verifyFirst)) &&
+                    !position.legalMoves().empty()) {
+                    engine::AnalysisRequest request;
+                    request.id = QUuid::createUuid();
+                    request.position = position;
+                    request.wantWdl = true;
+                    request.limit = engine::NodeLimit{budget};
+                    request.multiPv = multiPv && stage > 0 ? 3 : 1;
+                    const auto prepared = std::get<engine::PreparedSearch>(
+                        engine::prepareSearch(request, capabilities));
+                    const auto best =
+                        std::get<std::string>(position.uci(position.legalMoves().front()));
+                    for (const auto& command : prepared.options.split('\n')) {
+                        if (!command.isEmpty()) {
+                            steps.append(engine_test::step(QString::fromUtf8(command), {}));
+                        }
+                    }
+                    steps.append(engine_test::step(QStringLiteral("ucinewgame"), {}));
                     steps.append(ready());
+                    steps.append(
+                        engine_test::step(QString::fromUtf8(prepared.position).trimmed(), {}));
+                    if (crash) {
+                        steps.append(engine_test::step(
+                            QStringLiteral("go nodes %1").arg(budget),
+                            {QJsonObject{{QStringLiteral("type"), QStringLiteral("crash")}}}));
+                    } else {
+                        QString output;
+                        const auto evaluation =
+                            stage > 0 && !refinedScore.isEmpty() ? refinedScore : score;
+                        const auto legal = position.legalMoves();
+                        if (!evaluation.isEmpty()) {
+                            for (int rank = 1; rank <= prepared.effectiveMultiPv; ++rank) {
+                                const auto root = std::get<std::string>(
+                                    position.uci(legal[static_cast<std::size_t>(rank - 1)]));
+                                output += QStringLiteral(
+                                              "info depth 7 nodes %1 multipv %2 score %3%4 pv %5\n")
+                                              .arg(weak ? 1 : budget)
+                                              .arg(rank)
+                                              .arg(evaluation)
+                                              .arg(weak ? QStringLiteral(" lowerbound") : QString{})
+                                              .arg(QString::fromStdString(root));
+                            }
+                        }
+                        output += QStringLiteral("bestmove %1\n").arg(QString::fromStdString(best));
+                        steps.append(engine_test::step(QStringLiteral("go nodes %1").arg(budget),
+                                                       {engine_test::write(output, delay)}));
+                        steps.append(ready());
+                    }
                 }
-            }
-            if (index < static_cast<int>(moves.size())) {
-                (void)position.play(moves[static_cast<std::size_t>(index)]);
+                if (index < static_cast<int>(moves.size())) {
+                    (void)position.play(moves[static_cast<std::size_t>(index)]);
+                }
             }
         }
         steps.append(engine_test::step(
@@ -186,12 +230,12 @@ class Fixture {
     void run(review::Quality quality = review::Quality::Standard) {
         startup.reviewGame().start(chess::Color::Black, profileId, quality);
     }
-    bool done() {
+    bool done(int timeout = 12000) {
         return QTest::qWaitFor(
             [this] {
                 return !startup.reviewGame().state().active && !startup.reviewGame().state().busy;
             },
-            12000);
+            timeout);
     }
     bool sql(const QString& statement) {
         const auto connection = QUuid::createUuid().toString();
@@ -254,7 +298,7 @@ class QuickReviewTest final : public QObject {
         QVERIFY(f.seed(text + "*"));
         f.script(0, -1, 0, false, false, QStringLiteral("cp 0"));
         f.run();
-        QVERIFY(f.done());
+        QVERIFY(f.done(40000));
         auto& owner = f.startup.reviewGame();
         owner.moves().close();
         QTRY_VERIFY(owner.moves().drained());
@@ -453,6 +497,97 @@ class QuickReviewTest final : public QObject {
         QCoreApplication::sendEvent(quality, &wheel);
         QCOMPARE(quality->currentIndex(), selected);
     }
+    void refinementComparesAlternativesAndUpdatesSummary() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true, QStringLiteral("cp 0"));
+        f.run();
+        QVERIFY(f.done());
+        auto& controller = f.startup.reviewGame();
+        QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
+        QCOMPARE(controller.state().run->status, review::JobStatus::Complete);
+        QTRY_VERIFY(controller.state().overview &&
+                    controller.state().overview->revision == controller.state().run->revision);
+        QCOMPARE(controller.state().overview->sides[0].accuracy, std::optional<double>(100));
+        QCOMPARE(controller.state().overview->sides[1].stable, 1);
+        QCOMPARE(controller.state().overview->totalKeyMoments, 0);
+        QTRY_VERIFY(controller.moves().state().page && !controller.moves().state().loading);
+        const auto& move = controller.moves().state().page->moves.front();
+        QVERIFY(move.classification->stable);
+        QCOMPARE(move.classification->alternatives.size(), std::size_t(2));
+        QVERIFY(f.sql(QStringLiteral("DELETE FROM analysis_results")));
+        f.startup.engines().disconnectEngine();
+        QTRY_COMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnected);
+        controller.refreshOverview();
+        QTRY_VERIFY(!controller.state().busy);
+        QVERIFY(controller.state().overviewError.isEmpty());
+        QCOMPARE(controller.state().overview->sides[1].accuracy, std::optional<double>(100));
+    }
+    void refinementCancellationResumesOnlyMissingPositions() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        QFile runtime(f.directory.filePath(QStringLiteral("runtime.json")));
+        QVERIFY(runtime.open(QIODevice::ReadOnly));
+        auto script = QJsonDocument::fromJson(runtime.readAll()).object()["steps"].toArray();
+        runtime.close();
+        int searches = 0;
+        int keep = 0;
+        for (int i = 0; i < script.size(); ++i) {
+            if (script[i].toObject()["expect"].toString().startsWith(QStringLiteral("go nodes")) &&
+                ++searches == 4) {
+                keep = i + 2;
+                break;
+            }
+        }
+        QVERIFY(keep > 0);
+        while (script.size() > keep) {
+            script.removeLast();
+        }
+        script.append(quit());
+        engine_test::scenario(runtime.fileName(), script);
+        auto& controller = f.startup.reviewGame();
+        const auto cancel =
+            connect(&controller, &app::ReviewGameController::changed, &controller, [&] {
+                if (controller.state().active && controller.state().refinementDone == 1) {
+                    controller.cancel();
+                }
+            });
+        f.run();
+        QVERIFY(f.done());
+        disconnect(cancel);
+        QCOMPARE(controller.state().run->status, review::JobStatus::Cancelled);
+        const auto runId = controller.state().run->id;
+        f.startup.engines().disconnectEngine();
+        QTRY_COMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnected);
+        f.script(3, -1, 0, false, false, QStringLiteral("cp 25"), QStringLiteral("Test engine"), 0,
+                 false, {}, 1);
+        controller.resume(runId);
+        QVERIFY(f.done());
+        QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
+        QCOMPARE(controller.state().run->status, review::JobStatus::Complete);
+        QTRY_VERIFY(controller.state().overview &&
+                    controller.state().overview->revision == controller.state().run->revision);
+        QCOMPARE(controller.state().overview->deepenedPositions, 3);
+        QCOMPARE(controller.state().overview->verifiedPositions, 3);
+    }
+    void chronologicalMomentsAttachOpponentContext() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"));
+        f.run();
+        QVERIFY(f.done());
+        const auto& state = f.startup.reviewGame().state();
+        QVERIFY2(state.error.isEmpty(), qPrintable(state.error));
+        QTRY_VERIFY(state.overview && state.overview->revision == state.run->revision);
+        QCOMPARE(state.overview->totalKeyMoments, 1);
+        QCOMPARE(state.overview->keyMoments.front().positionIndex, 2);
+        QCOMPARE(state.overview->keyMoments.front().contextPosition, std::optional<int>(1));
+        f.startup.reviewGame().selectMoment(2);
+        QTRY_VERIFY(!f.startup.reviewGame().moves().state().loading);
+        QCOMPARE(f.startup.reviewGame().moves().state().selectedPosition, 2);
+    }
     void wholeGame_data() {
         QTest::addColumn<QString>("pgn");
         QTest::addColumn<int>("positions");
@@ -530,7 +665,7 @@ class QuickReviewTest final : public QObject {
         QCOMPARE(controller.moves().state().page->moves.front().classification->label, label);
         QVERIFY(!controller.moves().state().page->moves.back().classification);
     }
-    void moveInspectionShowsProvisionalEvidenceAndKeyboardSelection() {
+    void moveInspectionShowsVerifiedEvidenceAndKeyboardSelection() {
         Fixture f;
         QVERIFY(f.seed());
         f.script(0, -1, 0, false, false, QStringLiteral("cp 0"));
@@ -546,7 +681,7 @@ class QuickReviewTest final : public QObject {
         QCOMPARE(page.moves.size(), std::size_t(2));
         QVERIFY(page.moves[0].classification);
         QVERIFY(page.moves[0].classification->label);
-        QVERIFY(!page.moves[0].classification->stable);
+        QVERIFY(page.moves[0].classification->stable);
         auto* table = f.window.findChild<QTableView*>(QStringLiteral("reviewMoves"));
         auto* details = f.window.findChild<QPlainTextEdit*>(QStringLiteral("reviewMoveDetails"));
         QVERIFY(table);
@@ -637,6 +772,12 @@ class QuickReviewTest final : public QObject {
         f.run();
         QVERIFY(f.done());
         QVERIFY(f.startup.reviewGame().state().run->id != first.id);
+        auto& controller = f.startup.reviewGame();
+        controller.refreshOverview();
+        controller.inspect(first.id);
+        QTRY_VERIFY(controller.state().run && controller.state().run->id == first.id &&
+                    !controller.state().busy);
+        QVERIFY(controller.state().overviewError.isEmpty());
     }
     void cancelledPreparationAndSecondRunRejected() {
         Fixture f;
@@ -736,9 +877,9 @@ class QuickReviewTest final : public QObject {
         QElapsedTimer elapsed;
         elapsed.start();
         f.run();
-        QVERIFY(f.done());
+        QVERIFY(f.done(90000));
         heartbeat.stop();
-        qInfo("81-position scan: %lld ms; %lld cache lookups; %lld move pages",
+        qInfo("81-position adaptive review: %lld ms; %lld cache lookups; %lld move pages",
               static_cast<long long>(elapsed.elapsed()), static_cast<long long>(lookups.size()),
               static_cast<long long>(pages.size()));
         QVERIFY2(f.startup.reviewGame().state().error.isEmpty(),
@@ -980,7 +1121,7 @@ class QuickReviewTest final : public QObject {
         f.startup.reviewGame().selectGame(f.gameId);
         QTRY_VERIFY(!f.startup.reviewGame().state().busy);
         f.run();
-        QVERIFY(f.done());
+        QVERIFY(f.done(90000));
         QVERIFY2(f.startup.reviewGame().state().error.isEmpty(),
                  qPrintable(f.startup.reviewGame().state().error));
         const auto first = *f.startup.reviewGame().state().run;
@@ -1011,11 +1152,22 @@ class QuickReviewTest final : public QObject {
         QVERIFY(compatibleHits > 0);
         QSignalSpy finished(&f.supervisor(), &engine::EngineSupervisor::scheduledFinished);
         f.run();
-        QVERIFY(f.done());
+        QVERIFY(f.done(90000));
         QVERIFY2(f.startup.reviewGame().state().error.isEmpty(),
                  qPrintable(f.startup.reviewGame().state().error));
         QCOMPARE(f.startup.reviewGame().state().run->status, review::JobStatus::Complete);
-        QCOMPARE(finished.size(), first.totalPositions - compatibleHits);
+        int quickSearches = 0;
+        for (const auto& event : finished) {
+            const auto result = qvariant_cast<engine::ScheduledResult>(event.front());
+            if (result.evidence) {
+                const auto* nodes =
+                    std::get_if<engine::NodeLimit>(&result.evidence->evidence.limit);
+                if (nodes && nodes->nodes == 100000) {
+                    ++quickSearches;
+                }
+            }
+        }
+        QCOMPARE(quickSearches, first.totalPositions - compatibleHits);
         QVERIFY(f.sql(QStringLiteral("DELETE FROM analysis_results")));
         QSignalSpy loaded(&f.startup.gameRepository(),
                           &persistence::Database::reviewEvidenceLoaded);
@@ -1060,6 +1212,12 @@ class QuickReviewTest final : public QObject {
         QVERIFY(QTest::qWaitFor(
             [&] { return f.startup.reviewGame().moves().state().page.has_value(); }));
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-light.png")));
+        auto* tabs = f.window.findChild<QTabWidget*>(QStringLiteral("reviewResultsTabs"));
+        QVERIFY(tabs);
+        tabs->setCurrentIndex(0);
+        QCoreApplication::processEvents();
+        QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-summary-light.png")));
+        tabs->setCurrentIndex(1);
         auto palette = qApp->palette();
         palette.setColor(QPalette::Window, QColor(QStringLiteral("#202732")));
         palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#e5eaf0")));
@@ -1071,6 +1229,10 @@ class QuickReviewTest final : public QObject {
         f.window.resize(1360, 850);
         QTest::qWait(30);
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-dark.png")));
+        tabs->setCurrentIndex(0);
+        QCoreApplication::processEvents();
+        QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-summary-dark.png")));
+        tabs->setCurrentIndex(1);
         auto font = f.window.font();
         font.setPointSize(font.pointSize() + 5);
         f.window.setFont(font);

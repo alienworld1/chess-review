@@ -88,3 +88,5 @@ libraries separate. Automated tests use temporary storage.
 
 Advanced product settings and the review evidence model are documented in
 [Review evidence and configuration](docs/review-evidence.md).
+
+Review methodology: [refinement, stability and summaries](docs/review-summaries.md).
