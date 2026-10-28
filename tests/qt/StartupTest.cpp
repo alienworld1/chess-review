@@ -66,6 +66,7 @@ class StartupTest final : public QObject {
     void initializesAndCloses();
     void failureShowsDiagnostic();
     void closeDuringStartup();
+    void lateStorageNotificationsCannotReopenShutdown();
     void quitDuringStartup();
     void resolvedPathsInitializeLazily();
     void unusableDataDirectoryFails();
@@ -478,6 +479,21 @@ void StartupTest::failureShowsDiagnostic() {
     QVERIFY(diagnostic->isReadOnly());
     window.close();
     QTRY_COMPARE(finished.count(), 1);
+}
+
+void StartupTest::lateStorageNotificationsCannotReopenShutdown() {
+    QTemporaryDir directory;
+    StartupCoordinator startup;
+    startup.start(directory.filePath(QStringLiteral("library.sqlite3")));
+    startup.shutdown();
+    emit startup.gameRepository().ready(8);
+    QCOMPARE(startup.state(), chess_review::app::Lifecycle::Stopping);
+    emit startup.gameRepository().failed({});
+    QCOMPARE(startup.state(), chess_review::app::Lifecycle::Stopping);
+    QTRY_COMPARE(startup.state(), chess_review::app::Lifecycle::Stopped);
+    emit startup.gameRepository().ready(8);
+    emit startup.gameRepository().failed({});
+    QCOMPARE(startup.state(), chess_review::app::Lifecycle::Stopped);
 }
 
 void StartupTest::closeDuringStartup() {

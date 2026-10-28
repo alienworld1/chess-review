@@ -70,6 +70,7 @@ class MainWindow final : public QMainWindow {
     void fitToScreen();
     void watchScreen(QScreen* screen);
     app::NavigationController& navigation_;
+    int reviewSplit_ = 55;
     ReviewPage* reviewPage_ = nullptr;
     app::ReviewGameController* reviewController_ = nullptr;
     bool reviewLeaveAllowed_ = false;

@@ -2,6 +2,7 @@
 #include "app/EngineSettingsController.h"
 #include "app/ReviewConfiguration.h"
 #include "app/ReviewMovesController.h"
+#include "app/ReviewNavigationController.h"
 #include <QObject>
 #include <QString>
 #include <QThreadPool>
@@ -61,6 +62,7 @@ class ReviewGameController final : public QObject {
     const ReviewGameState& state() const { return state_; }
     const EngineSettingsState& engines() const { return settings_.state(); }
     ReviewMovesController& moves() { return moves_; }
+    ReviewNavigationController& navigation() { return navigation_; }
     review::Quality defaultQuality() const;
     void setReady(bool ready);
     void selectGame(persistence::GameId id);
@@ -108,6 +110,7 @@ class ReviewGameController final : public QObject {
     ReviewConfiguration& configuration_;
     ReviewGameState state_;
     ReviewMovesController moves_;
+    ReviewNavigationController navigation_;
     std::optional<persistence::StoredGame> game_;
     std::optional<persistence::StoredReview> stored_;
     config::ValidatedConfiguration runConfiguration_;

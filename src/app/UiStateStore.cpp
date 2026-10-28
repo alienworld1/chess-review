@@ -97,6 +97,13 @@ UiState readState(const QString& filename, std::optional<UiStateError>& error) {
     bool splitValid = false;
     state.board.analysisSplit =
         settings.value(QStringLiteral("analysis/v1/split"), 60).toInt(&splitValid);
+    bool reviewSplitValid = false;
+    state.reviewSplit =
+        settings.value(QStringLiteral("review/v1/split"), 55).toInt(&reviewSplitValid);
+    if (!reviewSplitValid || state.reviewSplit < 1 || state.reviewSplit > 99) {
+        error = UiStateError::Invalid;
+        state.reviewSplit = 55;
+    }
     state.board.blackAtBottom = orientation == QStringLiteral("true");
     state.board.inputMode =
         mode == QStringLiteral("click") ? BoardInputMode::Click : BoardInputMode::Drag;
@@ -134,8 +141,8 @@ UiState readState(const QString& filename, std::optional<UiStateError>& error) {
 }
 std::optional<UiStateError> writeState(const QString& filename, const UiState& state) {
     if (state.geometry.size() > 4096 || destinationId(state.destination).isEmpty() ||
-        !validFile(filename) || !validBoardPreferences(state.board) ||
-        (state.game && state.game->id <= 0)) {
+        !validFile(filename) || !validBoardPreferences(state.board) || state.reviewSplit < 1 ||
+        state.reviewSplit > 99 || (state.game && state.game->id <= 0)) {
         return UiStateError::Invalid;
     }
     if (!QDir().mkpath(QFileInfo(filename).absolutePath())) {
@@ -202,6 +209,7 @@ std::optional<UiStateError> writeState(const QString& filename, const UiState& s
         settings.setValue(QStringLiteral("board/v1/animation"), state.board.animation);
         settings.setValue(QStringLiteral("board/v1/blackAtBottom"), state.board.blackAtBottom);
         settings.setValue(QStringLiteral("analysis/v1/split"), state.board.analysisSplit);
+        settings.setValue(QStringLiteral("review/v1/split"), state.reviewSplit);
         settings.remove(QStringLiteral("workspace/v1"));
         if (state.game) {
             settings.setValue(QStringLiteral("workspace/v1/gameId"),

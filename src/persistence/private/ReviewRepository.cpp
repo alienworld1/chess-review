@@ -1415,6 +1415,10 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
                 positions.insert(move.positionIndex);
             }
             if (selection.selected) {
+                out.keyPositions.push_back(move.positionIndex);
+                if (selection.opponentContext) {
+                    out.opponentContexts.push_back(move.positionIndex);
+                }
                 if (keyMoments >= keyOffset && out.keyMoments.size() < 50) {
                     auto moment = move;
                     moment.contextPosition = selection.opponentContext;

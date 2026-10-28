@@ -4,6 +4,8 @@
 #include "app/StartupCoordinator.h"
 #include "engine/EffectiveSearch.h"
 #include "engine/private/SearchProtocol.h"
+#include "ui/chess/ChessBoardWidget.h"
+#include "ui/chess/MoveTimeline.h"
 #include "ui/shell/MainWindow.h"
 #include <QAction>
 #include <QApplication>
@@ -337,11 +339,18 @@ class QuickReviewTest final : public QObject {
         QVERIFY(f.done());
         auto& moves = f.startup.reviewGame().moves();
         QTRY_VERIFY(moves.state().page && !moves.state().loading);
+        auto& nav = f.startup.reviewGame().navigation();
+        QTRY_VERIFY(nav.ready());
+        nav.select(nav.target(1));
+        QTRY_COMPARE(nav.displayed(), 1);
+        QTRY_VERIFY(nav.evaluation().whiteExpected);
         QVERIFY(f.sql(QStringLiteral(
             "CREATE TABLE saved_classification_fixture AS SELECT * FROM review_classifications")));
         QVERIFY(f.sql(QStringLiteral("UPDATE review_classifications SET document=zeroblob(128)")));
         moves.retry();
         QTRY_VERIFY(!moves.state().error.isEmpty());
+        QVERIFY(!nav.move(1));
+        QVERIFY(!nav.evaluation().whiteExpected);
         auto* retry = f.window.findChild<QPushButton*>(QStringLiteral("retryReviewMoves"));
         QVERIFY(retry);
         QVERIFY(!retry->isHidden());
@@ -353,6 +362,7 @@ class QuickReviewTest final : public QObject {
         retry->click();
         QTRY_VERIFY(moves.state().page && !moves.state().loading && moves.state().error.isEmpty());
         QVERIFY(retry->isHidden());
+        QTRY_VERIFY(nav.evaluation().whiteExpected);
         QVERIFY(moves.state().page->moves.front().classification->label);
     }
     void fingerprintRejectsInvalidEngineValues() {
@@ -739,7 +749,8 @@ class QuickReviewTest final : public QObject {
         QVERIFY(table);
         QVERIFY(details);
         QCOMPARE(table->model()->rowCount(), 2);
-        QVERIFY(details->toPlainText().contains(QStringLiteral("Rule:")));
+        controller.selectMoment(1);
+        QTRY_VERIFY(details->toPlainText().contains(QStringLiteral("Rule:")));
         QVERIFY(details->toPlainText().contains(QStringLiteral("Evidence IDs:")));
         QVERIFY(details->toPlainText().contains(QStringLiteral("not assessed")));
         table->setCurrentIndex(table->model()->index(0, 0));
@@ -1246,6 +1257,57 @@ class QuickReviewTest final : public QObject {
         QCOMPARE(reopened.startup.engines().state().runtime.phase,
                  engine::RuntimePhase::Disconnected);
     }
+    void boardPreviewKeepsExplanationAndCommitIsExplicit() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        f.window.resize(1100, 720);
+        f.window.show();
+        auto& nav = f.startup.reviewGame().navigation();
+        QTRY_VERIFY(nav.ready());
+        nav.select(nav.target(1));
+        QTRY_COMPARE(nav.displayed(), 1);
+        QTRY_VERIFY(nav.move(1));
+        auto* headline = f.window.findChild<QLabel*>(QStringLiteral("reviewMomentHeadline"));
+        auto* board = f.window.findChild<ui::ChessBoardWidget*>(QStringLiteral("reviewBoard"));
+        auto* timeline = f.window.findChild<ui::MoveTimeline*>(QStringLiteral("reviewTimeline"));
+        QVERIFY(headline);
+        QVERIFY(board);
+        QVERIFY(timeline);
+        const auto selectedHeadline = headline->text();
+        const auto selectedBoard = board->state().pieces;
+        const auto blackMove = timeline->model()->index(1, 2);
+        QTest::mouseMove(timeline->viewport(), timeline->visualRect(blackMove).center());
+        QTRY_VERIFY(nav.previewing());
+        QTRY_COMPARE(nav.displayed(), 2);
+        QCOMPARE(nav.selected(), 1);
+        QCOMPARE(headline->text(), selectedHeadline);
+        QVERIFY(!board->state().interactive);
+        QVERIFY(nav.evaluation().whiteExpected);
+        f.startup.reviewGame().moves().retry();
+        QTRY_VERIFY(!f.startup.reviewGame().moves().state().loading);
+        QCOMPARE(nav.selected(), 1);
+        QCOMPARE(headline->text(), selectedHeadline);
+        QEvent leave(QEvent::Leave);
+        QApplication::sendEvent(timeline, &leave);
+        QTRY_COMPARE(nav.displayed(), 1);
+        QCOMPARE(board->state().pieces, selectedBoard);
+        QTest::mouseMove(timeline->viewport(),
+                         timeline->visualRect(blackMove).center() + QPoint(1, 0));
+        QTRY_VERIFY(nav.previewing());
+        QTest::mouseClick(timeline->viewport(), Qt::LeftButton, Qt::NoModifier,
+                          timeline->visualRect(blackMove).center());
+        QTRY_COMPARE(nav.selected(), 2);
+        QTRY_COMPARE(nav.displayed(), 2);
+        QVERIFY(!nav.previewing());
+        QVERIFY(headline->text().contains(QStringLiteral("e5")));
+        f.navigation.navigate(app::Destination::Home);
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        QCOMPARE(nav.selected(), 2);
+    }
     void renderWorkspace() {
         const auto directory = qEnvironmentVariable("CHESS_REVIEW_QUICK_RENDER_DIR");
         if (directory.isEmpty()) {
@@ -1266,6 +1328,11 @@ class QuickReviewTest final : public QObject {
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-light.png")));
         auto* tabs = f.window.findChild<QTabWidget*>(QStringLiteral("reviewResultsTabs"));
         QVERIFY(tabs);
+        auto* board = f.window.findChild<ui::ChessBoardWidget*>(QStringLiteral("reviewBoard"));
+        QVERIFY(board);
+        QVERIFY(board->boardRect().width() >= 236);
+        QCOMPARE(board->boardRect().width(), board->boardRect().height());
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewDetailsToggle"))->click();
         tabs->setCurrentIndex(0);
         QCoreApplication::processEvents();
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-summary-light.png")));
@@ -1280,11 +1347,18 @@ class QuickReviewTest final : public QObject {
         f.window.setPalette(palette);
         f.window.resize(1360, 850);
         QTest::qWait(30);
+        auto* reviewNext = f.window.findChild<QPushButton*>(QStringLiteral("reviewNextMove"));
+        auto* reviewShell = f.window.findChild<QScrollArea*>(QStringLiteral("shellScrollArea"));
+        QVERIFY(reviewShell->viewport()->rect().contains(
+            reviewNext->mapTo(reviewShell->viewport(), reviewNext->rect().center())));
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-dark.png")));
         tabs->setCurrentIndex(0);
         QCoreApplication::processEvents();
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-summary-dark.png")));
         tabs->setCurrentIndex(1);
+        f.window.resize(1800, 1000);
+        QTest::qWait(30);
+        QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-desktop.png")));
         auto font = f.window.font();
         font.setPointSize(font.pointSize() + 5);
         f.window.setFont(font);
@@ -1295,6 +1369,10 @@ class QuickReviewTest final : public QObject {
         auto* next = f.window.findChild<QPushButton*>(QStringLiteral("nextReviewMoves"));
         QVERIFY(shell);
         QVERIFY(next);
+        auto* explanationScroll =
+            f.window.findChild<QScrollArea*>(QStringLiteral("reviewExplanationScroll"));
+        QVERIFY(explanationScroll);
+        explanationScroll->ensureWidgetVisible(next);
         shell->ensureWidgetVisible(next);
         QCoreApplication::processEvents();
         QVERIFY(shell->viewport()->rect().contains(
@@ -1306,6 +1384,7 @@ class QuickReviewTest final : public QObject {
         auto* retry = f.window.findChild<QPushButton*>(QStringLiteral("retryReviewMoves"));
         QVERIFY(retry);
         QVERIFY(!retry->isHidden());
+        explanationScroll->ensureWidgetVisible(retry);
         shell->ensureWidgetVisible(retry);
         QCoreApplication::processEvents();
         QVERIFY(shell->viewport()->rect().contains(
@@ -1318,6 +1397,7 @@ class QuickReviewTest final : public QObject {
         auto* refreshSummary =
             f.window.findChild<QPushButton*>(QStringLiteral("refreshReviewSummary"));
         QVERIFY(refreshSummary);
+        explanationScroll->ensureWidgetVisible(refreshSummary);
         shell->ensureWidgetVisible(refreshSummary);
         QCoreApplication::processEvents();
         QVERIFY(shell->viewport()->rect().contains(

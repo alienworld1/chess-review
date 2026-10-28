@@ -990,3 +990,21 @@ owned raw evidence with different label thresholds to establish that accuracy do
 not depend on labels. Qt cases cover summary refresh during Busy backoff and clear
 last-successful labeling after a failed refresh. The render probe also saves
 `review-summary-error.png` and checks that Refresh summary remains reachable.
+
+
+## Board-first Review
+
+`review_navigation` covers read-only original-mainline replay, FEN move numbering,
+empty games, after-move selection, reversible hover, stale session targets, rapid
+navigation, late-summary entry policy, both orientations, and chronological key
+navigation beyond 50 moments. Its long-game fixture observes a live GUI heartbeat.
+Expected-score presentation checks perspective, approximation, missing/bounded/mate
+evidence, terminal values, unsupported models and non-finite inputs.
+
+`quick_review` retains real storage/fake-engine integration and the optional
+`CHESS_REVIEW_QUICK_RENDER_DIR` render probe. The latter saves the board-first
+workspace and expanded details in light/dark palettes and enlarged fonts. Set
+`QT_SCALE_FACTOR` to 1, 1.25, 1.5 or 2 in separate processes for scaling checks.
+`move_navigation`, `move_navigation_adversarial`, `analysis`, and `shell` protect the
+shared timeline and shutdown behavior. Native screen-reader and Windows checks
+require their respective desktop environments.

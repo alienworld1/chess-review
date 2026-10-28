@@ -23,6 +23,7 @@ struct UiState {
     Destination destination = Destination::Home;
     BoardPreferences board{};
     std::optional<GameResume> game = std::nullopt;
+    int reviewSplit = 55;
 };
 
 // Owning thread only. One load, then one saveAndClose; await closed() before destruction.

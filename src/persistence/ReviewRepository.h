@@ -136,6 +136,8 @@ struct ReviewOverview {
     std::vector<ReviewMove> keyMoments; // At most 50 compact entries per page.
     int keyOffset = 0;
     int totalKeyMoments = 0;
+    std::vector<int> keyPositions;     // Complete lightweight chronological navigation index.
+    std::vector<int> opponentContexts; // Key positions with an attached preceding opponent error.
     std::optional<int> largestLossPosition;
     std::optional<double> largestLoss;
 };

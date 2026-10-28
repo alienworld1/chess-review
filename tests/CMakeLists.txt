@@ -181,3 +181,6 @@ set_target_properties(review_classification_tests PROPERTIES AUTOMOC OFF AUTOUIC
 target_link_libraries(review_classification_tests PRIVATE chess_review_review Catch2::Catch2WithMain)
 chess_review_apply_options(review_classification_tests)
 catch_discover_tests(review_classification_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)
+
+chess_review_add_qt_test(review_navigation_tests review_navigation INTEGRATION WIDGETS
+    SOURCES qt/ReviewNavigationTest.cpp LIBRARIES chess_review_ui)

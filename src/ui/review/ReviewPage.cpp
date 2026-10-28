@@ -1,28 +1,59 @@
 #include "ui/review/ReviewPage.h"
 #include "app/ReviewMovePresentation.h"
 #include "ui/EngineText.h"
+#include "ui/chess/ChessBoardWidget.h"
+#include "ui/chess/MoveTimeline.h"
 #include <QAbstractTableModel>
+#include <QColor>
 #include <QComboBox>
 #include <QEvent>
 #include <QFormLayout>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QHideEvent>
 #include <QItemSelectionModel>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QResizeEvent>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStringList>
 #include <QTabWidget>
 #include <QTableView>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QVariant>
 #include <algorithm>
 
 namespace chess_review::ui {
 namespace {
+QColor reviewMoveColor(const persistence::ReviewMove* move, const QPalette& palette) {
+    if (!move || !move->classification || !move->classification->label) {
+        return palette.color(QPalette::Mid);
+    }
+    const bool dark = palette.color(QPalette::Window).lightness() < 128;
+    switch (*move->classification->label) {
+    case review::Classification::Best:
+        return QColor(dark ? "#65c486" : "#227843");
+    case review::Classification::Excellent:
+        return QColor(dark ? "#62bac8" : "#25808e");
+    case review::Classification::Good:
+        return QColor(dark ? "#65c486" : "#227843");
+    case review::Classification::Inaccuracy:
+        return QColor(dark ? "#f0c46c" : "#9d660b");
+    case review::Classification::Mistake:
+        return QColor(dark ? "#f2a65e" : "#b45d18");
+    case review::Classification::Blunder:
+        return QColor(dark ? "#f07780" : "#c53d49");
+    }
+    return palette.color(QPalette::Mid);
+}
+
 QString sideText(chess::Color side) {
     return side == chess::Color::White ? QObject::tr("White") : QObject::tr("Black");
 }
@@ -179,60 +210,240 @@ class ReviewMovesModel final : public QAbstractTableModel {
 ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     : QWidget(parent), controller_(controller) {
     setObjectName(QStringLiteral("reviewPage"));
+    auto& navigation = controller_.navigation();
     auto* layout = new QVBoxLayout(this);
-    auto* commands = new QHBoxLayout;
+    auto* header = new QHBoxLayout;
     auto* back = new QPushButton(tr("Back to Games"), this);
     back->setObjectName(QStringLiteral("reviewBack"));
-    commands->addWidget(back);
-    commands->addStretch();
-    auto* settings = new QPushButton(tr("Manage Engines…"), this);
-    commands->addWidget(settings);
-    layout->addLayout(commands);
-    connect(back, &QPushButton::clicked, this, &ReviewPage::backRequested);
-    connect(settings, &QPushButton::clicked, this, &ReviewPage::settingsRequested);
+    header->addWidget(back);
     game_ = new QLabel(this);
     game_->setTextFormat(Qt::PlainText);
     game_->setWordWrap(true);
-    layout->addWidget(game_);
-    auto* scope = new QLabel(
-        tr("Review becomes readable after the quick scan while selected moments are refined. "
-           "The Summary tab shows accuracy with coverage; move details distinguish stable and "
-           "provisional results."),
-        this);
-    scope->setWordWrap(true);
-    layout->addWidget(scope);
+    header->addWidget(game_, 1);
+    layout->addLayout(header);
+    connect(back, &QPushButton::clicked, this, &ReviewPage::backRequested);
+    compactSummary_ = new QLabel(this);
+    compactSummary_->setObjectName(QStringLiteral("reviewCompactSummary"));
+    compactSummary_->setTextFormat(Qt::PlainText);
+    compactSummary_->setWordWrap(true);
+    layout->addWidget(compactSummary_);
+    splitter_ = new QSplitter(Qt::Horizontal, this);
+    splitter_->setObjectName(QStringLiteral("reviewSplitter"));
+    splitter_->setChildrenCollapsible(false);
+    layout->addWidget(splitter_, 1);
+    auto* left = new QWidget(splitter_);
+    auto* boardLayout = new QVBoxLayout(left);
+    boardLayout->setContentsMargins(0, 0, 0, 0);
+    topPlayer_ = new QLabel(left);
+    topPlayer_->setTextFormat(Qt::PlainText);
+    boardLayout->addWidget(topPlayer_);
+    auto* boardRow = new QHBoxLayout;
+    evaluation_ = new QProgressBar(left);
+    evaluation_->setObjectName(QStringLiteral("reviewEvaluationBar"));
+    evaluation_->setOrientation(Qt::Vertical);
+    evaluation_->setRange(0, 1000);
+    evaluation_->setTextVisible(false);
+    evaluation_->setFixedWidth(18);
+    evaluation_->setAccessibleName(tr("White expected score, not win probability"));
+    boardRow->addWidget(evaluation_);
+    board_ = new ChessBoardWidget(left);
+    board_->setObjectName(QStringLiteral("reviewBoard"));
+    board_->setMinimumSize(248, 248);
+    board_->setToolTip(
+        tr("Read-only original game. Use the timeline or navigation buttons to explore moves."));
+    boardRow->addWidget(board_, 1);
+    boardLayout->addLayout(boardRow, 1);
+    bottomPlayer_ = new QLabel(left);
+    bottomPlayer_->setTextFormat(Qt::PlainText);
+    boardLayout->addWidget(bottomPlayer_);
+    evaluationText_ = new QLabel(left);
+    evaluationText_->setObjectName(QStringLiteral("reviewEvaluationText"));
+    evaluationText_->setWordWrap(true);
+    boardLayout->addWidget(evaluationText_);
+    previewLabel_ = new QLabel(left);
+    previewLabel_->setObjectName(QStringLiteral("reviewPreview"));
+    previewLabel_->setWordWrap(true);
+    boardLayout->addWidget(previewLabel_);
+    auto* actions = new QHBoxLayout;
+    const auto button = [this, actions](const QString& text, const QString& name) {
+        auto* result = new QPushButton(text, this);
+        result->setObjectName(name);
+        actions->addWidget(result);
+        return result;
+    };
+    firstMove_ = button(tr("Start"), QStringLiteral("reviewFirstMove"));
+    previousMove_ = button(tr("Previous"), QStringLiteral("reviewPreviousMove"));
+    nextMove_ = button(tr("Next"), QStringLiteral("reviewNextMove"));
+    lastMove_ = button(tr("End"), QStringLiteral("reviewLastMove"));
+    auto* flip = button(tr("Flip Board"), QStringLiteral("reviewFlipBoard"));
+    boardLayout->addLayout(actions);
+    connect(firstMove_, &QPushButton::clicked, &navigation,
+            &app::ReviewNavigationController::beginning);
+    connect(previousMove_, &QPushButton::clicked, &navigation,
+            &app::ReviewNavigationController::previous);
+    connect(nextMove_, &QPushButton::clicked, &navigation, &app::ReviewNavigationController::next);
+    connect(lastMove_, &QPushButton::clicked, &navigation, &app::ReviewNavigationController::end);
+    connect(flip, &QPushButton::clicked, &navigation, &app::ReviewNavigationController::flip);
+    connect(board_, &ChessBoardWidget::previousRequested, &navigation,
+            &app::ReviewNavigationController::previous);
+    connect(board_, &ChessBoardWidget::nextRequested, &navigation,
+            &app::ReviewNavigationController::next);
+    connect(board_, &ChessBoardWidget::beginningRequested, &navigation,
+            &app::ReviewNavigationController::beginning);
+    connect(board_, &ChessBoardWidget::endRequested, &navigation,
+            &app::ReviewNavigationController::end);
+    timeline_ = new MoveTimeline(left);
+    timeline_->setObjectName(QStringLiteral("reviewTimeline"));
+    timeline_->setAccessibleName(
+        tr("Complete original game; hover previews, click selects; Left/Right navigates"));
+    timeline_->setMaximumHeight(110);
+    timeline_->setHoverPreview(true);
+    boardLayout->addWidget(timeline_);
+    const auto positionFor =
+        [&navigation](app::NavigationTarget target) -> std::optional<app::ReviewTarget> {
+        if (target.session != navigation.target(0).session) {
+            return {};
+        }
+        const auto found = navigation.positionFor(target.node);
+        return found ? std::optional{navigation.target(*found)} : std::nullopt;
+    };
+    connect(timeline_, &MoveTimeline::navigationRequested, this,
+            [&navigation, positionFor](app::NavigationTarget target) {
+                if (const auto position = positionFor(target)) {
+                    navigation.select(*position);
+                }
+            });
+    connect(timeline_, &MoveTimeline::previewRequested, this,
+            [&navigation, positionFor](app::NavigationTarget target) {
+                if (const auto position = positionFor(target)) {
+                    navigation.preview(*position);
+                }
+            });
+    connect(timeline_, &MoveTimeline::visibleRequested, this,
+            [&navigation, positionFor](app::NavigationTarget first, app::NavigationTarget last) {
+                const auto begin = positionFor(first);
+                const auto end = positionFor(last);
+                if (begin && end) {
+                    navigation.visible(*begin, *end);
+                }
+            });
+    connect(timeline_, &MoveTimeline::previewCleared, &navigation,
+            &app::ReviewNavigationController::clearPreview);
+    connect(timeline_, &MoveTimeline::previousRequested, &navigation,
+            &app::ReviewNavigationController::previous);
+    connect(timeline_, &MoveTimeline::nextRequested, &navigation,
+            &app::ReviewNavigationController::next);
+    connect(timeline_, &MoveTimeline::beginningRequested, &navigation,
+            &app::ReviewNavigationController::beginning);
+    connect(timeline_, &MoveTimeline::endRequested, &navigation,
+            &app::ReviewNavigationController::end);
+    timeline_->setMoveDescription([&navigation](chess::NodeId node) {
+        const auto position = navigation.positionFor(node);
+        if (!position || *position == 0) {
+            return QString{};
+        }
+        return app::reviewMoveMarker(navigation.move(*position)) +
+               (navigation.keyMoment(*position) ? tr(" · ◆ Key moment") : QString{});
+    });
+    timeline_->setMoveAccent([this, &navigation](chess::NodeId node) {
+        const auto position = navigation.positionFor(node);
+        return position && *position > 0
+                   ? reviewMoveColor(navigation.move(*position), timeline_->palette())
+                   : QColor{};
+    });
+    for (auto* control : {firstMove_, previousMove_, nextMove_, lastMove_, flip}) {
+        control->installEventFilter(this);
+    }
+    auto* scroll = new QScrollArea(splitter_);
+    scroll->setObjectName(QStringLiteral("reviewExplanationScroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto* right = new QWidget(scroll);
+    right->setMinimumWidth(300);
+    scroll->setWidget(right);
+    auto* rightLayout = new QVBoxLayout(right);
+    auto* momentRow = new QHBoxLayout;
+    rail_ = new QFrame(right);
+    rail_->setFixedWidth(4);
+    rail_->setAutoFillBackground(true);
+    momentRow->addWidget(rail_);
+    auto* moment = new QVBoxLayout;
+    headline_ = new QLabel(right);
+    headline_->setObjectName(QStringLiteral("reviewMomentHeadline"));
+    headline_->setTextFormat(Qt::PlainText);
+    headline_->setWordWrap(true);
+    auto headingFont = headline_->font();
+    headingFont.setBold(true);
+    headline_->setFont(headingFont);
+    moment->addWidget(headline_);
+    explanation_ = new QLabel(right);
+    explanation_->setObjectName(QStringLiteral("reviewMomentExplanation"));
+    explanation_->setTextFormat(Qt::PlainText);
+    explanation_->setWordWrap(true);
+    explanation_->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    moment->addWidget(explanation_);
+    momentRow->addLayout(moment, 1);
+    rightLayout->addLayout(momentRow);
+    auto* keyActions = new QHBoxLayout;
+    previousMoment_ = new QPushButton(tr("Previous key moment"), right);
+    nextMoment_ = new QPushButton(tr("Next key moment"), right);
+    previousMoment_->setObjectName(QStringLiteral("reviewPreviousMoment"));
+    nextMoment_->setObjectName(QStringLiteral("reviewNextMoment"));
+    keyActions->addWidget(previousMoment_);
+    keyActions->addWidget(nextMoment_);
+    rightLayout->addLayout(keyActions);
+    connect(previousMoment_, &QPushButton::clicked, &navigation,
+            &app::ReviewNavigationController::previousMoment);
+    connect(nextMoment_, &QPushButton::clicked, &navigation,
+            &app::ReviewNavigationController::nextMoment);
+    const auto section = [right, rightLayout](const QString& title, bool expanded) {
+        auto* toggle = new QPushButton(title, right);
+        toggle->setCheckable(true);
+        toggle->setChecked(expanded);
+        auto* content = new QWidget(right);
+        content->setVisible(expanded);
+        rightLayout->addWidget(toggle);
+        rightLayout->addWidget(content);
+        connect(toggle, &QPushButton::toggled, content, &QWidget::setVisible);
+        return std::pair{toggle, content};
+    };
+    const auto setupSection = section(tr("Review setup"), true);
+    setupToggle_ = setupSection.first;
+    setup_ = setupSection.second;
+    auto* setupLayout = new QVBoxLayout(setup_);
     auto* form = new QFormLayout;
-    side_ = new QComboBox(this);
+    side_ = new QComboBox(setup_);
     side_->setObjectName(QStringLiteral("reviewSide"));
     side_->addItems({tr("Choose player…"), tr("White"), tr("Black")});
-    engine_ = new QComboBox(this);
+    engine_ = new QComboBox(setup_);
     engine_->setObjectName(QStringLiteral("reviewEngine"));
     engine_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    engine_->setMinimumContentsLength(20);
-    quality_ = new QComboBox(this);
+    engine_->setMinimumContentsLength(12);
+    quality_ = new QComboBox(setup_);
     quality_->setObjectName(QStringLiteral("reviewQuality"));
     quality_->addItems({tr("Fast"), tr("Standard"), tr("Thorough")});
     quality_->setCurrentIndex(static_cast<int>(controller.defaultQuality()));
     form->addRow(tr("&Player:"), side_);
     form->addRow(tr("&Engine:"), engine_);
     form->addRow(tr("&Quality:"), quality_);
-    layout->addLayout(form);
+    setupLayout->addLayout(form);
     for (auto* control : {side_, engine_, quality_}) {
         control->installEventFilter(this);
     }
-    reason_ = new QLabel(this);
+    reason_ = new QLabel(setup_);
     reason_->setTextFormat(Qt::PlainText);
     reason_->setWordWrap(true);
-    layout->addWidget(reason_);
-    auto* actions = new QHBoxLayout;
-    start_ = new QPushButton(tr("Run Review"), this);
+    setupLayout->addWidget(reason_);
+    start_ = new QPushButton(tr("Run Review"), setup_);
     start_->setObjectName(QStringLiteral("runReview"));
-    cancel_ = new QPushButton(tr("Cancel review"), this);
+    setupLayout->addWidget(start_);
+    auto* settings = new QPushButton(tr("Manage Engines…"), setup_);
+    setupLayout->addWidget(settings);
+    connect(settings, &QPushButton::clicked, this, &ReviewPage::settingsRequested);
+    cancel_ = new QPushButton(tr("Cancel review"), right);
     cancel_->setObjectName(QStringLiteral("cancelReview"));
-    actions->addWidget(start_);
-    actions->addWidget(cancel_);
-    actions->addStretch();
-    layout->addLayout(actions);
+    rightLayout->addWidget(cancel_);
     status_ = new QLabel(this);
     status_->setObjectName(QStringLiteral("reviewStatus"));
     status_->setAccessibleName(tr("Review progress"));
@@ -249,20 +460,9 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     error_->setWordWrap(true);
     error_->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     layout->addWidget(error_);
-    auto* tabs = new QTabWidget(this);
-    tabs->setObjectName(QStringLiteral("reviewResultsTabs"));
-    auto* movesTab = new QWidget(tabs);
-    auto* movesLayout = new QVBoxLayout(movesTab);
-    auto* historyTab = new QWidget(tabs);
-    auto* historyLayout = new QVBoxLayout(historyTab);
-    auto* summaryTab = new QWidget(this);
-    auto* summaryLayout = new QVBoxLayout(summaryTab);
-    summary_ = new QPlainTextEdit(this);
-    summary_->setObjectName(QStringLiteral("reviewSummary"));
-    summary_->setAccessibleName(tr("Game accuracy, coverage and factual summary"));
-    summary_->setReadOnly(true);
-    summaryLayout->addWidget(summary_, 1);
-    moments_ = new QTableView(this);
+    auto* keySection = section(tr("Chronological key moments"), false).second;
+    auto* keyLayout = new QVBoxLayout(keySection);
+    moments_ = new QTableView(keySection);
     moments_->setObjectName(QStringLiteral("reviewKeyMoments"));
     moments_->setAccessibleName(tr("Chronological key moments"));
     momentsModel_ = new ReviewMovesModel(this);
@@ -271,53 +471,103 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     moments_->setSelectionMode(QAbstractItemView::SingleSelection);
     moments_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     moments_->horizontalHeader()->setStretchLastSection(true);
-    summaryLayout->addWidget(moments_, 1);
-    auto* summaryActions = new QHBoxLayout;
-    previousMoments_ = new QPushButton(tr("Previous moments"), this);
-    nextMoments_ = new QPushButton(tr("Next moments"), this);
-    refreshSummary_ = new QPushButton(tr("Refresh summary"), this);
-    refreshSummary_->setObjectName(QStringLiteral("refreshReviewSummary"));
-    summaryActions->addWidget(previousMoments_);
-    summaryActions->addWidget(nextMoments_);
-    summaryActions->addWidget(refreshSummary_);
-    summaryLayout->addLayout(summaryActions);
-    tabs->addTab(summaryTab, tr("&Summary"));
-    connect(refreshSummary_, &QPushButton::clicked, this,
-            [this] { controller_.refreshOverview(); });
+    keyLayout->addWidget(moments_);
+    auto* keyPaging = new QHBoxLayout;
+    previousMoments_ = new QPushButton(tr("Earlier moments"), keySection);
+    nextMoments_ = new QPushButton(tr("Later moments"), keySection);
+    keyPaging->addWidget(previousMoments_);
+    keyPaging->addWidget(nextMoments_);
+    keyLayout->addLayout(keyPaging);
     connect(previousMoments_, &QPushButton::clicked, this, [this] {
-        const auto& overview = controller_.state().overview;
-        if (overview) {
-            controller_.refreshOverview(overview->keyOffset - 50);
+        if (controller_.state().overview) {
+            controller_.refreshOverview(controller_.state().overview->keyOffset - 50);
         }
     });
     connect(nextMoments_, &QPushButton::clicked, this, [this] {
-        const auto& overview = controller_.state().overview;
-        if (overview) {
-            controller_.refreshOverview(overview->keyOffset + 50);
+        if (controller_.state().overview) {
+            controller_.refreshOverview(controller_.state().overview->keyOffset + 50);
         }
     });
-    const auto openMoment = [this, tabs, movesTab](const QModelIndex& index) {
+    const auto openMoment = [this](const QModelIndex& index) {
         const auto& overview = controller_.state().overview;
-        if (!overview || !index.isValid() ||
-            index.row() >= static_cast<int>(overview->keyMoments.size())) {
-            return;
+        if (overview && index.isValid() &&
+            index.row() < static_cast<int>(overview->keyMoments.size())) {
+            controller_.selectMoment(
+                overview->keyMoments[static_cast<std::size_t>(index.row())].positionIndex);
         }
-        controller_.selectMoment(
-            overview->keyMoments[static_cast<std::size_t>(index.row())].positionIndex);
-        tabs->setCurrentWidget(movesTab);
-        moves_->setFocus();
     };
-    connect(moments_, &QTableView::activated, this, openMoment);
     connect(moments_, &QTableView::clicked, this, openMoment);
-    tabs->addTab(movesTab, tr("&Moves"));
-    tabs->addTab(historyTab, tr("Saved &runs"));
-    tabs->setCurrentWidget(movesTab);
-    layout->addWidget(tabs, 1);
-    auto* historyHeading = new QLabel(
-        tr("Select a saved run to inspect its moves or resume its original settings."), historyTab);
-    historyHeading->setWordWrap(true);
-    historyLayout->addWidget(historyHeading);
-    runs_ = new QTableView(this);
+    connect(moments_, &QTableView::activated, this, openMoment);
+    const auto detail = section(tr("Summary and evidence details"), false);
+    detail.first->setObjectName(QStringLiteral("reviewDetailsToggle"));
+    auto* detailSection = detail.second;
+    auto* detailLayout = new QVBoxLayout(detailSection);
+    auto* tabs = new QTabWidget(detailSection);
+    tabs->setObjectName(QStringLiteral("reviewResultsTabs"));
+    detailLayout->addWidget(tabs);
+    auto* summaryTab = new QWidget(tabs);
+    auto* summaryLayout = new QVBoxLayout(summaryTab);
+    summary_ = new QPlainTextEdit(summaryTab);
+    summary_->setObjectName(QStringLiteral("reviewSummary"));
+    summary_->setAccessibleName(tr("Game accuracy, coverage and factual summary"));
+    summary_->setReadOnly(true);
+    summaryLayout->addWidget(summary_);
+    refreshSummary_ = new QPushButton(tr("Refresh summary"), summaryTab);
+    refreshSummary_->setObjectName(QStringLiteral("refreshReviewSummary"));
+    summaryLayout->addWidget(refreshSummary_);
+    connect(refreshSummary_, &QPushButton::clicked, this,
+            [this] { controller_.refreshOverview(); });
+    tabs->addTab(summaryTab, tr("Summary"));
+    auto* movesTab = new QWidget(tabs);
+    auto* movesLayout = new QVBoxLayout(movesTab);
+    moves_ = new QTableView(movesTab);
+    moves_->setObjectName(QStringLiteral("reviewMoves"));
+    moves_->setAccessibleName(tr("Saved move evidence page"));
+    movesModel_ = new ReviewMovesModel(this);
+    moves_->setModel(movesModel_);
+    moves_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    moves_->setSelectionMode(QAbstractItemView::SingleSelection);
+    moves_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    moves_->horizontalHeader()->setStretchLastSection(true);
+    movesLayout->addWidget(moves_);
+    details_ = new QPlainTextEdit(movesTab);
+    details_->setObjectName(QStringLiteral("reviewMoveDetails"));
+    details_->setAccessibleName(tr("Selected move evidence and rationale"));
+    details_->setReadOnly(true);
+    movesLayout->addWidget(details_);
+    auto* paging = new QHBoxLayout;
+    previousMoves_ = new QPushButton(tr("Previous moves"), movesTab);
+    nextMoves_ = new QPushButton(tr("Next moves"), movesTab);
+    previousMoves_->setObjectName(QStringLiteral("previousReviewMoves"));
+    nextMoves_->setObjectName(QStringLiteral("nextReviewMoves"));
+    paging->addWidget(previousMoves_);
+    paging->addWidget(nextMoves_);
+    movesLayout->addLayout(paging);
+    moveStatus_ = new QLabel(right);
+    moveStatus_->setObjectName(QStringLiteral("reviewMoveStatus"));
+    moveStatus_->setTextFormat(Qt::PlainText);
+    moveStatus_->setWordWrap(true);
+    rightLayout->addWidget(moveStatus_);
+    retryMoves_ = new QPushButton(tr("Retry move evidence"), right);
+    retryMoves_->setObjectName(QStringLiteral("retryReviewMoves"));
+    rightLayout->addWidget(retryMoves_);
+    connect(retryMoves_, &QPushButton::clicked, &navigation,
+            &app::ReviewNavigationController::retryEvidence);
+    connect(previousMoves_, &QPushButton::clicked, this, [this] {
+        controller_.selectMoment(std::max(1, controller_.moves().state().offset - 49));
+    });
+    connect(nextMoves_, &QPushButton::clicked, this,
+            [this] { controller_.selectMoment(controller_.moves().state().offset + 51); });
+    connect(moves_->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
+            [this](const QModelIndex& index) {
+                if (index.isValid()) {
+                    controller_.selectMoment(controller_.moves().state().offset + index.row() + 1);
+                }
+            });
+    tabs->addTab(movesTab, tr("Evidence"));
+    auto* history = section(tr("Saved review runs"), false).second;
+    auto* historyLayout = new QVBoxLayout(history);
+    runs_ = new QTableView(history);
     runs_->setObjectName(QStringLiteral("reviewRuns"));
     runs_->setAccessibleName(tr("Saved review runs"));
     model_ = new ReviewRunsModel(this);
@@ -326,73 +576,18 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     runs_->setSelectionMode(QAbstractItemView::SingleSelection);
     runs_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     runs_->horizontalHeader()->setStretchLastSection(true);
-    runs_->setColumnWidth(0, 180);
-    runs_->setColumnWidth(3, 210);
-    historyLayout->addWidget(runs_, 1);
-    auto* paging = new QHBoxLayout;
-    previous_ = new QPushButton(tr("Previous runs"), this);
-    next_ = new QPushButton(tr("Next runs"), this);
-    resume_ = new QPushButton(tr("Resume selected run"), this);
+    historyLayout->addWidget(runs_);
+    auto* runPaging = new QHBoxLayout;
+    previous_ = new QPushButton(tr("Previous runs"), history);
+    next_ = new QPushButton(tr("Next runs"), history);
+    auto* refresh = new QPushButton(tr("Refresh runs"), history);
+    runPaging->addWidget(previous_);
+    runPaging->addWidget(next_);
+    historyLayout->addLayout(runPaging);
+    historyLayout->addWidget(refresh);
+    resume_ = new QPushButton(tr("Resume selected run"), history);
     resume_->setObjectName(QStringLiteral("resumeReview"));
-    auto* refresh = new QPushButton(tr("Refresh runs"), this);
-    paging->addWidget(previous_);
-    paging->addWidget(next_);
-    paging->addWidget(refresh);
-    paging->addStretch();
-    paging->addWidget(resume_);
-    historyLayout->addLayout(paging);
-    auto* moveHeading = new QLabel(
-        tr("All game moves — select a move to inspect its evidence and classification."), this);
-    moveHeading->setWordWrap(true);
-    movesLayout->addWidget(moveHeading);
-    auto* splitter = new QSplitter(Qt::Horizontal, this);
-    moves_ = new QTableView(splitter);
-    moves_->setObjectName(QStringLiteral("reviewMoves"));
-    moves_->setAccessibleName(tr("Game move classifications"));
-    movesModel_ = new ReviewMovesModel(this);
-    moves_->setModel(movesModel_);
-    moves_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    moves_->setSelectionMode(QAbstractItemView::SingleSelection);
-    moves_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    moves_->horizontalHeader()->setStretchLastSection(true);
-    details_ = new QPlainTextEdit(splitter);
-    details_->setObjectName(QStringLiteral("reviewMoveDetails"));
-    details_->setAccessibleName(tr("Selected move evidence and rationale"));
-    details_->setReadOnly(true);
-    splitter->setChildrenCollapsible(false);
-    splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 1);
-    movesLayout->addWidget(splitter, 1);
-    auto* movePaging = new QHBoxLayout;
-    previousMoves_ = new QPushButton(tr("Previous moves"), this);
-    nextMoves_ = new QPushButton(tr("Next moves"), this);
-    previousMoves_->setObjectName(QStringLiteral("previousReviewMoves"));
-    nextMoves_->setObjectName(QStringLiteral("nextReviewMoves"));
-    moveStatus_ = new QLabel(this);
-    moveStatus_->setObjectName(QStringLiteral("reviewMoveStatus"));
-    moveStatus_->setAccessibleName(tr("Move evidence status"));
-    moveStatus_->setTextFormat(Qt::PlainText);
-    moveStatus_->setWordWrap(true);
-    movePaging->addWidget(previousMoves_);
-    movePaging->addWidget(nextMoves_);
-    movePaging->addWidget(moveStatus_, 1);
-    retryMoves_ = new QPushButton(tr("Retry move evidence"), this);
-    retryMoves_->setObjectName(QStringLiteral("retryReviewMoves"));
-    movePaging->addWidget(retryMoves_);
-    connect(retryMoves_, &QPushButton::clicked, &controller_.moves(),
-            &app::ReviewMovesController::retry);
-    movesLayout->addLayout(movePaging);
-    connect(previousMoves_, &QPushButton::clicked, this,
-            [this] { controller_.moves().showPage(controller_.moves().state().offset - 50); });
-    connect(nextMoves_, &QPushButton::clicked, this,
-            [this] { controller_.moves().showPage(controller_.moves().state().offset + 50); });
-    connect(moves_->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
-            [this](const QModelIndex& current) {
-                if (current.isValid()) {
-                    controller_.moves().select(controller_.moves().state().offset + current.row() +
-                                               1);
-                }
-            });
+    historyLayout->addWidget(resume_);
     connect(refresh, &QPushButton::clicked, this,
             [this] { controller_.refreshRuns(controller_.state().page); });
     connect(previous_, &QPushButton::clicked, this,
@@ -422,9 +617,68 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     connect(side_, &QComboBox::currentIndexChanged, this, &ReviewPage::update);
     connect(engine_, &QComboBox::currentIndexChanged, this, &ReviewPage::update);
     connect(&controller_, &app::ReviewGameController::changed, this, &ReviewPage::update);
+    connect(&navigation, &app::ReviewNavigationController::changed, this,
+            &ReviewPage::updateNavigation);
+    connect(splitter_, &QSplitter::splitterMoved, this, [this] {
+        if (!applyingSplit_) {
+            const auto sizes = splitter_->sizes();
+            const int total = sizes[0] + sizes[1];
+            if (total > 0) {
+                splitShare_ = std::clamp(sizes[0] * 100 / total, 1, 99);
+            }
+        }
+    });
+    rightLayout->addStretch();
+    setSplitShare(55);
     update();
 }
+void ReviewPage::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    QTimer::singleShot(0, this, [this] { setSplitShare(splitShare_); });
+}
+void ReviewPage::changeEvent(QEvent* event) {
+    QWidget::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::FontChange ||
+        event->type() == QEvent::StyleChange) {
+        updateNavigation();
+    }
+}
+int ReviewPage::splitShare() const { return splitShare_; }
+void ReviewPage::setSplitShare(int share) {
+    splitShare_ = std::clamp(share, 1, 99);
+    applyingSplit_ = true;
+    const int width = std::max(100, splitter_->width());
+    splitter_->setSizes({width * splitShare_ / 100, width * (100 - splitShare_) / 100});
+    applyingSplit_ = false;
+}
+void ReviewPage::hideEvent(QHideEvent* event) {
+    controller_.navigation().clearPreview();
+    QWidget::hideEvent(event);
+}
 bool ReviewPage::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::KeyPress && watched != side_ && watched != engine_ &&
+        watched != quality_) {
+        auto* key = static_cast<QKeyEvent*>(event);
+        if (key->modifiers() == Qt::NoModifier) {
+            auto& nav = controller_.navigation();
+            switch (key->key()) {
+            case Qt::Key_Left:
+                nav.previous();
+                return true;
+            case Qt::Key_Right:
+                nav.next();
+                return true;
+            case Qt::Key_Home:
+                nav.beginning();
+                return true;
+            case Qt::Key_End:
+                nav.end();
+                return true;
+            default:
+                break;
+            }
+        }
+    }
     if (event->type() == QEvent::Wheel &&
         (watched == side_ || watched == engine_ || watched == quality_)) {
         event->ignore();
@@ -434,6 +688,13 @@ bool ReviewPage::eventFilter(QObject* watched, QEvent* event) {
 }
 void ReviewPage::update() {
     const auto& state = controller_.state();
+    const std::optional<review::ReviewId> run =
+        state.run ? std::optional{state.run->id} : std::nullopt;
+    if (run != shownRun_ || gameId_ != state.gameId) {
+        shownRun_ = run;
+        setupToggle_->setChecked(!run);
+    }
+    cancel_->setVisible(state.active);
     if (gameId_ != state.gameId) {
         gameId_ = state.gameId;
         side_->setCurrentIndex(0);
@@ -481,7 +742,18 @@ void ReviewPage::update() {
     if (state.cancelling) {
         status = tr("Cancelling; saving completed evidence…\n") + status;
     }
-    status_->setText(status);
+    status_->setToolTip(status);
+    status_->setAccessibleDescription(status);
+    status_->setText(state.cancelling ? tr("Cancelling; saving completed evidence…")
+                     : state.run      ? tr("%1 · %2 · %3 · saved %4/%5")
+                                       .arg(state.active ? phaseText(state.phase)
+                                                         : app::reviewStatusText(state.run->status),
+                                            sideText(state.run->selectedSide),
+                                            qualityText(state.run->quality))
+                                       .arg(state.run->completedPositions)
+                                       .arg(state.run->totalPositions)
+                                 : phaseText(state.phase));
+    progress_->setVisible(state.active);
     progress_->setRange(0, state.run ? state.run->totalPositions : 1);
     progress_->setValue(state.run ? state.run->completedPositions : 0);
     if (state.active && state.refinementTotal > 0) {
@@ -493,6 +765,7 @@ void ReviewPage::update() {
     }
     error_->setText(state.error +
                     (state.notice.isEmpty() ? QString{} : QLatin1Char('\n') + state.notice));
+    error_->setVisible(!error_->text().isEmpty());
     runs_->setEnabled(!state.active);
     model_->reload(state.runs);
     const auto selected = model_->row(runs_->currentIndex().row());
@@ -547,16 +820,117 @@ void ReviewPage::update() {
     } else {
         details_->clear();
     }
+    if (controller_.navigation().selected() == 0) {
+        details_->clear();
+    }
+    updateNavigation();
     const int total = state.run ? state.run->totalPositions - 1 : 0;
-    retryMoves_->setVisible(!moveState.error.isEmpty());
+    retryMoves_->setVisible(!controller_.navigation().evidenceError().isEmpty());
     retryMoves_->setEnabled(state.run && !moveState.loading);
     previousMoves_->setEnabled(state.run && moveState.offset > 0);
     nextMoves_->setEnabled(state.run && moveState.offset + 50 < total);
-    moveStatus_->setText(!moveState.error.isEmpty() ? moveState.error
-                         : moveState.loading        ? tr("Loading move evidence…")
-                                                    : tr("%1 moves · showing %2–%3")
+    moveStatus_->setText(!controller_.navigation().evidenceError().isEmpty()
+                             ? controller_.navigation().evidenceError()
+                         : moveState.loading ? tr("Loading move evidence…")
+                                             : tr("%1 moves · showing %2–%3")
                                                    .arg(total)
                                                    .arg(total ? moveState.offset + 1 : 0)
                                                    .arg(std::min(moveState.offset + 50, total)));
+}
+void ReviewPage::updateNavigation() {
+    auto& nav = controller_.navigation();
+    const auto& state = controller_.state();
+    board_->setState(nav.board());
+    app::BoardPreferences preferences;
+    preferences.blackAtBottom = nav.board().blackAtBottom;
+    board_->setPreferences(preferences);
+    const bool black = nav.board().blackAtBottom;
+    const auto white = nav.whitePlayer().isEmpty() ? tr("White") : nav.whitePlayer();
+    const auto blackPlayer = nav.blackPlayer().isEmpty() ? tr("Black") : nav.blackPlayer();
+    topPlayer_->setText(black ? white : blackPlayer);
+    bottomPlayer_->setText(black ? blackPlayer : white);
+    const auto evaluation = nav.evaluation();
+    evaluation_->setEnabled(evaluation.whiteExpected.has_value());
+    if (evaluation.whiteExpected) {
+        evaluation_->setValue(qRound(*evaluation.whiteExpected * 1000));
+    } else {
+        evaluation_->reset();
+    }
+    evaluation_->setInvertedAppearance(black);
+    evaluation_->setAccessibleDescription(evaluation.description);
+    evaluation_->setToolTip(evaluation.description);
+    evaluationText_->setText(evaluation.description);
+    previewLabel_->setText(
+        !nav.error().isEmpty() ? nav.error()
+        : !nav.ready()         ? tr("Loading original game…")
+        : nav.previewing()     ? tr("Previewing position %1 — selected position %2 is unchanged")
+                                 .arg(nav.requested())
+                                 .arg(nav.selected())
+        : nav.pending() ? tr("Loading position %1…").arg(nav.requested())
+                        : tr("Position %1 of %2")
+                              .arg(nav.selected())
+                              .arg(std::max(0, static_cast<int>(nav.line().size()) - 1)));
+    if (nav.ready()) {
+        const auto& line = nav.line();
+        timeline_->setSnapshot(
+            nav.tree(), line, nav.target(0).session, line[static_cast<std::size_t>(nav.selected())],
+            nav.pending() ? std::optional{line[static_cast<std::size_t>(nav.requested())]}
+                          : std::nullopt,
+            true);
+    } else {
+        timeline_->setSnapshot({}, {}, nav.target(0).session, chess::NodeId{0}, std::nullopt,
+                               false);
+    }
+    firstMove_->setEnabled(nav.ready() && nav.selected() > 0);
+    previousMove_->setEnabled(firstMove_->isEnabled());
+    lastMove_->setEnabled(nav.ready() && nav.selected() + 1 < static_cast<int>(nav.line().size()));
+    nextMove_->setEnabled(lastMove_->isEnabled());
+    previousMoment_->setEnabled(nav.canPreviousMoment());
+    nextMoment_->setEnabled(nav.canNextMoment());
+    const auto* move = nav.move(nav.selected());
+    std::optional<persistence::ReviewMove> contextualMove;
+    if (move && nav.opponentContext(nav.selected())) {
+        contextualMove = *move;
+        contextualMove->contextPosition = nav.opponentContext(nav.selected());
+        move = &*contextualMove;
+    }
+    headline_->setText(app::reviewMomentHeadline(move, nav.selected()));
+    explanation_->setText(app::reviewMomentExplanation(move, nav.selected()));
+    const auto detail = move ? app::reviewMoveDetails(*move) : QString{};
+    if (details_->toPlainText() != detail) {
+        details_->setPlainText(detail);
+    }
+    auto palette = rail_->palette();
+    palette.setColor(QPalette::Window, reviewMoveColor(move, palette));
+    rail_->setPalette(palette);
+    QString compact;
+    if (state.overview && state.run) {
+        const auto& side = state.overview->sides[static_cast<std::size_t>(state.run->selectedSide)];
+        compact =
+            tr("%1 · accuracy %2 · evaluated %3/%4 · stable %5/%4 · %6 key moments")
+                .arg(sideText(state.run->selectedSide))
+                .arg(side.accuracy ? QString::number(*side.accuracy, 'f', 0) + QLatin1Char('%')
+                                   : tr("unavailable"))
+                .arg(side.evaluated)
+                .arg(side.total)
+                .arg(side.stable)
+                .arg(state.overview->totalKeyMoments);
+        if (state.overview->revision != state.run->revision) {
+            compact += tr(" · earlier checkpoint");
+        }
+        if (!state.overviewError.isEmpty()) {
+            compact += tr(" · last successful summary; refresh failed");
+        }
+    } else {
+        compact = tr("Accuracy and coverage appear as evidence is saved.");
+        if (!state.overviewError.isEmpty()) {
+            compact += tr(" Summary unavailable: %1").arg(state.overviewError);
+        }
+    }
+    compactSummary_->setText(compact);
+    retryMoves_->setVisible(!nav.evidenceError().isEmpty());
+    if (!nav.evidenceError().isEmpty()) {
+        moveStatus_->setText(nav.evidenceError());
+    }
 }
 } // namespace chess_review::ui

@@ -20,8 +20,6 @@
 namespace chess_review::ui {
 void installMoveNavigationAccessibility();
 namespace {
-constexpr int currentPositionRole = Qt::UserRole;
-constexpr int pendingPositionRole = Qt::UserRole + 1;
 
 QString navigationHelp() {
     return GameTreeView::tr("Click a move to navigate. Ctrl+Left/Right focuses moves in a line; "
@@ -50,200 +48,25 @@ bool historyKey(QKeyEvent* event, app::AnalysisController& controller) {
     event->accept();
     return true;
 }
-QVariant moveData(const app::AnalysisController& controller, chess::NodeId node, int role) {
-    const auto& entry = controller.navigationTree()->nodes.at(node);
-    if (role == Qt::DisplayRole) {
-        return entry.parent ? entry.san : entry.label;
-    }
-    if (role == Qt::ToolTipRole || role == Qt::AccessibleTextRole) {
-        const auto description =
-            entry.notes.isEmpty() ? entry.label : entry.label + QLatin1Char('\n') + entry.notes;
-        return role == Qt::ToolTipRole ? description.toHtmlEscaped() : description;
-    }
-    if (role == Qt::AccessibleDescriptionRole) {
-        return controller.currentNode() == node ? QObject::tr("Current position")
-               : controller.busy() && controller.requestedNode() == node
-                   ? QObject::tr("Pending position")
-                   : QObject::tr("Go to position");
-    }
-    if (role == currentPositionRole) {
-        return controller.currentNode() == node;
-    }
-    if (role == pendingPositionRole) {
-        return controller.busy() && controller.requestedNode() == node;
-    }
-    return {};
-}
-} // namespace
-class TimelineModel final : public QAbstractTableModel {
-  public:
-    explicit TimelineModel(app::AnalysisController& controller, QObject* parent)
-        : QAbstractTableModel(parent), controller_(controller) {}
-    struct Row {
-        QString number;
-        std::optional<chess::NodeId> white;
-        std::optional<chess::NodeId> black;
-    };
-    int rowCount(const QModelIndex& parent = {}) const override {
-        return parent.isValid() ? 0 : static_cast<int>(rows_.size());
-    }
-    int columnCount(const QModelIndex& = {}) const override { return 3; }
-    std::optional<chess::NodeId> node(const QModelIndex& index) const {
-        if (!index.isValid() || index.row() < 0 || index.row() >= rowCount()) {
-            return std::nullopt;
-        }
-        const auto& row = rows_[static_cast<std::size_t>(index.row())];
-        return index.column() == 1 ? row.white : index.column() == 2 ? row.black : std::nullopt;
-    }
-    QModelIndex indexFor(chess::NodeId node) const {
-        const auto found = locations_.find(node);
-        return found == locations_.end() ? QModelIndex{}
-                                         : index(found->second.first, found->second.second);
-    }
-    QVariant data(const QModelIndex& index, int role) const override {
-        if (!index.isValid()) {
-            return {};
-        }
-        if (index.column() == 0 && role == Qt::DisplayRole) {
-            return rows_[static_cast<std::size_t>(index.row())].number;
-        }
-        const auto id = node(index);
-        return id ? moveData(controller_, *id, role) : QVariant{};
-    }
-    Qt::ItemFlags flags(const QModelIndex& index) const override {
-        return node(index) ? Qt::ItemIsEnabled | Qt::ItemIsSelectable : Qt::NoItemFlags;
-    }
-    QVariant headerData(int section, Qt::Orientation orientation, int role) const override {
-        if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
-            return {};
-        }
-        return section == 0 ? tr("Move") : section == 1 ? tr("White") : tr("Black");
-    }
-    void refresh() {
-        const auto& line = controller_.chosenLine();
-        if (tree_ != controller_.navigationTree() || line_ != line ||
-            session_ != controller_.target(chess::NodeId{0}).session) {
-            beginResetModel();
-            tree_ = controller_.navigationTree();
-            session_ = controller_.target(chess::NodeId{0}).session;
-            line_ = line;
-            rows_.clear();
-            locations_.clear();
-            for (const auto id : line_) {
-                const auto& entry = tree_->nodes.at(id);
-                if (!entry.parent) {
-                    rows_.push_back({{}, id, std::nullopt});
-                    locations_.emplace(id, std::pair{0, 1});
-                    continue;
-                }
-                if (entry.side == chess::Color::White || rows_.size() == 1 ||
-                    rows_.back().number != QString::number(entry.number)) {
-                    rows_.push_back({QString::number(entry.number), std::nullopt, std::nullopt});
-                }
-                const auto column = entry.side == chess::Color::White ? 1 : 2;
-                (column == 1 ? rows_.back().white : rows_.back().black) = id;
-                locations_.emplace(id, std::pair{static_cast<int>(rows_.size() - 1), column});
-            }
-            endResetModel();
-        } else if (!rows_.empty()) {
-            emit dataChanged(index(0, 1), index(rowCount() - 1, 2));
-        }
-    }
-    std::uint64_t session() const { return session_; }
-
-  private:
-    app::AnalysisController& controller_;
-    std::shared_ptr<const app::NavigationTree> tree_;
-    std::vector<chess::NodeId> line_;
-    std::vector<Row> rows_;
-    std::map<chess::NodeId, std::pair<int, int>> locations_;
-    std::uint64_t session_ = 0;
-};
-
-namespace {
-class TimelineDelegate final : public QStyledItemDelegate {
-  public:
-    explicit TimelineDelegate(QObject* parent) : QStyledItemDelegate(parent) {}
-    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
-        QStyledItemDelegate::initStyleOption(option, index);
-        option->state &= ~QStyle::State_Selected;
-        if (index.data(currentPositionRole).toBool()) {
-            option->backgroundBrush = option->palette.highlight();
-            option->palette.setBrush(QPalette::Text, option->palette.highlightedText());
-        }
-        if (index.data(pendingPositionRole).toBool()) {
-            option->font.setUnderline(true);
-        }
-    }
-};
 } // namespace
 MoveTimelineView::MoveTimelineView(app::AnalysisController& controller, QWidget* parent)
-    : QTableView(parent), controller_(controller), moves_(new TimelineModel(controller, this)) {
-    setObjectName(QStringLiteral("moveTimeline"));
-    setAccessibleName(tr("Chosen line move timeline"));
-    setModel(moves_);
-    setEditTriggers(NoEditTriggers);
-    setSelectionMode(SingleSelection);
-    setItemDelegate(new TimelineDelegate(this));
-    setSelectionBehavior(SelectItems);
-    verticalHeader()->hide();
-    horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
-    setMinimumHeight(84);
-    setMaximumHeight(110);
-    connect(selectionModel(), &QItemSelectionModel::selectionChanged, this,
-            [this](const QItemSelection& selected) {
-                if (refreshing_) {
-                    return;
-                }
-                for (const auto& index : selected.indexes()) {
-                    if (const auto node = moves_->node(index)) {
-                        controller_.navigate(app::NavigationTarget{moves_->session(), *node});
-                        return;
-                    }
-                }
-                refresh(); // A current board position cannot be deselected.
-            });
-    connect(this, &QTableView::clicked, this, [this](const QModelIndex& index) {
-        if (const auto node = moves_->node(index)) {
-            controller_.navigate(app::NavigationTarget{moves_->session(), *node});
-        }
-    });
-    connect(this, &QTableView::activated, this, [this](const QModelIndex& index) {
-        if (const auto node = moves_->node(index)) {
-            controller_.navigate(app::NavigationTarget{moves_->session(), *node});
-        }
-    });
+    : MoveTimeline(parent), controller_(controller) {
+    connect(this, &MoveTimeline::navigationRequested, &controller_,
+            qOverload<app::NavigationTarget>(&app::AnalysisController::navigate));
+    connect(this, &MoveTimeline::previousRequested, &controller_,
+            &app::AnalysisController::previous);
+    connect(this, &MoveTimeline::nextRequested, &controller_, &app::AnalysisController::next);
+    connect(this, &MoveTimeline::beginningRequested, &controller_,
+            &app::AnalysisController::beginning);
+    connect(this, &MoveTimeline::endRequested, &controller_, &app::AnalysisController::end);
     connect(&controller_, &app::AnalysisController::changed, this, &MoveTimelineView::refresh);
     refresh();
 }
 void MoveTimelineView::refresh() {
-    const QScopedValueRollback guard(refreshing_, true);
-    const auto focused = moves_->node(currentIndex());
-    const auto scroll = verticalScrollBar()->value();
-    moves_->refresh();
-    setEnabled(controller_.canNavigate());
-    if (focused && currentIndex() != moves_->indexFor(*focused)) {
-        setCurrentIndex(moves_->indexFor(*focused));
-    }
-    const auto published = moves_->indexFor(controller_.currentNode());
-    if (published.isValid()) {
-        selectionModel()->select(published, QItemSelectionModel::ClearAndSelect);
-    } else {
-        selectionModel()->clearSelection();
-    }
-    if (displayed_ != controller_.currentNode()) {
-        displayed_ = controller_.currentNode();
-        scrollTo(moves_->indexFor(*displayed_), EnsureVisible);
-    } else {
-        verticalScrollBar()->setValue(scroll);
-    }
-}
-void MoveTimelineView::keyPressEvent(QKeyEvent* event) {
-    if (!historyKey(event, controller_)) {
-        QTableView::keyPressEvent(event);
-    }
+    setSnapshot(controller_.navigationTree(), controller_.chosenLine(),
+                controller_.target(chess::NodeId{0}).session, controller_.currentNode(),
+                controller_.busy() ? std::optional{controller_.requestedNode()} : std::nullopt,
+                controller_.canNavigate());
 }
 
 class VariationModel final : public QAbstractItemModel {

@@ -162,7 +162,8 @@ void installExitDriver() {
                         ++phase;
                         return;
                     }
-                    auto* board = window->findChild<chess_review::ui::ChessBoardWidget*>();
+                    auto* board = window->findChild<chess_review::ui::ChessBoardWidget*>(
+                        QStringLiteral("chessBoard"));
                     if (!board || !board->state().interactive) {
                         return;
                     }

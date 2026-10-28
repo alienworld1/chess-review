@@ -191,6 +191,7 @@ void MainWindow::installReview(app::ReviewGameController& review) {
     reviewController_ = &review;
     reviewPage_ = new ReviewPage(review, pages_);
     pages_->addWidget(reviewPage_);
+    reviewPage_->setSplitShare(reviewSplit_);
     auto* games = pages_->findChild<GamesPage*>();
     Q_ASSERT(games);
     connect(games, &GamesPage::reviewRequested, this, [this, &review](persistence::GameId id) {
@@ -215,13 +216,19 @@ void MainWindow::installReview(app::ReviewGameController& review) {
     qobject_cast<QVBoxLayout*>(scroll->widget()->layout())->insertWidget(2, task);
     task->hide();
     connect(task, &QPushButton::clicked, this, &MainWindow::showReview);
+    connect(pages_, &QStackedWidget::currentChanged, this, [this, task, &review] {
+        const auto& state = review.state();
+        task->setVisible(pages_->currentWidget() != reviewPage_ &&
+                         (state.active || state.run.has_value() || !state.error.isEmpty()));
+    });
     connect(&review, &app::ReviewGameController::changed, this, [this, task, &review] {
         const auto& state = review.state();
         if (state.active && !reviewWasActive_) {
             reviewLeaveAllowed_ = false;
         }
         reviewWasActive_ = state.active;
-        task->setVisible(state.active || state.run.has_value() || !state.error.isEmpty());
+        task->setVisible(pages_->currentWidget() != reviewPage_ &&
+                         (state.active || state.run.has_value() || !state.error.isEmpty()));
         task->setText(tr("Review: %1 — %2 / %3 positions saved · Return to Review")
                           .arg(state.active ? tr("In progress")
                                : state.run  ? app::reviewStatusText(state.run->status)
@@ -643,6 +650,10 @@ void MainWindow::resetWindowGeometry() {
     fitToScreen();
 }
 void MainWindow::resetLayout() {
+    reviewSplit_ = 55;
+    if (reviewPage_) {
+        reviewPage_->setSplitShare(55);
+    }
     if (closing_) {
         return;
     }
@@ -654,6 +665,10 @@ void MainWindow::restoreUiState(const app::UiState& state) {
         return;
     }
     resetWindowGeometry();
+    reviewSplit_ = state.reviewSplit;
+    if (reviewPage_) {
+        reviewPage_->setSplitShare(reviewSplit_);
+    }
     if (analysis_) {
         analysis_->setPreferences(state.board);
     }
@@ -675,8 +690,9 @@ void MainWindow::restoreUiState(const app::UiState& state) {
     });
 }
 app::UiState MainWindow::uiState() const {
-    return {saveGeometry(), windowState().testFlag(Qt::WindowMaximized), navigation_.current(),
-            analysis_ ? analysis_->preferences() : app::BoardPreferences{}};
+    return {saveGeometry(),        windowState().testFlag(Qt::WindowMaximized),
+            navigation_.current(), analysis_ ? analysis_->preferences() : app::BoardPreferences{},
+            std::nullopt,          reviewPage_ ? reviewPage_->splitShare() : reviewSplit_};
 }
 void MainWindow::showClosing() {
     if (closing_) {

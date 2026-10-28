@@ -1,6 +1,7 @@
 #include "app/ReviewMovePresentation.h"
 #include <QObject>
 #include <QStringList>
+#include <cmath>
 namespace chess_review::app {
 namespace {
 QString evidenceReason(review::EvidenceIssue issue) {
@@ -111,6 +112,108 @@ QString classificationText(const std::optional<review::ClassificationResult>& re
         return QObject::tr("Blunder");
     }
     return {};
+}
+ReviewEvaluation reviewPositionEvaluation(const persistence::ReviewMove* row, bool initial) {
+    ReviewEvaluation result;
+    result.description = QObject::tr("White expected score: unavailable");
+    if (!row || !row->classification) {
+        return result;
+    }
+    const auto& evaluation = initial ? row->classification->before : row->classification->after;
+    if (evaluation.issue || !evaluation.expected) {
+        return result;
+    }
+    const auto& value = *evaluation.expected;
+    if (!std::isfinite(value.value) || value.value < 0 || value.value > 1 ||
+        value.modelVersion != review::expectedScoreModelVersion) {
+        return result;
+    }
+    result.whiteExpected = value.perspective == chess::Color::White ? value.value : 1 - value.value;
+    result.approximate = value.source == review::ConversionSource::ApproximateCentipawns;
+    result.description =
+        QObject::tr("White expected score: %1% · %2 · model %3")
+            .arg(*result.whiteExpected * 100, 0, 'f', 1)
+            .arg(result.approximate ? QObject::tr("approximate centipawn conversion")
+                 : value.source == review::ConversionSource::Terminal
+                     ? QObject::tr("locally proven terminal outcome")
+                     : QObject::tr("engine WDL"))
+            .arg(value.modelVersion);
+    return result;
+}
+QString reviewMoveMarker(const persistence::ReviewMove* move) {
+    if (!move || !move->classification) {
+        return QObject::tr("Awaiting evidence");
+    }
+    QString glyph;
+    if (move->classification->label) {
+        switch (*move->classification->label) {
+        case review::Classification::Best:
+            glyph = QStringLiteral("★ ");
+            break;
+        case review::Classification::Excellent:
+            glyph = QStringLiteral("E ");
+            break;
+        case review::Classification::Good:
+            glyph = QStringLiteral("✓ ");
+            break;
+        case review::Classification::Inaccuracy:
+            glyph = QStringLiteral("?! ");
+            break;
+        case review::Classification::Mistake:
+            glyph = QStringLiteral("? ");
+            break;
+        case review::Classification::Blunder:
+            glyph = QStringLiteral("?? ");
+            break;
+        }
+    }
+    return glyph + classificationText(move->classification) +
+           (move->classification->label
+                ? (move->classification->stable ? QObject::tr(" · stable")
+                                                : QObject::tr(" · provisional"))
+                : QString{});
+}
+QString reviewMomentHeadline(const persistence::ReviewMove* move, int position) {
+    if (position == 0) {
+        return QObject::tr("Initial position");
+    }
+    if (!move) {
+        return QObject::tr("Position %1 — awaiting evidence").arg(position);
+    }
+    return QObject::tr("%1%2 %3 — %4")
+        .arg(move->moveNumber)
+        .arg(move->mover == chess::Color::White ? QStringLiteral(".") : QStringLiteral("..."),
+             move->san, reviewMoveMarker(move));
+}
+QString reviewMomentExplanation(const persistence::ReviewMove* move, int position) {
+    if (position == 0) {
+        return QObject::tr("Explore the full game or continue to a key moment. The board shows "
+                           "each position after the played move.");
+    }
+    if (!move || !move->classification) {
+        return QObject::tr("Saved evidence is not available for this move yet. You can continue "
+                           "navigating the full game.");
+    }
+    const auto& result = *move->classification;
+    QStringList lines;
+    if (result.loss) {
+        lines << QObject::tr("This move reduced %1's expected score by %2 percentage points.")
+                     .arg(move->mover == chess::Color::White ? QObject::tr("White")
+                                                             : QObject::tr("Black"))
+                     .arg(*result.loss * 100, 0, 'f', 1);
+    } else if (result.evidenceIssue) {
+        lines << evidenceReason(*result.evidenceIssue);
+    } else {
+        lines << QObject::tr(
+            "A reliable numeric impact is unavailable. Inspect the saved evidence for details.");
+    }
+    lines << (result.stable ? QObject::tr("Two stronger passes agree on this result.")
+                            : QObject::tr("Provisional: stability has not been established."));
+    if (move->contextPosition) {
+        lines << QObject::tr("Context: the opponent's preceding error at position %1.")
+                     .arg(*move->contextPosition);
+    }
+    return lines.join(QLatin1Char('\n'));
 }
 QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::Color selectedSide) {
     QStringList text;

@@ -649,7 +649,7 @@ class LiveAnalysisTest final : public QObject {
         a.startup.engineAnalysis().start();
         QTRY_COMPARE(a.startup.engineAnalysis().state().line.pv, QStringLiteral("1. e4 e5 2. Nf3"));
         QTest::qWait(100);
-        auto* board = a.window.findChild<ui::ChessBoardWidget*>();
+        auto* board = a.window.findChild<ui::ChessBoardWidget*>(QStringLiteral("chessBoard"));
         auto* panel = a.window.findChild<ui::EngineAnalysisPanel*>();
         auto* bar = a.window.findChild<QWidget*>(QStringLiteral("evaluationBar"));
         QVERIFY(bar);

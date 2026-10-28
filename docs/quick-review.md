@@ -14,10 +14,41 @@ review perspective. Checkmate and stalemate positions use local board proof.
 The progress count includes only positions whose evidence has been saved. Valid
 completed engine results can still contain weak or otherwise insufficient evidence.
 New runs automatically refine selected moments after the quick scan. Processing
-completion does not certify every classification. The Summary tab shows accuracy
-with coverage, while the inspector distinguishes stable, provisional and withheld
-results. See [refinement and summaries](review-summaries.md). Guided explanations
-and the board-first review screen remain later increments.
+completion does not certify every classification. The compact summary shows
+accuracy with coverage; expand **Summary and evidence details** for counts,
+provenance and the full inspector. See [refinement and summaries](review-summaries.md).
+
+## Board-first navigation
+
+Review places the original game board beside the selected move's explanation.
+The board shows the position **after** the selected move, with the reviewed player
+at the bottom. **Flip Board** changes the current Review session's orientation.
+The first available summary opens the first chronological key moment, or the
+initial position if there are none. Navigating yourself prevents a late summary
+from moving you elsewhere.
+
+Use **Start**, **Previous**, **Next**, **End**, or the numbered White/Black timeline
+to explore every original mainline move, including moves without analysis. Left/Right
+and Home/End work in the timeline and move-navigation controls. Hovering a move
+temporarily previews its board and evaluation; the selected explanation stays in
+place. Leaving the timeline restores the selected position. Clicking commits the
+preview. The preview indicator distinguishes temporary and pending positions.
+
+**Previous key moment** and **Next key moment** follow the reviewed player's
+important moments chronologically, across evidence-page boundaries. Expand
+**Chronological key moments** for the list and opponent-error context.
+Classifications have textual markers and provisional/stable labels as well as
+color. Missing evidence is explicitly unavailable.
+
+The slim bar displays **White's expected score**, including draws; it is neither
+win probability nor a pawn evaluation. Approximate conversion is labeled. Missing,
+bounded, or unsupported numeric evidence leaves the bar unavailable.
+
+Drag the divider to resize the workspace; its Review-specific share survives an
+orderly exit. Explanations scroll independently. **Review setup** and **Saved
+review runs** expand on demand. Returning within the session retains the selected
+moment. Interactive better-move lines, Try Again, and Analyze/Back transitions are
+not yet implemented.
 
 ## Background work and cancellation
 
@@ -35,8 +66,9 @@ Interrupted. Work never resumes automatically.
 
 ## Saved runs and resume
 
-The Review workspace’s **Saved runs** tab lists runs for the selected game, with
-pagination. The **Moves** tab shows the inspected run’s move list and details.
+The Review workspace’s **Saved review runs** section lists runs for the selected
+game, with pagination. The **Evidence** tab under **Summary and evidence details**
+shows the inspected run’s paged evidence and full rationale.
 Select a run to inspect its status and coverage without starting an engine.
 Incomplete runs offer **Resume selected run**. Resume keeps the original player,
 quality, complete configuration and supported evidence-model versions, even if the
@@ -63,8 +95,9 @@ to update that cache does not erase the review's own saved evidence.
 
 ## Move classifications and evidence
 
-The move list includes both players and all mainline moves, in pages of 50 plies.
-Select a row with the mouse or keyboard to inspect its rationale. Labels appear
+The timeline includes both players and all mainline moves. Evidence is loaded in
+bounded pages of 50 plies as needed; the expanded inspector also offers explicit
+page controls. Select a move with the mouse or keyboard to inspect its rationale. Labels appear
 only after both adjacent positions and the classification have been committed.
 Cancelled and partial runs retain useful classifications; unprocessed moves remain
 visible as **Awaiting evidence**. **Unclassified** means evidence was retained but

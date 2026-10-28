@@ -102,6 +102,7 @@ chess_review_apply_options(chess_review_app_paths)
 add_library(chess_review_startup STATIC
     src/app/ReviewGameController.cpp
     src/app/ReviewMovesController.cpp
+    src/app/ReviewNavigationController.cpp
     src/app/ReviewMovePresentation.cpp
     src/app/ReviewConfiguration.cpp
     src/app/EngineAnalysisController.cpp
@@ -122,6 +123,7 @@ chess_review_apply_options(chess_review_startup)
 
 add_library(chess_review_ui STATIC
     src/ui/review/ReviewPage.cpp
+    src/ui/chess/MoveTimeline.cpp
     src/ui/EngineText.cpp
     src/ui/settings/EngineSettingsPage.cpp
     src/ui/chess/ChessBoardWidget.cpp

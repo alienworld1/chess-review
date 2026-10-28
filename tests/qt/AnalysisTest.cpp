@@ -842,7 +842,7 @@ void AnalysisTest::layout() {
     if (flipped) {
         controller_->flip();
     }
-    auto* board = window.findChild<ui::ChessBoardWidget*>();
+    auto* board = window.findChild<ui::ChessBoardWidget*>(QStringLiteral("chessBoard"));
     QVERIFY(board);
     QTest::qWait(180);
     if (qEnvironmentVariableIsSet("CHESS_REVIEW_SCREENSHOT_DIR")) {

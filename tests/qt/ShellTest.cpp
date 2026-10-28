@@ -472,8 +472,8 @@ void ShellTest::preferencesRoundTrip() {
     writer.load(path);
     QVERIFY(loaded.wait(5000));
     QVERIFY(!QFileInfo::exists(path));
-    writer.saveAndClose(
-        app::UiState{QByteArray("geometry bytes"), true, app::Destination::Settings});
+    writer.saveAndClose(app::UiState{
+        QByteArray("geometry bytes"), true, app::Destination::Settings, {}, std::nullopt, 67});
     QTRY_COMPARE(closed.count(), 1);
     QCOMPARE(failed.count(), 0);
     app::UiStateStore reader;
@@ -484,6 +484,7 @@ void ShellTest::preferencesRoundTrip() {
     QVERIFY(restored.wait(5000));
     const auto state = qvariant_cast<app::UiState>(restored.front().front());
     QCOMPARE(state.geometry, QByteArray("geometry bytes"));
+    QCOMPARE(state.reviewSplit, 67);
     QVERIFY(state.maximized);
     QCOMPARE(state.destination, app::Destination::Settings);
 }

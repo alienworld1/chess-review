@@ -12,8 +12,8 @@ bool active(const persistence::ReviewSummary& run) {
 }
 } // namespace
 
-ReviewMovesController::ReviewMovesController(persistence::Database& database)
-    : database_(database) {
+ReviewMovesController::ReviewMovesController(persistence::Database& database, bool backfill)
+    : database_(database), backfill_(backfill) {
     timer_.setSingleShot(true);
     connect(&timer_, &QTimer::timeout, this, &ReviewMovesController::requestNext);
     connect(&database_, &persistence::Database::reviewMovesLoaded, this,
@@ -129,7 +129,7 @@ void ReviewMovesController::requestNext() {
     if (closing_ || !pending_.isNull() || !run_) {
         return;
     }
-    if (!dirty_ && (active(*run_) || backfillOffset_ >= run_->totalPositions - 1)) {
+    if (!dirty_ && (!backfill_ || active(*run_) || backfillOffset_ >= run_->totalPositions - 1)) {
         return;
     }
     const int offset = dirty_ ? state_.offset : backfillOffset_;

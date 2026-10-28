@@ -14,7 +14,10 @@ full-game quick scan with player/engine/quality selection, durable progress,
 cancellation, background continuation and explicit resume. A paged move list shows
 provisional normal classifications with inspectable scores, rules, thresholds and
 evidence provenance. Older runs gain classifications from saved evidence without
-an engine. Accuracy and guided board review remain future work.
+an engine. The board-first Review workspace now offers per-side accuracy and
+coverage, stable/provisional results, chronological key moments, full-game move
+navigation, reversible hover previews and a White expected-score bar. Interactive
+better-move exploration and retry remain future work.
 Settings registers local UCI executables through a nonblocking validation
 handshake and persists their profiles. Explicit Connect/Disconnect controls keep
 an engine Ready and expose its advertised options without starting a search.

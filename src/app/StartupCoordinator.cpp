@@ -60,6 +60,9 @@ void StartupCoordinator::connectServices() {
             [this] { library_.refresh(true); });
     connect(&database_, &persistence::Database::progress, this, &StartupCoordinator::progress);
     connect(&database_, &persistence::Database::ready, this, [this] {
+        if (state_ == Lifecycle::Stopping || state_ == Lifecycle::Stopped) {
+            return;
+        }
         state_ = Lifecycle::Ready;
         localImports_.setReady(true);
         engines_.setReady(configuration_.state() != ConfigurationState::Loading);
@@ -77,6 +80,9 @@ void StartupCoordinator::connectServices() {
     });
     connect(&database_, &persistence::Database::failed, this,
             [this](const persistence::DatabaseError& error) {
+                if (state_ == Lifecycle::Stopping || state_ == Lifecycle::Stopped) {
+                    return;
+                }
                 state_ = Lifecycle::Failed;
                 emit failed(storageDiagnostic(error));
             });

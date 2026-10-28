@@ -19,7 +19,7 @@ struct ReviewMovesState {
 class ReviewMovesController final : public QObject {
     Q_OBJECT
   public:
-    explicit ReviewMovesController(persistence::Database& database);
+    explicit ReviewMovesController(persistence::Database& database, bool backfill = true);
     const ReviewMovesState& state() const { return state_; }
     void bind(const std::optional<persistence::ReviewSummary>& run);
     void showPage(int offset);
@@ -45,5 +45,6 @@ class ReviewMovesController final : public QObject {
     bool pendingVisible_ = false;
     bool dirty_ = false;
     bool closing_ = false;
+    bool backfill_ = true;
 };
 } // namespace chess_review::app

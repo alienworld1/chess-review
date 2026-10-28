@@ -1,27 +1,19 @@
 #pragma once
 
 #include "app/AnalysisController.h"
-#include <QTableView>
+#include "ui/chess/MoveTimeline.h"
 #include <QTreeView>
 
 namespace chess_review::ui {
-class TimelineModel;
 class VariationModel;
-
-class MoveTimelineView final : public QTableView {
+class MoveTimelineView final : public MoveTimeline {
     Q_OBJECT
   public:
     explicit MoveTimelineView(app::AnalysisController& controller, QWidget* parent = nullptr);
 
-  protected:
-    void keyPressEvent(QKeyEvent* event) override;
-
   private:
     void refresh();
     app::AnalysisController& controller_;
-    TimelineModel* moves_;
-    bool refreshing_ = false;
-    std::optional<chess::NodeId> displayed_;
 };
 
 class GameTreeView final : public QTreeView {
