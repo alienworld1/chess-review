@@ -218,7 +218,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     header->addWidget(back);
     game_ = new QLabel(this);
     game_->setTextFormat(Qt::PlainText);
-    game_->setWordWrap(true);
+    game_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     header->addWidget(game_, 1);
     layout->addLayout(header);
     connect(back, &QPushButton::clicked, this, &ReviewPage::backRequested);
@@ -235,7 +235,9 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     auto* boardLayout = new QVBoxLayout(left);
     boardLayout->setContentsMargins(0, 0, 0, 0);
     topPlayer_ = new QLabel(left);
+    topPlayer_->setObjectName(QStringLiteral("reviewTopPlayer"));
     topPlayer_->setTextFormat(Qt::PlainText);
+    topPlayer_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     boardLayout->addWidget(topPlayer_);
     auto* boardRow = new QHBoxLayout;
     evaluation_ = new QProgressBar(left);
@@ -254,7 +256,9 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     boardRow->addWidget(board_, 1);
     boardLayout->addLayout(boardRow, 1);
     bottomPlayer_ = new QLabel(left);
+    bottomPlayer_->setObjectName(QStringLiteral("reviewBottomPlayer"));
     bottomPlayer_->setTextFormat(Qt::PlainText);
+    bottomPlayer_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     boardLayout->addWidget(bottomPlayer_);
     evaluationText_ = new QLabel(left);
     evaluationText_->setObjectName(QStringLiteral("reviewEvaluationText"));
@@ -717,6 +721,7 @@ void ReviewPage::update() {
         }
     }
     game_->setText(tr("Game review: %1").arg(state.game));
+    game_->setToolTip(QStringLiteral("<qt>%1</qt>").arg(game_->text().toHtmlEscaped()));
     const auto blocker = controller_.startBlocker(engine_->currentData().toLongLong());
     reason_->setText(blocker.isEmpty() && side_->currentIndex() == 0
                          ? tr("Choose the player whose perspective this run will retain.")
@@ -840,6 +845,11 @@ void ReviewPage::update() {
 void ReviewPage::updateNavigation() {
     auto& nav = controller_.navigation();
     const auto& state = controller_.state();
+    if (nav.selected() == 0) {
+        const QSignalBlocker moveSelection(moves_->selectionModel());
+        moves_->setCurrentIndex({});
+        moves_->clearSelection();
+    }
     board_->setState(nav.board());
     app::BoardPreferences preferences;
     preferences.blackAtBottom = nav.board().blackAtBottom;
@@ -848,7 +858,10 @@ void ReviewPage::updateNavigation() {
     const auto white = nav.whitePlayer().isEmpty() ? tr("White") : nav.whitePlayer();
     const auto blackPlayer = nav.blackPlayer().isEmpty() ? tr("Black") : nav.blackPlayer();
     topPlayer_->setText(black ? white : blackPlayer);
+    topPlayer_->setToolTip(QStringLiteral("<qt>%1</qt>").arg(topPlayer_->text().toHtmlEscaped()));
     bottomPlayer_->setText(black ? blackPlayer : white);
+    bottomPlayer_->setToolTip(
+        QStringLiteral("<qt>%1</qt>").arg(bottomPlayer_->text().toHtmlEscaped()));
     const auto evaluation = nav.evaluation();
     evaluation_->setEnabled(evaluation.whiteExpected.has_value());
     if (evaluation.whiteExpected) {
@@ -863,7 +876,12 @@ void ReviewPage::updateNavigation() {
     previewLabel_->setText(
         !nav.error().isEmpty() ? nav.error()
         : !nav.ready()         ? tr("Loading original game…")
-        : nav.previewing()     ? tr("Previewing position %1 — selected position %2 is unchanged")
+        : nav.previewing() && nav.pending()
+            ? tr("Loading preview %1 — board still shows position %2; selected position %3")
+                  .arg(nav.requested())
+                  .arg(nav.displayed())
+                  .arg(nav.selected())
+        : nav.previewing() ? tr("Previewing position %1 — selected position %2 is unchanged")
                                  .arg(nav.requested())
                                  .arg(nav.selected())
         : nav.pending() ? tr("Loading position %1…").arg(nav.requested())

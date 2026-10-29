@@ -1,6 +1,7 @@
 #include "app/ReviewNavigationController.h"
 #include <QTimer>
 #include <algorithm>
+#include <iterator>
 
 namespace chess_review::app {
 ReviewNavigationController::ReviewNavigationController(persistence::Database& database,
@@ -200,7 +201,14 @@ void ReviewNavigationController::cachePage(const ReviewMovesState& state) {
         }
         pages_.push_front(*state.page);
         if (pages_.size() > 4) {
-            pages_.pop_back();
+            // Scrolling must not discard the committed explanation/evaluation.
+            // Keep its page pinned within the same four-page memory bound.
+            const int selectedOffset = (std::max(1, selected_) - 1) / 50 * 50;
+            const auto oldest =
+                std::find_if(pages_.rbegin(), pages_.rend(), [selectedOffset](const auto& page) {
+                    return page.offset != selectedOffset;
+                });
+            pages_.erase(std::prev(oldest.base()));
         }
     }
     requestVisibleEvidence();

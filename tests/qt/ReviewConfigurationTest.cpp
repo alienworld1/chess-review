@@ -509,6 +509,43 @@ class ReviewConfigurationTest final : public QObject {
         QVERIFY(std::holds_alternative<analysis::ReviewEvidenceRecord>(legacy));
         QVERIFY(!std::get<analysis::ReviewEvidenceRecord>(legacy).evidence.complete);
     }
+    void completedIterationCannotBypassSearchRequirements() {
+        auto raw = analysisResult();
+        raw.evidence.completedIteration = raw.evidence.lines;
+        raw.evidence.completedIteration.front().statistics.nodes = 70;
+        raw.evidence.lines.front().score->bound = engine::ScoreBound::Lower;
+        const auto complete = [](const engine::AnalysisResult& value) {
+            const auto adapted = analysis::reviewEvidence(value);
+            const auto* record = std::get_if<analysis::ReviewEvidenceRecord>(&adapted);
+            return record && record->evidence.complete;
+        };
+        QVERIFY(complete(raw));
+        auto changed = raw;
+        changed.evidence.statistics.nodes = 99;
+        QVERIFY(!complete(changed));
+        changed = raw;
+        changed.evidence.limit = engine::DepthLimit{13};
+        changed.evidence.statistics.depth = 13;
+        QVERIFY(!complete(changed)); // Total depth cannot promote a depth-12 witness.
+        changed.evidence.limit = engine::DepthLimit{12};
+        QVERIFY(complete(changed));
+        changed = raw;
+        changed.evidence.limit = engine::TimeLimit{100};
+        changed.evidence.statistics.timeMs = 99;
+        QVERIFY(!complete(changed));
+        changed.evidence.statistics.timeMs = 100;
+        QVERIFY(complete(changed));
+        changed = raw;
+        changed.evidence.requestedMultiPv = 3;
+        QVERIFY(!complete(changed)); // Effective width 1 cannot supply requested width 3.
+        for (const auto outcome :
+             {engine::AnalysisOutcome::Stopped, engine::AnalysisOutcome::Failed,
+              engine::AnalysisOutcome::Rejected}) {
+            changed = raw;
+            changed.outcome = outcome;
+            QVERIFY(!complete(changed));
+        }
+    }
     void adapterUsesScoreSetDepth() {
         auto raw = analysisResult();
         raw.evidence.statistics.depth = 13;

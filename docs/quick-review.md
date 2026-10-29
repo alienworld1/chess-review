@@ -166,6 +166,14 @@ superseded page cannot replace the current view or its error state. While scanni
 move-list refreshes coalesce over 200 ms; new classifications still commit with
 each evidence checkpoint. Background backfill continues after the scan stops.
 
+Retrying preserves the selected move within its evidence page. Scrolling the
+timeline keeps that move's explanation available within the bounded page cache.
+While a hover preview is loading, its status identifies the requested position
+and the position still displayed on the board.
+At the initial position the evidence inspector has no selected move row. Long
+game and player labels stay within the workspace; hover over clipped labels for
+their displayed-name text, which also remains available to accessibility tools.
+
 
 ## A finished run has no useful evaluations
 

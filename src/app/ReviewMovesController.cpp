@@ -102,7 +102,9 @@ void ReviewMovesController::showPage(int offset) {
     ++generation_;
     state_.offset = offset;
     state_.page.reset();
-    state_.selectedPosition = 0;
+    if (state_.selectedPosition <= offset || state_.selectedPosition > offset + 50) {
+        state_.selectedPosition = 0;
+    }
     state_.loading = true;
     state_.error.clear();
     dirty_ = true;

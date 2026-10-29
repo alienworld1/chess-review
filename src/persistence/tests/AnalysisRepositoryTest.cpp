@@ -540,6 +540,32 @@ class AnalysisRepositoryTest final : public QObject {
         QVERIFY(std::holds_alternative<CacheError>(conflict));
         QCOMPARE(std::get<CacheError>(conflict).code, CacheErrorCode::Conflict);
     }
+    void completedIterationRejectsMalformedFrames() {
+        auto result = sample(2, true);
+        const auto legacy = std::get<QByteArray>(encodeAnalysis(result));
+        result.evidence.completedIteration = result.evidence.lines;
+        const auto bytes = std::get<QByteArray>(encodeAnalysis(result));
+        const auto body = bytes.first(bytes.size() - 32);
+        const auto framed = [](QByteArray payload) {
+            payload += QCryptographicHash::hash(payload, QCryptographicHash::Sha256);
+            return payload;
+        };
+        // Recomputed checksums must not bypass framing, width or canonical checks.
+        for (qsizetype i = 0; i < body.size(); ++i) {
+            QVERIFY(!decodeAnalysis(framed(body.first(i))));
+        }
+        const auto witnessOffset = legacy.size() - 32;
+        for (const auto& count : {QByteArray::fromHex("00000000"), QByteArray::fromHex("00000101"),
+                                  QByteArray::fromHex("ffffffff")}) {
+            auto invalid = body;
+            invalid.replace(witnessOffset, 4, count);
+            QVERIFY(!decodeAnalysis(framed(invalid)));
+        }
+        auto invalid = body;
+        invalid[3] = 2; // A format-2 payload cannot smuggle a second line set.
+        QVERIFY(!decodeAnalysis(framed(invalid)));
+        QVERIFY(!decodeAnalysis(framed(body + 'x')));
+    }
     void codec() {
         auto r = sample(2, true);
         r.evidence.statistics.nps = std::numeric_limits<std::uint64_t>::max();

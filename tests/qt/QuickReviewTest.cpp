@@ -23,6 +23,7 @@
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QSignalSpy>
+#include <QSplitter>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTabWidget>
@@ -354,8 +355,8 @@ class QuickReviewTest final : public QObject {
         QTRY_VERIFY(moves.state().page && !moves.state().loading);
         auto& nav = f.startup.reviewGame().navigation();
         QTRY_VERIFY(nav.ready());
-        nav.select(nav.target(1));
-        QTRY_COMPARE(nav.displayed(), 1);
+        nav.select(nav.target(2));
+        QTRY_COMPARE(nav.displayed(), 2);
         QTRY_VERIFY(nav.evaluation().whiteExpected);
         QVERIFY(f.sql(QStringLiteral(
             "CREATE TABLE saved_classification_fixture AS SELECT * FROM review_classifications")));
@@ -374,9 +375,72 @@ class QuickReviewTest final : public QObject {
             "s.position_index=review_classifications.position_index)")));
         retry->click();
         QTRY_VERIFY(moves.state().page && !moves.state().loading && moves.state().error.isEmpty());
+        QCOMPARE(moves.state().selectedPosition, 2);
         QVERIFY(retry->isHidden());
         QTRY_VERIFY(nav.evaluation().whiteExpected);
         QVERIFY(moves.state().page->moves.front().classification->label);
+    }
+    void longPlayerNamesDoNotWidenReviewWorkspace() {
+        Fixture f;
+        const auto name = std::string("<b>&") + std::string(252, 'W');
+        QVERIFY(f.seed("[White \"" + name + "\"]\n[Black \"" + name + "\"]\n1. e4 e5 *"));
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        f.window.resize(1100, 720);
+        f.window.show();
+        auto& nav = f.startup.reviewGame().navigation();
+        QTRY_VERIFY(nav.ready());
+        auto* splitter = f.window.findChild<QSplitter*>(QStringLiteral("reviewSplitter"));
+        auto* shell = f.window.findChild<QScrollArea*>(QStringLiteral("shellScrollArea"));
+        QVERIFY(splitter);
+        QVERIFY(shell);
+        QCoreApplication::processEvents();
+        QVERIFY(splitter->width() <= shell->viewport()->width());
+        for (const auto& objectName :
+             {QStringLiteral("reviewTopPlayer"), QStringLiteral("reviewBottomPlayer")}) {
+            auto* label = f.window.findChild<QLabel*>(objectName);
+            QVERIFY(label);
+            QCOMPARE(label->textFormat(), Qt::PlainText);
+            QCOMPARE(label->text(), QString::fromStdString(name));
+            QCOMPARE(label->toolTip(),
+                     QStringLiteral("<qt>%1</qt>").arg(label->text().toHtmlEscaped()));
+        }
+    }
+    void scrollingEvidenceKeepsCommittedPageAndBoundsReads() {
+        std::string text;
+        for (int i = 0; i < 75; ++i) {
+            text += "Nf3 Nf6 Ng1 Ng8 ";
+        }
+        Fixture f;
+        QVERIFY(f.seed(text + "*"));
+        f.script(0, 1, 100);
+        f.run();
+        auto& owner = f.startup.reviewGame();
+        QTRY_VERIFY2(owner.state().run, qPrintable(owner.state().error));
+        owner.cancel();
+        QVERIFY(f.done());
+        auto& nav = owner.navigation();
+        QTRY_VERIFY(nav.ready());
+        nav.select(nav.target(2));
+        QTRY_VERIFY(nav.move(2));
+        owner.moves().close();
+        QTRY_VERIFY(owner.moves().drained());
+        QSignalSpy reads(&f.startup.gameRepository(), &persistence::Database::reviewMovesLoaded);
+        for (int position : {51, 101, 151, 201, 251}) {
+            nav.visible(nav.target(position), nav.target(position + 1));
+            QTRY_VERIFY(nav.move(position));
+            QCOMPARE(nav.selected(), 2);
+            QVERIFY(nav.move(2));
+        }
+        // One bounded page per new visible range; repeated paint/visibility intents
+        // must not keep issuing storage reads.
+        const auto count = reads.count();
+        for (int i = 0; i < 100; ++i) {
+            nav.visible(nav.target(251), nav.target(252));
+        }
+        QTest::qWait(100);
+        QCOMPARE(reads.count(), count);
+        QVERIFY(count <= 6);
+        QVERIFY(!nav.move(51));
     }
     void boundedFinalIterationDoesNotEraseUsableReview() {
         Fixture f;
@@ -1385,21 +1449,39 @@ class QuickReviewTest final : public QObject {
         f.window.show();
         auto& nav = f.startup.reviewGame().navigation();
         QTRY_VERIFY(nav.ready());
+        QTRY_VERIFY(f.startup.reviewGame().moves().state().page);
+        auto* inspector = f.window.findChild<QTableView*>(QStringLiteral("reviewMoves"));
+        QCOMPARE(nav.selected(), 0);
+        QVERIFY(!inspector->currentIndex().isValid());
+        QVERIFY(inspector->selectionModel()->selectedIndexes().isEmpty());
         nav.select(nav.target(1));
         QTRY_COMPARE(nav.displayed(), 1);
         QTRY_VERIFY(nav.move(1));
         auto* headline = f.window.findChild<QLabel*>(QStringLiteral("reviewMomentHeadline"));
+        auto* preview = f.window.findChild<QLabel*>(QStringLiteral("reviewPreview"));
         auto* board = f.window.findChild<ui::ChessBoardWidget*>(QStringLiteral("reviewBoard"));
         auto* timeline = f.window.findChild<ui::MoveTimeline*>(QStringLiteral("reviewTimeline"));
         QVERIFY(headline);
+        QVERIFY(preview);
         QVERIFY(board);
         QVERIFY(timeline);
         const auto selectedHeadline = headline->text();
         const auto selectedBoard = board->state().pieces;
+        bool sawLoadingPreview = false;
+        QObject previewObserver;
+        const auto previewChanged =
+            connect(&nav, &app::ReviewNavigationController::changed, &previewObserver, [&] {
+                if (nav.previewing() && nav.pending()) {
+                    sawLoadingPreview = true;
+                    QVERIFY(preview->text().startsWith(QStringLiteral("Loading preview")));
+                }
+            });
         const auto blackMove = timeline->model()->index(1, 2);
         QTest::mouseMove(timeline->viewport(), timeline->visualRect(blackMove).center());
         QTRY_VERIFY(nav.previewing());
         QTRY_COMPARE(nav.displayed(), 2);
+        QVERIFY(sawLoadingPreview);
+        disconnect(previewChanged);
         QCOMPARE(nav.selected(), 1);
         QCOMPARE(headline->text(), selectedHeadline);
         QVERIFY(!board->state().interactive);
@@ -1421,6 +1503,12 @@ class QuickReviewTest final : public QObject {
         QTRY_COMPARE(nav.displayed(), 2);
         QVERIFY(!nav.previewing());
         QVERIFY(headline->text().contains(QStringLiteral("e5")));
+        nav.beginning();
+        QTRY_COMPARE(nav.displayed(), 0);
+        QVERIFY(!inspector->currentIndex().isValid());
+        QVERIFY(inspector->selectionModel()->selectedIndexes().isEmpty());
+        nav.select(nav.target(2));
+        QTRY_COMPARE(nav.displayed(), 2);
         f.navigation.navigate(app::Destination::Home);
         f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
         QCOMPARE(nav.selected(), 2);
@@ -1440,6 +1528,11 @@ class QuickReviewTest final : public QObject {
         f.window.resize(1100, 720);
         f.window.show();
         QTest::qWait(30);
+        // Initial geometry restoration can clamp to the offscreen display. Apply
+        // the requested render size after that first show has settled.
+        f.window.resize(1100, 720);
+        QCoreApplication::processEvents();
+        QCOMPARE(f.window.size(), QSize(1100, 720));
         QVERIFY(QTest::qWaitFor(
             [&] { return f.startup.reviewGame().moves().state().page.has_value(); }));
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-light.png")));
