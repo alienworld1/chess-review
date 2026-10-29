@@ -210,15 +210,16 @@ void MainWindow::installReview(app::ReviewGameController& review) {
             [this] { navigation_.navigate(app::Destination::Settings); });
     connect(reviewPage_, &ReviewPage::analyzeRequested, this, [this] {
         auto& exploration = reviewController_->exploration();
-        if (!exploration.analysisOrigin()) {
+        const auto requestedOrigin = exploration.analysisOrigin();
+        if (!requestedOrigin) {
             return;
         }
-        const auto open = [this] {
+        const auto open = [this, requestedOrigin] {
             if (closing_) {
                 return;
             }
             auto& currentExplorer = reviewController_->exploration();
-            if (!currentExplorer.analysisOrigin()) {
+            if (currentExplorer.analysisOrigin() != requestedOrigin) {
                 return;
             }
             const bool resume = currentExplorer.sameAnalysisOrigin();

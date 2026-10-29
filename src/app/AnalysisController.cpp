@@ -158,6 +158,7 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
     if (closing_ || request != request_) {
         return;
     }
+    error_ = snapshot.error;
     const bool wasNavigating = navigating_;
     busy_ = false;
     navigating_ = false;

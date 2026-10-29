@@ -21,6 +21,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QScrollArea>
 #include <QSignalSpy>
 #include <QSplitter>
@@ -43,6 +44,7 @@ QJsonObject quit() {
     return engine_test::step(QStringLiteral("quit"),
                              {QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")}}});
 }
+enum class RetryScript { None, Unknown, Played, Crash };
 class Fixture {
   public:
     explicit Fixture(const QString& path = {},
@@ -139,7 +141,9 @@ class Fixture {
                 const QString& score = QStringLiteral("cp 25"),
                 const QString& identity = QStringLiteral("Test engine"), int quitDelay = 0,
                 bool multiPv = false, const QString& refinedScore = {}, int deepFirst = 0,
-                int verifyFirst = 0, bool boundedFinal = false, bool retrySearches = false) {
+                int verifyFirst = 0, bool boundedFinal = false,
+                RetryScript retry = RetryScript::None) {
+        const bool retrySearches = retry != RetryScript::None;
         QJsonArray steps{
             engine_test::step(
                 QStringLiteral("uci"),
@@ -252,7 +256,8 @@ class Fixture {
         if (retrySearches) {
             auto root = std::get<chess::Position>(document->tree.position(document->tree.rootId()));
             (void)root.play(moves.front());
-            const auto candidate = root.legalMoves().at(3);
+            const auto candidate =
+                retry == RetryScript::Played ? moves[1] : root.legalMoves().at(3);
             (void)root.play(candidate);
             for (const auto budget : {1000000U, 5000000U}) {
                 engine::AnalysisRequest request;
@@ -270,13 +275,20 @@ class Fixture {
                 steps.append(engine_test::step(QStringLiteral("ucinewgame"), {}));
                 steps.append(ready());
                 steps.append(engine_test::step(QString::fromUtf8(prepared.position).trimmed(), {}));
-                const auto best = std::get<std::string>(root.uci(root.legalMoves().front()));
-                steps.append(engine_test::step(
-                    QStringLiteral("go nodes %1").arg(budget),
-                    {engine_test::write(
-                        QStringLiteral("info depth 7 nodes %1 score cp -200 pv %2\nbestmove %2\n")
-                            .arg(budget)
-                            .arg(QString::fromStdString(best)))}));
+                if (retry == RetryScript::Crash) {
+                    steps.append(engine_test::step(
+                        QStringLiteral("go nodes %1").arg(budget),
+                        {QJsonObject{{QStringLiteral("type"), QStringLiteral("crash")}}}));
+                } else {
+                    const auto best = std::get<std::string>(root.uci(root.legalMoves().front()));
+                    steps.append(engine_test::step(
+                        QStringLiteral("go nodes %1").arg(budget),
+                        {engine_test::write(
+                            QStringLiteral(
+                                "info depth 7 nodes %1 score cp -200 pv %2\nbestmove %2\n")
+                                .arg(budget)
+                                .arg(QString::fromStdString(best)))}));
+                }
                 steps.append(ready());
             }
         }
@@ -732,11 +744,273 @@ class QuickReviewTest final : public QObject {
         QVERIFY(
             summary->toPlainText().contains(QStringLiteral("Last successfully loaded summary")));
     }
+
+    void retryEngineCrashRemainsUngradedAndDrainsShutdown() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true, {}, 0, 0, false, RetryScript::Crash);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(exploration.state().canRetry);
+        exploration.tryAgain();
+        QTRY_VERIFY(exploration.board().interactive);
+        auto root = *review.navigation().position();
+        QVERIFY(root.undo());
+        exploration.attemptMove(root.legalMoves()[3], exploration.board().revision);
+        QTRY_VERIFY(exploration.state().mode == app::ExplorationMode::Retry &&
+                    exploration.state().message.contains(QStringLiteral("Unable to grade")));
+        f.shutdown();
+        QCOMPARE(f.startup.state(), app::Lifecycle::Stopped);
+    }
+    void strongerCachedRetryRestartsWithinTheSavedBudget() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true, {}, 0, 0, false, RetryScript::Played);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& database = f.startup.gameRepository();
+        review.selectMoment(2);
+        QTRY_VERIFY(review.exploration().state().canRetry);
+        QSignalSpy evidence(&database, &persistence::Database::reviewEvidenceLoaded);
+        database.loadReviewEvidence(QUuid::createUuid(), review.state().run->id, 2,
+                                    review::EvidenceStage::Verification);
+        QVERIFY(evidence.wait());
+        auto record = qvariant_cast<persistence::LoadReviewEvidenceResult>(evidence.front()[1]);
+        QVERIFY(std::holds_alternative<persistence::StoredReviewEvidence>(record));
+        auto cached = *std::get<persistence::StoredReviewEvidence>(record).analysis;
+        QSignalSpy runLoaded(&database, &persistence::Database::reviewLoaded);
+        database.loadReview(QUuid::createUuid(), review.state().run->id);
+        QVERIFY(runLoaded.wait());
+        auto runResult = qvariant_cast<persistence::LoadReviewResult>(runLoaded.front()[1]);
+        QVERIFY(std::holds_alternative<persistence::StoredReview>(runResult));
+        auto provenance = std::make_shared<engine::AnalysisProvenance>(*cached.evidence.provenance);
+        provenance->fingerprint =
+            std::get<persistence::StoredReview>(runResult).settings.fingerprint;
+        cached.evidence.provenance = provenance;
+        cached.evidence.lines.resize(1);
+        if (!cached.evidence.completedIteration.empty()) {
+            cached.evidence.completedIteration.resize(1);
+        }
+        cached.evidence.requestedMultiPv = cached.evidence.effectiveMultiPv =
+            cached.evidence.achievedWidth = 1;
+        // Inject a typed repository reply, not a cache authorization exception for the fake binary.
+        QObject observer;
+        bool injecting = false, injected = false;
+        connect(&database, &persistence::Database::analysisFound, &observer,
+                [&](QUuid id, const persistence::FindAnalysisResult&) {
+                    if (injecting || injected) {
+                        return;
+                    }
+                    injecting = injected = true;
+                    emit database.analysisFound(id, persistence::CacheLookup{cached, 0});
+                    injecting = false;
+                });
+        app::ReviewExplorationController probe(database, review.navigation(), f.startup.engines(),
+                                               f.supervisor());
+        const auto close = qScopeGuard([&] {
+            QSignalSpy closed(&probe, &app::ReviewExplorationController::closed);
+            probe.close();
+            if (closed.empty() && !closed.wait(10000)) {
+                qFatal("Cache retry probe did not drain");
+            }
+        });
+        probe.bind(review.state().run);
+        QTRY_VERIFY(probe.state().canRetry);
+        QSignalSpy searches(&f.supervisor(), &engine::EngineSupervisor::scheduledChanged);
+        probe.tryAgain();
+        QTRY_VERIFY(probe.board().interactive);
+        probe.attemptMove(f.document->originalMainline()[1], probe.board().revision);
+        QTRY_VERIFY(injected);
+        QTRY_COMPARE_WITH_TIMEOUT(probe.state().mode, app::ExplorationMode::Success, 10000);
+        QVERIFY(!searches.empty());
+    }
+
+    void feedbackCancellationCannotResurrectPractice() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(exploration.state().canRetry);
+        bool cancelled = false;
+        QObject observer;
+        connect(&exploration, &app::ReviewExplorationController::moveFeedback, &observer,
+                [&](chess::Move, bool) {
+                    cancelled = true;
+                    exploration.returnToGame();
+                });
+        exploration.tryAgain();
+        QTRY_VERIFY(exploration.board().interactive);
+        auto root = *review.navigation().position();
+        QVERIFY(root.undo());
+        exploration.attemptMove(root.legalMoves()[1], exploration.board().revision);
+        QTRY_VERIFY(cancelled);
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Game);
+    }
+    void failedLinkedInitializationDoesNotBecomeAResumeOrigin() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(exploration.state().canAnalyze);
+        exploration.openAnalysis();
+        auto& linked = exploration.linkedAnalysis();
+        QTRY_VERIFY(!linked.busy() && linked.position());
+        QVERIFY(exploration.sameAnalysisOrigin());
+        review.selectMoment(1);
+        QTRY_VERIFY(exploration.state().canAnalyze && !review.navigation().pending());
+        exploration.openAnalysis();
+        QVERIFY(!exploration.sameAnalysisOrigin());
+        linked.reset(std::string("invalid FEN"));
+        QTRY_VERIFY(!linked.busy() && !linked.error().isEmpty());
+        QVERIFY(!exploration.sameAnalysisOrigin());
+        exploration.openAnalysis();
+        QTRY_VERIFY(!linked.busy() && linked.error().isEmpty());
+        QVERIFY(exploration.sameAnalysisOrigin());
+        QCOMPARE(linked.position()->context(), review.navigation().position()->context());
+    }
+    void candidateSelectorTracksDisplayedLine() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(!exploration.state().loading && exploration.state().canRetry);
+        exploration.showLine(1);
+        QTRY_VERIFY(exploration.state().canAnalyze);
+        auto* candidates = f.window.findChild<QComboBox*>(QStringLiteral("reviewCandidates"));
+        QCOMPARE(candidates->currentIndex(), 1);
+        QSignalSpy reads(&f.startup.gameRepository(),
+                         &persistence::Database::reviewExplorationLoaded);
+        QSignalSpy searches(&f.supervisor(), &engine::EngineSupervisor::scheduledChanged);
+        for (int i = 0; i < 30; ++i) {
+            exploration.end();
+            exploration.beginning();
+        }
+        exploration.end();
+        QTRY_VERIFY(exploration.state().canAnalyze);
+        QCOMPARE(exploration.state().step, exploration.state().length);
+        QCOMPARE(reads.count(), 0);
+        QCOMPARE(searches.count(), 0);
+    }
+    void completedRefinementRefreshesUnpinnedCandidates() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 150, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"),
+                 0, true, QStringLiteral("cp 0"));
+        f.run();
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        QTRY_VERIFY(review.state().run && review.state().run->completedPositions >= 3);
+        review.selectMoment(2);
+        QTRY_VERIFY(!exploration.state().candidates.empty());
+        QVERIFY(exploration.state().candidates.front().contains(QStringLiteral("67.5%")));
+        exploration.showLine(0);
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Line);
+        QTRY_VERIFY(exploration.state().canAnalyze);
+        QVERIFY(f.done());
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Line);
+        QVERIFY(!exploration.state().notice.isEmpty());
+        QVERIFY(exploration.moment() && !exploration.moment()->classification->stable);
+        exploration.returnToGame();
+        QTRY_VERIFY(!exploration.state().loading && !exploration.state().candidates.empty());
+        QVERIFY(exploration.state().candidates.front().contains(QStringLiteral("50.0%")));
+    }
+    void sandboxPreparationNeverAdmitsThePreviousBoard() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(!exploration.state().loading && exploration.state().canRetry);
+        bool invalidReady = false;
+        const auto observe =
+            connect(&exploration, &app::ReviewExplorationController::changed, &exploration, [&] {
+                if (exploration.state().mode == app::ExplorationMode::Line &&
+                    exploration.state().canAnalyze && exploration.state().step < 0) {
+                    invalidReady = true;
+                }
+            });
+        exploration.showLine(1);
+        QTRY_VERIFY(exploration.state().canAnalyze);
+        const auto before = exploration.board().pieces;
+        exploration.end();
+        QTRY_VERIFY(exploration.state().canAnalyze);
+        exploration.flip();
+        bool wrongInput = false;
+        const auto input =
+            connect(&exploration, &app::ReviewExplorationController::changed, &exploration, [&] {
+                if (exploration.state().mode == app::ExplorationMode::Retry &&
+                    exploration.board().interactive && exploration.board().pieces != before) {
+                    wrongInput = true;
+                }
+            });
+        exploration.tryAgain();
+        QTRY_VERIFY(exploration.board().interactive);
+        disconnect(observe);
+        disconnect(input);
+        QVERIFY(!invalidReady);
+        QVERIFY(!wrongInput);
+    }
+    void discardConfirmationCannotRetargetAnalysis() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(exploration.state().canAnalyze && !review.navigation().pending());
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        f.window.show();
+        auto* analyze = f.window.findChild<QPushButton*>(QStringLiteral("reviewAnalyzePosition"));
+        analyze->click();
+        auto& linked = exploration.linkedAnalysis();
+        QTRY_VERIFY(!linked.busy() && linked.position());
+        linked.attemptMove(linked.board().legalMoves.front(), linked.board().revision);
+        QTRY_VERIFY(!linked.busy() && linked.hasContent());
+        const auto edited = linked.board().pieces;
+        f.window.findChild<QPushButton*>(QStringLiteral("backToReview"))->click();
+        review.selectMoment(1);
+        QTRY_VERIFY(exploration.state().canAnalyze && !review.navigation().pending());
+        analyze->click();
+        QTRY_VERIFY(f.window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog")));
+        review.selectMoment(0);
+        QTRY_VERIFY(!review.navigation().pending());
+        auto* dialog = f.window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog"));
+        dialog->button(QMessageBox::Discard)->click();
+        QTRY_VERIFY(!linked.busy());
+        QVERIFY(linked.hasContent());
+        QCOMPARE(linked.board().pieces, edited);
+    }
     void explorationLinesRetriesAndLinkedAnalysisAreIsolated() {
         Fixture f;
         QVERIFY(f.seed("1. e4 e5 *", true));
         f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
-                 true, {}, 0, 0, false, true);
+                 true, {}, 0, 0, false, RetryScript::Unknown);
         f.run();
         QVERIFY(f.done());
         auto& review = f.startup.reviewGame();
@@ -1788,7 +2062,7 @@ class QuickReviewTest final : public QObject {
         f.startup.reviewGame().selectMoment(2);
         QTRY_COMPARE(f.startup.reviewGame().navigation().displayed(), 2);
         QTRY_VERIFY(exploration.state().canRetry);
-        exploration.showLine();
+        exploration.showLine(1);
         QTRY_VERIFY(exploration.state().canAnalyze);
         exploration.end();
         QTRY_COMPARE(exploration.state().step, 1);

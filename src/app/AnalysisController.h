@@ -25,6 +25,7 @@ class AnalysisController final : public QObject {
     const std::vector<HistoryEntry>& continuations() const { return continuations_; }
     chess::NodeId currentNode() const { return current_; }
     bool busy() const { return busy_; }
+    const QString& error() const { return error_; }
     const std::shared_ptr<const NavigationTree>& navigationTree() const { return navigationTree_; }
     const std::vector<chess::NodeId>& chosenLine() const { return chosenLine_; }
     chess::NodeId requestedNode() const { return requested_; }
@@ -124,5 +125,6 @@ class AnalysisController final : public QObject {
     QString blackPlayer_;
     QString gameDescription_;
     QString positionNotes_;
+    QString error_;
 };
 } // namespace chess_review::app

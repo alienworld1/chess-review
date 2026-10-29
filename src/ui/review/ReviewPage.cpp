@@ -976,9 +976,9 @@ void ReviewPage::updateNavigation() {
     nextMove_->setEnabled(lastMove_->isEnabled());
     previousMoment_->setEnabled(nav.canPreviousMoment());
     nextMoment_->setEnabled(nav.canNextMoment());
-    const auto* move = nav.move(nav.selected());
+    const auto* move = controller_.exploration().moment();
     std::optional<persistence::ReviewMove> contextualMove;
-    if (move && nav.opponentContext(nav.selected())) {
+    if (move && !controller_.exploration().active() && nav.opponentContext(nav.selected())) {
         contextualMove = *move;
         contextualMove->contextPosition = nav.opponentContext(nav.selected());
         move = &*contextualMove;
@@ -1077,6 +1077,10 @@ void ReviewPage::updateExploration() {
             candidates_->addItems(state.candidates);
         }
     }
+    if (line && candidates_->currentIndex() != state.candidate) {
+        const QSignalBlocker blocker(candidates_);
+        candidates_->setCurrentIndex(state.candidate);
+    }
     showLine_->setVisible(!hidden);
     showLine_->setEnabled(!state.loading && !state.candidates.empty());
     tryAgain_->setVisible(!hidden);
@@ -1091,7 +1095,10 @@ void ReviewPage::updateExploration() {
     hint_->setVisible(hidden);
     hint_->setEnabled(state.mode == app::ExplorationMode::Retry);
     reveal_->setVisible(hidden);
-    const auto status = state.loading ? tr("Loading candidate evidence…") : state.message;
+    auto status = state.loading ? tr("Loading candidate evidence…") : state.message;
+    if (!state.notice.isEmpty()) {
+        status += QLatin1Char('\n') + state.notice;
+    }
     if (explorationStatus_->text() != status) {
         explorationStatus_->setText(status);
         if (hidden && !status.isEmpty()) {

@@ -30,6 +30,7 @@ struct ExplorationState {
     int step = 0;
     int length = 0;
     QString message;
+    QString notice;
     QStringList candidates;
 };
 // All injected services outlive closed(). Owns isolated replay, retry and linked Analysis sessions.
@@ -45,6 +46,7 @@ class ReviewExplorationController final : public QObject {
     bool active() const { return state_.mode != ExplorationMode::Game; }
     bool hidesSolution() const;
     const BoardViewState& board() const;
+    const persistence::ReviewMove* moment() const;
     void bind(const std::optional<persistence::ReviewSummary>& run);
     void reload();
     void showLine(int candidate = 0);
@@ -74,11 +76,12 @@ class ReviewExplorationController final : public QObject {
     void moveFeedback(chess_review::chess::Move move, bool success);
 
   private:
+    void publish();
     void synchronize();
     void request();
     void grade(chess::Move move);
     void scheduleChild();
-    void evaluateChild(engine::AnalysisResult result);
+    void evaluateChild(engine::AnalysisResult result, bool cached = false);
     void showGrade(review::RetryResult result);
     void finishClose();
     persistence::Database& database_;
@@ -113,6 +116,7 @@ class ReviewExplorationController final : public QObject {
     bool verifying_ = false;
     bool workerBusy_ = false;
     bool evidenceReadFailed_ = false;
+    bool openingLinked_ = false;
     bool closing_ = false;
     bool sandboxClosed_ = false;
     bool linkedClosed_ = false;

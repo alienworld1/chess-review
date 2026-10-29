@@ -3,8 +3,19 @@
 #include <cmath>
 namespace chess_review::review {
 namespace {
-std::optional<double> candidateGap(const PositionEvidence& before, chess::Move move,
-                                   const ConversionConfig& conversion) {
+struct MeasuredGap {
+    double value;
+    std::optional<int> ticks;
+};
+int expectedTicks(const PositionEvidence& evidence, const ExpectedScore& score, chess::Color side) {
+    if (score.source == ConversionSource::Terminal) {
+        return static_cast<int>(score.value * 2000);
+    }
+    const auto& wdl = *evidence.evaluation.wdl;
+    return 2 * (evidence.evaluation.perspective == side ? wdl.wins : wdl.losses) + wdl.draws;
+}
+std::optional<MeasuredGap> candidateGap(const PositionEvidence& before, chess::Move move,
+                                        const ConversionConfig& conversion) {
     const auto found =
         std::find_if(before.candidates.begin(), before.candidates.end(), [move](const auto& c) {
             return !c.continuation.empty() && c.continuation.front() == move;
@@ -24,11 +35,11 @@ std::optional<double> candidateGap(const PositionEvidence& before, chess::Move m
         const auto ticks = [](const RawEvaluation& e, chess::Color side) {
             return 2 * (e.perspective == side ? e.wdl->wins : e.wdl->losses) + e.wdl->draws;
         };
-        return static_cast<double>(ticks(before.evaluation, before.position.board.sideToMove) -
-                                   ticks(found->evaluation, before.position.board.sideToMove)) /
-               2000.0;
+        const int difference = ticks(before.evaluation, before.position.board.sideToMove) -
+                               ticks(found->evaluation, before.position.board.sideToMove);
+        return MeasuredGap{static_cast<double>(difference) / 2000, difference};
     }
-    return best.expected->value - value.expected->value;
+    return MeasuredGap{best.expected->value - value.expected->value, {}};
 }
 RetryGrade grade(double gap, bool first, const ClassificationConfig& thresholds) {
     if (gap >= thresholds.inaccuracyLoss) {
@@ -46,7 +57,9 @@ RetryGrade grade(double gap, bool first, const ClassificationConfig& thresholds)
 RetryResult gradeRetry(const chess::Position& root, chess::Move attempted, const MoveEvidence& deep,
                        const MoveEvidence& verified, const Configuration& config,
                        const PositionEvidence* deepChild, const PositionEvidence* verifiedChild) {
-    if (!root.isLegal(attempted) || deep.playedMove != verified.playedMove) {
+    if ((deepChild == nullptr) != (verifiedChild == nullptr) || !root.isLegal(attempted) ||
+        deep.playedMove != verified.playedMove ||
+        deep.before.engineIdentity != verified.before.engineIdentity) {
         return {};
     }
     const auto d = classify(root, deep, config.classification, config.conversion);
@@ -55,7 +68,7 @@ RetryResult gradeRetry(const chess::Position& root, chess::Move attempted, const
         !v.bestMove) {
         return {};
     }
-    std::optional<double> dg, vg;
+    std::optional<MeasuredGap> dg, vg;
     if (deepChild && verifiedChild) {
         const auto dp = pairEvidence(root, attempted, deep.before, *deepChild, config.conversion);
         const auto vp =
@@ -69,22 +82,37 @@ RetryResult gradeRetry(const chess::Position& root, chess::Move attempted, const
         if (!assessStability(dc, vc, dp, vp, config.refinement).stable) {
             return {};
         }
-        dg = dc.loss;
-        vg = vc.loss;
+        const auto measure = [](const MoveEvidence& pair, const ClassificationResult& result) {
+            MeasuredGap gap{*result.loss, {}};
+            if (result.before.expected->source != ConversionSource::ApproximateCentipawns &&
+                result.after.expected->source != ConversionSource::ApproximateCentipawns) {
+                gap.ticks = expectedTicks(pair.before, *result.before.expected, pair.mover) -
+                            expectedTicks(pair.after, *result.after.expected, pair.mover);
+            }
+            return gap;
+        };
+        dg = measure(dp, dc);
+        vg = measure(vp, vc);
     } else {
         dg = candidateGap(deep.before, attempted, config.conversion);
         vg = candidateGap(verified.before, attempted, config.conversion);
     }
-    if (!dg || !vg || !std::isfinite(*dg) || !std::isfinite(*vg) || *dg < 0 || *vg < 0 ||
-        std::abs(*dg - *vg) > config.refinement.maximumDrift) {
+    if (!dg || !vg || !std::isfinite(dg->value) || !std::isfinite(vg->value) || dg->value < 0 ||
+        vg->value < 0) {
+        return {};
+    }
+    const double drift = dg->ticks && vg->ticks
+                             ? static_cast<double>(std::abs(*dg->ticks - *vg->ticks)) / 2000
+                             : std::abs(dg->value - vg->value);
+    if (drift > config.refinement.maximumDrift) {
         return {};
     }
     const bool first = attempted == *d.bestMove && attempted == *v.bestMove;
-    const auto a = grade(*dg, first, config.classification);
-    const auto b = grade(*vg, first, config.classification);
+    const auto a = grade(dg->value, first, config.classification);
+    const auto b = grade(vg->value, first, config.classification);
     if (a != b) {
         return {};
     }
-    return {b, vg};
+    return {b, vg->value};
 }
 } // namespace chess_review::review

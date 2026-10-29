@@ -99,6 +99,8 @@ TEST_CASE("Unknown retries require independent comparable child evidence",
     auto vc = proof(after, 410, "g8f6", "vc", 5000000);
     CHECK(gradeRetry(root, move, d, v, {}, &dc, &vc).grade == RetryGrade::Strong);
     CHECK(!gradeRetry(root, move, d, v, {}, &dc, &dc).grade);
+    CHECK(!gradeRetry(root, parsed(root, "d2d4"), d, v, {}, &dc, nullptr).grade);
+    CHECK(!gradeRetry(root, parsed(root, "d2d4"), d, v, {}, nullptr, &vc).grade);
     vc.evaluation.wdl = Wdl{500, 0, 500};
     vc.candidates[0].evaluation = vc.evaluation;
     CHECK(!gradeRetry(root, move, d, v, {}, &dc, &vc).grade);
@@ -107,4 +109,19 @@ TEST_CASE("Unknown retries require independent comparable child evidence",
     vc.strength.nodes = 5000000;
     vc.position.moves.clear();
     CHECK(!gradeRetry(root, move, d, v, {}, &dc, &vc).grade);
+}
+
+TEST_CASE("Retry rejects mixing engines across otherwise coherent passes",
+          "[unit][review][retry]") {
+    const auto root = chess::Position::initial();
+    const auto deep = original(root, false, 10);
+    auto verified = original(root, true, 10);
+    verified.before.engineIdentity = verified.after.engineIdentity = "another-engine";
+    CHECK(!gradeRetry(root, parsed(root, "d2d4"), deep, verified, {}).grade);
+}
+TEST_CASE("Retry drift includes the exact native WDL boundary", "[unit][review][retry]") {
+    const auto root = chess::Position::initial();
+    const auto deep = original(root, false, 13);
+    const auto verified = original(root, true, 33);
+    CHECK(gradeRetry(root, parsed(root, "d2d4"), deep, verified, {}).grade == RetryGrade::Okay);
 }

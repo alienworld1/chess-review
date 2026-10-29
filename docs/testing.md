@@ -1041,3 +1041,14 @@ Review layout. Run it at `QT_SCALE_FACTOR=1`, `1.25`, `1.5` and `2` on the
 configured offscreen desktop, and inspect the resulting light/dark, enlarged-font
 and error-state images. Native screen readers and physical mixed-DPI transitions
 still need platform-specific QA.
+
+The increment-7 adversarial regressions additionally check candidate selector/board
+agreement, replay readiness before move admission, pinned explanation/evidence
+consistency while refinement completes, current-evidence reload on leaving a line,
+stale discard-dialog rejection, feedback cancellation, failed linked initialization
+and crash-during-retry shutdown. Thirty rapid line-navigation cycles must issue no
+new selected-moment reads or engine searches. A typed cache-reply fixture checks
+that a first pass already at the verification budget restarts at the saved first-pass
+budget; it does not exempt the fake engine from production cache qualification.
+Retry domain tests reject cross-engine passes and partial child verification and
+cover exact native-WDL drift boundaries.

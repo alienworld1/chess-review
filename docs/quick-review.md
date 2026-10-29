@@ -204,8 +204,9 @@ represent separate evaluations of every position in a line.
 Choose **Show Line** to start before the reviewed move, then use Start, Previous,
 Next and End, or Left/Right and Home/End, to inspect the continuation. The original
 game stays intact. **Return to Game** restores the selected post-move position;
-selecting another timeline moment also leaves exploration. Hover previews pause
-while exploring. Saved line inspection works without a connected engine.
+selecting another timeline moment also leaves exploration. If background review
+advances, the active line keeps its original analysis and identifies that in the
+panel; Return to Game loads the current results. Hover previews pause while exploring. Saved line inspection works without a connected engine.
 
 **Try Again** is available for the selected player's stable Inaccuracy, Mistake
 and Blunder moments with sufficient evidence. It restores the pre-move board and

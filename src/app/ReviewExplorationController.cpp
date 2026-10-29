@@ -29,11 +29,7 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
             if (state_.mode == ExplorationMode::Line && evidence_ && !sandbox_.busy()) {
                 state_.step = static_cast<int>(sandbox_.currentNode().value) - evidence_->rootPly;
             }
-            state_.canAnalyze = state_.mode == ExplorationMode::Game
-                                    ? run_ && !navigation_.pending() && !navigation_.previewing() &&
-                                          navigation_.position()
-                                    : !sandbox_.busy() && state_.mode == ExplorationMode::Line;
-            emit changed();
+            publish();
         }
     });
     connect(&sandbox_, &AnalysisController::moveAccepted, this,
@@ -41,11 +37,22 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
     connect(&sandbox_, &AnalysisController::failed, this, [this](const QString& message) {
         returnToGame();
         state_.message = message;
-        emit changed();
+        publish();
     });
     connect(&sandbox_, &AnalysisController::closed, this, [this] {
         sandboxClosed_ = true;
         finishClose();
+    });
+    connect(&linked_, &AnalysisController::changed, this, [this] {
+        if (openingLinked_ && !linked_.busy()) {
+            openingLinked_ = false;
+            if (!linked_.error().isEmpty() || !linked_.position()) {
+                linkedOrigin_.reset();
+                linkedEvidence_.reset();
+                linkedState_ = {};
+            }
+            publish();
+        }
     });
     connect(&linked_, &AnalysisController::closed, this, [this] {
         linkedClosed_ = true;
@@ -64,6 +71,11 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
             pending_ = {};
             if (closing_) {
                 finishClose();
+                return;
+            }
+            if (active()) {
+                state_.loading = false;
+                publish();
                 return;
             }
             if (pendingGeneration_ != generation_) {
@@ -105,13 +117,9 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
                                     evidence_->move.classification->stable ? tr("stable")
                                                                            : tr("provisional"));
                 }
-                const auto& c = *evidence_->move.classification;
-                state_.canRetry = c.stable && evidence_->deep && evidence_->verified && c.label &&
-                                  *c.label >= review::Classification::Inaccuracy && run_ &&
-                                  evidence_->move.mover == run_->selectedSide;
                 state_.message.clear();
             }
-            emit changed();
+            publish();
         });
     connect(&database_, &persistence::Database::analysisFound, this,
             [this](QUuid id, const persistence::FindAnalysisResult& result) {
@@ -122,11 +130,12 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
                 if (closing_ || cacheGeneration_ != generation_ ||
                     state_.mode != ExplorationMode::Grading) {
                     finishClose();
+                    publish();
                     return;
                 }
                 if (const auto* lookup = std::get_if<persistence::CacheLookup>(&result);
                     lookup && lookup->hit) {
-                    evaluateChild(*lookup->hit);
+                    evaluateChild(*lookup->hit, true);
                 } else {
                     scheduleChild();
                 }
@@ -140,6 +149,7 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
                 search_ = {};
                 if (closing_ || state_.mode != ExplorationMode::Grading) {
                     finishClose();
+                    publish();
                     return;
                 }
                 if (result.outcome != engine::ScheduledOutcome::Completed || !result.evidence) {
@@ -150,6 +160,34 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
             });
 }
 ReviewExplorationController::~ReviewExplorationController() { Q_ASSERT(worker_.waitForDone(0)); }
+void ReviewExplorationController::publish() {
+    if (closing_) {
+        return;
+    }
+    const bool current = evidence_ && run_ && evidence_->run.summary.id == run_->id &&
+                         evidence_->run.summary.revision == run_->revision &&
+                         evidence_->move.positionIndex == target_.position;
+    const auto* c =
+        evidence_ && evidence_->move.classification ? &*evidence_->move.classification : nullptr;
+    state_.canRetry = current && c && c->stable && c->label &&
+                      *c->label >= review::Classification::Inaccuracy && evidence_->deep &&
+                      evidence_->verified && evidence_->move.mover == run_->selectedSide &&
+                      !state_.loading && !workerBusy_ && !sandbox_.busy() && search_.isNull() &&
+                      cacheRead_.isNull() && !hidesSolution();
+    state_.canAnalyze =
+        run_ && (state_.mode == ExplorationMode::Game
+                     ? !navigation_.pending() && !navigation_.previewing() && navigation_.position()
+                     : state_.mode == ExplorationMode::Line && !state_.pendingBoard &&
+                           !sandbox_.busy() && sandbox_.position());
+    state_.notice = active() && evidence_ && !current
+                        ? tr("Earlier checkpoint pinned for this exploration. Return to Game loads "
+                             "current evidence.")
+                        : QString{};
+    emit changed();
+}
+const persistence::ReviewMove* ReviewExplorationController::moment() const {
+    return active() && evidence_ ? &evidence_->move : navigation_.move(navigation_.selected());
+}
 bool ReviewExplorationController::hidesSolution() const {
     return state_.mode == ExplorationMode::Retry || state_.mode == ExplorationMode::Grading ||
            state_.mode == ExplorationMode::Success;
@@ -176,14 +214,11 @@ void ReviewExplorationController::synchronize() {
             returnToGame();
             evidence_.reset();
             state_.candidates.clear();
-            state_.canRetry = false;
             state_.loading = false;
         }
         state_.message = tr("Move evidence could not be validated. Retry move evidence before "
                             "exploring candidates.");
-        state_.canAnalyze =
-            run_ && !navigation_.pending() && !navigation_.previewing() && navigation_.position();
-        emit changed();
+        publish();
         return;
     }
     if (evidenceReadFailed_) {
@@ -192,25 +227,19 @@ void ReviewExplorationController::synchronize() {
     }
     const auto target = navigation_.target(navigation_.selected());
     if (target != target_) {
-        returnToGame();
-        ++generation_;
         target_ = target;
         evidence_.reset();
         state_.candidates.clear();
-        state_.canRetry = false;
         state_.message.clear();
         state_.loading = false;
+        returnToGame();
         request();
     }
-    state_.canAnalyze = !navigation_.pending() && !navigation_.previewing() &&
-                        navigation_.position() && state_.mode == ExplorationMode::Game;
-    if (state_.mode == ExplorationMode::Line) {
-        state_.canAnalyze = !sandbox_.busy();
-    }
-    emit changed();
+    publish();
 }
 void ReviewExplorationController::request() {
-    if (closing_ || evidenceReadFailed_ || !pending_.isNull() || !run_ || target_.position <= 0) {
+    if (closing_ || active() || evidenceReadFailed_ || !pending_.isNull() || !run_ ||
+        target_.position <= 0) {
         return;
     }
     state_.loading = true;
@@ -225,10 +254,9 @@ void ReviewExplorationController::reload() {
     ++generation_;
     evidence_.reset();
     state_.candidates.clear();
-    state_.canRetry = false;
     state_.message.clear();
     request();
-    emit changed();
+    publish();
 }
 void ReviewExplorationController::showLine(int candidate) {
     if (closing_ || hidesSolution() || !evidence_ || candidate < 0 ||
@@ -236,17 +264,19 @@ void ReviewExplorationController::showLine(int candidate) {
         return;
     }
     navigation_.clearPreview();
+    sandbox_.setOrientation(navigation_.board().blackAtBottom);
     state_.mode = ExplorationMode::Line;
+    state_.pendingBoard = true;
+    displayedBoard_.interactive = false;
     state_.candidate = candidate;
     state_.step = 0;
     const auto& moves =
         evidence_->evidence.candidates[static_cast<std::size_t>(candidate)].continuation;
     state_.length = static_cast<int>(moves.size());
-    sandbox_.setOrientation(navigation_.board().blackAtBottom);
     sandbox_.openLine(evidence_->before, moves, 0);
     state_.message =
         tr("Candidate continuation · evaluation belongs to its root, not each position.");
-    emit changed();
+    publish();
 }
 void ReviewExplorationController::step(int position) {
     if (state_.mode != ExplorationMode::Line || !evidence_ || !sandbox_.canNavigate()) {
@@ -291,11 +321,16 @@ void ReviewExplorationController::returnToGame() {
         supervisor_.cancelScheduledAnalysis(session_, search_);
     }
     state_.mode = ExplorationMode::Game;
-    state_.canAnalyze =
-        run_ && !navigation_.pending() && !navigation_.previewing() && navigation_.position();
     state_.message.clear();
+    state_.pendingBoard = false;
     displayedBoard_.interactive = false;
-    emit changed();
+    if (evidence_ && run_ && evidence_->run.summary.revision != run_->revision) {
+        evidence_.reset();
+        state_.candidates.clear();
+        state_.loading = false;
+        request();
+    }
+    publish();
 }
 void ReviewExplorationController::tryAgain() {
     if (closing_ || !state_.canRetry || !evidence_ || workerBusy_ || !search_.isNull() ||
@@ -303,13 +338,15 @@ void ReviewExplorationController::tryAgain() {
         return;
     }
     navigation_.clearPreview();
+    sandbox_.setOrientation(navigation_.board().blackAtBottom);
     ++generation_;
     hint_ = 0;
     state_.mode = ExplorationMode::Retry;
+    state_.pendingBoard = true;
+    displayedBoard_.interactive = false;
     state_.message = tr("Find a stronger move. You can request a hint or show the solution.");
-    sandbox_.setOrientation(navigation_.board().blackAtBottom);
     sandbox_.openPosition(evidence_->before);
-    emit changed();
+    publish();
 }
 void ReviewExplorationController::hint() {
     if (state_.mode != ExplorationMode::Retry || !evidence_) {
@@ -325,7 +362,7 @@ void ReviewExplorationController::hint() {
         : hint_ == 2
             ? tr("Consider the piece on %1.").arg(QString::fromStdString(best->from.name()))
             : tr("Consider moving it to %1.").arg(QString::fromStdString(best->to.name()));
-    emit changed();
+    publish();
 }
 void ReviewExplorationController::selectSquare(chess::Square square) {
     if (state_.mode == ExplorationMode::Retry) {
@@ -412,6 +449,7 @@ void ReviewExplorationController::grade(chess::Move move) {
                 workerBusy_ = false;
                 if (closing_ || generation != generation_) {
                     finishClose();
+                    publish();
                     return;
                 }
                 if (request) {
@@ -425,15 +463,15 @@ void ReviewExplorationController::grade(chess::Move move) {
                     }
                 } else {
                     showGrade(grade);
-                    if (!error.isEmpty()) {
+                    if (generation == generation_ && !closing_ && !error.isEmpty()) {
                         state_.message += QLatin1Char('\n') + error;
-                        emit changed();
+                        publish();
                     }
                 }
             },
             Qt::QueuedConnection);
     });
-    emit changed();
+    publish();
 }
 void ReviewExplorationController::scheduleChild() {
     if (!prepared_ || closing_ || state_.mode != ExplorationMode::Grading) {
@@ -448,9 +486,9 @@ void ReviewExplorationController::scheduleChild() {
     prepared_->id = search_;
     state_.message = verifying_ ? tr("Verifying your move…") : tr("Analyzing your move…");
     supervisor_.scheduleAnalysis(session_, *prepared_, engine::AnalysisPriority::RetryMove);
-    emit changed();
+    publish();
 }
-void ReviewExplorationController::evaluateChild(engine::AnalysisResult result) {
+void ReviewExplorationController::evaluateChild(engine::AnalysisResult result, bool cached) {
     const auto generation = generation_;
     const auto evidence = evidence_;
     const auto deep = deepChild_;
@@ -458,7 +496,7 @@ void ReviewExplorationController::evaluateChild(engine::AnalysisResult result) {
     const bool verification = verifying_;
     workerBusy_ = true;
     worker_.start(
-        [this, generation, evidence, deep, move, verification, result = std::move(result)] {
+        [this, generation, evidence, deep, move, verification, cached, result = std::move(result)] {
             std::optional<review::PositionEvidence> child;
             review::RetryResult grade;
             try {
@@ -476,12 +514,26 @@ void ReviewExplorationController::evaluateChild(engine::AnalysisResult result) {
             } catch (const std::exception&) {
                 child.reset();
             }
+            // A dominating cache hit can already be as strong as the saved verification
+            // budget. Use a fresh first pass rather than guaranteeing an incomparable pair.
+            const auto verificationBudget =
+                evidence->run.settings.configuration.values
+                    .budgets[static_cast<std::size_t>(evidence->run.summary.quality)]
+                    .verificationNodes;
+            const bool freshFirst = cached && (!child || !child->strength.nodes ||
+                                               *child->strength.nodes >= verificationBudget);
             QMetaObject::invokeMethod(
                 this,
-                [this, generation, verification, child = std::move(child), grade]() mutable {
+                [this, generation, verification, freshFirst, child = std::move(child),
+                 grade]() mutable {
                     workerBusy_ = false;
                     if (closing_ || generation != generation_) {
                         finishClose();
+                        publish();
+                        return;
+                    }
+                    if (freshFirst) {
+                        scheduleChild();
                         return;
                     }
                     if (!child || verification) {
@@ -500,6 +552,7 @@ void ReviewExplorationController::evaluateChild(engine::AnalysisResult result) {
         });
 }
 void ReviewExplorationController::showGrade(review::RetryResult result) {
+    const auto generation = generation_;
     if (!result.grade) {
         state_.message = tr(
             "Unable to grade: sufficient comparable evidence is unavailable. You can try again.");
@@ -519,16 +572,21 @@ void ReviewExplorationController::showGrade(review::RetryResult result) {
             break;
         }
     }
-    if (result.grade && attempted_) {
-        emit moveFeedback(*attempted_, result.success());
-    }
     state_.mode = result.success() ? ExplorationMode::Success : ExplorationMode::Retry;
     if (result.success()) {
         success_.start(1200);
     } else if (evidence_) {
         sandbox_.openPosition(evidence_->before);
     }
-    emit changed();
+    if (closing_ || generation != generation_) {
+        return;
+    }
+    if (result.grade && attempted_) {
+        emit moveFeedback(*attempted_, result.success());
+    }
+    if (!closing_ && generation == generation_) {
+        publish();
+    }
 }
 std::optional<ReviewReturnOrigin> ReviewExplorationController::analysisOrigin() const {
     if (!state_.canAnalyze || !run_ || hidesSolution()) {
@@ -542,14 +600,14 @@ std::optional<ReviewReturnOrigin> ReviewExplorationController::analysisOrigin() 
                               board().blackAtBottom};
 }
 bool ReviewExplorationController::sameAnalysisOrigin() const {
-    return linkedOrigin_ && analysisOrigin() == linkedOrigin_;
+    return !openingLinked_ && linkedOrigin_ && analysisOrigin() == linkedOrigin_;
 }
 void ReviewExplorationController::openAnalysis() {
     const auto origin = analysisOrigin();
     if (!origin || closing_) {
         return;
     }
-    if (linkedOrigin_ == origin) {
+    if (sameAnalysisOrigin()) {
         return;
     }
     const auto position =
@@ -557,14 +615,15 @@ void ReviewExplorationController::openAnalysis() {
     if (!position) {
         return;
     }
+    linked_.setOrientation(board().blackAtBottom);
     linkedOrigin_ = origin;
     linkedEvidence_ = evidence_;
     linkedState_ = state_;
-    linked_.setOrientation(board().blackAtBottom);
+    openingLinked_ = true;
     linked_.openPosition(position);
 }
 void ReviewExplorationController::restoreReviewOrigin() {
-    if (closing_ || !linkedOrigin_ || !run_ || run_->id != linkedOrigin_->run ||
+    if (closing_ || openingLinked_ || !linkedOrigin_ || !run_ || run_->id != linkedOrigin_->run ||
         navigation_.target(0).session != linkedOrigin_->target.session) {
         return;
     }
@@ -575,16 +634,17 @@ void ReviewExplorationController::restoreReviewOrigin() {
         navigation_.flip();
     }
     if (origin.candidate >= 0 && linkedEvidence_ && !evidenceReadFailed_) {
+        sandbox_.setOrientation(origin.blackAtBottom);
         evidence_ = linkedEvidence_;
         state_ = linkedState_;
-        state_.canAnalyze = false;
-        sandbox_.setOrientation(origin.blackAtBottom);
+        state_.pendingBoard = true;
+        displayedBoard_.interactive = false;
         sandbox_.openLine(
             evidence_->before,
             evidence_->evidence.candidates[static_cast<std::size_t>(origin.candidate)].continuation,
             origin.step);
     }
-    emit changed();
+    publish();
 }
 void ReviewExplorationController::close() {
     if (closing_) {
