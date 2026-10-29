@@ -127,6 +127,82 @@ class AsyncDatabase {
 class ReviewRepositoryTest final : public QObject {
     Q_OBJECT
   private slots:
+    void workspaceContextValidatesAndRollsBack() {
+        Fixture f;
+        const auto request = seed(f.session);
+        const auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        ReviewContext context{request.gameId, run.id, 2, true};
+        QVERIFY(std::holds_alternative<std::monostate>(f.session.saveReviewContext(context)));
+        const auto loaded = std::get<ReviewContext>(f.session.loadReviewContext(0, 0));
+        QCOMPARE(loaded.gameId, context.gameId);
+        QCOMPARE(loaded.reviewId, context.reviewId);
+        QCOMPARE(loaded.position, context.position);
+        QVERIFY(loaded.reopen);
+        const auto selection =
+            std::get<ReviewContext>(f.session.loadReviewContext(request.gameId, 0));
+        QCOMPARE(selection.reviewId, context.reviewId);
+        QCOMPARE(selection.position, context.position);
+        auto wrong = context;
+        wrong.position = 3;
+        QCOMPARE(std::get<ReviewError>(f.session.saveReviewContext(wrong)).code,
+                 ReviewErrorCode::InvalidInput);
+        const auto other = std::get<Inserted>(f.session.insertGame(*document("1. d4 *"), {})).id;
+        wrong = context;
+        wrong.gameId = other;
+        QCOMPARE(std::get<ReviewError>(f.session.saveReviewContext(wrong)).code,
+                 ReviewErrorCode::InvalidInput);
+        QVERIFY(f.exec(QStringLiteral("CREATE TRIGGER reject_moment BEFORE INSERT ON "
+                                      "review_moments BEGIN SELECT RAISE(ABORT,'fixture'); END")));
+        wrong = context;
+        wrong.position = 1;
+        wrong.reopen = false;
+        QVERIFY(std::holds_alternative<ReviewError>(f.session.saveReviewContext(wrong)));
+        const auto preserved = std::get<ReviewContext>(f.session.loadReviewContext(0, 0));
+        QCOMPARE(preserved.position, context.position);
+        QVERIFY(preserved.reopen);
+        const auto rows = std::get<std::vector<LibraryReview>>(
+            f.session.listLibraryReviews({request.gameId, other}));
+        QCOMPARE(rows.size(), std::size_t{2});
+        QVERIFY(rows[0].run);
+        QCOMPARE(rows[0].run->id, run.id);
+        QVERIFY(!rows[1].run);
+    }
+    void workspaceContextRejectsDamagedMetadata() {
+        Fixture f;
+        const auto request = seed(f.session);
+        const auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        QVERIFY(std::holds_alternative<std::monostate>(
+            f.session.saveReviewContext({request.gameId, run.id, 1, true})));
+        QVERIFY(f.exec(QStringLiteral("UPDATE review_moments SET position_index='bad'")));
+        QVERIFY(std::get<ReviewContext>(f.session.loadReviewContext(0, 0)).invalidPosition);
+        QVERIFY(f.exec(QStringLiteral("PRAGMA ignore_check_constraints=ON")));
+        QVERIFY(f.exec(QStringLiteral("UPDATE review_workspace SET format_version=99")));
+        QCOMPARE(std::get<ReviewError>(f.session.loadReviewContext(0, 0)).code,
+                 ReviewErrorCode::UnsupportedVersion);
+    }
+    void workspaceMigrationPreservesVersionEightData() {
+        QTemporaryDir dir;
+        const auto path = dir.filePath(QStringLiteral("migration.sqlite"));
+        GameId game;
+        ReviewId run;
+        {
+            StorageSession old;
+            QVERIFY(!old.initialize(path, std::span(migrations()).first(8), ignore));
+            const auto request = seed(old);
+            game = request.gameId;
+            run = std::get<ReviewSummary>(old.createReview(request)).id;
+        }
+        StorageSession current;
+        QVERIFY(!current.initialize(path, migrations(), ignore));
+        QCOMPARE(std::get<StoredReview>(current.loadReview(run)).summary.gameId, game);
+        QCOMPARE(std::get<StoredReview>(current.loadReview(run)).summary.status,
+                 JobStatus::Interrupted);
+        QVERIFY(!std::get<ReviewContext>(current.loadReviewContext(0, 0)).gameId);
+        const auto interrupted =
+            std::get<std::vector<ReviewSummary>>(current.listInterruptedReviews(0, 51));
+        QCOMPARE(interrupted.size(), std::size_t{1});
+        QCOMPARE(interrupted.front().id, run);
+    }
     void init() { QTest::failOnWarning(); }
     void damagedStageMetadataCannotInventProgress_data() {
         QTest::addColumn<int>("damage");
@@ -565,6 +641,9 @@ class ReviewRepositoryTest final : public QObject {
             QSqlQuery q(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE review_classifications")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE review_stage_positions")));
+            QVERIFY(q.exec(QStringLiteral("DROP TABLE review_workspace")));
+            QVERIFY(q.exec(QStringLiteral("DROP TABLE review_selection")));
+            QVERIFY(q.exec(QStringLiteral("DROP TABLE review_moments")));
             QVERIFY(q.exec(QStringLiteral("DELETE FROM schema_migrations WHERE version>=7")));
         }
         StorageSession reopened;
@@ -1239,6 +1318,10 @@ class ReviewRepositoryTest final : public QObject {
         const auto run = std::get<StoredReview>(loaded);
         QCOMPARE(run.summary.status, JobStatus::Interrupted);
         QCOMPARE(run.summary.completedPositions, 1);
+        const auto context = std::get<ReviewContext>(session.loadReviewContext(0, 0));
+        QCOMPARE(context.reviewId, std::optional<ReviewId>{run.summary.id});
+        QCOMPARE(context.position, std::optional<int>{1});
+        QVERIFY(context.reopen);
         QVERIFY(std::holds_alternative<StoredReviewEvidence>(session.loadReviewEvidence(1, 0)));
         QVERIFY(std::holds_alternative<ReviewError>(session.loadReviewEvidence(1, 1)));
     }
@@ -1263,7 +1346,7 @@ class ReviewRepositoryTest final : public QObject {
                  ReviewErrorCode::Unavailable);
         db.value.initialize(path);
         QTRY_COMPARE(ready.size(), 1);
-        QCOMPARE(ready[0][0].toInt(), 8);
+        QCOMPARE(ready[0][0].toInt(), 9);
         std::vector<QUuid> ids;
         for (int i = 0; i < 17; ++i) {
             ids.push_back(QUuid::createUuid());
@@ -1314,6 +1397,10 @@ int main(int argc, char** argv) {
         if (!std::holds_alternative<ReviewSummary>(
                 session.checkpointReview(checkpoint(run.id, 0, 0, resultAt(request, *doc, 0))))) {
             return 3;
+        }
+        if (!std::holds_alternative<std::monostate>(
+                session.saveReviewContext({request.gameId, run.id, 1, true}))) {
+            return 4;
         }
         std::fputs("CHECKPOINT\n", stdout);
         std::fflush(stdout);

@@ -109,24 +109,32 @@ class LibraryTableModel final : public QAbstractTableModel {
         return parent.isValid() ? 0 : static_cast<int>(rows_.size());
     }
     int columnCount(const QModelIndex& parent = {}) const override {
-        return parent.isValid() ? 0 : 6;
+        return parent.isValid() ? 0 : 8;
     }
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override {
         if (orientation != Qt::Horizontal || role != Qt::DisplayRole || section < 0 ||
-            section >= 6) {
+            section >= 8) {
             return {};
         }
-        const QStringList labels{tr("White"),       tr("Black"),        tr("Result"),
-                                 tr("Played date"), tr("Time control"), tr("Imported (UTC)")};
+        const QStringList labels{tr("White"),         tr("Black"),
+                                 tr("Result"),        tr("Played date"),
+                                 tr("Time control"),  tr("Imported (UTC)"),
+                                 tr("Review status"), tr("Chosen-player accuracy")};
         return labels.at(section);
     }
     QVariant data(const QModelIndex& index, int role) const override {
         if (!index.isValid() || index.row() < 0 || index.row() >= rowCount() ||
-            index.column() < 0 || index.column() >= 6) {
+            index.column() < 0 || index.column() >= 8) {
             return {};
         }
         const auto& row = rows_[static_cast<std::size_t>(index.row())];
         if (role == Qt::ToolTipRole) {
+            if (index.column() == 6) {
+                return controller_.reviewStatus(row.id).toHtmlEscaped();
+            }
+            if (index.column() == 7) {
+                return controller_.reviewAccuracy(row.id).toHtmlEscaped();
+            }
             if (row.metadataError) {
                 return tr("Game ID %1: %2")
                     .arg(row.id)
@@ -142,6 +150,12 @@ class LibraryTableModel final : public QAbstractTableModel {
         }
         if (row.metadataError) {
             return index.column() == 0 ? tr("Unreadable metadata (ID %1)").arg(row.id) : QString{};
+        }
+        if (index.column() == 6) {
+            return controller_.reviewStatus(row.id);
+        }
+        if (index.column() == 7) {
+            return controller_.reviewAccuracy(row.id);
         }
         const QStringList values{row.white,    row.black,       row.result,
                                  row.playedAt, row.timeControl, row.importedAt};
@@ -324,9 +338,14 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     connect(games_, &QTableView::activated, this, &GamesPage::requestOpen);
     connect(games_->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
             &GamesPage::updateOpenAction);
-    games_->setColumnWidth(0, 180);
-    games_->setColumnWidth(1, 180);
-    games_->setColumnWidth(2, 80);
+    games_->setColumnWidth(0, 130);
+    games_->setColumnWidth(1, 130);
+    games_->setColumnWidth(2, 60);
+    games_->setColumnWidth(6, 300);
+    games_->setColumnWidth(7, 270);
+    // Keep review results visible before secondary metadata on laptop displays.
+    games_->horizontalHeader()->moveSection(games_->horizontalHeader()->visualIndex(6), 3);
+    games_->horizontalHeader()->moveSection(games_->horizontalHeader()->visualIndex(7), 4);
     games_->setColumnWidth(5, 200);
     layout->addWidget(games_, 3);
     auto* paging = new QHBoxLayout;

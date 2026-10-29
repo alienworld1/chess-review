@@ -1,6 +1,7 @@
 #include "EngineControllerTestAccess.h"
 #include "EngineTestSupport.h"
 #include "TestEnvironment.h"
+#include "app/ReviewWorkspaceController.h"
 #include "app/StartupCoordinator.h"
 #include "engine/EffectiveSearch.h"
 #include "engine/private/SearchProtocol.h"
@@ -18,6 +19,8 @@
 #include <QMessageBox>
 #include <QPalette>
 #include <QPlainTextEdit>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -337,6 +340,315 @@ class Fixture {
 class QuickReviewTest final : public QObject {
     Q_OBJECT
   private slots:
+    void missingContextShowsAnErrorWithoutSelectingAnotherRun() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        auto& controller = f.startup.reviewGame();
+        controller.inspect(999999);
+        QTRY_VERIFY(!controller.state().busy && !controller.state().error.isEmpty());
+        QCOMPARE(controller.state().gameId, f.gameId);
+        QVERIFY(!controller.state().run);
+        QVERIFY(controller.navigation().ready());
+        QVERIFY(!controller.state().runs.empty());
+        controller.selectGame(999999);
+        QTRY_VERIFY(!controller.state().busy && !controller.state().error.isEmpty());
+        QCOMPARE(f.navigation.current(), app::Destination::Games);
+        auto* notice = f.window.findChild<QLabel*>(QStringLiteral("uiStateNotice"));
+        QVERIFY(notice);
+        QVERIFY(!notice->text().isEmpty());
+        QVERIFY(!notice->isHidden());
+    }
+    void interruptedReviewsAreDiscoverableAndPaged() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        auto& db = f.startup.gameRepository();
+        QSignalSpy loaded(&db, &persistence::Database::reviewLoaded);
+        db.loadReview(QUuid::createUuid(), f.startup.reviewGame().state().run->id);
+        QTRY_VERIFY(!loaded.empty());
+        const auto settings = std::get<persistence::StoredReview>(
+                                  qvariant_cast<persistence::LoadReviewResult>(loaded.front()[1]))
+                                  .settings;
+        QSignalSpy created(&db, &persistence::Database::reviewCreated);
+        for (int i = 0; i < 51; ++i) {
+            created.clear();
+            db.createReview(QUuid::createUuid(), settings);
+            QTRY_VERIFY(!created.empty());
+            QVERIFY(std::holds_alternative<persistence::ReviewSummary>(
+                qvariant_cast<persistence::CreateReviewResult>(created.front()[1])));
+        }
+        f.shutdown();
+        Fixture reopened(f.directory.filePath(QStringLiteral("review.sqlite3")));
+        auto& workspace = reopened.startup.reviewGame().workspace();
+        QTRY_COMPARE(workspace.interrupted().size(), std::size_t{50});
+        QVERIFY(workspace.recoveryHasNext());
+        QCOMPARE(reopened.startup.engines().state().runtime.phase,
+                 engine::RuntimePhase::Disconnected);
+        workspace.refreshRecovery(1);
+        QTRY_VERIFY(!workspace.recoveryBusy());
+        QCOMPARE(workspace.interrupted().size(), std::size_t{1});
+        QVERIFY(!workspace.recoveryHasNext());
+        workspace.refreshRecovery();
+        QTRY_COMPARE(workspace.interrupted().size(), std::size_t{50});
+        reopened.navigation.navigate(app::Destination::Home);
+        reopened.window.resize(1100, 720);
+        reopened.window.show();
+        auto* recovery = reopened.window.findChild<QWidget*>(QStringLiteral("reviewRecovery"));
+        QVERIFY(recovery);
+        QTRY_VERIFY(recovery->isVisible());
+        auto* list = reopened.window.findChild<QWidget*>(QStringLiteral("interruptedReviewList"));
+        auto* show =
+            reopened.window.findChild<QPushButton*>(QStringLiteral("showInterruptedReviews"));
+        QVERIFY(list);
+        QVERIFY(show);
+        QVERIFY(list->isHidden());
+        show->setFocus();
+        QTest::keyClick(show, Qt::Key_Space);
+        QVERIFY(!list->isHidden());
+        show->click();
+        QVERIFY(list->isHidden());
+        auto& library = reopened.startup.library();
+        library.activate();
+        QTRY_VERIFY(library.reviewStatus(f.gameId).contains(
+            QStringLiteral("interrupted review available")));
+        QTRY_VERIFY(library.reviewAccuracy(f.gameId).contains(QLatin1Char('%')));
+        const auto output = qEnvironmentVariable("CHESS_REVIEW_QUICK_RENDER_DIR");
+        if (!output.isEmpty()) {
+            QCoreApplication::processEvents();
+            QVERIFY(reopened.window.grab().save(output + QStringLiteral("/recovery-home.png")));
+            show->click();
+            QCoreApplication::processEvents();
+            QVERIFY(reopened.window.grab().save(output + QStringLiteral("/recovery-list.png")));
+            show->click();
+            reopened.navigation.navigate(app::Destination::Games);
+            QCoreApplication::processEvents();
+            auto* table = reopened.window.findChild<QTableView*>(QStringLiteral("gamesTable"));
+            QVERIFY(table);
+            QVERIFY(table->columnViewportPosition(7) + table->columnWidth(7) <=
+                    table->viewport()->width());
+            QVERIFY(reopened.window.grab().save(output + QStringLiteral("/recovery-library.png")));
+            auto palette = reopened.window.palette();
+            palette.setColor(QPalette::Window, QColor("#202732"));
+            palette.setColor(QPalette::WindowText, QColor("#e5eaf0"));
+            palette.setColor(QPalette::Base, QColor("#171e27"));
+            palette.setColor(QPalette::Text, QColor("#e5eaf0"));
+            palette.setColor(QPalette::Button, QColor("#303b49"));
+            palette.setColor(QPalette::ButtonText, QColor("#e5eaf0"));
+            reopened.window.setPalette(palette);
+            auto font = reopened.window.font();
+            font.setPointSize(font.pointSize() + 5);
+            reopened.window.setFont(font);
+            reopened.navigation.navigate(app::Destination::Home);
+            QCoreApplication::processEvents();
+            QVERIFY(reopened.window.grab().save(
+                output + QStringLiteral("/recovery-home-dark-enlarged.png")));
+        }
+    }
+    void newerSelectionWinsOverPendingRestoreAndHoverDoesNotSave() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        auto& controller = f.startup.reviewGame();
+        const auto run = controller.state().run->id;
+        QSignalSpy saved(&controller.workspace(),
+                         &app::ReviewWorkspaceController::contextCommitted);
+        controller.selectMoment(1);
+        QTRY_COMPARE(controller.navigation().displayed(), 1);
+        QTRY_VERIFY(!saved.empty());
+        controller.inspect(run);
+        controller.navigation().select(controller.navigation().target(2));
+        QTRY_VERIFY(!controller.state().busy);
+        QTRY_COMPARE(controller.navigation().displayed(), 2);
+        saved.clear();
+        controller.selectMoment(1);
+        QTRY_VERIFY(!saved.empty());
+        controller.navigation().preview(controller.navigation().target(2));
+        QTRY_COMPARE(controller.navigation().displayed(), 2);
+        QSignalSpy contexts(&f.startup.gameRepository(),
+                            &persistence::Database::reviewContextLoaded);
+        const auto request = QUuid::createUuid();
+        f.startup.gameRepository().loadReviewContext(request, f.gameId, run);
+        QTRY_VERIFY(!contexts.empty());
+        const auto context = std::get<persistence::ReviewContext>(
+            qvariant_cast<persistence::LoadReviewContextResult>(contexts.back()[1]));
+        QCOMPARE(context.position, std::optional<int>{1});
+        controller.navigation().clearPreview();
+        QTRY_COMPARE(controller.navigation().displayed(), 1);
+    }
+    void productionRestartAndCloseFlushLatestMoment() {
+#ifndef Q_OS_LINUX
+        QSKIP("Production profile isolation uses Linux XDG locations.");
+#else
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        review.workspace().setVisible(true);
+        review.selectMoment(1);
+        f.shutdown();
+        QTemporaryDir root;
+        const auto data = root.filePath(QStringLiteral("data/chess-review"));
+        QVERIFY(QDir().mkpath(data));
+        QVERIFY(QFile::copy(f.directory.filePath(QStringLiteral("review.sqlite3")),
+                            QDir(data).filePath(QStringLiteral("chess-review.sqlite3"))));
+        auto environment = QProcessEnvironment::systemEnvironment();
+        environment.insert(QStringLiteral("XDG_DATA_HOME"), root.filePath(QStringLiteral("data")));
+        environment.insert(QStringLiteral("XDG_CONFIG_HOME"),
+                           root.filePath(QStringLiteral("config")));
+        environment.insert(QStringLiteral("XDG_CACHE_HOME"),
+                           root.filePath(QStringLiteral("cache")));
+        for (const auto& mode :
+             {QStringLiteral("review-change"), QStringLiteral("review-reopen")}) {
+            environment.insert(QStringLiteral("CHESS_REVIEW_EXIT_MODE"), mode);
+            QProcess process;
+            process.setProcessEnvironment(environment);
+            process.start(QString::fromUtf8(CHESS_REVIEW_EXIT_PROBE), {});
+            const auto cleanup = qScopeGuard([&] {
+                if (process.state() != QProcess::NotRunning) {
+                    process.kill();
+                    if (!process.waitForFinished(3000)) {
+                        qFatal("Review exit probe could not be reaped");
+                    }
+                }
+            });
+            QVERIFY(process.waitForStarted(5000));
+            const bool exited = process.waitForFinished(10000);
+            QVERIFY2(exited, process.readAllStandardError().constData());
+            QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+            QCOMPARE(process.exitCode(), 0);
+            const auto output = process.readAllStandardOutput();
+            QVERIFY(output.contains("review-restored:"));
+            QVERIFY(output.contains("event-loop-quitting"));
+        }
+        QFile events(root.filePath(QStringLiteral("cache/chess-review/logs/events-0.jsonl")));
+        QVERIFY(events.open(QIODevice::ReadOnly));
+        const auto records = events.readAll();
+        QVERIFY(records.contains("session.stopped"));
+        QVERIFY(!records.contains("engine.process.started"));
+#endif
+    }
+    void libraryShowsChosenSideAccuracyWithoutEngineRestart() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        QSignalSpy saved(&f.startup.reviewGame().workspace(),
+                         &app::ReviewWorkspaceController::contextCommitted);
+        f.startup.reviewGame().selectMoment(2);
+        QTRY_VERIFY(!saved.empty());
+        auto& library = f.startup.library();
+        library.activate();
+        QTRY_VERIFY(library.reviewStatus(f.gameId).contains(QStringLiteral("Black")));
+        QTRY_VERIFY(library.reviewAccuracy(f.gameId).contains(QLatin1Char('%')));
+        QVERIFY(library.reviewAccuracy(f.gameId).contains(QStringLiteral("evaluated")));
+        QSignalSpy summaries(&f.startup.gameRepository(),
+                             &persistence::Database::reviewOverviewLoaded);
+        QSignalSpy metadata(&f.startup.gameRepository(),
+                            &persistence::Database::libraryReviewsListed);
+        library.refresh();
+        QTRY_VERIFY(!metadata.empty());
+        QVERIFY(summaries.empty());
+    }
+    void restartRestoresReviewWithoutEngineOrValidToml() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        const auto id = f.startup.reviewGame().state().run->id;
+        auto& controller = f.startup.reviewGame();
+        QSignalSpy saved(&controller.workspace(),
+                         &app::ReviewWorkspaceController::contextCommitted);
+        controller.workspace().setVisible(true);
+        controller.selectMoment(2);
+        QTRY_COMPARE(controller.navigation().displayed(), 2);
+        QTRY_VERIFY(!saved.empty());
+        f.shutdown();
+        const auto invalid = f.directory.filePath(QStringLiteral("bad.toml"));
+        QFile config(invalid);
+        QVERIFY(config.open(QIODevice::WriteOnly));
+        config.write("invalid = [");
+        config.close();
+        Fixture reopened(f.directory.filePath(QStringLiteral("review.sqlite3")), invalid);
+        auto& restored = reopened.startup.reviewGame();
+        QTRY_VERIFY(restored.state().run && restored.state().run->id == id &&
+                    !restored.state().busy);
+        QTRY_COMPARE(restored.navigation().selected(), 2);
+        QTRY_COMPARE(restored.navigation().displayed(), 2);
+        QCOMPARE(restored.state().run->selectedSide, chess::Color::Black);
+        QCOMPARE(reopened.startup.engines().state().runtime.phase,
+                 engine::RuntimePhase::Disconnected);
+        QCOMPARE(reopened.startup.reviewConfiguration().state(), app::ConfigurationState::Invalid);
+        QVERIFY(restored.state().overview);
+        QVERIFY(restored.navigation().move(2));
+    }
+    void backgroundReviewDoesNotReplaceAnotherGame() {
+        Fixture f;
+        QVERIFY(f.seed());
+        pgn::PgnReader reader("1. d4 d5 *");
+        auto doc =
+            std::make_shared<const pgn::PgnDocument>(std::get<pgn::PgnDocument>(reader.next()));
+        auto& db = f.startup.gameRepository();
+        QSignalSpy inserted(&db, &persistence::Database::gameInserted);
+        db.insertGame(QUuid::createUuid(), doc);
+        QVERIFY(inserted.wait());
+        const auto other = std::get<persistence::Inserted>(
+                               qvariant_cast<persistence::InsertGameResult>(inserted.front()[1]))
+                               .id;
+        f.script(0, -1, 100);
+        f.run();
+        auto& controller = f.startup.reviewGame();
+        QTRY_VERIFY(controller.taskState().run);
+        controller.selectGame(other);
+        QTRY_VERIFY(controller.state().gameId == other && !controller.state().busy);
+        QVERIFY(!controller.startBlocker(f.profileId).isEmpty());
+        QCOMPARE(controller.taskState().gameId, f.gameId);
+        QTRY_VERIFY(!controller.taskState().busy);
+        QCOMPARE(controller.state().gameId, other);
+        QVERIFY(!controller.state().run);
+        QCOMPARE(controller.taskState().run->status, review::JobStatus::Complete);
+        controller.workspace().returnToTask();
+        QTRY_VERIFY(controller.state().run &&
+                    controller.state().run->status == review::JobStatus::Complete &&
+                    !controller.state().busy);
+        QCOMPARE(controller.state().gameId, f.gameId);
+    }
+    void switchingRunsRestoresCommittedMoments() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        auto& controller = f.startup.reviewGame();
+        const auto first = controller.state().run->id;
+        controller.selectMoment(2);
+        QTRY_COMPARE(controller.navigation().displayed(), 2);
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        const auto second = controller.state().run->id;
+        QVERIFY(first != second);
+        controller.selectMoment(1);
+        QTRY_COMPARE(controller.navigation().displayed(), 1);
+        controller.inspect(first);
+        QTRY_VERIFY(controller.state().run && controller.state().run->id == first &&
+                    !controller.state().busy);
+        QTRY_COMPARE(controller.navigation().selected(), 2);
+        controller.inspect(second);
+        QTRY_VERIFY(controller.state().run && controller.state().run->id == second &&
+                    !controller.state().busy);
+        QTRY_COMPARE(controller.navigation().selected(), 1);
+    }
     void init() {
         QTest::failOnWarning(QRegularExpression(
             QStringLiteral("^(?!This plugin does not support propagateSizeHints\\(\\)$).*")));
@@ -1494,11 +1806,12 @@ class QuickReviewTest final : public QObject {
         f.run();
         f.startup.reviewGame().start(chess::Color::White, f.profileId, review::Quality::Fast);
         f.startup.reviewGame().selectGame(99999);
-        QCOMPARE(f.startup.reviewGame().state().gameId, f.gameId);
+        QCOMPARE(f.startup.reviewGame().taskState().gameId, f.gameId);
+        QCOMPARE(f.startup.reviewGame().state().gameId, persistence::GameId{99999});
         f.startup.reviewGame().cancel();
-        QVERIFY(f.done());
-        if (f.startup.reviewGame().state().run) {
-            QCOMPARE(f.startup.reviewGame().state().run->status, review::JobStatus::Cancelled);
+        QTRY_VERIFY(!f.startup.reviewGame().taskState().busy);
+        if (f.startup.reviewGame().taskState().run) {
+            QCOMPARE(f.startup.reviewGame().taskState().run->status, review::JobStatus::Cancelled);
         }
     }
     void engineCrashAndStorageFailure() {

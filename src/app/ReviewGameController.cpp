@@ -1,4 +1,5 @@
 #include "app/ReviewGameController.h"
+#include "app/ReviewWorkspaceController.h"
 #include "engine/EffectiveSearch.h"
 #include <QMetaObject>
 #include <QScopedValueRollback>
@@ -59,89 +60,28 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                                            engine::EngineSupervisor& supervisor,
                                            ReviewConfiguration& configuration, QObject* parent)
     : QObject(parent), database_(database), settings_(settings), supervisor_(supervisor),
-      configuration_(configuration), moves_(database), navigation_(database, moves_),
-      exploration_(database, navigation_, settings, supervisor),
+      configuration_(configuration), workspace_(std::make_unique<ReviewWorkspaceController>(
+                                         database, settings, supervisor, configuration, *this)),
       cursor_(std::make_unique<Cursor>()) {
-    connect(&moves_, &ReviewMovesController::changed, this, &ReviewGameController::publish);
-    connect(&moves_, &ReviewMovesController::drainedChanged, this,
-            &ReviewGameController::finishClose);
-    connect(&navigation_, &ReviewNavigationController::closed, this,
-            &ReviewGameController::finishClose);
-    connect(&exploration_, &ReviewExplorationController::closed, this,
+    connect(workspace_.get(), &ReviewWorkspaceController::changed, this,
+            &ReviewGameController::changed);
+    connect(workspace_.get(), &ReviewWorkspaceController::closed, this,
             &ReviewGameController::finishClose);
     worker_.setMaxThreadCount(1);
     worker_.setExpiryTimeout(-1);
     retry_.setSingleShot(true);
-    listRetry_.setSingleShot(true);
     connect(&retry_, &QTimer::timeout, this, [this] {
         if (operation_) {
             pending_ = QUuid::createUuid();
             operation_(pending_);
         }
     });
-    connect(&listRetry_, &QTimer::timeout, this, [this] { refreshRuns(state_.page); });
     connect(&settings_, &EngineSettingsController::changed, this,
             &ReviewGameController::runtimeChanged);
     connect(&configuration_, &ReviewConfiguration::changed, this, &ReviewGameController::publish);
-    connect(&database_, &persistence::Database::gameLoaded, this,
-            [this](QUuid id, const persistence::LoadGameResult& result) {
-                if (!accept(id)) {
-                    return;
-                }
-                if (const auto* error = std::get_if<persistence::GameError>(&result)) {
-                    if (error->code == persistence::GameErrorCode::Busy) {
-                        handleError({ReviewErrorCode::Busy, error->message});
-                    } else {
-                        fail(error->message, review::JobFailure::Storage);
-                    }
-                    return;
-                }
-                operation_ = {};
-                game_ = std::get<persistence::StoredGame>(result);
-                navigation_.open(*game_);
-                state_.game =
-                    tr("Game %1: %2 — %3")
-                        .arg(game_->summary.id)
-                        .arg(game_->summary.white.isEmpty() ? tr("White")
-                                                            : displayName(game_->summary.white),
-                             game_->summary.black.isEmpty() ? tr("Black")
-                                                            : displayName(game_->summary.black));
-                state_.phase = ReviewPhase::Idle;
-                publish();
-                refreshRuns();
-                finishClose();
-            });
-    connect(&database_, &persistence::Database::reviewsListed, this,
-            [this](QUuid id, const persistence::ListReviewsResult& result) {
-                if (id != listing_) {
-                    return;
-                }
-                listing_ = {};
-                state_.listing = false;
-                if (const auto* error = std::get_if<ReviewError>(&result)) {
-                    if (error->code == ReviewErrorCode::Busy && !closing_) {
-                        listRetry_.start(100);
-                    } else {
-                        state_.notice = error->message;
-                    }
-                } else {
-                    state_.runs = std::get<std::vector<persistence::ReviewSummary>>(result);
-                    state_.hasNext = state_.runs.size() > 50;
-                    if (state_.hasNext) {
-                        state_.runs.pop_back();
-                    }
-                }
-                publish();
-                finishClose();
-            });
     connect(&database_, &persistence::Database::reviewLoaded, this,
             [this](QUuid id, const persistence::LoadReviewResult& result) {
                 if (!accept(id)) {
-                    return;
-                }
-                if (!state_.active && !closing_ && nextInspection_) {
-                    const auto next = *std::exchange(nextInspection_, std::nullopt);
-                    loadInspection(next);
                     return;
                 }
                 if (const auto* error = std::get_if<ReviewError>(&result)) {
@@ -183,11 +123,6 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
     connect(&database_, &persistence::Database::reviewOverviewLoaded, this,
             [this](QUuid id, const persistence::LoadReviewOverviewResult& result) {
                 if (!accept(id)) {
-                    return;
-                }
-                if (!state_.active && !closing_ && nextInspection_) {
-                    const auto next = *std::exchange(nextInspection_, std::nullopt);
-                    loadInspection(next);
                     return;
                 }
                 if (const auto* error = std::get_if<ReviewError>(&result)) {
@@ -387,15 +322,13 @@ void ReviewGameController::publish() {
     if (closed_) {
         return;
     }
-    moves_.bind(state_.run);
-    navigation_.bind(state_.run, state_.overview);
-    exploration_.bind(state_.run);
     state_.busy = state_.active || workerBusy_ || !pending_.isNull() || retry_.isActive();
     const QScopedValueRollback notification(notifying_, true);
-    emit changed();
+    emit taskChanged();
 }
 void ReviewGameController::setReady(bool ready) {
     state_.ready = ready;
+    workspace_->setReady(ready);
     publish();
 }
 void ReviewGameController::request(std::function<void(QUuid)> operation, bool durable) {
@@ -435,8 +368,8 @@ void ReviewGameController::handleError(const ReviewError& error) {
         const auto id = state_.run ? state_.run->id : 0;
         state_.error = tr("The saved run changed. Reloaded state requires explicit resume.");
         finish();
-        if (!closing_ && id) {
-            loadInspection(id);
+        if (!closing_ && id && workspace_->state().run && workspace_->state().run->id == id) {
+            workspace_->loadRun(id);
         }
     } else if (terminalWrite_) {
         state_.error = tr("Run status could not be saved. Previously committed evidence is "
@@ -446,72 +379,28 @@ void ReviewGameController::handleError(const ReviewError& error) {
         fail(error.message, review::JobFailure::Storage);
     }
 }
-void ReviewGameController::selectGame(persistence::GameId id) {
-    if (closing_ || state_.busy || !state_.ready || id <= 0) {
-        return;
-    }
-    ++generation_;
-    listing_ = {};
-    listRetry_.stop();
-    navigation_.clear();
-    game_.reset();
-    stored_.reset();
-    state_.run.reset();
-    state_.overview.reset();
-    state_.overviewError.clear();
-    state_.runs.clear();
-    state_.page = 0;
-    state_.hasNext = false;
-    state_.listing = false;
-    nextInspection_.reset();
-    state_.gameId = id;
-    state_.engine.clear();
-    state_.error.clear();
-    state_.notice.clear();
-    state_.message.clear();
-    state_.phase = ReviewPhase::Loading;
-    request([this, id](QUuid requestId) { database_.loadGame(requestId, id); });
+const ReviewGameState& ReviewGameController::state() const { return workspace_->state(); }
+ReviewWorkspaceController& ReviewGameController::workspace() { return *workspace_; }
+ReviewMovesController& ReviewGameController::moves() { return workspace_->moves(); }
+ReviewNavigationController& ReviewGameController::navigation() { return workspace_->navigation(); }
+ReviewExplorationController& ReviewGameController::exploration() {
+    return workspace_->exploration();
 }
-void ReviewGameController::refreshRuns(std::int64_t page) {
-    if (closing_ || !state_.ready || !state_.gameId || !listing_.isNull() || page < 0 ||
-        page > 1000000) {
-        return;
-    }
-    state_.page = page;
-    state_.listing = true;
-    listing_ = QUuid::createUuid();
-    database_.listReviews(listing_, state_.gameId, page * 50, 51);
-    publish();
+void ReviewGameController::selectGame(persistence::GameId id) { workspace_->selectGame(id); }
+void ReviewGameController::inspect(review::ReviewId id) { workspace_->inspect(id); }
+void ReviewGameController::refreshRuns(std::int64_t page) { workspace_->refreshRuns(page); }
+void ReviewGameController::start(chess::Color side, std::int64_t profile, review::Quality quality) {
+    workspace_->start(side, profile, quality);
 }
-void ReviewGameController::inspect(review::ReviewId id) {
-    if (closing_ || state_.active || !game_ || id <= 0) {
-        return;
-    }
-    if (state_.busy) {
-        nextInspection_ = id;
-        return;
-    }
-    state_.error.clear();
-    loadInspection(id);
-}
-void ReviewGameController::loadInspection(review::ReviewId id) {
-    terminalWrite_ = false;
-    state_.overview.reset();
-    state_.overviewError.clear();
-    state_.run.reset();
-    stored_.reset();
-    state_.engine.clear();
-    state_.phase = ReviewPhase::Loading;
-    request([this, id](QUuid requestId) { database_.loadReview(requestId, id); });
-}
+void ReviewGameController::resume(review::ReviewId id) { workspace_->resume(id); }
 QString ReviewGameController::startBlocker(std::int64_t profileId) const {
     if (!state_.ready || closing_) {
         return tr("Local storage is unavailable.");
     }
-    if (state_.busy) {
+    if (state_.busy || workspace_->state().busy) {
         return tr("Wait for the current operation or cancel the active run.");
     }
-    if (!game_) {
+    if (!workspace_->hasGame()) {
         return tr("Select a saved game from Games.");
     }
     if (configuration_.state() != ConfigurationState::Valid) {
@@ -534,8 +423,8 @@ QString ReviewGameController::startBlocker(std::int64_t profileId) const {
     }
     return {};
 }
-void ReviewGameController::start(chess::Color side, std::int64_t profileId,
-                                 review::Quality quality) {
+void ReviewGameController::startJob(chess::Color side, std::int64_t profileId,
+                                    review::Quality quality) {
     if (!startBlocker(profileId).isEmpty() ||
         (side != chess::Color::White && side != chess::Color::Black)) {
         return;
@@ -577,7 +466,7 @@ void ReviewGameController::start(chess::Color side, std::int64_t profileId,
     ++generation_;
     connectSelected(false);
 }
-void ReviewGameController::resume(review::ReviewId id) {
+void ReviewGameController::resumeJob(review::ReviewId id) {
     if (closing_ || state_.busy || !game_ || !state_.ready ||
         configuration_.state() != ConfigurationState::Valid || id <= 0) {
         return;
@@ -827,6 +716,10 @@ std::uint64_t ReviewGameController::nodeBudget() const {
     return b.quickScanNodes;
 }
 void ReviewGameController::refreshOverview(int keyOffset) {
+    if (!state_.active) {
+        workspace_->refreshOverview(keyOffset);
+        return;
+    }
     if (closing_ || !state_.run || !pending_.isNull() || retry_.isActive() || !search_.isNull() ||
         workerBusy_) {
         return;
@@ -837,9 +730,7 @@ void ReviewGameController::refreshOverview(int keyOffset) {
         database_.loadReviewOverview(requestId, id, revision, keyOffset);
     });
 }
-void ReviewGameController::selectMoment(int index) {
-    navigation_.select(navigation_.target(index));
-}
+void ReviewGameController::selectMoment(int index) { workspace_->selectMoment(index); }
 void ReviewGameController::preparePosition() {
     workerBusy_ = true;
     state_.phase = ReviewPhase::Preparing;
@@ -1032,12 +923,6 @@ void ReviewGameController::finish() {
                             "identified separately.");
     }
     publish();
-    if (!closing_) {
-        refreshRuns();
-        if (!state_.active && state_.error.isEmpty()) {
-            refreshOverview();
-        }
-    }
     finishClose();
 }
 void ReviewGameController::cancel() {
@@ -1061,11 +946,7 @@ void ReviewGameController::close() {
         return;
     }
     closing_ = true;
-    moves_.close();
-    exploration_.close();
-    navigation_.close();
-    nextInspection_.reset();
-    listRetry_.stop();
+    workspace_->close();
     if (retry_.isActive() && !durableOperation_) {
         retry_.stop();
         operation_ = {};
@@ -1074,9 +955,9 @@ void ReviewGameController::close() {
     finishClose();
 }
 void ReviewGameController::finishClose() {
-    if (!closing_ || closed_ || closeQueued_ || !moves_.drained() || !navigation_.drained() ||
-        !exploration_.drained() || state_.active || workerBusy_ || !pending_.isNull() ||
-        !search_.isNull() || !cacheWrite_.isNull() || !listing_.isNull() || retry_.isActive()) {
+    if (!closing_ || closed_ || closeQueued_ || !workspace_->drained() || state_.active ||
+        workerBusy_ || !pending_.isNull() || !search_.isNull() || !cacheWrite_.isNull() ||
+        retry_.isActive()) {
         return;
     }
     closeQueued_ = true;
@@ -1085,7 +966,7 @@ void ReviewGameController::finishClose() {
 void ReviewGameController::deliverClose() {
     // A changed() consumer may close us and run a nested event loop. Do not authorize
     // destruction until its notification stack and the last worker have retired.
-    if (notifying_ || !worker_.waitForDone(0)) {
+    if (notifying_ || workspace_->notifying_ || !worker_.waitForDone(0)) {
         QTimer::singleShot(5, this, &ReviewGameController::deliverClose);
         return;
     }

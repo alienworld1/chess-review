@@ -65,6 +65,11 @@ class Database final : public QObject {
     void loadGame(RequestId request, GameId id);
     void listGames(RequestId request, std::int64_t offset = 0, int limit = 50);
 
+    void loadReviewContext(RequestId requestId, GameId gameId, ReviewId reviewId);
+    void saveReviewContext(RequestId requestId, ReviewContext context);
+    void listLibraryReviews(RequestId requestId, std::vector<GameId> gameIds);
+    void listInterruptedReviews(RequestId requestId, std::int64_t offset, int limit);
+
     // Durable review operations share repository admission and accepted-write drainage.
     void createReview(RequestId requestId, CreateReview request);
     void loadReview(RequestId requestId, ReviewId id);
@@ -82,6 +87,11 @@ class Database final : public QObject {
                                int limit = 50);
 
   signals:
+    void reviewContextLoaded(RequestId requestId, const LoadReviewContextResult& result);
+    void reviewContextSaved(RequestId requestId, const SaveReviewContextResult& result);
+    void libraryReviewsListed(RequestId requestId, const ListLibraryReviewsResult& result);
+    void interruptedReviewsListed(RequestId requestId, const ListReviewsResult& result);
+
     void
     reviewExplorationLoaded(chess_review::persistence::RequestId requestId,
                             const chess_review::persistence::LoadReviewExplorationResult& result);

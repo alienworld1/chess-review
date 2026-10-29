@@ -1,5 +1,6 @@
 #include "ui/shell/MainWindow.h"
 #include "app/EngineAnalysisController.h"
+#include "app/ReviewWorkspaceController.h"
 #include "ui/analysis/AnalysisPage.h"
 #include "ui/games/GamesPage.h"
 #include "ui/games/PgnTextEdit.h"
@@ -40,6 +41,8 @@
 #include <QVariant>
 #include <QWindow>
 #include <algorithm>
+
+#include <memory>
 
 namespace chess_review::ui {
 QRect fittedWindowGeometry(const QRect& desired, const QRect& available) {
@@ -99,6 +102,9 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
         destinations_[i] = action;
         connect(action, &QAction::triggered, this, [this, destination = values[i]] {
             if (!closing_) {
+                if (reviewController_) {
+                    reviewController_->workspace().suppressRestoration();
+                }
                 if (navigation_.current() == destination) {
                     selectDestination();
                 } else {
@@ -255,9 +261,7 @@ void MainWindow::installReview(app::ReviewGameController& review) {
         if (closing_) {
             return;
         }
-        if (!review.state().busy) {
-            review.selectGame(id);
-        }
+        review.selectGame(id);
         showReview();
     });
     connect(reviewPage_, &ReviewPage::backRequested, this, [this] {
@@ -272,27 +276,127 @@ void MainWindow::installReview(app::ReviewGameController& review) {
     task->setAccessibleName(tr("Background review status; return to review"));
     qobject_cast<QVBoxLayout*>(scroll->widget()->layout())->insertWidget(2, task);
     task->hide();
-    connect(task, &QPushButton::clicked, this, &MainWindow::showReview);
-    connect(pages_, &QStackedWidget::currentChanged, this, [this, task, &review] {
-        const auto& state = review.state();
-        task->setVisible(pages_->currentWidget() != reviewPage_ &&
-                         (state.active || state.run.has_value() || !state.error.isEmpty()));
+    connect(task, &QPushButton::clicked, &review.workspace(),
+            &app::ReviewWorkspaceController::returnToTask);
+    connect(&review.workspace(), &app::ReviewWorkspaceController::showRequested, this,
+            &MainWindow::showReview);
+    connect(&review.workspace(), &app::ReviewWorkspaceController::restoreFailed, this, [this] {
+        if (closing_) {
+            return;
+        }
+        const auto& state = reviewController_->state();
+        preferencesNotice_->setText(state.error.isEmpty() ? state.notice : state.error);
+        preferencesNotice_->setVisible(!preferencesNotice_->text().isEmpty());
+        navigation_.navigate(app::Destination::Games);
+        selectDestination();
     });
-    connect(&review, &app::ReviewGameController::changed, this, [this, task, &review] {
-        const auto& state = review.state();
+    const auto updateTask = [this, task, &review] {
+        const auto& state = review.taskState();
         if (state.active && !reviewWasActive_) {
             reviewLeaveAllowed_ = false;
         }
         reviewWasActive_ = state.active;
-        task->setVisible(pages_->currentWidget() != reviewPage_ &&
+        const bool viewingTask = pages_->currentWidget() == reviewPage_ && review.state().run &&
+                                 state.run && review.state().run->id == state.run->id;
+        task->setVisible(!viewingTask &&
                          (state.active || state.run.has_value() || !state.error.isEmpty()));
-        task->setText(tr("Review: %1 — %2 / %3 positions saved · Return to Review")
+        task->setText(tr("Game %1: %2 — %3 / %4 positions saved · Return to Review")
+                          .arg(state.gameId)
                           .arg(state.active ? tr("In progress")
                                : state.run  ? app::reviewStatusText(state.run->status)
                                             : tr("Stopped"))
                           .arg(state.run ? state.run->completedPositions : 0)
                           .arg(state.run ? state.run->totalPositions : 0));
+    };
+    connect(&review, &app::ReviewGameController::changed, this, updateTask);
+    connect(&review, &app::ReviewGameController::taskChanged, this, updateTask);
+    connect(pages_, &QStackedWidget::currentChanged, this, [this, &review, updateTask] {
+        review.workspace().setVisible(pages_->currentWidget() == reviewPage_ ||
+                                      pages_->currentWidget() == linkedAnalysis_);
+        updateTask();
     });
+    auto* home = pages_->widget(0);
+    auto* recovery = new QWidget(home);
+    recovery->setObjectName(QStringLiteral("reviewRecovery"));
+    auto* recoveryLayout = new QVBoxLayout(recovery);
+    auto* recoveryNotice = new QLabel(
+        tr("Interrupted reviews are saved. Open a run to inspect it or explicitly resume."),
+        recovery);
+    recoveryNotice->setWordWrap(true);
+    recoveryLayout->addWidget(recoveryNotice);
+    auto* showRecovery = new QPushButton(tr("View interrupted reviews"), recovery);
+    showRecovery->setObjectName(QStringLiteral("showInterruptedReviews"));
+    showRecovery->setCheckable(true);
+    recoveryLayout->addWidget(showRecovery);
+    auto* recoveryDetails = new QWidget(recovery);
+    recoveryDetails->setObjectName(QStringLiteral("interruptedReviewList"));
+    auto* detailsLayout = new QVBoxLayout(recoveryDetails);
+    auto* recoveryRows = new QVBoxLayout;
+    detailsLayout->addLayout(recoveryRows);
+    recoveryLayout->addWidget(recoveryDetails);
+    recoveryDetails->hide();
+    connect(showRecovery, &QPushButton::toggled, recoveryDetails, &QWidget::setVisible);
+    connect(showRecovery, &QPushButton::toggled, this, [showRecovery](bool shown) {
+        showRecovery->setText(shown ? tr("Hide interrupted reviews")
+                                    : tr("View interrupted reviews"));
+    });
+    auto* recoveryError = new QLabel(recovery);
+    recoveryError->setWordWrap(true);
+    recoveryError->setTextFormat(Qt::PlainText);
+    recoveryLayout->addWidget(recoveryError);
+    auto* controls = new QHBoxLayout;
+    auto* earlier = new QPushButton(tr("Previous interrupted reviews"), recovery);
+    auto* later = new QPushButton(tr("Next interrupted reviews"), recovery);
+    auto* refresh = new QPushButton(tr("Refresh interrupted reviews"), recovery);
+    controls->addWidget(earlier);
+    controls->addWidget(later);
+    controls->addWidget(refresh);
+    detailsLayout->addLayout(controls);
+    qobject_cast<QVBoxLayout*>(home->layout())->insertWidget(1, recovery);
+    const auto updateRecovery = [this, recovery, recoveryRows, recoveryError, earlier, later,
+                                 &review] {
+        auto& workspace = review.workspace();
+        while (auto item = std::unique_ptr<QLayoutItem>(recoveryRows->takeAt(0))) {
+            if (item->widget()) {
+                item->widget()->deleteLater();
+            }
+        }
+        recovery->setVisible(!workspace.interrupted().empty() ||
+                             !workspace.recoveryError().isEmpty());
+        recoveryError->setText(workspace.recoveryError());
+        earlier->setEnabled(!workspace.recoveryBusy() && workspace.recoveryPage() > 0);
+        later->setEnabled(!workspace.recoveryBusy() && workspace.recoveryHasNext());
+        for (const auto& run : workspace.interrupted()) {
+            auto* open = new QPushButton(QObject::tr("Game %1 · %2 · saved %3/%4 · Open review %5")
+                                             .arg(run.gameId)
+                                             .arg(run.selectedSide == chess::Color::White
+                                                      ? QObject::tr("White")
+                                                      : QObject::tr("Black"))
+                                             .arg(run.completedPositions)
+                                             .arg(run.totalPositions)
+                                             .arg(run.id),
+                                         recovery);
+            open->setEnabled(!run.metadataError);
+            recoveryRows->addWidget(open);
+            QObject::connect(open, &QPushButton::clicked, &workspace, [this, &workspace, run] {
+                workspace.selectGame(run.gameId, run.id);
+                showReview();
+            });
+        }
+    };
+    connect(&review.workspace(), &app::ReviewWorkspaceController::recoveryChanged, this,
+            updateRecovery);
+    connect(earlier, &QPushButton::clicked, this, [&review] {
+        auto& w = review.workspace();
+        w.refreshRecovery(w.recoveryPage() - 1);
+    });
+    connect(later, &QPushButton::clicked, this, [&review] {
+        auto& w = review.workspace();
+        w.refreshRecovery(w.recoveryPage() + 1);
+    });
+    connect(refresh, &QPushButton::clicked, this,
+            [&review] { review.workspace().refreshRecovery(); });
+    recovery->hide();
 }
 void MainWindow::showReview() {
     if (closing_ || !reviewPage_) {
@@ -594,14 +698,15 @@ void MainWindow::selectDestination() {
         auto* stay = dialog->addButton(tr("Stay"), QMessageBox::RejectRole);
         auto* cancel = dialog->addButton(tr("Cancel task"), QMessageBox::DestructiveRole);
         dialog->setDefaultButton(stay);
-        connect(dialog, &QDialog::finished, this, [this, dialog, background, cancel] {
+        const auto origin = reviewController_->taskToken();
+        connect(dialog, &QDialog::finished, this, [this, dialog, background, cancel, origin] {
             reviewLeavePending_ = false;
             if (closing_) {
                 return;
             }
             if (dialog->clickedButton() == background || dialog->clickedButton() == cancel) {
                 reviewLeaveAllowed_ = true;
-                if (dialog->clickedButton() == cancel) {
+                if (dialog->clickedButton() == cancel && origin == reviewController_->taskToken()) {
                     reviewController_->cancel();
                 }
                 selectDestination();

@@ -34,6 +34,11 @@ class StorageSession final {
     FindAnalysisResult findAnalysis(const engine::CacheQuery& query,
                                     qint64 scanLimit = maxAnalysisRecords);
 
+    LoadReviewContextResult loadReviewContext(GameId gameId, ReviewId reviewId);
+    SaveReviewContextResult saveReviewContext(ReviewContext context);
+    ListLibraryReviewsResult listLibraryReviews(std::vector<GameId> gameIds);
+    ListReviewsResult listInterruptedReviews(std::int64_t offset, int limit);
+
     CreateReviewResult createReview(const CreateReview& request);
     LoadReviewResult loadReview(ReviewId id);
     ListReviewsResult listReviews(GameId gameId, std::int64_t offset, int limit);

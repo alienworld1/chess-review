@@ -2,6 +2,7 @@
 #include "app/EngineSettingsController.h"
 #include "app/ReviewConfiguration.h"
 #include "app/ReviewExplorationController.h"
+#include "app/ReviewGameState.h"
 #include "app/ReviewMovesController.h"
 #include <QObject>
 #include <QString>
@@ -16,39 +17,7 @@
 #include <vector>
 
 namespace chess_review::app {
-enum class ReviewPhase {
-    Idle,
-    Loading,
-    Connecting,
-    Preparing,
-    LookingUp,
-    Scanning,
-    Refining,
-    Saving,
-    Finished
-};
-struct ReviewGameState {
-    persistence::GameId gameId = 0;
-    QString game;
-    QString engine;
-    ReviewPhase phase = ReviewPhase::Idle;
-    QString message;
-    QString error;
-    QString notice;
-    std::optional<persistence::ReviewSummary> run;
-    std::vector<persistence::ReviewSummary> runs;
-    std::optional<persistence::ReviewOverview> overview;
-    QString overviewError;
-    int refinementDone = 0;
-    int refinementTotal = 0;
-    std::int64_t page = 0;
-    bool hasNext = false;
-    bool listing = false;
-    bool active = false;
-    bool busy = false;
-    bool ready = false;
-    bool cancelling = false;
-};
+class ReviewWorkspaceController;
 QString reviewStatusText(review::JobStatus status);
 // GUI-thread facade. Injected services outlive closed(). Only the serial worker owns Cursor.
 // closed() is delivered asynchronously outside changed() notifications; then destruction is safe.
@@ -59,11 +28,14 @@ class ReviewGameController final : public QObject {
                          engine::EngineSupervisor& supervisor, ReviewConfiguration& configuration,
                          QObject* parent = nullptr);
     ~ReviewGameController() override;
-    const ReviewGameState& state() const { return state_; }
+    const ReviewGameState& state() const;
+    const ReviewGameState& taskState() const { return state_; }
+    QUuid taskToken() const { return job_; }
+    ReviewWorkspaceController& workspace();
     const EngineSettingsState& engines() const { return settings_.state(); }
-    ReviewMovesController& moves() { return moves_; }
-    ReviewExplorationController& exploration() { return exploration_; }
-    ReviewNavigationController& navigation() { return navigation_; }
+    ReviewMovesController& moves();
+    ReviewExplorationController& exploration();
+    ReviewNavigationController& navigation();
     review::Quality defaultQuality() const;
     void setReady(bool ready);
     void selectGame(persistence::GameId id);
@@ -78,9 +50,13 @@ class ReviewGameController final : public QObject {
     void close();
   signals:
     void changed();
+    void taskChanged();
     void closed();
 
   private:
+    friend class ReviewWorkspaceController;
+    void startJob(chess::Color side, std::int64_t profileId, review::Quality quality);
+    void resumeJob(review::ReviewId id);
     struct Cursor;
     void publish();
     void request(std::function<void(QUuid)> operation, bool durable = false);
@@ -104,15 +80,13 @@ class ReviewGameController final : public QObject {
     void fail(const QString& message, review::JobFailure failure);
     void finishClose();
     void deliverClose();
-    void loadInspection(review::ReviewId id);
+
     persistence::Database& database_;
     EngineSettingsController& settings_;
     engine::EngineSupervisor& supervisor_;
     ReviewConfiguration& configuration_;
     ReviewGameState state_;
-    ReviewMovesController moves_;
-    ReviewNavigationController navigation_;
-    ReviewExplorationController exploration_;
+    std::unique_ptr<ReviewWorkspaceController> workspace_;
     std::optional<persistence::StoredGame> game_;
     std::optional<persistence::StoredReview> stored_;
     config::ValidatedConfiguration runConfiguration_;
@@ -130,11 +104,8 @@ class ReviewGameController final : public QObject {
     std::unique_ptr<Cursor> cursor_;
     std::stop_source stop_;
     QTimer retry_;
-    QTimer listRetry_;
     std::function<void(QUuid)> operation_;
     QUuid pending_;
-    std::optional<review::ReviewId> nextInspection_;
-    QUuid listing_;
     QUuid cacheWrite_;
     QUuid session_;
     QUuid job_;

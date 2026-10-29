@@ -5,6 +5,7 @@
 #include <QString>
 #include <QTimer>
 #include <cstdint>
+#include <map>
 #include <vector>
 
 namespace chess_review::app {
@@ -19,6 +20,8 @@ class GameLibraryController final : public QObject {
     bool opening() const { return !pendingOpen_.isNull(); }
     void refresh(bool newest = false);
     void importedGame();
+    QString reviewStatus(persistence::GameId id) const;
+    QString reviewAccuracy(persistence::GameId id) const;
     void previous();
     void next();
     const std::vector<persistence::GameSummary>& rows() const { return rows_; }
@@ -34,6 +37,20 @@ class GameLibraryController final : public QObject {
 
   private:
     void requestPage();
+    void requestReviews();
+    void requestAccuracy();
+    struct ReviewRow {
+        persistence::LibraryReview metadata;
+        std::optional<review::SideSummary> side;
+        QString error;
+    };
+    std::map<persistence::GameId, ReviewRow> reviews_;
+    persistence::RequestId reviewsPending_;
+    persistence::RequestId accuracyPending_;
+    std::vector<persistence::ReviewSummary> accuracyQueue_;
+    std::optional<persistence::ReviewSummary> accuracyRun_;
+    std::uint64_t reviewsRevision_ = 0;
+    std::uint64_t accuracyRevision_ = 0;
     persistence::Database& database_;
     QTimer refreshTimer_;
     persistence::RequestId pending_;

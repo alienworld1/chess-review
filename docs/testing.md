@@ -1052,3 +1052,24 @@ that a first pass already at the verification budget restarts at the saved first
 budget; it does not exempt the fake engine from production cache qualification.
 Retry domain tests reject cross-engine passes and partial child verification and
 cover exact native-WDL drift boundaries.
+
+## Reopen and recovery integration
+
+The `quick_review` suite exercises restoration of run, perspective and original-game
+moment with invalid current TOML and no engine connection; independent computation
+and inspection; per-run moment memory; user selection overriding pending restore;
+hover isolation; missing-context diagnostics; and chosen-player library accuracy
+with revision-based reuse. A 51-job fixture checks Interrupted discovery and paging.
+The Home list starts collapsed and can be opened with the keyboard.
+
+The production-main subprocess driver restores a saved review, changes its moment,
+and closes before the 250 ms debounce expires. A second launch verifies that normal
+shutdown flushed the latest moment and that the event loop exits normally.
+Persistence cases cover schema-8 upgrade, ownership/bounds validation, transactional
+context rollback, damaged scalar metadata, and crash retention of evidence plus
+navigation context. New SQL fixtures live in persistence tests.
+
+Optional `CHESS_REVIEW_QUICK_RENDER_DIR` renders include the compact Home notice,
+expanded recovery list, library, and existing Review/exploration states. Run
+`quick_review_tests interruptedReviewsAreDiscoverableAndPaged renderWorkspace` with
+that directory and `QT_SCALE_FACTOR=1`, `1.25`, `1.5`, or `2` to inspect scaling.

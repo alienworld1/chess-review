@@ -71,6 +71,7 @@ add_library(chess_review_persistence STATIC
     src/persistence/private/ReviewRepository.cpp
     src/persistence/migrations/006_reviews.cpp
     src/persistence/migrations/007_classifications.cpp
+    src/persistence/migrations/009_review_workspace.cpp
     src/persistence/migrations/008_refinement.cpp
     src/persistence/private/AnalysisCodec.cpp
     src/persistence/private/AnalysisRepository.cpp
@@ -101,6 +102,7 @@ chess_review_apply_options(chess_review_app_paths)
 
 add_library(chess_review_startup STATIC
     src/app/ReviewExplorationController.cpp
+    src/app/ReviewWorkspaceController.cpp
     src/app/ReviewGameController.cpp
     src/app/ReviewMovesController.cpp
     src/app/ReviewNavigationController.cpp

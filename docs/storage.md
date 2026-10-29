@@ -543,3 +543,19 @@ never starts an engine. Future scheduling should checkpoint every completed
 position before acknowledging durable progress. A crash can repeat uncommitted
 work; unfinished search snapshots are not retained. Orderly shutdown drains
 accepted writes, and remaining active jobs become Interrupted on the next launch.
+
+## Review workspace context (schema 009)
+
+The database stores navigation references in `review_workspace`,
+`review_selection`, and `review_moments`: the current Review workspace, last
+inspected run per game, and committed original-mainline position per run.
+Perspective, model/configuration identities, and evidence remain authoritative in
+the saved run. No ephemeral exploration state is serialized.
+
+Typed `loadReviewContext`/`saveReviewContext`, `listLibraryReviews`, and
+`listInterruptedReviews` operations use the existing asynchronous Database facade,
+16-request admission bound, and accepted-write drainage. Library metadata batches
+are limited to 50 games; recovery pages accept at most 51 rows for lookahead.
+Context writes validate game/run ownership and position bounds transactionally.
+UI geometry and splitter preferences remain in the existing QSettings file.
+See [reopen and recovery](reopen-recovery.md) for user-facing behavior.

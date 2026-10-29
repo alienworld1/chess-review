@@ -1695,4 +1695,248 @@ std::optional<DatabaseError> StorageSession::interruptReviewJobs(const QString& 
     }
     return std::nullopt;
 }
+LoadReviewContextResult StorageSession::loadReviewContext(GameId gameId, ReviewId reviewId) {
+    if (!usable_) {
+        return storage();
+    }
+    if (gameId < 0 || reviewId < 0 || (!gameId && reviewId)) {
+        return error(ReviewErrorCode::InvalidInput);
+    }
+    ReviewContext out;
+    QSqlQuery q(database_);
+    if (!gameId) {
+        if (!q.exec(QStringLiteral(
+                "SELECT CASE WHEN typeof(format_version)='integer' THEN format_version END,"
+                "CASE WHEN typeof(game_id)='integer' THEN game_id END,"
+                "CASE WHEN typeof(review_id)='integer' THEN review_id END,"
+                "CASE WHEN typeof(reopen)='integer' THEN reopen END,"
+                "typeof(game_id) IN ('integer','null') AND typeof(review_id) IN ('integer','null') "
+                "FROM review_workspace WHERE id=1"))) {
+            return storage();
+        }
+        if (!q.next()) {
+            return q.lastError().isValid() ? LoadReviewContextResult{storage()}
+                                           : LoadReviewContextResult{out};
+        }
+        if (q.value(0).metaType().id() != QMetaType::LongLong || !q.value(4).toBool() ||
+            q.value(3).metaType().id() != QMetaType::LongLong ||
+            (q.value(3).toLongLong() != 0 && q.value(3).toLongLong() != 1)) {
+            return invalid();
+        }
+        if (q.value(0).toLongLong() != 1) {
+            return error(ReviewErrorCode::UnsupportedVersion);
+        }
+        for (int i : {1, 2}) {
+            if (!q.value(i).isNull() && (q.value(i).metaType().id() != QMetaType::LongLong ||
+                                         q.value(i).toLongLong() <= 0)) {
+                return invalid();
+            }
+        }
+        if (!q.value(1).isNull()) {
+            out.gameId = q.value(1).toLongLong();
+        }
+        if (!q.value(2).isNull()) {
+            out.reviewId = q.value(2).toLongLong();
+        }
+        out.reopen = q.value(3).toLongLong() == 1;
+        if ((out.reviewId || out.reopen) && !out.gameId) {
+            return invalid();
+        }
+    } else {
+        out.gameId = gameId;
+        if (reviewId) {
+            out.reviewId = reviewId;
+        } else {
+            if (!exec(q,
+                      QStringLiteral("SELECT CASE WHEN typeof(review_id)='integer' THEN review_id "
+                                     "END FROM review_selection WHERE game_id=?"),
+                      {static_cast<qint64>(gameId)})) {
+                return storage();
+            }
+            if (q.next()) {
+                if (q.value(0).metaType().id() != QMetaType::LongLong ||
+                    q.value(0).toLongLong() <= 0) {
+                    return invalid();
+                }
+                out.reviewId = q.value(0).toLongLong();
+            } else if (q.lastError().isValid()) {
+                return storage();
+            }
+        }
+    }
+    q.finish();
+    if (out.reviewId) {
+        if (!exec(q,
+                  QStringLiteral("SELECT CASE WHEN typeof(position_index)='integer' THEN "
+                                 "position_index END FROM review_moments WHERE review_id=?"),
+                  {static_cast<qint64>(*out.reviewId)})) {
+            return storage();
+        }
+        if (q.next()) {
+            // Invalid positions are recoverable navigation preferences, never chess evidence.
+            const auto value = q.value(0);
+            if (value.metaType().id() == QMetaType::LongLong && value.toLongLong() >= 0 &&
+                value.toLongLong() <= 16384) {
+                out.position = static_cast<int>(value.toLongLong());
+            } else {
+                out.invalidPosition = true;
+            }
+        } else if (q.lastError().isValid()) {
+            return storage();
+        }
+    }
+    return out;
+}
+SaveReviewContextResult StorageSession::saveReviewContext(ReviewContext context) {
+    if (!usable_) {
+        return storage();
+    }
+    if (context.invalidPosition || (context.gameId && *context.gameId <= 0) ||
+        (context.reviewId && *context.reviewId <= 0) ||
+        ((context.reviewId || context.reopen) && !context.gameId) ||
+        (context.position &&
+         (!context.reviewId || *context.position < 0 || *context.position > 16384))) {
+        return error(ReviewErrorCode::InvalidInput);
+    }
+    ReviewTransaction tx(database_, usable_);
+    if (!tx.begin()) {
+        return storage();
+    }
+    QSqlQuery q(database_);
+    if (context.gameId) {
+        if (!exec(q, QStringLiteral("SELECT id FROM games WHERE id=?"),
+                  {static_cast<qint64>(*context.gameId)})) {
+            return storage();
+        }
+        if (!q.next()) {
+            return error(ReviewErrorCode::Missing);
+        }
+        q.finish();
+    }
+    if (context.reviewId) {
+        if (!exec(q, summaryProjection + QStringLiteral("WHERE r.id=?"),
+                  {static_cast<qint64>(*context.reviewId)})) {
+            return storage();
+        }
+        if (!q.next()) {
+            return error(ReviewErrorCode::Missing);
+        }
+        const auto run = summary(q);
+        q.finish();
+        if (!run || run->gameId != *context.gameId ||
+            (context.position && *context.position >= run->totalPositions)) {
+            return error(ReviewErrorCode::InvalidInput);
+        }
+        if (!exec(q,
+                  QStringLiteral("INSERT INTO review_selection VALUES(?,?) ON CONFLICT(game_id) DO "
+                                 "UPDATE SET review_id=excluded.review_id"),
+                  {static_cast<qint64>(*context.gameId), static_cast<qint64>(*context.reviewId)})) {
+            return storage();
+        }
+        if (context.position &&
+            !exec(q,
+                  QStringLiteral("INSERT INTO review_moments VALUES(?,?) ON CONFLICT(review_id) DO "
+                                 "UPDATE SET position_index=excluded.position_index"),
+                  {static_cast<qint64>(*context.reviewId), *context.position})) {
+            return storage();
+        }
+    }
+    const QVariant game =
+        context.gameId ? QVariant::fromValue(static_cast<qint64>(*context.gameId)) : QVariant{};
+    const QVariant run =
+        context.reviewId ? QVariant::fromValue(static_cast<qint64>(*context.reviewId)) : QVariant{};
+    if (!exec(q,
+              QStringLiteral(
+                  "INSERT INTO review_workspace VALUES(1,1,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                  "game_id=excluded.game_id,review_id=excluded.review_id,reopen=excluded.reopen"),
+              {game, run, context.reopen ? 1 : 0}) ||
+        !tx.commit()) {
+        return storage();
+    }
+    return std::monostate{};
+}
+ListLibraryReviewsResult StorageSession::listLibraryReviews(std::vector<GameId> gameIds) {
+    if (!usable_) {
+        return storage();
+    }
+    if (gameIds.size() > 50 ||
+        std::any_of(gameIds.begin(), gameIds.end(), [](GameId id) { return id <= 0; })) {
+        return error(ReviewErrorCode::InvalidInput);
+    }
+    std::vector<LibraryReview> out;
+    for (const auto gameId : gameIds) {
+        LibraryReview row;
+        row.gameId = gameId;
+        QSqlQuery interrupted(database_);
+        if (!exec(interrupted,
+                  QStringLiteral("SELECT EXISTS(SELECT 1 FROM reviews r JOIN review_jobs j ON "
+                                 "j.review_id=r.id WHERE r.game_id=? AND j.status=8)"),
+                  {static_cast<qint64>(gameId)}) ||
+            !interrupted.next()) {
+            return storage();
+        }
+        row.hasInterrupted = interrupted.value(0).toBool();
+        interrupted.finish();
+        auto context = loadReviewContext(gameId, 0);
+        if (const auto* issue = std::get_if<ReviewError>(&context)) {
+            row.error = *issue;
+        } else {
+            const auto selected = std::get<ReviewContext>(context).reviewId;
+            QSqlQuery q(database_);
+            const auto sql =
+                selected ? summaryProjection + QStringLiteral("WHERE r.id=?")
+                         : summaryProjection +
+                               QStringLiteral("WHERE r.game_id=? ORDER BY r.id DESC LIMIT 1");
+            if (!exec(q, sql, {static_cast<qint64>(selected.value_or(gameId))})) {
+                return storage();
+            }
+            if (q.next()) {
+                row.run = summary(q);
+                if (!row.run || row.run->gameId != gameId) {
+                    row.run.reset();
+                    row.error = invalid();
+                }
+            } else if (q.lastError().isValid()) {
+                return storage();
+            } else if (selected) {
+                row.error = error(ReviewErrorCode::Missing);
+            }
+        }
+        out.push_back(std::move(row));
+    }
+    return out;
+}
+ListReviewsResult StorageSession::listInterruptedReviews(std::int64_t offset, int limit) {
+    if (!usable_) {
+        return storage();
+    }
+    if (offset < 0 || limit < 1 || limit > 51) {
+        return error(ReviewErrorCode::InvalidInput);
+    }
+    QSqlQuery q(database_);
+    if (!exec(q,
+              summaryProjection +
+                  QStringLiteral(
+                      "WHERE j.status=8 ORDER BY j.updated_at DESC,r.id DESC LIMIT ? OFFSET ?"),
+              {limit, static_cast<qint64>(offset)})) {
+        return storage();
+    }
+    std::vector<ReviewSummary> out;
+    while (q.next()) {
+        auto run = summary(q);
+        if (!run) {
+            ReviewSummary damaged;
+            damaged.id = q.value(0).toLongLong();
+            damaged.gameId = q.value(2).toLongLong();
+            damaged.metadataError = ReviewErrorCode::InvalidRecord;
+            out.push_back(damaged);
+        } else {
+            out.push_back(*run);
+        }
+    }
+    if (q.lastError().isValid()) {
+        return storage();
+    }
+    return out;
+}
 } // namespace chess_review::persistence::detail

@@ -156,6 +156,23 @@ using LoadReviewExplorationResult =
     std::variant<std::shared_ptr<const ReviewExploration>, ReviewError>;
 using LoadReviewOverviewResult = std::variant<ReviewOverview, ReviewError>;
 using LoadReviewMovesResult = std::variant<ReviewMovePage, ReviewError>;
+// Navigation references only; saved review metadata remains authoritative.
+struct ReviewContext {
+    std::optional<GameId> gameId;
+    std::optional<ReviewId> reviewId;
+    std::optional<int> position;
+    bool reopen = false;
+    bool invalidPosition = false; // Recoverable navigation metadata, never evidence.
+};
+struct LibraryReview {
+    GameId gameId = 0;
+    bool hasInterrupted = false;
+    std::optional<ReviewSummary> run;
+    std::optional<ReviewError> error;
+};
+using LoadReviewContextResult = std::variant<ReviewContext, ReviewError>;
+using SaveReviewContextResult = std::variant<std::monostate, ReviewError>;
+using ListLibraryReviewsResult = std::variant<std::vector<LibraryReview>, ReviewError>;
 struct ReviewTransition {
     std::int64_t revision = 0;
     std::optional<review::JobStatus> previous;
@@ -180,3 +197,7 @@ Q_DECLARE_METATYPE(chess_review::persistence::ListReviewTransitionsResult)
 Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewMovesResult)
 
 Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewOverviewResult)
+
+Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewContextResult)
+Q_DECLARE_METATYPE(chess_review::persistence::SaveReviewContextResult)
+Q_DECLARE_METATYPE(chess_review::persistence::ListLibraryReviewsResult)

@@ -23,6 +23,7 @@ class ReviewPage final : public QWidget {
     // The explanation owns its scroll extent; it must not expand the outer
     // shell through height-for-width propagation when details are opened.
     bool hasHeightForWidth() const override { return false; }
+    app::ReviewGameController& controller() { return controller_; }
     int splitShare() const;
     void setSplitShare(int share);
   signals:

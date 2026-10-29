@@ -17,7 +17,9 @@ evidence provenance. Older runs gain classifications from saved evidence without
 an engine. The board-first Review workspace now offers per-side accuracy and
 coverage, stable/provisional results, chronological key moments, full-game move
 navigation, reversible hover previews and a White expected-score bar. Interactive
-better-move exploration and retry remain future work.
+better-move exploration and evidence-based retry are available. Saved Review workspaces
+restore their chosen run, perspective, and game moment after restart. Home surfaces
+interrupted jobs for explicit resume; Games shows chosen-player review accuracy.
 Settings registers local UCI executables through a nonblocking validation
 handshake and persists their profiles. Explicit Connect/Disconnect controls keep
 an engine Ready and expose its advertised options without starting a search.
@@ -84,6 +86,7 @@ libraries separate. Automated tests use temporary storage.
 - [Local UCI engines](docs/engines.md): registration, connections, position-search API, and limits
 - [Diagnostics](docs/diagnostics.md): troubleshooting, local logs, and privacy
 - [Quick review](docs/quick-review.md): running scans, inspecting classifications, cancellation, and resume
+- [Reopen and recovery](docs/reopen-recovery.md): saved moments, historical results, and background reviews
 - [Analyze board](docs/analysis-board.md): moves, navigation, annotations, and preferences
 - [Chess core](docs/chess-core.md): adapter API, FEN policy, moves, and identity
 - [Importing games](docs/import.md): local files, paste, drops, limits, and results

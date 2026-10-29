@@ -1,4 +1,5 @@
 #include "app/StartupCoordinator.h"
+#include "app/ReviewWorkspaceController.h"
 #include "diagnostics/Logger.h"
 #include <QCoreApplication>
 #include <QEvent>
@@ -33,6 +34,26 @@ void StartupCoordinator::connectServices() {
         closeSupervisorWhenProducersFinish();
         closeStorageWhenProducersFinish();
     });
+    connect(&reviewGame_.workspace(), &ReviewWorkspaceController::recoveryFinished, this,
+            [this](bool restored) {
+                if (restored) {
+                    resume_.reset();
+                } else if (state_ == Lifecycle::Ready && resume_ && !analysis_.hasContent() &&
+                           !analysis_.busy()) {
+                    library_.open(resume_->id);
+                }
+            });
+    connect(&reviewGame_.workspace(), &ReviewWorkspaceController::contextCommitted, &library_,
+            &GameLibraryController::importedGame);
+    connect(&reviewGame_, &ReviewGameController::taskChanged, &library_,
+            [this, lastRun = review::ReviewId{0}, lastRevision = std::int64_t{-1}]() mutable {
+                const auto& run = reviewGame_.taskState().run;
+                if (run && (run->id != lastRun || run->revision != lastRevision)) {
+                    lastRun = run->id;
+                    lastRevision = run->revision;
+                    library_.importedGame();
+                }
+            });
     connect(&library_, &GameLibraryController::opened, &analysis_, &AnalysisController::openGame);
     connect(&library_, &GameLibraryController::openFailed, this, [this] { resume_.reset(); });
     connect(&analysis_, &AnalysisController::gameOpened, this, [this] {
@@ -73,9 +94,10 @@ void StartupCoordinator::connectServices() {
         if (analysis_.hasContent() || (analysis_.busy() && !analysis_.history().empty())) {
             resume_.reset();
         }
-        if (resume_) {
-            library_.open(resume_->id);
+        if (analysis_.hasContent() || analysis_.busy()) {
+            reviewGame_.workspace().suppressRestoration();
         }
+        reviewGame_.workspace().recover();
         emit ready();
     });
     connect(&database_, &persistence::Database::failed, this,

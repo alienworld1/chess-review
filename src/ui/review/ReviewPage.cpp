@@ -835,14 +835,16 @@ void ReviewPage::update() {
     } else {
         progress_->setFormat(QStringLiteral("%p%"));
     }
-    error_->setText(state.error +
-                    (state.notice.isEmpty() ? QString{} : QLatin1Char('\n') + state.notice));
+    error_->setText(
+        state.error + (state.notice.isEmpty() ? QString{} : QLatin1Char('\n') + state.notice) +
+        (state.compatibilityNotice.isEmpty() ? QString{}
+                                             : QLatin1Char('\n') + state.compatibilityNotice));
     error_->setVisible(!error_->text().isEmpty());
-    runs_->setEnabled(!state.active);
+    runs_->setEnabled(!state.listing);
     model_->reload(state.runs);
     const auto selected = model_->row(runs_->currentIndex().row());
-    resume_->setEnabled(!state.busy && selected && !selected->metadataError &&
-                        selected->status >= review::JobStatus::Partial);
+    resume_->setEnabled(!state.busy && !controller_.taskState().busy && selected &&
+                        !selected->metadataError && selected->status >= review::JobStatus::Partial);
     previous_->setEnabled(!state.listing && state.page > 0);
     next_->setEnabled(!state.listing && state.hasNext);
     refreshSummary_->setEnabled(state.run && !state.busy);

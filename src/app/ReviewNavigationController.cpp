@@ -115,6 +115,9 @@ void ReviewNavigationController::navigate(int position, bool user) {
     requestEvidence(position, true);
     dispatch();
     emit changed();
+    if (user) {
+        emit selectionCommitted(position);
+    }
 }
 void ReviewNavigationController::select(ReviewTarget target) {
     if (valid(target)) {

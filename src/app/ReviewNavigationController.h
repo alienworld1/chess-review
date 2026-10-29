@@ -59,6 +59,7 @@ class ReviewNavigationController final : public QObject {
     bool drained() const { return replayClosed_ && previewEvidence_.drained(); }
   signals:
     void changed();
+    void selectionCommitted(int position);
     void closed();
 
   private:

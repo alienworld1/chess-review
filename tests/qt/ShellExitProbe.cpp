@@ -1,6 +1,7 @@
 #include "ui/analysis/AnalysisPage.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include "ui/games/GamesPage.h"
+#include "ui/review/ReviewPage.h"
 #include "ui/shell/MainWindow.h"
 #include <QAbstractButton>
 #include <QAction>
@@ -46,6 +47,29 @@ void installExitDriver() {
                 const bool ready = !status->isVisible();
                 if (mode != QStringLiteral("startup") && !ready && !failure) {
                     continue;
+                }
+                if (mode.startsWith(QStringLiteral("review-"))) {
+                    auto* page = window->findChild<chess_review::ui::ReviewPage*>();
+                    auto& review = page->controller();
+                    if (!review.state().run || review.state().busy ||
+                        !review.navigation().ready()) {
+                        return;
+                    }
+                    const int expected = mode == QStringLiteral("review-change") ? 1 : 2;
+                    if (review.navigation().selected() != expected) {
+                        return;
+                    }
+                    std::fprintf(stdout, "review-restored:%lld,side:%d,moment:%d\n",
+                                 static_cast<long long>(review.state().run->id),
+                                 static_cast<int>(review.state().run->selectedSide),
+                                 review.navigation().selected());
+                    std::fflush(stdout);
+                    timer->stop();
+                    if (mode == QStringLiteral("review-change")) {
+                        review.selectMoment(2);
+                    }
+                    window->close();
+                    return;
                 }
                 if (mode.startsWith(QStringLiteral("game-"))) {
                     auto* page = window->findChild<chess_review::ui::AnalysisPage*>(

@@ -1,4 +1,5 @@
 #include "app/GameLibraryController.h"
+#include "app/ReviewGameController.h"
 #include <QTimer>
 #include <algorithm>
 #include <utility>
@@ -59,8 +60,80 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                 } else {
                     error_ = std::get<persistence::GameError>(result).message;
                 }
+                requestReviews();
                 emit changed();
             });
+    connect(&database_, &persistence::Database::libraryReviewsListed, this,
+            [this](QUuid id, const persistence::ListLibraryReviewsResult& result) {
+                if (id != reviewsPending_ || id.isNull()) {
+                    return;
+                }
+                reviewsPending_ = {};
+                if (!ready_ || reviewsRevision_ != revision_) {
+                    requestReviews();
+                    return;
+                }
+                if (const auto* issue = std::get_if<persistence::ReviewError>(&result)) {
+                    error_ = issue->message;
+                    if (issue->code == persistence::ReviewErrorCode::Busy) {
+                        refreshTimer_.start();
+                    }
+                } else {
+                    auto previous = std::move(reviews_);
+                    reviews_.clear();
+                    accuracyQueue_.clear();
+                    for (const auto& row :
+                         std::get<std::vector<persistence::LibraryReview>>(result)) {
+                        auto& presentation = reviews_[row.gameId];
+                        presentation = ReviewRow{row, {}, {}};
+                        const auto old = previous.find(row.gameId);
+                        if (row.run && old != previous.end() && old->second.metadata.run &&
+                            old->second.metadata.run->id == row.run->id &&
+                            old->second.metadata.run->revision == row.run->revision) {
+                            presentation.side = old->second.side;
+                        }
+                        if (row.run && !presentation.side) {
+                            accuracyQueue_.push_back(*row.run);
+                        }
+                    }
+                    std::reverse(accuracyQueue_.begin(), accuracyQueue_.end());
+                    requestAccuracy();
+                }
+                emit changed();
+            });
+    connect(
+        &database_, &persistence::Database::reviewOverviewLoaded, this,
+        [this](QUuid id, const persistence::LoadReviewOverviewResult& result) {
+            if (id != accuracyPending_ || id.isNull()) {
+                return;
+            }
+            accuracyPending_ = {};
+            if (ready_ && accuracyRevision_ == revision_ && accuracyRun_) {
+                auto found = reviews_.find(accuracyRun_->gameId);
+                if (found != reviews_.end() && found->second.metadata.run &&
+                    found->second.metadata.run->id == accuracyRun_->id &&
+                    found->second.metadata.run->revision == accuracyRun_->revision) {
+                    if (const auto* overview = std::get_if<persistence::ReviewOverview>(&result)) {
+                        if (overview->reviewId == accuracyRun_->id &&
+                            overview->revision == accuracyRun_->revision) {
+                            found->second.side =
+                                overview
+                                    ->sides[static_cast<std::size_t>(accuracyRun_->selectedSide)];
+                        }
+                    } else {
+                        const auto& issue = std::get<persistence::ReviewError>(result);
+                        found->second.error = issue.message;
+                        if (issue.code == persistence::ReviewErrorCode::Busy ||
+                            issue.code == persistence::ReviewErrorCode::Conflict) {
+                            refreshTimer_.start();
+                        }
+                    }
+                }
+                emit changed();
+            }
+            accuracyRun_.reset();
+            requestAccuracy();
+        });
 }
 void GameLibraryController::setReady(bool ready) {
     ready_ = ready;
@@ -68,6 +141,8 @@ void GameLibraryController::setReady(bool ready) {
     ++openGeneration_;
     if (!ready) {
         refreshTimer_.stop();
+        accuracyQueue_.clear();
+        reviews_.clear();
         rows_.clear();
         hasNext_ = false;
     } else if (active_) {
@@ -97,6 +172,7 @@ void GameLibraryController::refresh(bool newest) {
         offset_ = 0;
     }
     ++revision_;
+    accuracyQueue_.clear();
     requestPage();
 }
 void GameLibraryController::importedGame() {
@@ -126,5 +202,72 @@ void GameLibraryController::requestPage() {
     requestedRevision_ = revision_;
     database_.listGames(pending_, offset_, 51);
     emit changed();
+}
+void GameLibraryController::requestReviews() {
+    if (!ready_ || !reviewsPending_.isNull() || !pending_.isNull()) {
+        return;
+    }
+    std::vector<persistence::GameId> ids;
+    for (const auto& row : rows_) {
+        ids.push_back(row.id);
+    }
+    reviewsRevision_ = revision_;
+    reviewsPending_ = QUuid::createUuid();
+    database_.listLibraryReviews(reviewsPending_, std::move(ids));
+}
+void GameLibraryController::requestAccuracy() {
+    if (!ready_ || !accuracyPending_.isNull() || accuracyQueue_.empty()) {
+        return;
+    }
+    accuracyRun_ = accuracyQueue_.back();
+    accuracyQueue_.pop_back();
+    accuracyRevision_ = revision_;
+    accuracyPending_ = QUuid::createUuid();
+    database_.loadReviewOverview(accuracyPending_, accuracyRun_->id, accuracyRun_->revision);
+}
+QString GameLibraryController::reviewStatus(persistence::GameId id) const {
+    const auto found = reviews_.find(id);
+    if (found == reviews_.end()) {
+        return tr("Loading review status…");
+    }
+    const auto& row = found->second;
+    if (row.metadata.error) {
+        return row.metadata.error->message;
+    }
+    if (!row.metadata.run) {
+        return tr("Not reviewed");
+    }
+    const auto& run = *row.metadata.run;
+    const auto text = tr("%1 · %2 · saved %3/%4")
+                          .arg(reviewStatusText(run.status),
+                               run.selectedSide == chess::Color::White ? tr("White") : tr("Black"))
+                          .arg(run.completedPositions)
+                          .arg(run.totalPositions);
+    return text + (row.metadata.hasInterrupted && run.status != review::JobStatus::Interrupted
+                       ? tr(" · interrupted review available")
+                       : QString{});
+}
+QString GameLibraryController::reviewAccuracy(persistence::GameId id) const {
+    const auto found = reviews_.find(id);
+    if (found == reviews_.end() || !found->second.metadata.run) {
+        return QStringLiteral("—");
+    }
+    const auto& row = found->second;
+    if (!row.error.isEmpty()) {
+        return tr("Unavailable: %1").arg(row.error);
+    }
+    if (!row.side) {
+        return tr("Loading accuracy…");
+    }
+    const auto& side = *row.side;
+    if (!side.accuracy) {
+        return tr("Unavailable · %1/%2 evaluated").arg(side.evaluated).arg(side.total);
+    }
+    const auto text = tr("%1% · %2/%3 evaluated")
+                          .arg(*side.accuracy, 0, 'f', 1)
+                          .arg(side.evaluated)
+                          .arg(side.total);
+    return text + (side.evaluated < side.total ? tr(" · partial") : QString{}) +
+           (side.stable < side.evaluated ? tr(" · provisional") : QString{});
 }
 } // namespace chess_review::app
