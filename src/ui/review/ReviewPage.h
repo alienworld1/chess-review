@@ -1,6 +1,8 @@
 #pragma once
 #include "app/ReviewGameController.h"
 #include <QWidget>
+#include <utility>
+#include <vector>
 class QComboBox;
 class QLabel;
 class QPushButton;
@@ -26,6 +28,7 @@ class ReviewPage final : public QWidget {
   signals:
     void backRequested();
     void settingsRequested();
+    void analyzeRequested();
 
   protected:
     void hideEvent(QHideEvent* event) override;
@@ -36,6 +39,17 @@ class ReviewPage final : public QWidget {
   private:
     void update();
     void updateNavigation();
+    void updateExploration();
+    QComboBox* candidates_;
+    QLabel* explorationStatus_;
+    QPushButton* showLine_;
+    QPushButton* tryAgain_;
+    QPushButton* returnGame_;
+    QPushButton* hint_;
+    QPushButton* reveal_;
+    QPushButton* analyze_;
+    QPushButton* reloadExploration_;
+    std::vector<std::pair<QPushButton*, QWidget*>> sections_;
     ChessBoardWidget* board_;
     MoveTimeline* timeline_;
     QSplitter* splitter_;

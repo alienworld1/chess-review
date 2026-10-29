@@ -1,8 +1,8 @@
 #pragma once
 #include "app/EngineSettingsController.h"
 #include "app/ReviewConfiguration.h"
+#include "app/ReviewExplorationController.h"
 #include "app/ReviewMovesController.h"
-#include "app/ReviewNavigationController.h"
 #include <QObject>
 #include <QString>
 #include <QThreadPool>
@@ -62,6 +62,7 @@ class ReviewGameController final : public QObject {
     const ReviewGameState& state() const { return state_; }
     const EngineSettingsState& engines() const { return settings_.state(); }
     ReviewMovesController& moves() { return moves_; }
+    ReviewExplorationController& exploration() { return exploration_; }
     ReviewNavigationController& navigation() { return navigation_; }
     review::Quality defaultQuality() const;
     void setReady(bool ready);
@@ -111,6 +112,7 @@ class ReviewGameController final : public QObject {
     ReviewGameState state_;
     ReviewMovesController moves_;
     ReviewNavigationController navigation_;
+    ReviewExplorationController exploration_;
     std::optional<persistence::StoredGame> game_;
     std::optional<persistence::StoredReview> stored_;
     config::ValidatedConfiguration runConfiguration_;

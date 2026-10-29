@@ -26,6 +26,11 @@ std::size_t pieceIndex(chess::Piece piece) {
 }
 } // namespace
 ChessBoardWidget::ChessBoardWidget(QWidget* parent) : QWidget(parent) {
+    connect(&feedbackTimer_, &QTimer::timeout, this, [this] {
+        feedbackSquare_.reset();
+        update();
+    });
+
     static const bool initialized = [] {
         initializeBoardResources();
         return true;
@@ -149,6 +154,13 @@ void ChessBoardWidget::rebuildPieces() {
         pieces_[i] = std::move(image);
     }
 }
+void ChessBoardWidget::flashMove(chess::Move move, bool success) {
+    feedbackSquare_ = move.to;
+    feedbackSuccess_ = success;
+    feedbackTimer_.setSingleShot(true);
+    feedbackTimer_.start(300);
+    update();
+}
 void ChessBoardWidget::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -205,6 +217,10 @@ void ChessBoardWidget::paintEvent(QPaintEvent*) {
                 gradient.setColorAt(0, QColor(197, 61, 73, 200));
                 gradient.setColorAt(1, Qt::transparent);
                 painter.fillRect(rect, gradient);
+            }
+            if (feedbackSquare_ == square && feedbackTimer_.isActive()) {
+                painter.fillRect(rect, feedbackSuccess_ ? QColor(39, 131, 75, 100)
+                                                        : QColor(197, 61, 73, 100));
             }
             if (preferences_.coordinates) {
                 painter.setPen(

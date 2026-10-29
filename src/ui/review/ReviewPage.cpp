@@ -4,11 +4,13 @@
 #include "ui/chess/ChessBoardWidget.h"
 #include "ui/chess/MoveTimeline.h"
 #include <QAbstractTableModel>
+#include <QAccessible>
 #include <QColor>
 #include <QComboBox>
 #include <QEvent>
 #include <QFormLayout>
 #include <QFrame>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QHideEvent>
@@ -281,21 +283,32 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     lastMove_ = button(tr("End"), QStringLiteral("reviewLastMove"));
     auto* flip = button(tr("Flip Board"), QStringLiteral("reviewFlipBoard"));
     boardLayout->addLayout(actions);
-    connect(firstMove_, &QPushButton::clicked, &navigation,
-            &app::ReviewNavigationController::beginning);
-    connect(previousMove_, &QPushButton::clicked, &navigation,
-            &app::ReviewNavigationController::previous);
-    connect(nextMove_, &QPushButton::clicked, &navigation, &app::ReviewNavigationController::next);
-    connect(lastMove_, &QPushButton::clicked, &navigation, &app::ReviewNavigationController::end);
-    connect(flip, &QPushButton::clicked, &navigation, &app::ReviewNavigationController::flip);
-    connect(board_, &ChessBoardWidget::previousRequested, &navigation,
-            &app::ReviewNavigationController::previous);
-    connect(board_, &ChessBoardWidget::nextRequested, &navigation,
-            &app::ReviewNavigationController::next);
-    connect(board_, &ChessBoardWidget::beginningRequested, &navigation,
-            &app::ReviewNavigationController::beginning);
-    connect(board_, &ChessBoardWidget::endRequested, &navigation,
-            &app::ReviewNavigationController::end);
+    connect(firstMove_, &QPushButton::clicked, &controller_.exploration(),
+            &app::ReviewExplorationController::beginning);
+    connect(previousMove_, &QPushButton::clicked, &controller_.exploration(),
+            &app::ReviewExplorationController::previous);
+    connect(nextMove_, &QPushButton::clicked, &controller_.exploration(),
+            &app::ReviewExplorationController::next);
+    connect(lastMove_, &QPushButton::clicked, &controller_.exploration(),
+            &app::ReviewExplorationController::end);
+    connect(flip, &QPushButton::clicked, &controller_.exploration(),
+            &app::ReviewExplorationController::flip);
+    connect(board_, &ChessBoardWidget::previousRequested, &controller_.exploration(),
+            &app::ReviewExplorationController::previous);
+    connect(board_, &ChessBoardWidget::nextRequested, &controller_.exploration(),
+            &app::ReviewExplorationController::next);
+    connect(board_, &ChessBoardWidget::beginningRequested, &controller_.exploration(),
+            &app::ReviewExplorationController::beginning);
+    connect(board_, &ChessBoardWidget::endRequested, &controller_.exploration(),
+            &app::ReviewExplorationController::end);
+    connect(&controller_.exploration(), &app::ReviewExplorationController::moveFeedback, board_,
+            &ChessBoardWidget::flashMove);
+    connect(board_, &ChessBoardWidget::squareSelected, &controller_.exploration(),
+            &app::ReviewExplorationController::selectSquare);
+    connect(board_, &ChessBoardWidget::selectionCleared, &controller_.exploration(),
+            &app::ReviewExplorationController::clearSelection);
+    connect(board_, &ChessBoardWidget::moveAttempted, &controller_.exploration(),
+            &app::ReviewExplorationController::attemptMove);
     timeline_ = new MoveTimeline(left);
     timeline_->setObjectName(QStringLiteral("reviewTimeline"));
     timeline_->setAccessibleName(
@@ -318,9 +331,11 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
                 }
             });
     connect(timeline_, &MoveTimeline::previewRequested, this,
-            [&navigation, positionFor](app::NavigationTarget target) {
-                if (const auto position = positionFor(target)) {
-                    navigation.preview(*position);
+            [this, &navigation, positionFor](app::NavigationTarget target) {
+                if (!controller_.exploration().active()) {
+                    if (const auto position = positionFor(target)) {
+                        navigation.preview(*position);
+                    }
                 }
             });
     connect(timeline_, &MoveTimeline::visibleRequested, this,
@@ -389,6 +404,54 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     moment->addWidget(explanation_);
     momentRow->addLayout(moment, 1);
     rightLayout->addLayout(momentRow);
+    candidates_ = new QComboBox(right);
+    candidates_->setObjectName(QStringLiteral("reviewCandidates"));
+    candidates_->setAccessibleName(tr("Saved candidate continuations and root evaluations"));
+    candidates_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    candidates_->setMinimumContentsLength(12);
+    rightLayout->addWidget(candidates_);
+    explorationStatus_ = new QLabel(right);
+    explorationStatus_->setObjectName(QStringLiteral("reviewExplorationStatus"));
+    explorationStatus_->setTextFormat(Qt::PlainText);
+    explorationStatus_->setWordWrap(true);
+    rightLayout->addWidget(explorationStatus_);
+    auto* explorationActions = new QGridLayout;
+    const auto action = [right, explorationActions](const QString& text, const QString& name,
+                                                    int row, int column) {
+        auto* control = new QPushButton(text, right);
+        control->setObjectName(name);
+        explorationActions->addWidget(control, row, column);
+        return control;
+    };
+    showLine_ = action(tr("Show Line"), QStringLiteral("reviewShowLine"), 0, 0);
+    tryAgain_ = action(tr("Try Again"), QStringLiteral("reviewTryAgain"), 0, 1);
+    analyze_ = action(tr("Analyze Position"), QStringLiteral("reviewAnalyzePosition"), 1, 0);
+    reloadExploration_ =
+        action(tr("Reload candidates"), QStringLiteral("reviewReloadCandidates"), 1, 1);
+    returnGame_ = action(tr("Return to Game"), QStringLiteral("reviewReturnToGame"), 2, 0);
+    hint_ = action(tr("Hint"), QStringLiteral("reviewHint"), 3, 0);
+    reveal_ = action(tr("Show Solution"), QStringLiteral("reviewShowSolution"), 3, 1);
+    rightLayout->addLayout(explorationActions);
+    auto& exploration = controller_.exploration();
+    connect(showLine_, &QPushButton::clicked, this,
+            [this] { controller_.exploration().showLine(candidates_->currentIndex()); });
+    connect(candidates_, &QComboBox::activated, this, [this](int index) {
+        if (controller_.exploration().state().mode == app::ExplorationMode::Line) {
+            controller_.exploration().showLine(index);
+        }
+    });
+    connect(tryAgain_, &QPushButton::clicked, &exploration,
+            &app::ReviewExplorationController::tryAgain);
+    connect(returnGame_, &QPushButton::clicked, &exploration,
+            &app::ReviewExplorationController::returnToGame);
+    connect(reveal_, &QPushButton::clicked, &exploration,
+            &app::ReviewExplorationController::returnToGame);
+    connect(hint_, &QPushButton::clicked, &exploration, &app::ReviewExplorationController::hint);
+    connect(reloadExploration_, &QPushButton::clicked, &exploration,
+            &app::ReviewExplorationController::reload);
+    connect(analyze_, &QPushButton::clicked, this, &ReviewPage::analyzeRequested);
+    connect(&exploration, &app::ReviewExplorationController::changed, this,
+            &ReviewPage::updateNavigation);
     auto* keyActions = new QHBoxLayout;
     previousMoment_ = new QPushButton(tr("Previous key moment"), right);
     nextMoment_ = new QPushButton(tr("Next key moment"), right);
@@ -401,7 +464,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
             &app::ReviewNavigationController::previousMoment);
     connect(nextMoment_, &QPushButton::clicked, &navigation,
             &app::ReviewNavigationController::nextMoment);
-    const auto section = [right, rightLayout](const QString& title, bool expanded) {
+    const auto section = [this, right, rightLayout](const QString& title, bool expanded) {
         auto* toggle = new QPushButton(title, right);
         toggle->setCheckable(true);
         toggle->setChecked(expanded);
@@ -410,6 +473,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
         rightLayout->addWidget(toggle);
         rightLayout->addWidget(content);
         connect(toggle, &QPushButton::toggled, content, &QWidget::setVisible);
+        sections_.emplace_back(toggle, content);
         return std::pair{toggle, content};
     };
     const auto setupSection = section(tr("Review setup"), true);
@@ -657,6 +721,9 @@ void ReviewPage::setSplitShare(int share) {
 }
 void ReviewPage::hideEvent(QHideEvent* event) {
     controller_.navigation().clearPreview();
+    if (controller_.exploration().hidesSolution()) {
+        controller_.exploration().returnToGame();
+    }
     QWidget::hideEvent(event);
 }
 bool ReviewPage::eventFilter(QObject* watched, QEvent* event) {
@@ -664,7 +731,7 @@ bool ReviewPage::eventFilter(QObject* watched, QEvent* event) {
         watched != quality_) {
         auto* key = static_cast<QKeyEvent*>(event);
         if (key->modifiers() == Qt::NoModifier) {
-            auto& nav = controller_.navigation();
+            auto& nav = controller_.exploration();
             switch (key->key()) {
             case Qt::Key_Left:
                 nav.previous();
@@ -850,10 +917,14 @@ void ReviewPage::updateNavigation() {
         moves_->setCurrentIndex({});
         moves_->clearSelection();
     }
-    board_->setState(nav.board());
-    app::BoardPreferences preferences;
-    preferences.blackAtBottom = nav.board().blackAtBottom;
-    board_->setPreferences(preferences);
+    const auto& displayedBoard = controller_.exploration().board();
+    const bool orientationChanged = board_->state().blackAtBottom != displayedBoard.blackAtBottom;
+    board_->setState(displayedBoard);
+    if (orientationChanged) {
+        app::BoardPreferences preferences;
+        preferences.blackAtBottom = displayedBoard.blackAtBottom;
+        board_->setPreferences(preferences);
+    }
     const bool black = nav.board().blackAtBottom;
     const auto white = nav.whitePlayer().isEmpty() ? tr("White") : nav.whitePlayer();
     const auto blackPlayer = nav.blackPlayer().isEmpty() ? tr("Black") : nav.blackPlayer();
@@ -949,9 +1020,95 @@ void ReviewPage::updateNavigation() {
         }
     }
     compactSummary_->setText(compact);
+    updateExploration();
     retryMoves_->setVisible(!nav.evidenceError().isEmpty());
     if (!nav.evidenceError().isEmpty()) {
         moveStatus_->setText(nav.evidenceError());
+    }
+}
+void ReviewPage::updateExploration() {
+    auto& exploration = controller_.exploration();
+    const auto& state = exploration.state();
+    const bool hidden = exploration.hidesSolution();
+    const bool line = state.mode == app::ExplorationMode::Line;
+    // Clear solution text as well as hiding its widgets, including accessibility values.
+    if (hidden) {
+        explanation_->clear();
+        details_->clear();
+        headline_->setText(tr("Find a stronger move"));
+    }
+    explanation_->setVisible(!hidden);
+    compactSummary_->setVisible(!hidden);
+    evaluation_->setVisible(!exploration.active());
+    evaluationText_->setVisible(!exploration.active());
+    if (exploration.active()) {
+        evaluation_->reset();
+        evaluation_->setAccessibleDescription({});
+        evaluation_->setToolTip({});
+        evaluationText_->clear();
+        previewLabel_->setText(
+            state.pendingBoard ? tr("Loading exploration position…")
+            : line ? tr("Candidate line · move %1 of %2").arg(state.step).arg(state.length)
+                   : tr("Practice position"));
+    }
+    board_->setToolTip(
+        hidden ? tr("Play one legal move to try again.")
+        : line ? tr("Candidate preview. Use Previous and Next to step through the line.")
+               : tr("Read-only original game. Use the timeline to select a moment."));
+    timeline_->setHoverPreview(!exploration.active());
+    timeline_->setVisible(!hidden);
+    for (const auto& [toggle, content] : sections_) {
+        toggle->setVisible(!hidden);
+        content->setVisible(!hidden && toggle->isChecked());
+    }
+    previousMoment_->setVisible(!hidden);
+    nextMoment_->setVisible(!hidden);
+    candidates_->setVisible(!hidden);
+    if (hidden) {
+        candidates_->clear();
+    } else {
+        QStringList current;
+        for (int i = 0; i < candidates_->count(); ++i) {
+            current << candidates_->itemText(i);
+        }
+        if (current != state.candidates) {
+            const QSignalBlocker blocker(candidates_);
+            candidates_->clear();
+            candidates_->addItems(state.candidates);
+        }
+    }
+    showLine_->setVisible(!hidden);
+    showLine_->setEnabled(!state.loading && !state.candidates.empty());
+    tryAgain_->setVisible(!hidden);
+    tryAgain_->setEnabled(state.canRetry);
+    analyze_->setVisible(!hidden);
+    analyze_->setEnabled(state.canAnalyze);
+    reloadExploration_->setVisible(!hidden && !state.loading && state.candidates.empty());
+    reloadExploration_->setEnabled(!exploration.active() &&
+                                   controller_.navigation().selected() > 0);
+    returnGame_->setVisible(exploration.active());
+    returnGame_->setText(hidden ? tr("Cancel practice") : tr("Return to Game"));
+    hint_->setVisible(hidden);
+    hint_->setEnabled(state.mode == app::ExplorationMode::Retry);
+    reveal_->setVisible(hidden);
+    const auto status = state.loading ? tr("Loading candidate evidence…") : state.message;
+    if (explorationStatus_->text() != status) {
+        explorationStatus_->setText(status);
+        if (hidden && !status.isEmpty()) {
+            QAccessibleAnnouncementEvent announcement(explorationStatus_, status);
+            QAccessible::updateAccessibility(&announcement);
+        }
+    }
+    if (line) {
+        firstMove_->setEnabled(state.step > 0);
+        previousMove_->setEnabled(state.step > 0);
+        nextMove_->setEnabled(state.step < state.length);
+        lastMove_->setEnabled(state.step < state.length);
+    } else if (hidden) {
+        firstMove_->setEnabled(false);
+        previousMove_->setEnabled(false);
+        nextMove_->setEnabled(false);
+        lastMove_->setEnabled(false);
     }
 }
 } // namespace chess_review::ui

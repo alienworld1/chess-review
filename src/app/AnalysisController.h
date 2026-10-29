@@ -44,6 +44,9 @@ class AnalysisController final : public QObject {
     const QString& gameDescription() const { return gameDescription_; }
     const QString& positionNotes() const { return positionNotes_; }
     // Optional FEN is also useful to embedded consumers; validation stays in chess.
+    void openLine(std::shared_ptr<const chess::Position> position, std::vector<chess::Move> moves,
+                  int step);
+    void openPosition(std::shared_ptr<const chess::Position> position);
     void reset(const std::optional<std::string>& fen = std::nullopt);
     void selectSquare(chess::Square square);
     void clearSelection();
@@ -75,6 +78,9 @@ class AnalysisController final : public QObject {
     struct ResetRequest {
         std::optional<std::string> fen;
         std::optional<persistence::StoredGame> game;
+        std::shared_ptr<const chess::Position> position = {};
+        std::vector<chess::Move> continuation = {};
+        int step = 0;
     };
     struct AnnotationHistory {
         std::vector<std::vector<BoardAnnotation>> undo;

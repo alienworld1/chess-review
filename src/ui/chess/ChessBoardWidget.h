@@ -2,6 +2,7 @@
 
 #include "app/BoardState.h"
 #include <QPixmap>
+#include <QTimer>
 #include <QVariantAnimation>
 #include <QWidget>
 #include <array>
@@ -17,6 +18,7 @@ class ChessBoardWidget final : public QWidget {
     void setPreferences(const app::BoardPreferences& preferences);
     void setAnnotationColor(int color);
     void animateMove(chess::Move move);
+    void flashMove(chess::Move move, bool success);
     const app::BoardViewState& state() const { return state_; }
     QRectF boardRect() const;
     QRectF squareRect(chess::Square square) const;
@@ -71,6 +73,9 @@ class ChessBoardWidget final : public QWidget {
     std::optional<chess::Square> arrowStart_;
     int annotationColor_ = 0;
     int pressedColor_ = 0;
+    QTimer feedbackTimer_;
+    std::optional<chess::Square> feedbackSquare_;
+    bool feedbackSuccess_ = false;
     QMenu* promotion_ = nullptr;
     std::uint64_t gestureRevision_ = 0;
     QVariantAnimation animation_;

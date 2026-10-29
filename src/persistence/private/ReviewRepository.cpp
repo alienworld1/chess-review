@@ -4,6 +4,7 @@
 #include "persistence/private/StorageSession.h"
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QStringList>
 #include <QTimeZone>
 #include <QVariant>
 #include <algorithm>
@@ -1459,6 +1460,97 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
         return storage();
     }
     return out;
+}
+LoadReviewExplorationResult
+StorageSession::loadReviewExploration(ReviewId id, std::int64_t revision, int index) {
+    if (!usable_) {
+        return storage();
+    }
+    ReviewTransaction tx(database_, usable_);
+    if (!tx.begin()) {
+        return storage();
+    }
+    StoredGame game;
+    const auto loaded = loadReviewRecord(id, &game);
+    if (const auto* e = std::get_if<ReviewError>(&loaded)) {
+        return *e;
+    }
+    const auto& run = std::get<StoredReview>(loaded);
+    if (run.summary.revision != revision) {
+        return error(ReviewErrorCode::Conflict);
+    }
+    if (index <= 0 || index >= run.summary.totalPositions) {
+        return error(ReviewErrorCode::InvalidInput);
+    }
+    auto restored = gamePosition(game, index - 1);
+    const auto* root = std::get_if<chess::Position>(&restored);
+    if (!root) {
+        return invalid();
+    }
+    auto cursor = *root;
+    auto page = readMovePage(database_, run, game, cursor, index - 1, 1);
+    if (const auto* e = std::get_if<ReviewError>(&page)) {
+        return *e;
+    }
+    auto out = std::make_shared<ReviewExploration>();
+    out->run = run;
+    out->move = std::get<ReviewMovePage>(page).moves.front();
+    out->rootPly = static_cast<int>(root->context().moves.size());
+    out->before = std::make_shared<const chess::Position>(*root);
+    const auto evidence = readEvidence(database_, run, *root, index - 1, out->move.stage);
+    if (const auto* e = std::get_if<ReviewError>(&evidence)) {
+        return *e;
+    }
+    out->evidence = std::get<StoredReviewEvidence>(evidence).evidence;
+    // Classification is recomputed by readMovePage using these same original-board witnesses.
+    if (!out->move.classification || out->move.classification->issue ||
+        !out->move.classification->bestMove) {
+        return error(ReviewErrorCode::Missing);
+    }
+    for (const auto& c : out->evidence.candidates) {
+        auto position = *root;
+        QStringList sans;
+        for (const auto& move : c.continuation) {
+            auto san = position.san(move);
+            const auto* text = std::get_if<std::string>(&san);
+            if (!text) {
+                return invalid();
+            }
+            if (position.sideToMove() == chess::Color::White || sans.isEmpty()) {
+                sans << QStringLiteral("%1%2")
+                            .arg(position.fullmoveNumber())
+                            .arg(position.sideToMove() == chess::Color::White
+                                     ? QStringLiteral(".")
+                                     : QStringLiteral("..."));
+            }
+            sans << QString::fromStdString(*text);
+            if (std::holds_alternative<chess::Error>(position.play(move))) {
+                return invalid();
+            }
+        }
+        out->candidateSans.push_back(sans.join(QLatin1Char(' ')));
+    }
+    if (out->move.classification->stable) {
+        for (auto stage : {review::EvidenceStage::Deepening, review::EvidenceStage::Verification}) {
+            auto result =
+                refinedPair(database_, run, *root,
+                            game.document->originalMainline()[static_cast<std::size_t>(index - 1)],
+                            index, stage);
+            if (const auto* e = std::get_if<ReviewError>(&result)) {
+                return *e;
+            }
+            auto pair = std::get<std::optional<RefinedPair>>(std::move(result));
+            if (!pair) {
+                return invalid();
+            }
+            (stage == review::EvidenceStage::Deepening ? out->deep : out->verified) =
+                std::move(pair->pair);
+        }
+    }
+    if (!tx.commit()) {
+        return storage();
+    }
+    return std::shared_ptr<const ReviewExploration>(std::move(out));
 }
 LoadReviewEvidenceResult StorageSession::loadReviewEvidence(ReviewId id, int index,
                                                             review::EvidenceStage stage) {

@@ -141,6 +141,19 @@ struct ReviewOverview {
     std::optional<int> largestLossPosition;
     std::optional<double> largestLoss;
 };
+// One selected moment only. Shared immutable worker-created values never enter timeline pages.
+struct ReviewExploration {
+    StoredReview run;
+    ReviewMove move;
+    int rootPly = 0;
+    std::shared_ptr<const chess::Position> before;
+    review::PositionEvidence evidence;
+    std::optional<review::MoveEvidence> deep;
+    std::optional<review::MoveEvidence> verified;
+    std::vector<QString> candidateSans;
+};
+using LoadReviewExplorationResult =
+    std::variant<std::shared_ptr<const ReviewExploration>, ReviewError>;
 using LoadReviewOverviewResult = std::variant<ReviewOverview, ReviewError>;
 using LoadReviewMovesResult = std::variant<ReviewMovePage, ReviewError>;
 struct ReviewTransition {

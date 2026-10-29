@@ -268,6 +268,17 @@ void AnalysisController::openGame(const persistence::StoredGame& game) {
     }
     requestReset({std::nullopt, game});
 }
+void AnalysisController::openLine(std::shared_ptr<const chess::Position> position,
+                                  std::vector<chess::Move> moves, int step) {
+    if (position && step >= 0 && step <= static_cast<int>(moves.size())) {
+        requestReset({std::nullopt, std::nullopt, std::move(position), std::move(moves), step});
+    }
+}
+void AnalysisController::openPosition(std::shared_ptr<const chess::Position> position) {
+    if (position) {
+        requestReset({std::nullopt, std::nullopt, std::move(position)});
+    }
+}
 void AnalysisController::reset(const std::optional<std::string>& fen) {
     requestReset({fen, std::nullopt});
 }
@@ -315,6 +326,27 @@ void AnalysisController::startReset(ResetRequest reset) {
                 replacement.description =
                     tr("%1 — %2 | Result: %3")
                         .arg(replacement.white, replacement.black, game.summary.result);
+            } else if (reset.position) {
+                const auto context = reset.position->context();
+                std::vector<chess::GameTreeInputNode> nodes{{0, std::nullopt, {}}};
+                for (const auto& move : context.moves) {
+                    nodes.push_back({nodes.size() - 1, move, {}});
+                }
+                for (const auto& move : reset.continuation) {
+                    nodes.push_back({nodes.size() - 1, move, {}});
+                }
+                auto result = chess::GameTree::fromNodes(
+                    context.provenance == chess::RootProvenance::InitialPosition
+                        ? std::nullopt
+                        : std::optional<std::string_view>{context.rootFen},
+                    nodes);
+                if (auto* error = std::get_if<chess::GameTreeError>(&result)) {
+                    return QString::fromStdString(error->message);
+                }
+                replacement.tree = std::move(std::get<chess::GameTree>(result));
+                replacement.current =
+                    chess::NodeId{context.moves.size() + static_cast<std::size_t>(reset.step)};
+                replacement.savedNodes = replacement.tree->size();
             } else {
                 auto result =
                     reset.fen ? chess::GameTree::fromFen(*reset.fen) : chess::GameTree::initial();

@@ -176,7 +176,7 @@ if(UNIX)
     target_compile_definitions(quick_review_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
 endif()
 
-add_executable(review_classification_tests unit/ReviewClassificationTest.cpp unit/ReviewSummaryTest.cpp)
+add_executable(review_classification_tests unit/ReviewClassificationTest.cpp unit/ReviewSummaryTest.cpp unit/RetryTest.cpp)
 set_target_properties(review_classification_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 target_link_libraries(review_classification_tests PRIVATE chess_review_review Catch2::Catch2WithMain)
 chess_review_apply_options(review_classification_tests)

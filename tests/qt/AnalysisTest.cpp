@@ -46,6 +46,31 @@ class AnalysisTest final : public QObject {
   private slots:
     void init();
     void cleanup();
+    void historyBearingInitialization() {
+        auto root = chess::Position::initial();
+        for (const char* text : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
+            const auto next = std::get<chess::Move>(root.parseUci(text));
+            QVERIFY(std::holds_alternative<std::monostate>(root.play(next)));
+        }
+        const auto context = root.context();
+        controller_->openPosition(std::make_shared<const chess::Position>(root));
+        QTRY_VERIFY(!controller_->busy());
+        QCOMPARE(controller_->position()->context(), context);
+        QVERIFY(!controller_->hasContent());
+        const auto continuation = std::get<chess::Move>(root.parseUci("e2e4"));
+        controller_->openLine(std::make_shared<const chess::Position>(root), {continuation}, 0);
+        QTRY_VERIFY(!controller_->busy());
+        QCOMPARE(controller_->position()->context(), context);
+        controller_->next();
+        QTRY_VERIFY(!controller_->busy());
+        QVERIFY(std::holds_alternative<std::monostate>(root.play(continuation)));
+        QCOMPARE(controller_->position()->context(), root.context());
+        const auto prior = controller_->position()->context();
+        QSignalSpy failed(controller_.get(), &app::AnalysisController::failed);
+        controller_->openLine(std::make_shared<const chess::Position>(root), {continuation}, 1);
+        QTRY_VERIFY(!failed.empty());
+        QCOMPARE(controller_->position()->context(), prior);
+    }
     void legalMovesAndStaleInput();
     void dropSettlement_data();
     void dropSettlement();

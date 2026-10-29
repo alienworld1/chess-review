@@ -192,3 +192,48 @@ Older runs that saved only the final bounded output cannot reconstruct earlier
 iterations. After updating and restarting the app, expand **Review setup** and
 choose **Run Review** to collect a new run. Existing runs and the imported game
 remain intact; reopening an old run does not silently rewrite its evidence.
+
+## Better moves and practice
+
+The explanation names the best supported alternative when usable evidence is
+available. The candidate selector shows saved continuations, their **root**
+expected scores from the mover's perspective, and stable/provisional
+status. Approximate centipawn conversions are identified. These scores do not
+represent separate evaluations of every position in a line.
+
+Choose **Show Line** to start before the reviewed move, then use Start, Previous,
+Next and End, or Left/Right and Home/End, to inspect the continuation. The original
+game stays intact. **Return to Game** restores the selected post-move position;
+selecting another timeline moment also leaves exploration. Hover previews pause
+while exploring. Saved line inspection works without a connected engine.
+
+**Try Again** is available for the selected player's stable Inaccuracy, Mistake
+and Blunder moments with sufficient evidence. It restores the pre-move board and
+hides solution content, including the timeline, evaluations and evidence panels.
+Play one legal move using the normal board inputs; promotion remains supported.
+Hints progress from a neutral prompt to the candidate's piece and destination.
+**Show Solution** and **Cancel practice** restore the original explanation.
+
+Best and Strong complete an attempt; Okay and Try Again invite another move.
+Demonstrated equivalent moves receive credit. The versioned retry policy uses
+that saved review's thresholds: Strong is within its Excellent threshold, Okay
+is below Inaccuracy, and larger gaps receive Try Again. At the defaults these
+cutoffs are 1 and 5 percentage points of expected score. Conflicting or
+insufficient evidence produces **Unable to grade**.
+
+Known candidate evidence is checked first. An unknown move triggers bounded
+analysis with the original review engine/configuration and its deepening and
+verification budgets. A compatible cache result can supply the first pass;
+verification uses a separate search. Connect the original engine in Settings if
+needed; a different engine is never silently substituted. Practice can be
+cancelled while evaluation is pending. Leaving Review cancels practice. Attempts
+are temporary and do not change saved labels, accuracy or review progress.
+
+**Analyze Position** opens the currently displayed game or candidate position in
+a separate temporary Analysis workspace, retaining its complete move history.
+Your ordinary Analysis workspace is preserved. Live engine work starts only
+through **Start**. **Back to Review** restores the originating moment, candidate
+step and orientation. Reopening the same origin retains temporary analysis edits;
+replacing edited linked analysis asks before discarding them. Both workspaces'
+temporary edits participate in the normal quit confirmation. Linked workspaces
+and practice attempts are not restored after application restart.

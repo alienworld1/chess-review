@@ -1,4 +1,5 @@
 #include "app/ReviewMovePresentation.h"
+#include "review/Retry.h"
 #include <QObject>
 #include <QStringList>
 #include <cmath>
@@ -207,6 +208,10 @@ QString reviewMomentExplanation(const persistence::ReviewMove* move, int positio
         lines << QObject::tr(
             "A reliable numeric impact is unavailable. Inspect the saved evidence for details.");
     }
+    if (result.bestMove && !result.issue && !move->bestSan.isEmpty()) {
+        lines << QObject::tr("Best supported alternative: %1. Inspect its saved continuation.")
+                     .arg(move->bestSan);
+    }
     lines << (result.stable ? QObject::tr("Two stronger passes agree on this result.")
                             : QObject::tr("Provisional: stability has not been established."));
     if (move->contextPosition) {
@@ -365,6 +370,7 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
                 .arg(r.thresholds.inaccuracyLoss * 100, 0, 'g', 10)
                 .arg(r.thresholds.mistakeLoss * 100, 0, 'g', 10)
                 .arg(r.thresholds.blunderLoss * 100, 0, 'g', 10);
+    text << QObject::tr("Generic explanation model %1").arg(review::explanationModelVersion);
     text << QObject::tr("Rule: %1; classification model %2")
                 .arg(QString::fromStdString(r.ruleId))
                 .arg(r.modelVersion);

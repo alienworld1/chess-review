@@ -60,11 +60,14 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                                            ReviewConfiguration& configuration, QObject* parent)
     : QObject(parent), database_(database), settings_(settings), supervisor_(supervisor),
       configuration_(configuration), moves_(database), navigation_(database, moves_),
+      exploration_(database, navigation_, settings, supervisor),
       cursor_(std::make_unique<Cursor>()) {
     connect(&moves_, &ReviewMovesController::changed, this, &ReviewGameController::publish);
     connect(&moves_, &ReviewMovesController::drainedChanged, this,
             &ReviewGameController::finishClose);
     connect(&navigation_, &ReviewNavigationController::closed, this,
+            &ReviewGameController::finishClose);
+    connect(&exploration_, &ReviewExplorationController::closed, this,
             &ReviewGameController::finishClose);
     worker_.setMaxThreadCount(1);
     worker_.setExpiryTimeout(-1);
@@ -386,6 +389,7 @@ void ReviewGameController::publish() {
     }
     moves_.bind(state_.run);
     navigation_.bind(state_.run, state_.overview);
+    exploration_.bind(state_.run);
     state_.busy = state_.active || workerBusy_ || !pending_.isNull() || retry_.isActive();
     const QScopedValueRollback notification(notifying_, true);
     emit changed();
@@ -1058,6 +1062,7 @@ void ReviewGameController::close() {
     }
     closing_ = true;
     moves_.close();
+    exploration_.close();
     navigation_.close();
     nextInspection_.reset();
     listRetry_.stop();
@@ -1070,8 +1075,8 @@ void ReviewGameController::close() {
 }
 void ReviewGameController::finishClose() {
     if (!closing_ || closed_ || closeQueued_ || !moves_.drained() || !navigation_.drained() ||
-        state_.active || workerBusy_ || !pending_.isNull() || !search_.isNull() ||
-        !cacheWrite_.isNull() || !listing_.isNull() || retry_.isActive()) {
+        !exploration_.drained() || state_.active || workerBusy_ || !pending_.isNull() ||
+        !search_.isNull() || !cacheWrite_.isNull() || !listing_.isNull() || retry_.isActive()) {
         return;
     }
     closeQueued_ = true;

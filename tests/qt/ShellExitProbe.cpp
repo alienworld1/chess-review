@@ -48,7 +48,8 @@ void installExitDriver() {
                     continue;
                 }
                 if (mode.startsWith(QStringLiteral("game-"))) {
-                    auto* page = window->findChild<chess_review::ui::AnalysisPage*>();
+                    auto* page = window->findChild<chess_review::ui::AnalysisPage*>(
+                        QStringLiteral("analyzePage"));
                     auto& analysis = page->controller();
                     if (mode == QStringLiteral("game-import") && phase == 0) {
                         window->findChild<QAction*>(QStringLiteral("gamesAction"))->trigger();
@@ -162,8 +163,9 @@ void installExitDriver() {
                         ++phase;
                         return;
                     }
-                    auto* board = window->findChild<chess_review::ui::ChessBoardWidget*>(
-                        QStringLiteral("chessBoard"));
+                    auto* board = window->findChild<QWidget*>(QStringLiteral("analyzePage"))
+                                      ->findChild<chess_review::ui::ChessBoardWidget*>(
+                                          QStringLiteral("chessBoard"));
                     if (!board || !board->state().interactive) {
                         return;
                     }

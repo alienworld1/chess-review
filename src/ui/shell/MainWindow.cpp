@@ -192,6 +192,62 @@ void MainWindow::installReview(app::ReviewGameController& review) {
     reviewPage_ = new ReviewPage(review, pages_);
     pages_->addWidget(reviewPage_);
     reviewPage_->setSplitShare(reviewSplit_);
+    auto& linkedExplorer = review.exploration();
+    linkedAnalysis_ = new AnalysisPage(linkedExplorer.linkedAnalysis(), pages_);
+    linkedAnalysis_->setObjectName(QStringLiteral("reviewLinkedAnalysisPage"));
+    linkedAnalysis_->installEngineAnalysis(linkedExplorer.linkedEngine());
+    pages_->addWidget(linkedAnalysis_);
+    auto* linkedCommands =
+        linkedAnalysis_->findChild<QHBoxLayout*>(QStringLiteral("analysisCommands"));
+    auto* backToReview = new QPushButton(tr("Back to Review"), linkedAnalysis_);
+    backToReview->setObjectName(QStringLiteral("backToReview"));
+    linkedCommands->addWidget(backToReview);
+    connect(backToReview, &QPushButton::clicked, this, [this] {
+        reviewController_->exploration().restoreReviewOrigin();
+        showReview();
+    });
+    connect(linkedAnalysis_, &AnalysisPage::manageEnginesRequested, this,
+            [this] { navigation_.navigate(app::Destination::Settings); });
+    connect(reviewPage_, &ReviewPage::analyzeRequested, this, [this] {
+        auto& exploration = reviewController_->exploration();
+        if (!exploration.analysisOrigin()) {
+            return;
+        }
+        const auto open = [this] {
+            if (closing_) {
+                return;
+            }
+            auto& currentExplorer = reviewController_->exploration();
+            if (!currentExplorer.analysisOrigin()) {
+                return;
+            }
+            const bool resume = currentExplorer.sameAnalysisOrigin();
+            const auto origin = currentExplorer.analysisOrigin();
+            currentExplorer.openAnalysis();
+            if (analysis_ && !resume && origin) {
+                auto preferences = analysis_->preferences();
+                preferences.blackAtBottom = origin->blackAtBottom;
+                linkedAnalysis_->setPreferences(preferences);
+            }
+            linkedAnalysisPending_ = true;
+            if (navigation_.current() == app::Destination::Analyze) {
+                selectDestination();
+            } else {
+                navigation_.navigate(app::Destination::Analyze);
+            }
+        };
+        if (!exploration.sameAnalysisOrigin()) {
+            linkedAnalysis_->requestDiscard(open);
+        } else {
+            open();
+        }
+    });
+    connect(pages_, &QStackedWidget::currentChanged, this, [this] {
+        if (reviewController_) {
+            reviewController_->exploration().linkedEngine().setVisible(
+                !closing_ && pages_->currentWidget() == linkedAnalysis_);
+        }
+    });
     auto* games = pages_->findChild<GamesPage*>();
     Q_ASSERT(games);
     connect(games, &GamesPage::reviewRequested, this, [this, &review](persistence::GameId id) {
@@ -258,9 +314,12 @@ void MainWindow::installEngineAnalysis(app::EngineAnalysisController& engine) {
     });
     connect(&navigation_, &app::NavigationController::destinationChanged, this, [this, &engine] {
         // Earlier subscribers may have synchronously redirected this navigation.
-        engine.setVisible(!closing_ && navigation_.current() == app::Destination::Analyze);
+        engine.setVisible(!closing_ && pages_->currentWidget() == analysis_);
     });
-    engine.setVisible(navigation_.current() == app::Destination::Analyze);
+    connect(pages_, &QStackedWidget::currentChanged, this, [this, &engine] {
+        engine.setVisible(!closing_ && pages_->currentWidget() == analysis_);
+    });
+    engine.setVisible(pages_->currentWidget() == analysis_);
 }
 void MainWindow::installEngines(app::EngineSettingsController& engines) {
     auto* placeholder =
@@ -301,7 +360,13 @@ void MainWindow::installAnalysis(app::AnalysisController& controller) {
     auto* flip = new QAction(tr("Flip Board"), this);
     flip->setObjectName(QStringLiteral("flipBoardAction"));
     flip->setShortcut(QKeySequence(QStringLiteral("Ctrl+F")));
-    connect(flip, &QAction::triggered, &controller, &app::AnalysisController::flip);
+    connect(flip, &QAction::triggered, this, [this, &controller] {
+        if (linkedAnalysis_ && pages_->currentWidget() == linkedAnalysis_) {
+            linkedAnalysis_->controller().flip();
+        } else {
+            controller.flip();
+        }
+    });
     // Reuse the existing View menu without introducing a second command surface.
     auto* view = findChild<QMenu*>(QStringLiteral("viewMenu"));
     Q_ASSERT(view);
@@ -548,6 +613,9 @@ void MainWindow::selectDestination() {
         dialog->open();
         return;
     }
+    if (navigation_.current() != app::Destination::Analyze) {
+        linkedAnalysisPending_ = false;
+    }
     if (library_ && navigation_.current() == app::Destination::Games && !closing_) {
         library_->activate();
     }
@@ -557,6 +625,10 @@ void MainWindow::selectDestination() {
         if (action->data().value<app::Destination>() == navigation_.current()) {
             action->setChecked(true);
             pages_->setCurrentIndex(static_cast<int>(i));
+            if (navigation_.current() == app::Destination::Analyze && linkedAnalysisPending_) {
+                linkedAnalysisPending_ = false;
+                pages_->setCurrentWidget(linkedAnalysis_);
+            }
             if (analysis_ && navigation_.current() == app::Destination::Analyze && !closing_) {
                 analysis_->controller().start();
             }
@@ -724,7 +796,13 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     event->ignore();
     if (!closing_) {
         if (analysis_) {
-            analysis_->requestDiscard([this] { emit closeRequested(); });
+            analysis_->requestDiscard([this] {
+                if (linkedAnalysis_) {
+                    linkedAnalysis_->requestDiscard([this] { emit closeRequested(); });
+                } else {
+                    emit closeRequested();
+                }
+            });
         } else {
             emit closeRequested();
         }

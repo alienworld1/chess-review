@@ -43,6 +43,8 @@ class StorageSession final {
                                             int limit);
     LoadReviewOverviewResult loadReviewOverview(ReviewId id, std::int64_t expectedRevision,
                                                 int keyOffset = 0);
+    LoadReviewExplorationResult loadReviewExploration(ReviewId id, std::int64_t revision,
+                                                      int index);
     LoadReviewEvidenceResult
     loadReviewEvidence(ReviewId id, int positionIndex,
                        review::EvidenceStage stage = review::EvidenceStage::Quick);

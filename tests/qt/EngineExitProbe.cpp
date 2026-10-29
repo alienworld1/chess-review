@@ -103,8 +103,10 @@ void installDriver() {
                             if (mode == QStringLiteral("live-analyzing")) {
                                 auto* analyze =
                                     window->findChild<QAction*>(QStringLiteral("analyzeAction"));
-                                auto* start = window->findChild<QPushButton*>(
-                                    QStringLiteral("startEngineAnalysis"));
+                                auto* start =
+                                    window->findChild<QWidget*>(QStringLiteral("analyzePage"))
+                                        ->findChild<QPushButton*>(
+                                            QStringLiteral("startEngineAnalysis"));
                                 if (!analyze || !start) {
                                     qFatal("Missing live analysis controls");
                                 }

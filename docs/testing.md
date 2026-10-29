@@ -1024,3 +1024,20 @@ With `CHESS_REVIEW_STOCKFISH` set to an explicitly selected local executable,
 fixture through the production pipeline. It requires usable accuracy, classified
 errors/key moments and saved inspection after disconnecting the engine. This goes
 beyond checking whether engine searches merely completed.
+
+### Better-move exploration regressions
+
+The `[retry]` domain cases cover exact WDL grade boundaries for both players,
+demonstrated equivalent alternatives, independent child evidence, conflicting
+passes, history/engine mismatches and conservative mate/bound handling.
+`analysis` covers history-bearing initialization and failed-line replacement.
+`quick_review` exercises selected-stage continuation reads, stale/corrupt reads,
+legal line stepping, hidden practice solutions, equivalent-move credit without
+searches, two-pass grading of unknown moves, engine-unavailable recovery and
+separate Analysis/Back restoration without changing the saved review.
+
+The existing `CHESS_REVIEW_QUICK_RENDER_DIR` probe also exercises the expanded
+Review layout. Run it at `QT_SCALE_FACTOR=1`, `1.25`, `1.5` and `2` on the
+configured offscreen desktop, and inspect the resulting light/dark, enlarged-font
+and error-state images. Native screen readers and physical mixed-DPI transitions
+still need platform-specific QA.

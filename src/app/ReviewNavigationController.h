@@ -21,6 +21,7 @@ class ReviewNavigationController final : public QObject {
     void clear();
     void bind(const std::optional<persistence::ReviewSummary>& run,
               const std::optional<persistence::ReviewOverview>& overview);
+    const std::shared_ptr<const chess::Position>& position() const { return replay_.position(); }
     const BoardViewState& board() const { return board_; }
     const std::shared_ptr<const NavigationTree>& tree() const { return replay_.navigationTree(); }
     const std::vector<chess::NodeId>& line() const { return line_; }

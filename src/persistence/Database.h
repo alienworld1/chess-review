@@ -75,12 +75,16 @@ class Database final : public QObject {
                            int offset, int limit = 50);
     void loadReviewOverview(RequestId requestId, ReviewId id, std::int64_t expectedRevision,
                             int keyOffset = 0);
+    void loadReviewExploration(RequestId requestId, ReviewId id, std::int64_t revision, int index);
     void loadReviewEvidence(RequestId requestId, ReviewId id, int positionIndex,
                             review::EvidenceStage stage = review::EvidenceStage::Quick);
     void listReviewTransitions(RequestId requestId, ReviewId id, std::int64_t offset = 0,
                                int limit = 50);
 
   signals:
+    void
+    reviewExplorationLoaded(chess_review::persistence::RequestId requestId,
+                            const chess_review::persistence::LoadReviewExplorationResult& result);
     void reviewOverviewLoaded(chess_review::persistence::RequestId requestId,
                               const chess_review::persistence::LoadReviewOverviewResult& result);
     void reviewCreated(chess_review::persistence::RequestId requestId,

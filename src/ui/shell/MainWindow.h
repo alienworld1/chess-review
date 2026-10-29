@@ -77,6 +77,8 @@ class MainWindow final : public QMainWindow {
     bool reviewLeavePending_ = false;
     bool reviewWasActive_ = false;
     AnalysisPage* analysis_ = nullptr;
+    AnalysisPage* linkedAnalysis_ = nullptr;
+    bool linkedAnalysisPending_ = false;
     QAction* importFile_ = nullptr;
     QAction* pastePgn_ = nullptr;
     app::GameLibraryController* library_ = nullptr;
