@@ -184,3 +184,23 @@ catch_discover_tests(review_classification_tests ADD_TAGS_AS_LABELS PROPERTIES T
 
 chess_review_add_qt_test(review_navigation_tests review_navigation INTEGRATION WIDGETS
     SOURCES qt/ReviewNavigationTest.cpp LIBRARIES chess_review_ui)
+
+# Production composition and event loop, driven only in this test executable.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    qt_add_executable(review_acceptance_probe
+        "${PROJECT_SOURCE_DIR}/src/main.cpp" qt/ReviewAcceptanceProbe.cpp)
+    target_include_directories(review_acceptance_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+    target_link_libraries(review_acceptance_probe PRIVATE chess_review_ui chess_review_app_paths Qt6::Test)
+    chess_review_apply_options(review_acceptance_probe)
+    add_dependencies(review_acceptance_probe fake_uci_engine)
+    target_compile_definitions(review_acceptance_probe PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
+
+    chess_review_add_qt_test(review_acceptance_tests review_acceptance INTEGRATION
+        SOURCES qt/ReviewAcceptanceTest.cpp LIBRARIES chess_review_pgn chess_review_persistence)
+    set_tests_properties(review_acceptance PROPERTIES TIMEOUT 600)
+    add_dependencies(review_acceptance_tests review_acceptance_probe)
+    target_compile_definitions(review_acceptance_tests PRIVATE
+        REVIEW_ACCEPTANCE_PROBE="$<TARGET_FILE:review_acceptance_probe>"
+        REVIEW_ACCEPTANCE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/review"
+        REVIEW_ACCEPTANCE_SCREEN="${CMAKE_CURRENT_SOURCE_DIR}/support/desktop-screen.json")
+endif()

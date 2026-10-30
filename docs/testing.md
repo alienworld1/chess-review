@@ -1082,3 +1082,57 @@ no metadata or accuracy reads are scheduled after deactivation. Recovery paging
 checks empty-page fallback, selection/focus retention, and Enter activation.
 Storage fixtures verify unsupported headers in library, history, and recovery
 without deriving evidence or hiding healthy rows.
+
+### Complete game-review acceptance (Linux)
+
+`ctest --preset dev -R '^review_acceptance$' --output-on-failure` runs the
+connected local journey in fresh processes linked with production `main.cpp`.
+The test-only driver is absent from the shipped executable and from
+`BUILD_TESTING=OFF` builds. Each case owns temporary HOME/XDG roots, PGNs, scenario
+files and storage; it never changes a user's engine executable or saved games.
+
+The journey registers the fake engine, pastes a PGN, selects the game/player/quality
+with widgets, completes review, visits a key moment, previews the timeline, steps
+a legal continuation, visits Analysis/Back, and plays a demonstrated equivalent
+move in Try Again. A second process must restore the exact run/player/moment without
+starting an engine. Public repository reads check all persisted position histories
+and reproduce classifications from the saved configuration and selected evidence.
+Additional cases cover a completed 60-ply game, terminal FEN, engine crash,
+checkpoint-preserving cancellation, process kill/Interrupted recovery/explicit
+resume, and navigation/background return/cancel on a 512-ply game. Timings,
+maximum heartbeat gap and search counts are observations, not portable latency
+thresholds. Fixture purposes and limits are in `tests/fixtures/review/README.md`.
+
+Real-engine acceptance is explicit and separate from deterministic CI:
+
+```sh
+CHESS_REVIEW_STOCKFISH=/absolute/path/to/stockfish \
+  build/dev/tests/review_acceptance_tests realEngineJourney
+QT_QPA_PLATFORM=offscreen CHESS_REVIEW_STOCKFISH=/absolute/path/to/stockfish \
+  build/dev/tests/quick_review_tests stockfishProducesUsefulReview pinnedEngineCacheReuse
+```
+
+Use the reviewed pinned Stockfish binary for the cache probe; another conformant
+engine can run reviews but cannot establish that resource policy's reuse gate.
+These tests assert useful evidence and behavior, not exact real-engine scores.
+
+To capture Home, Settings, Games, Review, linked Analysis and hidden-solution
+practice at all three desktop sizes, both palettes and normal/enlarged fonts:
+
+```sh
+mkdir -p /tmp/review-acceptance-renders/1
+QT_SCALE_FACTOR=1 CHESS_REVIEW_ACCEPTANCE_RENDER_DIR=/tmp/review-acceptance-renders/1 \
+  build/dev/tests/review_acceptance_tests renderJourney
+```
+
+Repeat with separate output directories and `QT_SCALE_FACTOR=1.25`, `1.5` and `2`.
+The probe asserts logical/physical image sizes, square Review boards and scroll
+reachability of primary controls. Inspect PNGs for overlap, clipping, legibility,
+focus and piece sharpness; no pixel-perfect golden baseline is used.
+
+Offscreen acceptance does not validate a native window manager, screen reader,
+physical mixed-monitor DPI transitions or Windows. Native release QA must check
+keyboard traversal and focus, file dialogs, screen-reader names/status updates,
+light/dark changes, monitor transitions at the supported scales, and the same
+import → review → exploration → close/reopen journey. Record those checks as
+unverified until run on their actual platforms.
