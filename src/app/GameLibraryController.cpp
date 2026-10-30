@@ -28,14 +28,14 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
             });
     refreshTimer_.setSingleShot(true);
     refreshTimer_.setInterval(250);
-    connect(&refreshTimer_, &QTimer::timeout, this, [this] { refresh(); });
+    connect(&refreshTimer_, &QTimer::timeout, this, [this] { refreshMetadata(false, false); });
     connect(&database_, &persistence::Database::gamesListed, this,
             [this](persistence::RequestId request, const persistence::ListGamesResult& result) {
                 if (pending_.isNull() || request != pending_) {
                     return;
                 }
                 pending_ = {};
-                if (requestedRevision_ != revision_ || !ready_) {
+                if (requestedRevision_ != revision_ || !ready_ || !active_) {
                     requestPage();
                     if (!busy()) {
                         emit changed();
@@ -50,6 +50,7 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                     const auto size = std::min<std::size_t>(50, rows->size());
                     rows_.assign(rows->begin(), rows->begin() + static_cast<std::ptrdiff_t>(size));
                     error_.clear();
+                    pageStale_ = false;
                     // Concurrent imports can shift pages; never strand the user on an empty page.
                     if (rows_.empty() && offset_ > 0) {
                         offset_ = 0;
@@ -69,7 +70,7 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                     return;
                 }
                 reviewsPending_ = {};
-                if (!ready_ || reviewsRevision_ != revision_) {
+                if (!ready_ || !active_ || reviewsRevision_ != revision_) {
                     requestReviews();
                     return;
                 }
@@ -108,7 +109,7 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                 return;
             }
             accuracyPending_ = {};
-            if (ready_ && accuracyRevision_ == revision_ && accuracyRun_) {
+            if (ready_ && active_ && accuracyRevision_ == revision_ && accuracyRun_) {
                 auto found = reviews_.find(accuracyRun_->gameId);
                 if (found != reviews_.end() && found->second.metadata.run &&
                     found->second.metadata.run->id == accuracyRun_->id &&
@@ -144,6 +145,7 @@ void GameLibraryController::setReady(bool ready) {
         accuracyQueue_.clear();
         reviews_.clear();
         rows_.clear();
+        pageStale_ = true;
         hasNext_ = false;
     } else if (active_) {
         requestPage();
@@ -163,11 +165,29 @@ void GameLibraryController::open(persistence::GameId id) {
 void GameLibraryController::activate() {
     if (!active_) {
         active_ = true;
-        refresh();
+        if (pageStale_) {
+            refresh();
+        } else {
+            requestReviews();
+        }
     }
 }
-void GameLibraryController::refresh(bool newest) {
+void GameLibraryController::deactivate() {
+    if (!active_) {
+        return;
+    }
+    active_ = false;
+    ++revision_;
     refreshTimer_.stop();
+    accuracyQueue_.clear();
+}
+void GameLibraryController::refresh(bool newest) { refreshMetadata(newest, true); }
+void GameLibraryController::refreshMetadata(bool newest, bool invalidateAccuracy) {
+    pageStale_ = true;
+    refreshTimer_.stop();
+    if (invalidateAccuracy) {
+        reviews_.clear();
+    }
     if (newest) {
         offset_ = 0;
     }
@@ -176,6 +196,7 @@ void GameLibraryController::refresh(bool newest) {
     requestPage();
 }
 void GameLibraryController::importedGame() {
+    pageStale_ = true;
     if (ready_ && active_ && !refreshTimer_.isActive()) {
         refreshTimer_.start();
     }
@@ -204,7 +225,7 @@ void GameLibraryController::requestPage() {
     emit changed();
 }
 void GameLibraryController::requestReviews() {
-    if (!ready_ || !reviewsPending_.isNull() || !pending_.isNull()) {
+    if (!ready_ || !active_ || !reviewsPending_.isNull() || !pending_.isNull()) {
         return;
     }
     std::vector<persistence::GameId> ids;
@@ -216,7 +237,7 @@ void GameLibraryController::requestReviews() {
     database_.listLibraryReviews(reviewsPending_, std::move(ids));
 }
 void GameLibraryController::requestAccuracy() {
-    if (!ready_ || !accuracyPending_.isNull() || accuracyQueue_.empty()) {
+    if (!ready_ || !active_ || !accuracyPending_.isNull() || accuracyQueue_.empty()) {
         return;
     }
     accuracyRun_ = accuracyQueue_.back();

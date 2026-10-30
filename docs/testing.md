@@ -1073,3 +1073,12 @@ Optional `CHESS_REVIEW_QUICK_RENDER_DIR` renders include the compact Home notice
 expanded recovery list, library, and existing Review/exploration states. Run
 `quick_review_tests interruptedReviewsAreDiscoverableAndPaged renderWorkspace` with
 that directory and `QT_SCALE_FACTOR=1`, `1.25`, `1.5`, or `2` to inspect scaling.
+
+Reopen hardening regressions exercise history refresh during pending inspection,
+resuming a different run through nested notifications, invalid start parameters,
+reentrant game selection, monotonic committed revisions, and explicit startup
+navigation suppressing both restoration paths. Hidden-library probes assert that
+no metadata or accuracy reads are scheduled after deactivation. Recovery paging
+checks empty-page fallback, selection/focus retention, and Enter activation.
+Storage fixtures verify unsupported headers in library, history, and recovery
+without deriving evidence or hiding healthy rows.

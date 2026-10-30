@@ -24,6 +24,7 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -33,6 +34,7 @@
 #include <QScreen>
 #include <QScrollArea>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QTextEdit>
 #include <QTimer>
@@ -41,8 +43,6 @@
 #include <QVariant>
 #include <QWindow>
 #include <algorithm>
-
-#include <memory>
 
 namespace chess_review::ui {
 QRect fittedWindowGeometry(const QRect& desired, const QRect& available) {
@@ -331,8 +331,33 @@ void MainWindow::installReview(app::ReviewGameController& review) {
     auto* recoveryDetails = new QWidget(recovery);
     recoveryDetails->setObjectName(QStringLiteral("interruptedReviewList"));
     auto* detailsLayout = new QVBoxLayout(recoveryDetails);
-    auto* recoveryRows = new QVBoxLayout;
-    detailsLayout->addLayout(recoveryRows);
+    auto* recoveryRows = new QListWidget(recoveryDetails);
+    recoveryRows->setObjectName(QStringLiteral("interruptedReviewRows"));
+    recoveryRows->setAccessibleName(tr("Interrupted reviews"));
+    recoveryRows->setSelectionMode(QAbstractItemView::SingleSelection);
+    recoveryRows->setMinimumHeight(100);
+    recoveryRows->setMaximumHeight(240);
+    detailsLayout->addWidget(recoveryRows);
+    auto* openRecovery = new QPushButton(tr("Open selected review"), recoveryDetails);
+    openRecovery->setObjectName(QStringLiteral("openInterruptedReview"));
+    openRecovery->setEnabled(false);
+    detailsLayout->addWidget(openRecovery);
+    const auto openSelected = [this, recoveryRows, &review] {
+        const auto* item = recoveryRows->currentItem();
+        if (closing_ || !item || !item->data(Qt::UserRole + 2).toBool()) {
+            return;
+        }
+        review.workspace().selectGame(item->data(Qt::UserRole + 1).toLongLong(),
+                                      item->data(Qt::UserRole).toLongLong());
+        showReview();
+    };
+    connect(openRecovery, &QPushButton::clicked, this, openSelected);
+    connect(recoveryRows, &QListWidget::itemActivated, this,
+            [openSelected](QListWidgetItem*) { openSelected(); });
+    connect(recoveryRows, &QListWidget::currentRowChanged, this, [recoveryRows, openRecovery] {
+        const auto* item = recoveryRows->currentItem();
+        openRecovery->setEnabled(item && item->data(Qt::UserRole + 2).toBool());
+    });
     recoveryLayout->addWidget(recoveryDetails);
     recoveryDetails->hide();
     connect(showRecovery, &QPushButton::toggled, recoveryDetails, &QWidget::setVisible);
@@ -353,36 +378,54 @@ void MainWindow::installReview(app::ReviewGameController& review) {
     controls->addWidget(refresh);
     detailsLayout->addLayout(controls);
     qobject_cast<QVBoxLayout*>(home->layout())->insertWidget(1, recovery);
-    const auto updateRecovery = [this, recovery, recoveryRows, recoveryError, earlier, later,
-                                 &review] {
+    const auto updateRecovery = [recovery, recoveryRows, recoveryError, earlier, later, refresh,
+                                 openRecovery, &review] {
         auto& workspace = review.workspace();
-        while (auto item = std::unique_ptr<QLayoutItem>(recoveryRows->takeAt(0))) {
-            if (item->widget()) {
-                item->widget()->deleteLater();
+        const auto* selected = recoveryRows->currentItem();
+        const auto previous = selected ? selected->data(Qt::UserRole) : QVariant{};
+        const QSignalBlocker blocker(recoveryRows);
+        // Retain the items/focus during the initial busy notification.
+        if (!workspace.recoveryBusy()) {
+            recoveryRows->clear();
+            for (const auto& run : workspace.interrupted()) {
+                auto* item = new QListWidgetItem(
+                    run.metadataError
+                        ? QObject::tr("Game %1 · Review %2 could not be read. Open for details.")
+                              .arg(run.gameId)
+                              .arg(run.id)
+                        : QObject::tr("Game %1 · %2 · saved %3/%4 · Review %5")
+                              .arg(run.gameId)
+                              .arg(run.selectedSide == chess::Color::White ? QObject::tr("White")
+                                                                           : QObject::tr("Black"))
+                              .arg(run.completedPositions)
+                              .arg(run.totalPositions)
+                              .arg(run.id),
+                    recoveryRows);
+                item->setData(Qt::UserRole, QVariant::fromValue(static_cast<qint64>(run.id)));
+                item->setData(Qt::UserRole + 1,
+                              QVariant::fromValue(static_cast<qint64>(run.gameId)));
+                item->setData(Qt::UserRole + 2, run.id > 0 && run.gameId > 0);
+                item->setToolTip(
+                    run.metadataError
+                        ? QObject::tr("The saved data is preserved. Open for details, or use "
+                                      "Games to inspect another run or start a new review.")
+                        : item->text());
+                if (item->data(Qt::UserRole) == previous) {
+                    recoveryRows->setCurrentItem(item);
+                }
+            }
+            if (!recoveryRows->currentItem() && recoveryRows->count() > 0) {
+                recoveryRows->setCurrentRow(0);
             }
         }
+        const auto* current = recoveryRows->currentItem();
+        openRecovery->setEnabled(current && current->data(Qt::UserRole + 2).toBool());
         recovery->setVisible(!workspace.interrupted().empty() ||
                              !workspace.recoveryError().isEmpty());
         recoveryError->setText(workspace.recoveryError());
         earlier->setEnabled(!workspace.recoveryBusy() && workspace.recoveryPage() > 0);
         later->setEnabled(!workspace.recoveryBusy() && workspace.recoveryHasNext());
-        for (const auto& run : workspace.interrupted()) {
-            auto* open = new QPushButton(QObject::tr("Game %1 · %2 · saved %3/%4 · Open review %5")
-                                             .arg(run.gameId)
-                                             .arg(run.selectedSide == chess::Color::White
-                                                      ? QObject::tr("White")
-                                                      : QObject::tr("Black"))
-                                             .arg(run.completedPositions)
-                                             .arg(run.totalPositions)
-                                             .arg(run.id),
-                                         recovery);
-            open->setEnabled(!run.metadataError);
-            recoveryRows->addWidget(open);
-            QObject::connect(open, &QPushButton::clicked, &workspace, [this, &workspace, run] {
-                workspace.selectGame(run.gameId, run.id);
-                showReview();
-            });
-        }
+        refresh->setEnabled(!workspace.recoveryBusy());
     };
     connect(&review.workspace(), &app::ReviewWorkspaceController::recoveryChanged, this,
             updateRecovery);
@@ -541,6 +584,13 @@ void MainWindow::installImports(app::ImportController& imports,
     delete placeholder;
     auto* games = new GamesPage(imports, library, *importFile_, *pastePgn_, pages_);
     pages_->insertWidget(pageIndex, games);
+    connect(pages_, &QStackedWidget::currentChanged, this, [this, games, &library] {
+        if (!closing_ && pages_->currentWidget() == games) {
+            library.activate();
+        } else {
+            library.deactivate();
+        }
+    });
     connect(games, &GamesPage::openRequested, this, [this, &library](persistence::GameId id) {
         if (!closing_ && analysis_ && !library.opening()) {
             analysis_->requestDiscard([this, &library, id] {
@@ -721,9 +771,6 @@ void MainWindow::selectDestination() {
     }
     if (navigation_.current() != app::Destination::Analyze) {
         linkedAnalysisPending_ = false;
-    }
-    if (library_ && navigation_.current() == app::Destination::Games && !closing_) {
-        library_->activate();
     }
     // A previous signal subscriber may have synchronously redirected navigation.
     for (std::size_t i = 0; i < destinations_.size(); ++i) {

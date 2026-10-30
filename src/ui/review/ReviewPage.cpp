@@ -843,10 +843,12 @@ void ReviewPage::update() {
     runs_->setEnabled(!state.listing);
     model_->reload(state.runs);
     const auto selected = model_->row(runs_->currentIndex().row());
-    resume_->setEnabled(!state.busy && !controller_.taskState().busy && selected &&
+    const auto resumeBlocker = controller_.resumeBlocker();
+    resume_->setToolTip(resumeBlocker);
+    resume_->setEnabled(!state.busy && resumeBlocker.isEmpty() && selected &&
                         !selected->metadataError && selected->status >= review::JobStatus::Partial);
-    previous_->setEnabled(!state.listing && state.page > 0);
-    next_->setEnabled(!state.listing && state.hasNext);
+    previous_->setEnabled(!state.inspecting && state.page > 0);
+    next_->setEnabled(!state.inspecting && state.hasNext);
     refreshSummary_->setEnabled(state.run && !state.busy);
     previousMoments_->setEnabled(state.overview && state.overview->keyOffset > 0 && !state.busy);
     nextMoments_->setEnabled(state.overview &&

@@ -61,31 +61,44 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
             remember();
         }
     });
-    connect(
-        &database_, &Database::gameLoaded, this, [this](QUuid id, const LoadGameResult& result) {
-            if (!accept(id)) {
-                return;
-            }
-            if (const auto* issue = std::get_if<GameError>(&result)) {
-                if (issue->code == GameErrorCode::Busy) {
-                    retry_.start(100);
+    connect(&database_, &Database::gameLoaded, this,
+            [this](QUuid id, const LoadGameResult& result) {
+                if (!accept(id)) {
                     return;
                 }
-                state_.error = issue->message;
+                if (const auto* issue = std::get_if<GameError>(&result)) {
+                    if (issue->code == GameErrorCode::Busy) {
+                        retry_.start(100);
+                        return;
+                    }
+                    state_.error = issue->message;
+                    operation_ = {};
+                    state_.phase = ReviewPhase::Finished;
+                    publish();
+                    emit restoreFailed();
+                    return;
+                }
                 operation_ = {};
-                state_.phase = ReviewPhase::Finished;
-                publish();
-                emit restoreFailed();
-                return;
-            }
-            operation_ = {};
-            game_ = std::get<StoredGame>(result);
-            state_.game = tr("Game %1: %2 — %3")
-                              .arg(game_->summary.id)
-                              .arg(game_->summary.white.left(256), game_->summary.black.left(256));
-            navigation_.open(*game_);
-            loadContext(desiredRun_.value_or(0));
-        });
+                const auto generation = generation_;
+                game_ = std::get<StoredGame>(result);
+                const auto player = [](const QString& name, const QString& fallback) {
+                    auto text = name.left(256);
+                    if (!text.isEmpty() && text.back().isHighSurrogate()) {
+                        text.chop(1);
+                    }
+                    text = text.simplified();
+                    return text.isEmpty() ? fallback : text;
+                };
+                state_.game = tr("Game %1: %2 — %3")
+                                  .arg(game_->summary.id)
+                                  .arg(player(game_->summary.white, tr("White")),
+                                       player(game_->summary.black, tr("Black")));
+                navigation_.open(*game_);
+                if (closing_ || generation != generation_) {
+                    return;
+                }
+                loadContext(desiredRun_.value_or(0));
+            });
     connect(&database_, &Database::reviewContextLoaded, this,
             [this](QUuid id, const LoadReviewContextResult& result) {
                 if (id == restoreRequest_ && !id.isNull()) {
@@ -125,6 +138,7 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
                     }
                     operation_ = {};
                     contextLoading_ = false;
+                    pendingResume_.reset();
                     state_.error = issue->message;
                     publish();
                     return;
@@ -169,6 +183,7 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
                     }
                     operation_ = {};
                     contextLoading_ = false;
+                    pendingResume_.reset();
                     state_.error = issue->message;
                     state_.phase = ReviewPhase::Finished;
                     publish();
@@ -178,6 +193,7 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
                 operation_ = {};
                 auto run = std::get<StoredReview>(result);
                 if (run.summary.gameId != state_.gameId) {
+                    pendingResume_.reset();
                     state_.error = tr("This run belongs to another game.");
                     contextLoading_ = false;
                     publish();
@@ -185,14 +201,27 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
                 }
                 stored_ = std::move(run);
                 updateCompatibility();
-                state_.run = stored_->summary;
+                if (!state_.run || state_.run->id != stored_->summary.id ||
+                    state_.run->revision <= stored_->summary.revision) {
+                    state_.run = stored_->summary;
+                }
+                // A matching live job may have advanced while this read was queued.
+                const auto& liveTask = task_.taskState();
+                if (liveTask.run && liveTask.run->id == state_.run->id &&
+                    liveTask.run->revision > state_.run->revision) {
+                    state_.run = liveTask.run;
+                }
                 state_.engine = stored_->settings.fingerprint.reportedName.left(256);
                 state_.phase = ReviewPhase::Finished;
                 state_.message = reviewStatusText(state_.run->status);
                 restorePending_ = restoreMoment_.has_value();
                 contextLoading_ = false;
                 // Select before the overview can choose its default key moment.
+                const auto generation = generation_;
                 publish();
+                if (closing_ || generation != generation_) {
+                    return;
+                }
                 if (restorePending_ && navigation_.ready()) {
                     const auto index = *restoreMoment_;
                     restorePending_ = false;
@@ -205,6 +234,11 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
                     }
                 }
                 remember();
+                if (pendingResume_ && state_.run && *pendingResume_ == state_.run->id) {
+                    const auto resumedId = *std::exchange(pendingResume_, std::nullopt);
+                    resume(resumedId);
+                    return;
+                }
                 refreshOverview();
             });
     connect(&database_, &Database::reviewsListed, this,
@@ -304,7 +338,12 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
                     }
                     recoveryError_ = issue->message;
                 } else {
-                    interrupted_ = std::get<std::vector<ReviewSummary>>(result);
+                    const auto& runs = std::get<std::vector<ReviewSummary>>(result);
+                    if (runs.empty() && recoveryPage_ > 0 && !closing_) {
+                        refreshRecovery();
+                        return;
+                    }
+                    interrupted_ = runs;
                     recoveryHasNext_ = interrupted_.size() > 50;
                     if (recoveryHasNext_) {
                         interrupted_.pop_back();
@@ -353,21 +392,24 @@ bool ReviewWorkspaceController::accept(QUuid id) {
     }
     return true;
 }
+bool ReviewWorkspaceController::displaysTask() const {
+    const auto& task = task_.taskState();
+    return game_ && task.gameId == state_.gameId &&
+           (followingTask_ || (state_.run && task.run && state_.run->id == task.run->id));
+}
 void ReviewWorkspaceController::publish() {
     if (closed_) {
         return;
     }
+    const QScopedValueRollback notification(notifying_, true);
     const auto& task = task_.taskState();
-    const bool intended = !desiredRun_ || (task.run ? task.run->id == *desiredRun_ : state_.active);
-    const bool same = intended && task.gameId == state_.gameId && task.active &&
-                      (!state_.run || !task.run || task.run->id == state_.run->id);
-    state_.active = same;
-    state_.cancelling = same && task.cancelling;
-    state_.busy = same || !pending_.isNull() || retry_.isActive();
+    state_.active = displaysTask() && task.active;
+    state_.cancelling = state_.active && task.cancelling;
+    state_.inspecting = !pending_.isNull() || retry_.isActive();
+    state_.busy = state_.active || state_.inspecting;
     moves_.bind(state_.run);
     navigation_.bind(state_.run, state_.overview);
     exploration_.bind(state_.run);
-    const QScopedValueRollback notification(notifying_, true);
     emit changed();
 }
 void ReviewWorkspaceController::updateCompatibility() {
@@ -401,7 +443,10 @@ void ReviewWorkspaceController::selectGame(GameId id, std::optional<review::Revi
         return;
     }
     remember();
-    ++generation_;
+    const auto generation = ++generation_;
+    followingTask_ = false;
+    restoreAllowed_ = false;
+    pendingResume_.reset();
     retry_.stop();
     operation_ = {};
     next_ = {};
@@ -413,6 +458,9 @@ void ReviewWorkspaceController::selectGame(GameId id, std::optional<review::Revi
     restorePending_ = false;
     contextLoading_ = true;
     navigation_.clear();
+    if (closing_ || generation != generation_) {
+        return;
+    }
     state_ = ReviewGameState{};
     state_.ready = true;
     state_.gameId = id;
@@ -424,12 +472,18 @@ void ReviewWorkspaceController::loadContext(review::ReviewId id) {
     const auto game = state_.gameId;
     request([this, game, id](QUuid request) { database_.loadReviewContext(request, game, id); });
 }
-void ReviewWorkspaceController::inspect(review::ReviewId id) {
+void ReviewWorkspaceController::inspect(review::ReviewId id) { inspectRun(id, false); }
+void ReviewWorkspaceController::inspectRun(review::ReviewId id, bool resumeAfterLoad) {
     if (closing_ || !game_ || id <= 0) {
         return;
     }
     remember();
-    ++generation_;
+    const auto generation = ++generation_;
+    followingTask_ = false;
+    restoreAllowed_ = false;
+    pendingResume_ = resumeAfterLoad ? std::optional{id} : std::nullopt;
+    contextLoading_ = true;
+    state_.listing = false;
     desiredRun_ = id;
     state_.error.clear();
     state_.notice.clear();
@@ -444,6 +498,9 @@ void ReviewWorkspaceController::inspect(review::ReviewId id) {
     state_.overview.reset();
     stored_.reset();
     navigation_.bind({}, {});
+    if (closing_ || generation != generation_) {
+        return;
+    }
     loadContext(id);
 }
 void ReviewWorkspaceController::loadRun(review::ReviewId id) {
@@ -451,7 +508,8 @@ void ReviewWorkspaceController::loadRun(review::ReviewId id) {
     request([this, id](QUuid request) { database_.loadReview(request, id); });
 }
 void ReviewWorkspaceController::refreshRuns(std::int64_t page) {
-    if (closing_ || !game_ || page < 0 || page > 1000000) {
+    if (closing_ || !game_ || page < 0 || page > 1000000 || !pending_.isNull() ||
+        retry_.isActive()) {
         return;
     }
     state_.page = page;
@@ -479,6 +537,15 @@ void ReviewWorkspaceController::start(chess::Color side, std::int64_t profile,
     if (closing_ || !game_ || state_.busy || !task_.startBlocker(profile).isEmpty()) {
         return;
     }
+    if ((side != chess::Color::White && side != chess::Color::Black) ||
+        (quality != review::Quality::Fast && quality != review::Quality::Standard &&
+         quality != review::Quality::Thorough)) {
+        state_.error = tr("Invalid review perspective or quality.");
+        publish();
+        return;
+    }
+    followingTask_ = true;
+    pendingResume_.reset();
     task_.game_ = game_;
     task_.state_ = ReviewGameState{};
     task_.state_.ready = state_.ready;
@@ -492,45 +559,59 @@ void ReviewWorkspaceController::start(chess::Color side, std::int64_t profile,
     task_.startJob(side, profile, quality);
 }
 void ReviewWorkspaceController::resume(review::ReviewId id) {
-    if (closing_ || !game_ || state_.busy || task_.taskState().busy) {
+    if (closing_ || !game_) {
         return;
     }
+    const auto blocker = task_.resumeBlocker();
+    if (id <= 0 || !blocker.isEmpty()) {
+        state_.error = id <= 0 ? tr("Select a valid saved review to resume.") : blocker;
+        publish();
+        return;
+    }
+    if (!state_.run || state_.run->id != id) {
+        inspectRun(id, true);
+        return;
+    }
+    if (state_.run->status < review::JobStatus::Partial) {
+        state_.error = tr("This run cannot be resumed. Start a new review if needed.");
+        publish();
+        return;
+    }
+    remember();
+    followingTask_ = true;
     task_.game_ = game_;
     task_.state_ = ReviewGameState{};
     task_.state_.ready = state_.ready;
     task_.state_.gameId = state_.gameId;
     task_.state_.game = state_.game;
-    desiredRun_.reset();
-    task_.resumeJob(id);
     desiredRun_ = id;
+    task_.resumeJob(id);
 }
 void ReviewWorkspaceController::taskChanged() {
     const auto& task = task_.taskState();
-    const bool intended = !desiredRun_ || (task.run ? task.run->id == *desiredRun_ : state_.active);
-    if (intended && task.gameId == state_.gameId &&
-        (task.active || state_.active ||
-         (state_.run && task.run && state_.run->id == task.run->id))) {
-        if (!state_.run || !task.run || state_.run->id == task.run->id) {
-            const bool revised =
-                task.run && (!state_.run || task.run->revision != state_.run->revision);
-            if (task.run) {
-                state_.run = task.run;
-            }
-            state_.engine = task.engine;
-            state_.phase = task.phase;
-            state_.message = task.message;
-            state_.error = task.error;
-            state_.refinementDone = task.refinementDone;
-            state_.refinementTotal = task.refinementTotal;
-            if (task.overview) {
-                state_.overview = task.overview;
-            }
-            if (revised) {
-                remember();
-            }
-            if (!task.active && revised && pending_.isNull()) {
-                refreshOverview();
-            }
+    if (displaysTask() && (!task.run || !state_.run || task.run->id != state_.run->id ||
+                           task.run->revision >= state_.run->revision)) {
+        const bool revised =
+            task.run && (!state_.run || task.run->revision != state_.run->revision);
+        if (task.run) {
+            state_.run = task.run;
+        }
+        state_.engine = task.engine;
+        state_.phase = task.phase;
+        state_.message = task.message;
+        state_.error = task.error;
+        state_.refinementDone = task.refinementDone;
+        state_.refinementTotal = task.refinementTotal;
+        if (task.overview &&
+            (!state_.overview || task.overview->reviewId != state_.overview->reviewId ||
+             task.overview->revision >= state_.overview->revision)) {
+            state_.overview = task.overview;
+        }
+        if (revised) {
+            remember();
+        }
+        if (!task.active && revised && pending_.isNull()) {
+            refreshOverview();
         }
     }
     if (task.run && task.run->status != review::JobStatus::Interrupted &&

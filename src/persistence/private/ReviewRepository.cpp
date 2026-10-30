@@ -859,6 +859,10 @@ ListReviewsResult StorageSession::listReviews(GameId gameId, std::int64_t offset
             damaged.metadataError = ReviewErrorCode::InvalidRecord;
             rows.push_back(std::move(damaged));
         } else {
+            const auto header = readReviewHeader(database_, *value);
+            if (const auto* issue = std::get_if<ReviewError>(&header)) {
+                value->metadataError = issue->code;
+            }
             rows.push_back(*value);
         }
     }
@@ -1895,6 +1899,12 @@ ListLibraryReviewsResult StorageSession::listLibraryReviews(std::vector<GameId> 
                 if (!row.run || row.run->gameId != gameId) {
                     row.run.reset();
                     row.error = invalid();
+                } else {
+                    const auto header = readReviewHeader(database_, *row.run);
+                    if (const auto* headerIssue = std::get_if<ReviewError>(&header)) {
+                        row.error = *headerIssue;
+                        row.run.reset();
+                    }
                 }
             } else if (q.lastError().isValid()) {
                 return storage();
@@ -1931,6 +1941,10 @@ ListReviewsResult StorageSession::listInterruptedReviews(std::int64_t offset, in
             damaged.metadataError = ReviewErrorCode::InvalidRecord;
             out.push_back(damaged);
         } else {
+            const auto header = readReviewHeader(database_, *run);
+            if (const auto* issue = std::get_if<ReviewError>(&header)) {
+                run->metadataError = issue->code;
+            }
             out.push_back(*run);
         }
     }

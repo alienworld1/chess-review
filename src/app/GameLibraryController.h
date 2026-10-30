@@ -16,6 +16,7 @@ class GameLibraryController final : public QObject {
     explicit GameLibraryController(persistence::Database& database, QObject* parent = nullptr);
     void setReady(bool ready);
     void activate();
+    void deactivate();
     void open(persistence::GameId id);
     bool opening() const { return !pendingOpen_.isNull(); }
     void refresh(bool newest = false);
@@ -36,6 +37,7 @@ class GameLibraryController final : public QObject {
     void opened(const chess_review::persistence::StoredGame& game);
 
   private:
+    void refreshMetadata(bool newest, bool invalidateAccuracy);
     void requestPage();
     void requestReviews();
     void requestAccuracy();
@@ -65,6 +67,7 @@ class GameLibraryController final : public QObject {
     std::uint64_t requestedRevision_ = 0;
     bool ready_ = false;
     bool active_ = false;
+    bool pageStale_ = true;
     bool hasNext_ = false;
 };
 } // namespace chess_review::app

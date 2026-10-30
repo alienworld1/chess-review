@@ -16,6 +16,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QLabel>
+#include <QListWidget>
 #include <QMessageBox>
 #include <QPalette>
 #include <QPlainTextEdit>
@@ -26,6 +27,7 @@
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QSplitter>
 #include <QSqlDatabase>
@@ -37,6 +39,7 @@
 #include <QTimer>
 #include <QWheelEvent>
 #include <algorithm>
+#include <utility>
 using namespace chess_review;
 namespace {
 QJsonObject ready() {
@@ -51,7 +54,8 @@ enum class RetryScript { None, Unknown, Played, Crash };
 class Fixture {
   public:
     explicit Fixture(const QString& path = {},
-                     const std::optional<QString>& configuration = std::nullopt)
+                     const std::optional<QString>& configuration = std::nullopt,
+                     const std::optional<QString>& uiState = std::nullopt)
         : window(navigation, startup.analysis()) {
         window.installEngines(startup.engines());
         window.installEngineAnalysis(startup.engineAnalysis());
@@ -59,8 +63,12 @@ class Fixture {
         window.installReview(startup.reviewGame());
         QObject::connect(&startup, &app::StartupCoordinator::ready, &window,
                          &ui::MainWindow::showReady);
+        if (uiState) {
+            QObject::connect(&startup, &app::StartupCoordinator::initialUiState, &window,
+                             &ui::MainWindow::restoreUiState);
+        }
         startup.start(path.isEmpty() ? directory.filePath(QStringLiteral("review.sqlite3")) : path,
-                      std::nullopt, configuration);
+                      uiState, configuration);
     }
     ~Fixture() {
         shutdown();
@@ -340,6 +348,170 @@ class Fixture {
 class QuickReviewTest final : public QObject {
     Q_OBJECT
   private slots:
+    void explicitStartupNavigationSuppressesLegacyAndReviewRestore() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        f.startup.reviewGame().workspace().setVisible(true);
+        f.shutdown();
+        const auto stateFile = f.directory.filePath(QStringLiteral("ui-state.ini"));
+        {
+            QSettings settings(stateFile, QSettings::IniFormat);
+            settings.setValue(QStringLiteral("workspace/v1/gameId"), static_cast<qint64>(f.gameId));
+            settings.setValue(QStringLiteral("workspace/v1/node"),
+                              QString::number(f.document->tree.rootId().value));
+            settings.sync();
+            QCOMPARE(settings.status(), QSettings::NoError);
+        }
+        Fixture reopened(f.directory.filePath(QStringLiteral("review.sqlite3")), std::nullopt,
+                         stateFile);
+        QSignalSpy recovered(&reopened.startup.reviewGame().workspace(),
+                             &app::ReviewWorkspaceController::recoveryFinished);
+        reopened.window.findChild<QAction*>(QStringLiteral("homeAction"))->trigger();
+        QTRY_VERIFY(!recovered.empty());
+        QVERIFY(!reopened.startup.library().opening());
+        QVERIFY(!reopened.startup.analysis().busy());
+        QVERIFY(!reopened.startup.analysis().gameId());
+        QVERIFY(!reopened.startup.reviewGame().state().gameId);
+        QCOMPARE(reopened.navigation.current(), app::Destination::Home);
+    }
+    void historyRefreshCannotReplacePendingInspection() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        auto& controller = f.startup.reviewGame();
+        const auto id = controller.state().run->id;
+        controller.inspect(id);
+        controller.refreshRuns();
+        QTRY_VERIFY(!controller.state().busy);
+        QVERIFY(controller.state().run);
+        QCOMPARE(controller.state().run->id, id);
+    }
+    void resumeDifferentRunRebindsTheWorkspace() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script(0, 1);
+        auto& controller = f.startup.reviewGame();
+        const auto cancel =
+            connect(&controller, &app::ReviewGameController::changed, &controller, [&] {
+                if (controller.state().active && controller.state().run &&
+                    controller.state().run->completedPositions == 1) {
+                    controller.cancel();
+                }
+            });
+        f.run();
+        QVERIFY(f.done());
+        disconnect(cancel);
+        const auto first = *controller.state().run;
+        QCOMPARE(first.status, review::JobStatus::Cancelled);
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        QVERIFY(controller.state().run->id != first.id);
+        f.script(1);
+        bool nested = false;
+        const auto nestedRead =
+            connect(&controller, &app::ReviewGameController::changed, &f.window, [&] {
+                if (nested || !controller.state().inspecting) {
+                    return;
+                }
+                nested = true;
+                QEventLoop loop;
+                const auto done =
+                    connect(&controller, &app::ReviewGameController::changed, &loop, [&] {
+                        if (controller.state().run && controller.state().run->id == first.id &&
+                            !controller.state().inspecting) {
+                            loop.quit();
+                        }
+                    });
+                QTimer::singleShot(5000, &loop, &QEventLoop::quit);
+                loop.exec();
+                disconnect(done);
+            });
+        controller.resume(first.id);
+        disconnect(nestedRead);
+        QVERIFY(nested);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.taskState().run &&
+                                     controller.taskState().run->id == first.id &&
+                                     !controller.taskState().busy,
+                                 15000);
+        QCOMPARE(controller.taskState().run->id, first.id);
+        QVERIFY(controller.state().run);
+        QCOMPARE(controller.state().run->id, first.id);
+        QCOMPARE(controller.state().run->status, review::JobStatus::Complete);
+    }
+    void invalidStartPreservesTheInspectedRun() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        auto& controller = f.startup.reviewGame();
+        const auto id = controller.state().run->id;
+        // Deliberately pass an invalid enum to verify boundary rejection.
+        // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+        controller.start(static_cast<chess::Color>(99), f.profileId, review::Quality::Standard);
+        QVERIFY(controller.state().run);
+        QCOMPARE(controller.state().run->id, id);
+        // Deliberately pass an invalid enum to verify boundary rejection.
+        // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+        controller.start(chess::Color::Black, f.profileId, static_cast<review::Quality>(99));
+        QVERIFY(controller.state().run);
+        QCOMPARE(controller.state().run->id, id);
+    }
+    void reentrantGameSelectionKeepsNewestIntent() {
+        Fixture f;
+        QVERIFY(f.seed());
+        auto& db = f.startup.gameRepository();
+        pgn::PgnReader reader("1. d4 *");
+        auto document =
+            std::make_shared<const pgn::PgnDocument>(std::get<pgn::PgnDocument>(reader.next()));
+        QSignalSpy inserted(&db, &persistence::Database::gameInserted);
+        db.insertGame(QUuid::createUuid(), document);
+        QTRY_VERIFY(!inserted.empty());
+        const auto other = std::get<persistence::Inserted>(
+                               qvariant_cast<persistence::InsertGameResult>(inserted.front()[1]))
+                               .id;
+        auto& controller = f.startup.reviewGame();
+        bool armed = true;
+        const auto selectionObserver = connect(
+            &controller.navigation(), &app::ReviewNavigationController::changed, &controller, [&] {
+                if (std::exchange(armed, false)) {
+                    controller.selectGame(other);
+                }
+            });
+        const auto disconnectSelection = qScopeGuard([&] { disconnect(selectionObserver); });
+        controller.selectGame(f.gameId);
+        QTRY_VERIFY(!controller.state().busy);
+        QCOMPARE(controller.state().gameId, other);
+        QVERIFY(controller.state().game.contains(QString::number(other)));
+    }
+    void hiddenLibraryDoesNotDeriveReviewSummaries() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        f.navigation.navigate(app::Destination::Games);
+        auto& library = f.startup.library();
+        QTRY_VERIFY(library.reviewAccuracy(f.gameId).contains(QLatin1Char('%')));
+        f.navigation.navigate(app::Destination::Home);
+        QSignalSpy metadata(&f.startup.gameRepository(),
+                            &persistence::Database::libraryReviewsListed);
+        QSignalSpy summaries(&f.startup.gameRepository(),
+                             &persistence::Database::reviewOverviewLoaded);
+        library.importedGame();
+        QTest::qWait(400);
+        QVERIFY(metadata.empty());
+        QVERIFY(summaries.empty());
+        f.navigation.navigate(app::Destination::Games);
+        QTRY_VERIFY(!metadata.empty());
+        QTRY_VERIFY(!summaries.empty());
+    }
     void missingContextShowsAnErrorWithoutSelectingAnotherRun() {
         Fixture f;
         QVERIFY(f.seed());
@@ -393,6 +565,20 @@ class QuickReviewTest final : public QObject {
         QTRY_VERIFY(!workspace.recoveryBusy());
         QCOMPARE(workspace.interrupted().size(), std::size_t{1});
         QVERIFY(!workspace.recoveryHasNext());
+        const auto last = workspace.interrupted().front();
+        QSignalSpy continued(&reopened.startup.gameRepository(),
+                             &persistence::Database::reviewContinued);
+        reopened.startup.gameRepository().continueReview(
+            QUuid::createUuid(),
+            {last.id, last.revision, settings.fingerprint, settings.configuration});
+        QTRY_VERIFY(!continued.empty());
+        QVERIFY(std::holds_alternative<persistence::ReviewSummary>(
+            qvariant_cast<persistence::ContinueReviewResult>(continued.front()[1])));
+        workspace.refreshRecovery(1);
+        QTRY_VERIFY(!workspace.recoveryBusy());
+        QCOMPARE(workspace.recoveryPage(), std::int64_t{0});
+        QCOMPARE(workspace.interrupted().size(), std::size_t{50});
+
         workspace.refreshRecovery();
         QTRY_COMPARE(workspace.interrupted().size(), std::size_t{50});
         reopened.navigation.navigate(app::Destination::Home);
@@ -444,10 +630,35 @@ class QuickReviewTest final : public QObject {
             font.setPointSize(font.pointSize() + 5);
             reopened.window.setFont(font);
             reopened.navigation.navigate(app::Destination::Home);
+            if (!show->isChecked()) {
+                show->click();
+            }
             QCoreApplication::processEvents();
             QVERIFY(reopened.window.grab().save(
                 output + QStringLiteral("/recovery-home-dark-enlarged.png")));
         }
+        reopened.navigation.navigate(app::Destination::Home);
+        if (!show->isChecked()) {
+            show->click();
+        }
+        auto* rows =
+            reopened.window.findChild<QListWidget*>(QStringLiteral("interruptedReviewRows"));
+        QVERIFY(rows);
+        QCOMPARE(rows->count(), 50);
+        rows->setCurrentRow(1);
+        const auto chosen = rows->currentItem()->data(Qt::UserRole).toLongLong();
+        rows->setFocus();
+        QTRY_VERIFY(rows->hasFocus());
+        workspace.refreshRecovery();
+        QTRY_VERIFY(!workspace.recoveryBusy());
+        QVERIFY(rows->hasFocus());
+        QCOMPARE(rows->currentItem()->data(Qt::UserRole).toLongLong(), chosen);
+        rows->setFocus();
+        QTest::keyClick(rows, Qt::Key_Return);
+        QTRY_VERIFY(reopened.startup.reviewGame().state().run &&
+                    reopened.startup.reviewGame().state().run->id == chosen);
+        QCOMPARE(reopened.startup.engines().state().runtime.phase,
+                 engine::RuntimePhase::Disconnected);
     }
     void newerSelectionWinsOverPendingRestoreAndHoverDoesNotSave() {
         Fixture f;
@@ -555,9 +766,13 @@ class QuickReviewTest final : public QObject {
                              &persistence::Database::reviewOverviewLoaded);
         QSignalSpy metadata(&f.startup.gameRepository(),
                             &persistence::Database::libraryReviewsListed);
-        library.refresh();
+        library.importedGame();
         QTRY_VERIFY(!metadata.empty());
         QVERIFY(summaries.empty());
+        metadata.clear();
+        library.refresh();
+        QTRY_VERIFY(!metadata.empty());
+        QTRY_VERIFY(!summaries.empty());
     }
     void restartRestoresReviewWithoutEngineOrValidToml() {
         Fixture f;
@@ -1980,6 +2195,21 @@ class QuickReviewTest final : public QObject {
         QTRY_COMPARE(f.startup.reviewGame().state().run->status, review::JobStatus::Partial);
         QCOMPARE(f.startup.reviewGame().state().run->completedPositions, 0);
         QVERIFY(f.startup.reviewGame().state().error.contains(QStringLiteral("changed")));
+        const auto revision = f.startup.reviewGame().state().run->revision;
+        bool regressed = false;
+        const auto revisionObserver =
+            connect(&f.startup.reviewGame(), &app::ReviewGameController::changed, &f.window, [&] {
+                const auto& run = f.startup.reviewGame().state().run;
+                if (run && run->revision < revision) {
+                    regressed = true;
+                }
+            });
+        const auto disconnectRevision = qScopeGuard([&] { disconnect(revisionObserver); });
+        f.startup.engines().refresh();
+        QTRY_VERIFY(!f.startup.engines().state().listing);
+        QCOMPARE(f.startup.reviewGame().state().run->status, review::JobStatus::Partial);
+        QCOMPARE(f.startup.reviewGame().state().run->revision, revision);
+        QVERIFY(!regressed);
         f.shutdown();
     }
     void damagedEvidenceIsNotReplacedOnResume() {

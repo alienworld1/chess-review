@@ -392,6 +392,21 @@ void ReviewGameController::refreshRuns(std::int64_t page) { workspace_->refreshR
 void ReviewGameController::start(chess::Color side, std::int64_t profile, review::Quality quality) {
     workspace_->start(side, profile, quality);
 }
+QString ReviewGameController::resumeBlocker() const {
+    if (closing_ || !state_.ready) {
+        return tr("Local storage is unavailable.");
+    }
+    if (state_.busy) {
+        return tr("Wait for the active review or cancel it before resuming another run.");
+    }
+    if (workspace_->state().inspecting) {
+        return tr("Wait for the selected review to finish loading.");
+    }
+    if (configuration_.state() != ConfigurationState::Valid) {
+        return tr("Fix the review configuration and restart before resuming.");
+    }
+    return {};
+}
 void ReviewGameController::resume(review::ReviewId id) { workspace_->resume(id); }
 QString ReviewGameController::startBlocker(std::int64_t profileId) const {
     if (!state_.ready || closing_) {

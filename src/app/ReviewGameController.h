@@ -43,6 +43,7 @@ class ReviewGameController final : public QObject {
     void inspect(review::ReviewId id);
     QString startBlocker(std::int64_t profileId) const;
     void start(chess::Color side, std::int64_t profileId, review::Quality quality);
+    QString resumeBlocker() const;
     void resume(review::ReviewId id);
     void refreshOverview(int keyOffset = 0);
     void selectMoment(int positionIndex);

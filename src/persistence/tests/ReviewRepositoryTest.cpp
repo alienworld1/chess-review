@@ -127,6 +127,32 @@ class AsyncDatabase {
 class ReviewRepositoryTest final : public QObject {
     Q_OBJECT
   private slots:
+    void compactReviewListsRejectUnsupportedHeaders() {
+        Fixture f;
+        const auto request = seed(f.session);
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        QVERIFY(!f.session.interruptReviewJobs(f.path));
+        run = std::get<StoredReview>(f.session.loadReview(run.id)).summary;
+        QVERIFY(std::holds_alternative<std::monostate>(
+            f.session.saveReviewContext({request.gameId, run.id, 0, false})));
+        QVERIFY(f.exec(QStringLiteral("UPDATE reviews SET format_version=99")));
+        const auto listed =
+            std::get<std::vector<LibraryReview>>(f.session.listLibraryReviews({request.gameId}));
+        QCOMPARE(listed.size(), std::size_t{1});
+        QVERIFY(listed.front().error);
+        QCOMPARE(listed.front().error->code, ReviewErrorCode::UnsupportedVersion);
+        QVERIFY(!listed.front().run);
+        const auto history =
+            std::get<std::vector<ReviewSummary>>(f.session.listReviews(request.gameId, 0, 51));
+        QCOMPARE(history.size(), std::size_t{1});
+        QCOMPARE(history.front().metadataError,
+                 std::optional<ReviewErrorCode>{ReviewErrorCode::UnsupportedVersion});
+        const auto recovery =
+            std::get<std::vector<ReviewSummary>>(f.session.listInterruptedReviews(0, 51));
+        QCOMPARE(recovery.size(), std::size_t{1});
+        QCOMPARE(recovery.front().metadataError,
+                 std::optional<ReviewErrorCode>{ReviewErrorCode::UnsupportedVersion});
+    }
     void workspaceContextValidatesAndRollsBack() {
         Fixture f;
         const auto request = seed(f.session);

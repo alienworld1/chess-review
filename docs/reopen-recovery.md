@@ -29,6 +29,9 @@ reinterpreted or replaced with another run.
 
 On startup, unfinished jobs become **Interrupted**. Home lists interrupted reviews
 with game IDs, player sides, and saved position counts; the list is paginated.
+Expand the notice, select a row, and press Enter or **Open selected review**.
+Refreshing preserves your selected run. If the last run on a later page leaves
+the interrupted state, the list returns to its first page.
 Open a run to inspect its evidence, then choose **Resume selected run** explicitly.
 Startup and opening a review do not launch an engine.
 
@@ -48,7 +51,10 @@ the running game's saved progress and returns directly to its run.
 The library shows the selected run's status and chosen-player accuracy with
 coverage. Partial and provisional values are explicitly marked. Missing or
 unreadable accuracy is unavailable, never zero. Accuracy loads progressively from
-validated saved evidence without starting analysis.
+validated saved evidence without starting analysis. Summary loading pauses when
+you leave Games. **Refresh** validates accuracy again; automatic progress updates
+reuse unchanged validated summaries. Unsupported saved settings or models appear
+as unavailable results, with the original records retained.
 
 If a remembered run cannot load, the healthy game remains available with an
 explanation and its run history. A missing/unreadable game returns to Games with

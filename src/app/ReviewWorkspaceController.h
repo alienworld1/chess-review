@@ -3,8 +3,12 @@
 #include "app/ReviewExplorationController.h"
 #include "app/ReviewGameState.h"
 #include "app/ReviewNavigationController.h"
+#include <QObject>
+#include <QTimer>
+#include <QUuid>
 #include <deque>
 #include <functional>
+#include <optional>
 namespace chess_review::app {
 class ReviewGameController;
 // GUI-thread workspace. Storage, replay and engine work retain their existing owners.
@@ -31,6 +35,7 @@ class ReviewWorkspaceController final : public QObject {
     void setVisible(bool visible);
     void recover();
     void suppressRestoration() { restoreAllowed_ = false; }
+    bool restorationAllowed() const { return restoreAllowed_; }
     void refreshRecovery(std::int64_t page = 0);
     const std::vector<persistence::ReviewSummary>& interrupted() const { return interrupted_; }
     std::int64_t recoveryPage() const { return recoveryPage_; }
@@ -53,8 +58,10 @@ class ReviewWorkspaceController final : public QObject {
     void publish();
     void updateCompatibility();
     void taskChanged();
+    bool displaysTask() const;
     void request(std::function<void(QUuid)> operation);
     bool accept(QUuid id);
+    void inspectRun(review::ReviewId id, bool resumeAfterLoad);
     void loadRun(review::ReviewId id);
     void loadContext(review::ReviewId id = 0);
     void remember();
@@ -70,6 +77,8 @@ class ReviewWorkspaceController final : public QObject {
     std::optional<persistence::StoredGame> game_;
     std::optional<persistence::StoredReview> stored_;
     std::optional<review::ReviewId> desiredRun_;
+    std::optional<review::ReviewId> pendingResume_;
+    bool followingTask_ = false;
     std::optional<int> restoreMoment_;
     std::optional<int> userMoment_;
     bool restorePending_ = false;

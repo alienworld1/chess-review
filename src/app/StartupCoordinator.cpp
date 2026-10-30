@@ -38,8 +38,9 @@ void StartupCoordinator::connectServices() {
             [this](bool restored) {
                 if (restored) {
                     resume_.reset();
-                } else if (state_ == Lifecycle::Ready && resume_ && !analysis_.hasContent() &&
-                           !analysis_.busy()) {
+                } else if (state_ == Lifecycle::Ready &&
+                           reviewGame_.workspace().restorationAllowed() && resume_ &&
+                           !analysis_.hasContent() && !analysis_.busy()) {
                     library_.open(resume_->id);
                 }
             });

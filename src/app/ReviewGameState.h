@@ -32,6 +32,7 @@ struct ReviewGameState {
     bool listing = false;
     bool active = false;
     bool busy = false;
+    bool inspecting = false;
     bool ready = false;
     bool cancelling = false;
 };
