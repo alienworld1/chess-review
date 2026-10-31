@@ -1,4 +1,4 @@
-#include "review/Classification.h"
+#include "review/Summary.h"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
@@ -227,4 +227,135 @@ TEST_CASE("Exact WDL loss is independent of baseline and includes draws",
     paired.after.candidates.front().evaluation = paired.after.evaluation;
     CHECK(classify(position, paired, {}).loss == 0.05);
     CHECK(classify(position, paired, {}, ConversionConfig{300, false}).loss == 0.0);
+}
+
+TEST_CASE("Quick scan separates pending, usable and retained evidence", "[unit][review][scan]") {
+    CHECK(ScanAssessment{}.state == ScanState::AwaitingEvidence);
+    auto position = chess::Position::initial();
+    SECTION("black mover") {
+        REQUIRE(std::holds_alternative<std::monostate>(position.play(move(position, "e2e4"))));
+    }
+    const auto paired = pair(position, 30);
+    const auto result = classify(position, paired, {});
+    const auto scan = assessQuickScan(result, paired, {});
+    CHECK(scan.state == ScanState::Usable);
+    CHECK(scan.loss == Catch::Approx(.03));
+    CHECK(scan.signedDelta == paired.signedDelta);
+    CHECK(!scan.issue);
+    CHECK(scan.reasons.empty());
+}
+TEST_CASE("Quick scan repairs recoverable gaps only under policy two", "[unit][review][scan]") {
+    const auto position = chess::Position::initial();
+    auto raw = pair(position, 30);
+    auto issue = EvidenceIssue::Incomplete;
+    auto reason = RefinementReason::InsufficientStrength;
+    SECTION("insufficient strength") { raw.before.complete = false; }
+    SECTION("bound") {
+        raw.before.evaluation.score->bound = Bound::Lower;
+        issue = EvidenceIssue::Bounded;
+        reason = RefinementReason::BoundedEvaluation;
+    }
+    SECTION("missing score and WDL") {
+        raw.before.complete = false;
+        raw.before.evaluation.score.reset();
+        raw.before.evaluation.wdl.reset();
+        issue = EvidenceIssue::Incomplete;
+        reason = RefinementReason::MissingEvaluation;
+    }
+    SECTION("WDL without score is still missing candidate evidence") {
+        raw.before.complete = false;
+        raw.before.evaluation.score.reset();
+        issue = EvidenceIssue::Incomplete;
+        reason = RefinementReason::MissingEvaluation;
+    }
+    SECTION("mixed conversions") {
+        raw.after.evaluation.wdl.reset();
+        issue = EvidenceIssue::MixedConversion;
+        reason = RefinementReason::MixedConversion;
+    }
+    raw.before.candidates.front().evaluation = raw.before.evaluation;
+    raw.after.candidates.front().evaluation = raw.after.evaluation;
+    const auto paired = pairEvidence(position, raw.playedMove, raw.before, raw.after);
+    const auto result = classify(position, paired, {});
+    const auto scan = assessQuickScan(result, paired, {});
+    CHECK(scan.state == ScanState::Unusable);
+    CHECK(scan.issue == issue);
+    if (reason == RefinementReason::MissingEvaluation) {
+        CHECK(scan.reasons == std::vector{RefinementReason::InsufficientStrength, reason});
+    } else {
+        CHECK(scan.reasons == std::vector{reason});
+    }
+    CHECK(!scan.loss);
+    CHECK(!scan.signedDelta);
+    const auto legacy = assessQuickScan(result, paired, {}, 1);
+    CHECK(legacy.needsRefinement() == needsRefinement(result, paired, {}));
+    CHECK(!legacy.needsRefinement());
+}
+TEST_CASE("Quick scan retains combined triggers and exact legacy decisions",
+          "[unit][review][scan]") {
+    const auto position = chess::Position::initial();
+    for (int loss = -1; loss <= 300; ++loss) {
+        const auto paired = pair(position, loss, true);
+        const auto result = classify(position, paired, {});
+        const auto legacy = assessQuickScan(result, paired, {}, 1);
+        CHECK(legacy.needsRefinement() == needsRefinement(result, paired, {}));
+        // Golden policy-1 decisions for rank-1 native-WDL evidence: low-loss
+        // threshold proximity, the Inaccuracy margin, then search conflict.
+        CHECK(legacy.needsRefinement() == (loss <= 20 || loss >= 40));
+        const auto scan = assessQuickScan(result, paired, {});
+        CHECK(scan.needsRefinement() == legacy.needsRefinement());
+        if (loss == 200) {
+            CHECK(scan.reasons == std::vector{RefinementReason::SearchConflict,
+                                              RefinementReason::MajorLoss,
+                                              RefinementReason::ThresholdProximity});
+        }
+    }
+}
+TEST_CASE("Quick scan preserves mate signals without inventing numeric loss",
+          "[unit][review][scan]") {
+    const auto position = chess::Position::initial();
+    auto raw = pair(position, 30);
+    raw.before.evaluation.score = RawScore{ScoreKind::Mate, 3};
+    raw.before.candidates.front().evaluation = raw.before.evaluation;
+    raw.after.complete = false;
+    const auto paired = pairEvidence(position, raw.playedMove, raw.before, raw.after);
+    const auto scan = assessQuickScan(classify(position, paired, {}), paired, {});
+    CHECK(scan.state == ScanState::Unusable);
+    CHECK(scan.reasons ==
+          std::vector{RefinementReason::MateSignal, RefinementReason::InsufficientStrength});
+    CHECK(!scan.loss);
+    CHECK(!scan.signedDelta);
+}
+TEST_CASE("Quick scan rejects invalid inputs instead of scheduling repair",
+          "[unit][review][scan]") {
+    const auto position = chess::Position::initial();
+    auto raw = pair(position, 30);
+    auto policy = std::uint32_t{2};
+    auto configuration = ClassificationConfig{};
+    auto refinement = RefinementConfig{};
+    SECTION("context mismatch") { raw.after.position.moves.clear(); }
+    SECTION("engine mismatch") { raw.after.engineIdentity = "another engine"; }
+    SECTION("unsupported evidence") { raw.before.modelVersion = 99; }
+    SECTION("restricted search") { raw.before.restricted = true; }
+    SECTION("invalid candidate") { raw.before.candidates.front().rank = 2; }
+    SECTION("invalid WDL with missing score") {
+        raw.before.evaluation.score.reset();
+        raw.before.evaluation.wdl->wins = -1;
+        raw.before.candidates.front().evaluation = raw.before.evaluation;
+    }
+    SECTION("invalid other side with missing score") {
+        raw.before.evaluation.score.reset();
+        raw.before.candidates.front().evaluation = raw.before.evaluation;
+        raw.after.candidates.front().rank = 2;
+    }
+    SECTION("invalid classification config") { configuration.inaccuracyLoss = -1; }
+    SECTION("invalid refinement config") {
+        refinement.boundaryMargin = std::numeric_limits<double>::quiet_NaN();
+    }
+    SECTION("unsupported policy") { policy = 99; }
+    const auto paired = pairEvidence(position, raw.playedMove, raw.before, raw.after);
+    const auto scan =
+        assessQuickScan(classify(position, paired, configuration), paired, refinement, policy);
+    CHECK(scan.state == ScanState::Invalid);
+    CHECK(!scan.needsRefinement());
 }

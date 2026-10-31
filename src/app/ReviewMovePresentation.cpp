@@ -36,6 +36,67 @@ QString evidenceReason(review::EvidenceIssue issue) {
     }
     return QObject::tr("Evidence is unavailable.");
 }
+QString refinementReason(review::RefinementReason reason) {
+    using review::RefinementReason;
+    switch (reason) {
+    case RefinementReason::MajorLoss:
+        return QObject::tr("a large expected-score loss");
+    case RefinementReason::ThresholdProximity:
+        return QObject::tr("loss near a classification threshold");
+    case RefinementReason::MateSignal:
+        return QObject::tr("an engine mate signal");
+    case RefinementReason::SearchConflict:
+        return QObject::tr("conflicting search estimates");
+    case RefinementReason::InsufficientStrength:
+        return QObject::tr("insufficient measured strength or candidate coverage");
+    case RefinementReason::MissingEvaluation:
+        return QObject::tr("a missing evaluation");
+    case RefinementReason::BoundedEvaluation:
+        return QObject::tr("a bounded evaluation");
+    case RefinementReason::MixedConversion:
+        return QObject::tr("incompatible score conversion methods");
+    }
+    return {};
+}
+QString scanDetails(const review::ScanAssessment& scan) {
+    QStringList text;
+    switch (scan.state) {
+    case review::ScanState::AwaitingEvidence:
+        text << QObject::tr("Quick scan: awaiting adjacent saved evidence.");
+        break;
+    case review::ScanState::Usable:
+        text << QObject::tr(
+            "Quick scan: usable provisional evaluation. This does not establish stability.");
+        break;
+    case review::ScanState::Unusable:
+        text << QObject::tr(
+            "Quick scan: evidence retained; a usable numeric evaluation is withheld.");
+        break;
+    case review::ScanState::Invalid:
+        text << QObject::tr(
+            "Quick scan: invalid evidence or policy; automatic repair is unavailable.");
+        break;
+    }
+    if (scan.issue) {
+        text << evidenceReason(*scan.issue);
+    }
+    if (scan.signedDelta) {
+        text << QObject::tr("Quick-scan expected-score loss from the mover's perspective: %1 "
+                            "percentage points.")
+                    .arg(*scan.signedDelta * 100, 0, 'f', 3);
+    }
+    if (scan.needsRefinement()) {
+        QStringList reasons;
+        for (const auto reason : scan.reasons) {
+            reasons << refinementReason(reason);
+        }
+        text << QObject::tr("Quick-scan refinement reasons: %1.")
+                    .arg(reasons.join(QStringLiteral("; ")));
+        text << QObject::tr("These describe the original scan. Stronger evidence may resolve them; "
+                            "unresolved evidence stays provisional or unclassified.");
+    }
+    return text.join(QLatin1Char('\n'));
+}
 QString expected(const review::EvaluationResult& evaluation) {
     if (!evaluation.expected) {
         return QObject::tr("Unavailable");
@@ -233,6 +294,15 @@ QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::C
     }
     for (std::size_t index = 0; index < 2; ++index) {
         const auto& side = overview.sides[index];
+        const auto& scan = overview.quickScan[index];
+        text << QObject::tr("%1 quick-scan coverage: usable %2/%3 moves · retained gaps %4 · "
+                            "awaiting %5 · invalid %6")
+                    .arg(index == 0 ? QObject::tr("White") : QObject::tr("Black"))
+                    .arg(scan.usable)
+                    .arg(side.total)
+                    .arg(scan.unusable)
+                    .arg(scan.awaiting)
+                    .arg(scan.invalid);
         text << QObject::tr("%1%2: accuracy %3 · evaluated %4/%5 · stable %6/%5")
                     .arg(index == 0 ? QObject::tr("White") : QObject::tr("Black"))
                     .arg(index == static_cast<std::size_t>(selectedSide)
@@ -276,6 +346,7 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
                 .arg(move.mover == chess::Color::White ? QStringLiteral(".")
                                                        : QStringLiteral("..."),
                      move.san, classificationText(move.classification));
+    text << scanDetails(move.quickScan);
     if (!move.classification) {
         text << QObject::tr(
             "Both adjacent positions need saved evidence before this move can be classified.");

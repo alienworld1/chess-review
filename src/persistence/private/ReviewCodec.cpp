@@ -129,6 +129,9 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
     if (!config || !sameConfiguration(**config, settings.configuration)) {
         return {};
     }
+    if (!review::supportsPipelineModel(settings.pipelineVersion)) {
+        return {};
+    }
     if (!settings.refinement &&
         settings.configuration.values.refinement != review::RefinementConfig{}) {
         return {};
@@ -174,7 +177,7 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
         document["excellentLoss"] = c.classification.excellentLoss;
     }
     if (settings.refinement) {
-        document["pipelineVersion"] = 1;
+        document["pipelineVersion"] = static_cast<int>(settings.pipelineVersion);
         document["reviewModelVersion"] = 1;
         document["stabilityModelVersion"] = 1;
         document["accuracyModelVersion"] = 1;
@@ -190,6 +193,7 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
     }
     const auto& o = *parsed;
     CreateReview out;
+    out.pipelineVersion = 1;
     const int format = o["formatVersion"].toInt(-1);
     if (format != 1 && format != 2) {
         return std::nullopt;
@@ -231,10 +235,12 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
     }
     c.conversion = {o["fallbackScaleCp"].toDouble(), o["preferWdl"].toBool()};
     if (o.contains("pipelineVersion")) {
-        if (o["pipelineVersion"].toInt(-1) != 1) {
+        const auto pipelineVersion = o["pipelineVersion"].toInt(-1);
+        if (pipelineVersion != 1 && pipelineVersion != 2) {
             return std::nullopt;
         }
         out.refinement = true;
+        out.pipelineVersion = static_cast<std::uint32_t>(pipelineVersion);
         const auto r = o["refinement"].toArray();
         if (r.size() != 3) {
             return std::nullopt;

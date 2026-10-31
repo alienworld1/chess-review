@@ -40,6 +40,7 @@ struct CreateReview {
     chess::Color selectedSide = chess::Color::White;
     config::ValidatedConfiguration configuration;
     bool refinement = false;
+    std::uint32_t pipelineVersion = review::pipelineModelVersion;
 };
 struct ReviewSummary {
     ReviewId id = 0;
@@ -102,6 +103,7 @@ struct ReviewMove {
     std::array<review::AnalysisStrength, 4> stabilityStrength;
     review::StabilityAssessment stability;
     bool refinementTarget = false;
+    review::ScanAssessment quickScan;
     review::EvidenceStage stage = review::EvidenceStage::Quick;
     std::optional<int> contextPosition;
     QString bestSan;
@@ -130,6 +132,7 @@ struct ReviewOverview {
     std::int64_t revision = 0;
     QString result;
     std::array<review::SideSummary, 2> sides;
+    std::array<review::ScanCoverage, 2> quickScan;
     std::vector<int> refinementPositions;
     int deepenedPositions = 0;
     int verifiedPositions = 0;

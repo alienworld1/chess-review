@@ -127,6 +127,162 @@ class AsyncDatabase {
 class ReviewRepositoryTest final : public QObject {
     Q_OBJECT
   private slots:
+    void pipelineSettingsRetainReleasedAndNewPolicies() {
+        Fixture f;
+        auto request = seed(f.session);
+        for (const bool refinement : {false, true}) {
+            request.refinement = refinement;
+            for (const std::uint32_t version : {1U, 2U}) {
+                request.pipelineVersion = version;
+                const auto bytes = encodeReviewSettings(request);
+                QVERIFY(!bytes.isEmpty());
+                const auto decoded = decodeReviewSettings(bytes);
+                QVERIFY(decoded);
+                QCOMPARE(decoded->pipelineVersion, refinement ? version : 1U);
+                QCOMPARE(encodeReviewSettings(*decoded), bytes);
+                const auto run = std::get<ReviewSummary>(f.session.createReview(request));
+                QCOMPARE(
+                    std::get<StoredReview>(f.session.loadReview(run.id)).settings.pipelineVersion,
+                    refinement ? version : 1U);
+            }
+        }
+        request.pipelineVersion = 99;
+        QVERIFY(encodeReviewSettings(request).isEmpty());
+        request.pipelineVersion = 2;
+        auto object = *readReviewDocument(encodeReviewSettings(request), maxReviewSettingsBytes);
+        object["pipelineVersion"] = 99;
+        const auto bytes = reviewDocument(object);
+        QVERIFY(!decodeReviewSettings(bytes));
+        QSqlQuery update(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+        QVERIFY(update.prepare(QStringLiteral("UPDATE reviews SET settings=?")));
+        update.addBindValue(bytes);
+        QVERIFY(update.exec());
+        QCOMPARE(std::get<ReviewError>(f.session.loadReview(1)).code,
+                 ReviewErrorCode::UnsupportedVersion);
+    }
+    void scanMapPolicyAndCompletion_data() {
+        QTest::addColumn<int>("policy");
+        QTest::addColumn<QString>("gap");
+        for (const int policy : {1, 2}) {
+            for (const auto* gap : {"weak", "bound", "missing", "mixed"}) {
+                const auto name =
+                    QStringLiteral("v%1-%2").arg(policy).arg(QString::fromLatin1(gap));
+                QTest::newRow(qPrintable(name)) << policy << QString::fromLatin1(gap);
+            }
+        }
+    }
+    void scanMapPolicyAndCompletion() {
+        QFETCH(int, policy);
+        QFETCH(QString, gap);
+        QTemporaryDir directory;
+        const auto path = directory.filePath(QStringLiteral("scan.sqlite3"));
+        ReviewId id = 0;
+        std::array<review::ScanAssessment, 2> scans;
+        std::array<review::ScanCoverage, 2> coverage;
+        {
+            StorageSession session;
+            QVERIFY(!session.initialize(path, migrations(), ignore));
+            const auto doc = document();
+            auto request = seed(session, doc);
+            request.refinement = true;
+            request.pipelineVersion = static_cast<std::uint32_t>(policy);
+            auto run = std::get<ReviewSummary>(session.createReview(request));
+            id = run.id;
+            auto overview = std::get<ReviewOverview>(session.loadReviewOverview(id, run.revision));
+            QCOMPARE(overview.quickScan[0].awaiting, 1);
+            QCOMPARE(overview.quickScan[1].awaiting, 1);
+            QVERIFY(overview.refinementPositions.empty());
+            for (int index = 0; index < 3; ++index) {
+                auto result = resultAt(request, *doc, index);
+                if (gap == QStringLiteral("weak")) {
+                    result.evidence.statistics.nodes = 1;
+                    result.evidence.lines.front().statistics.nodes = 1;
+                } else if (gap == QStringLiteral("bound")) {
+                    result.evidence.lines.front().score->bound = engine::ScoreBound::Lower;
+                } else if (gap == QStringLiteral("missing")) {
+                    result.evidence.lines.front().score.reset();
+                    result.evidence.commonDepth.reset();
+                    result.evidence.achievedWidth = 0;
+                } else if (index % 2 == 0) {
+                    result.evidence.lines.front().wdl = engine::Wdl{500, 0, 500};
+                }
+                const auto saved =
+                    session.checkpointReview(checkpoint(id, run.revision, index, result));
+                QVERIFY2(std::holds_alternative<ReviewSummary>(saved), "Quick checkpoint failed");
+                run = std::get<ReviewSummary>(saved);
+                overview = std::get<ReviewOverview>(session.loadReviewOverview(id, run.revision));
+                QCOMPARE(overview.quickScan[0].awaiting, index < 1 ? 1 : 0);
+                QCOMPARE(overview.quickScan[1].awaiting, index < 2 ? 1 : 0);
+            }
+            coverage = overview.quickScan;
+            QCOMPARE(coverage[0].unusable, 1);
+            QCOMPARE(coverage[1].unusable, 1);
+            const auto page =
+                std::get<ReviewMovePage>(session.deriveReviewMoves(id, run.revision, 0, 50));
+            for (std::size_t i = 0; i < scans.size(); ++i) {
+                scans[i] = page.moves[i].quickScan;
+                QCOMPARE(scans[i].state, review::ScanState::Unusable);
+                QCOMPARE(scans[i].needsRefinement(), policy == 2);
+            }
+            QCOMPARE(overview.refinementPositions,
+                     policy == 2 ? (std::vector<int>{0, 1, 2}) : std::vector<int>{});
+            ReviewCheckpoint cancelled;
+            cancelled.reviewId = id;
+            cancelled.expectedRevision = run.revision;
+            cancelled.status = JobStatus::Cancelled;
+            run = std::get<ReviewSummary>(session.checkpointReview(cancelled));
+            run = std::get<ReviewSummary>(session.continueReview(
+                {id, run.revision, request.fingerprint, request.configuration}));
+            QCOMPARE(std::get<StoredReview>(session.loadReview(id)).settings.pipelineVersion,
+                     static_cast<std::uint32_t>(policy));
+            ReviewCheckpoint finish;
+            finish.reviewId = id;
+            finish.expectedRevision = run.revision;
+            finish.status = JobStatus::Complete;
+            if (policy == 2) {
+                QCOMPARE(std::get<ReviewError>(session.checkpointReview(finish)).code,
+                         ReviewErrorCode::InvalidInput);
+                QCOMPARE(std::get<StoredReview>(session.loadReview(id)).summary.revision,
+                         run.revision);
+                for (const auto stage :
+                     {review::EvidenceStage::Deepening, review::EvidenceStage::Verification}) {
+                    for (int index = 0; index < 3; ++index) {
+                        auto result = resultAt(request, *doc, index);
+                        const std::uint64_t nodes =
+                            stage == review::EvidenceStage::Deepening ? 1000000 : 5000000;
+                        result.evidence.limit = engine::NodeLimit{nodes};
+                        result.evidence.statistics.nodes = nodes;
+                        result.evidence.lines.front().statistics.nodes = nodes;
+                        auto cp = checkpoint(id, run.revision, index, result);
+                        cp.stage = stage;
+                        cp.status = JobStatus::Deepening;
+                        run = std::get<ReviewSummary>(session.checkpointReview(cp));
+                    }
+                }
+                overview = std::get<ReviewOverview>(session.loadReviewOverview(id, run.revision));
+                QCOMPARE(overview.sides[0].stable, 1);
+                QCOMPARE(overview.sides[1].stable, 1);
+                QCOMPARE(overview.quickScan, coverage);
+                finish.expectedRevision = run.revision;
+            }
+            QVERIFY(std::holds_alternative<ReviewSummary>(session.checkpointReview(finish)));
+        }
+        StorageSession reopened;
+        QVERIFY(!reopened.initialize(path, migrations(), ignore));
+        const auto run = std::get<StoredReview>(reopened.loadReview(id));
+        QCOMPARE(run.settings.pipelineVersion, static_cast<std::uint32_t>(policy));
+        QCOMPARE(run.summary.status, JobStatus::Complete);
+        const auto overview =
+            std::get<ReviewOverview>(reopened.loadReviewOverview(id, run.summary.revision));
+        QCOMPARE(overview.quickScan, coverage);
+        const auto page =
+            std::get<ReviewMovePage>(reopened.deriveReviewMoves(id, run.summary.revision, 0, 50));
+        for (std::size_t i = 0; i < scans.size(); ++i) {
+            QCOMPARE(page.moves[i].quickScan, scans[i]);
+            QCOMPARE(page.moves[i].stage, policy == 2 ? review::EvidenceStage::Verification
+                                                      : review::EvidenceStage::Quick);
+        }
+    }
     void compactReviewListsRejectUnsupportedHeaders() {
         Fixture f;
         const auto request = seed(f.session);

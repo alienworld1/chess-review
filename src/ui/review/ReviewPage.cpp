@@ -1008,6 +1008,16 @@ void ReviewPage::updateNavigation() {
                 .arg(side.total)
                 .arg(side.stable)
                 .arg(state.overview->totalKeyMoments);
+        const auto& scan =
+            state.overview->quickScan[static_cast<std::size_t>(state.run->selectedSide)];
+        compact += tr(" · quick scan: usable %1/%2 · gaps %3 · awaiting %4")
+                       .arg(scan.usable)
+                       .arg(side.total)
+                       .arg(scan.unusable)
+                       .arg(scan.awaiting);
+        if (scan.invalid > 0) {
+            compact += tr(" · invalid scan evidence %1").arg(scan.invalid);
+        }
         if (side.total > 0 && side.evaluated == 0) {
             compact += tr(" · no usable move evaluations; inspect evidence details");
         }

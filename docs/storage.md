@@ -559,3 +559,25 @@ are limited to 50 games; recovery pages accept at most 51 rows for lookahead.
 Context writes validate game/run ownership and position bounds transactionally.
 UI geometry and splitter preferences remain in the existing QSettings file.
 See [reopen and recovery](reopen-recovery.md) for user-facing behavior.
+
+### Quick-scan projections and pipeline policy
+
+`CreateReview::pipelineVersion` selects supported refinement policy 1 or 2; new
+runs default to 2. The checksummed settings document includes `pipelineVersion`
+when refinement is enabled. Released version-1 settings round-trip unchanged;
+settings without pipeline metadata retain the original scan-only semantics.
+Unsupported pipeline versions are rejected. No schema migration is needed.
+
+`ReviewMove::quickScan` is a compact domain assessment of the owned **quick-stage**
+pair, independently of whichever stronger pair supplies the current presentation.
+It contains availability/usability, a withholding issue, optional numeric loss and
+typed refinement reasons. `ReviewOverview::quickScan` contains per-side move counts
+(awaiting, usable, unusable and invalid). Missing adjacent evidence counts as
+awaiting; a completed attempt with insufficient interpretation counts as a gap.
+These are reproducible worker-derived projections, not separately stored claims.
+
+Move pages, overview queue selection and completion validation share the captured
+policy. Policy 2 requires both refinement stages for its deduplicated targeted
+positions before completion, but does not promise numeric usability or stability.
+Existing corruption, revision, resource-identity and cache-compatibility checks
+remain prerequisites; an invalid policy-2 assessment is a record error.

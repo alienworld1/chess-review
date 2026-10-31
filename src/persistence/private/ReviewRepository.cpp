@@ -162,10 +162,11 @@ std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
             static_cast<int>(review::expectedScoreModelVersion)) {
         return error(ReviewErrorCode::UnsupportedVersion);
     }
-    if (doc->contains("pipelineVersion") && ((*doc)["pipelineVersion"].toInt(-1) != 1 ||
-                                             (*doc)["accuracyModelVersion"].toInt(-1) != 1 ||
-                                             (*doc)["stabilityModelVersion"].toInt(-1) != 1 ||
-                                             (*doc)["reviewModelVersion"].toInt(-1) != 1)) {
+    if (doc->contains("pipelineVersion") &&
+        (((*doc)["pipelineVersion"].toInt(-1) != 1 && (*doc)["pipelineVersion"].toInt(-1) != 2) ||
+         (*doc)["accuracyModelVersion"].toInt(-1) != 1 ||
+         (*doc)["stabilityModelVersion"].toInt(-1) != 1 ||
+         (*doc)["reviewModelVersion"].toInt(-1) != 1)) {
         return error(ReviewErrorCode::UnsupportedVersion);
     }
     auto settings = decodeReviewSettings(bytes);
@@ -1107,8 +1108,13 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
                 const auto classified = review::classify(
                     beforePosition, quickPair, run.settings.configuration.values.classification,
                     run.settings.configuration.values.conversion);
-                if (review::needsRefinement(classified, quickPair,
-                                            run.settings.configuration.values.refinement)) {
+                const auto scan = review::assessQuickScan(
+                    classified, quickPair, run.settings.configuration.values.refinement,
+                    run.settings.pipelineVersion);
+                if (scan.state == review::ScanState::Invalid && run.settings.pipelineVersion >= 2) {
+                    return invalid();
+                }
+                if (scan.needsRefinement()) {
                     for (const auto stage :
                          {review::EvidenceStage::Deepening, review::EvidenceStage::Verification}) {
                         const auto refined =
@@ -1228,8 +1234,14 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                 return *e;
             }
             const auto quickPair = std::get<review::MoveEvidence>(pair);
-            row.refinementTarget = review::needsRefinement(
-                result, quickPair, run.settings.configuration.values.refinement);
+            row.quickScan = review::assessQuickScan(result, quickPair,
+                                                    run.settings.configuration.values.refinement,
+                                                    run.settings.pipelineVersion);
+            if (row.quickScan.state == review::ScanState::Invalid &&
+                run.settings.pipelineVersion >= 2) {
+                return invalid();
+            }
+            row.refinementTarget = row.quickScan.needsRefinement();
             std::optional<RefinedPair> chosen;
             if (run.settings.refinement) {
                 auto deepResult = refinedPair(db, run, *position, move, ply + 1,
@@ -1411,6 +1423,21 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
             return *e;
         }
         for (const auto& move : std::get<ReviewMovePage>(page).moves) {
+            auto& coverage = out.quickScan[static_cast<std::size_t>(move.mover)];
+            switch (move.quickScan.state) {
+            case review::ScanState::AwaitingEvidence:
+                ++coverage.awaiting;
+                break;
+            case review::ScanState::Usable:
+                ++coverage.usable;
+                break;
+            case review::ScanState::Unusable:
+                ++coverage.unusable;
+                break;
+            case review::ScanState::Invalid:
+                ++coverage.invalid;
+                break;
+            }
             const auto& c = move.classification;
             const auto selection = summaryBuilder.add(
                 {move.positionIndex, move.mover, c.has_value(), c && c->stable,

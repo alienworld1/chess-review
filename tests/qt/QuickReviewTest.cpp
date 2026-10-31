@@ -1,6 +1,7 @@
 #include "EngineControllerTestAccess.h"
 #include "EngineTestSupport.h"
 #include "TestEnvironment.h"
+#include "app/ReviewMovePresentation.h"
 #include "app/ReviewWorkspaceController.h"
 #include "app/StartupCoordinator.h"
 #include "engine/EffectiveSearch.h"
@@ -39,7 +40,9 @@
 #include <QTimer>
 #include <QWheelEvent>
 #include <algorithm>
+#include <array>
 #include <utility>
+#include <vector>
 using namespace chess_review;
 namespace {
 QJsonObject ready() {
@@ -178,7 +181,7 @@ class Fixture {
         auto position = std::get<chess::Position>(document->tree.position(document->tree.rootId()));
         const auto moves = document->originalMainline();
         const int total = static_cast<int>(moves.size()) + 1;
-        const int stages = end < 0 && !weak && !score.isEmpty() && total > 1 ? 3 : 1;
+        const int stages = end < 0 && total > 1 ? 3 : 1;
         for (int stage = 0; stage < stages; ++stage) {
             const std::uint64_t budget = stage == 0 ? 100000 : stage == 1 ? 1000000 : 5000000;
             position = std::get<chess::Position>(document->tree.position(document->tree.rootId()));
@@ -211,6 +214,7 @@ class Fixture {
                             {QJsonObject{{QStringLiteral("type"), QStringLiteral("crash")}}}));
                     } else {
                         QString output;
+                        const bool weakStage = weak && (stage == 0 || refinedScore.isEmpty());
                         const auto evaluation =
                             stage > 0 && !refinedScore.isEmpty() ? refinedScore : score;
                         const auto legal = position.legalMoves();
@@ -232,15 +236,16 @@ class Fixture {
                                         (void)continuation.play(next);
                                     }
                                 }
-                                output += QStringLiteral(
-                                              "info depth 7 nodes %1 multipv %2 score %3%4 pv %5\n")
-                                              .arg(weak           ? 1
-                                                   : boundedFinal ? budget / 2
-                                                                  : budget)
-                                              .arg(rank)
-                                              .arg(evaluation)
-                                              .arg(weak ? QStringLiteral(" lowerbound") : QString{})
-                                              .arg(pv);
+                                output +=
+                                    QStringLiteral(
+                                        "info depth 7 nodes %1 multipv %2 score %3%4 pv %5\n")
+                                        .arg(weakStage      ? 1
+                                             : boundedFinal ? budget / 2
+                                                            : budget)
+                                        .arg(rank)
+                                        .arg(evaluation)
+                                        .arg(weakStage ? QStringLiteral(" lowerbound") : QString{})
+                                        .arg(pv);
                             }
                         }
                         auto finalBest = best;
@@ -1053,6 +1058,7 @@ class QuickReviewTest final : public QObject {
         for (const auto& row : controller.moves().state().page->moves) {
             QVERIFY(row.classification);
             QVERIFY(row.classification->label);
+            QCOMPARE(row.quickScan.state, review::ScanState::Usable);
         }
         bool sawBoundWithDifferentExactMove = false;
         for (const auto& event : attempts) {
@@ -1839,6 +1845,96 @@ class QuickReviewTest final : public QObject {
         exploration.showLine();
         QCOMPARE(exploration.state().mode, app::ExplorationMode::Game);
     }
+    void scanGapsFeedOneRefinementCycle_data() {
+        QTest::addColumn<bool>("repair");
+        QTest::addColumn<bool>("missing");
+        QTest::newRow("weak-repaired") << true << false;
+        QTest::newRow("weak-unresolved") << false << false;
+        QTest::newRow("missing-repaired") << true << true;
+        QTest::newRow("missing-unresolved") << false << true;
+    }
+    void scanGapsFeedOneRefinementCycle() {
+        QFETCH(bool, repair);
+        QFETCH(bool, missing);
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *"));
+        f.script(0, -1, 0, !missing, false, missing ? QString{} : QStringLiteral("cp 25"),
+                 QStringLiteral("Test engine"), 0, false,
+                 repair ? QStringLiteral("cp 0") : QString{});
+        auto& controller = f.startup.reviewGame();
+        std::array<int, 3> searches{};
+        bool earlyReview = false;
+        bool fullScanBarrier = true;
+        QElapsedTimer elapsed;
+        qint64 scanMilliseconds = -1;
+        const auto scanChanged =
+            connect(&controller, &app::ReviewGameController::changed, &controller, [&] {
+                const auto& state = controller.state();
+                if (state.run && state.run->completedPositions == state.run->totalPositions &&
+                    scanMilliseconds < 0) {
+                    scanMilliseconds = elapsed.elapsed();
+                }
+                if (state.active && state.overview && state.run &&
+                    state.run->completedPositions < state.run->totalPositions &&
+                    state.overview->quickScan[0].unusable > 0) {
+                    earlyReview = true;
+                }
+            });
+        const auto scanFinished = connect(
+            &f.supervisor(), &engine::EngineSupervisor::scheduledFinished, &controller,
+            [&](const engine::ScheduledResult& result) {
+                if (!result.evidence) {
+                    return;
+                }
+                const auto* nodes =
+                    std::get_if<engine::NodeLimit>(&result.evidence->evidence.limit);
+                if (!nodes) {
+                    return;
+                }
+                const int stage = nodes->nodes == 100000 ? 0 : nodes->nodes == 1000000 ? 1 : 2;
+                ++searches[static_cast<std::size_t>(stage)];
+                if (stage > 0 && (!controller.taskState().run ||
+                                  controller.taskState().run->completedPositions != 3)) {
+                    fullScanBarrier = false;
+                }
+            });
+        const auto disconnectObservers = qScopeGuard([&] {
+            disconnect(scanChanged);
+            disconnect(scanFinished);
+        });
+        elapsed.start();
+        f.run();
+        QVERIFY(f.done());
+        QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
+        QCOMPARE(controller.state().run->status, review::JobStatus::Complete);
+        QTRY_VERIFY(controller.state().overview &&
+                    controller.state().overview->revision == controller.state().run->revision);
+        const auto& overview = *controller.state().overview;
+        QCOMPARE(overview.quickScan[0].unusable, 1);
+        QCOMPARE(overview.quickScan[1].unusable, 1);
+        QCOMPARE(overview.quickScan[0].usable, 0);
+        QCOMPARE(overview.quickScan[0].awaiting, 0);
+        QCOMPARE(overview.refinementPositions, (std::vector<int>{0, 1, 2}));
+        QCOMPARE(overview.deepenedPositions, 3);
+        QCOMPARE(overview.verifiedPositions, 3);
+        QCOMPARE(overview.sides[0].evaluated, repair ? 1 : 0);
+        QCOMPARE(searches, (std::array<int, 3>{3, 3, 3}));
+        QVERIFY(earlyReview);
+        QVERIFY(fullScanBarrier);
+        QTRY_VERIFY(controller.moves().state().page && !controller.moves().state().loading);
+        const auto& move = controller.moves().state().page->moves.front();
+        QCOMPARE(move.quickScan.state, review::ScanState::Unusable);
+        QVERIFY(move.quickScan.needsRefinement());
+        QVERIFY(
+            app::reviewMoveDetails(move).contains(QStringLiteral("Quick-scan refinement reasons")));
+        qInfo("scan map: scan=%lld ms total=%lld ms quick=%d deep=%d verification=%d usable=%d "
+              "gaps=%d targets=%zu",
+              static_cast<long long>(scanMilliseconds), static_cast<long long>(elapsed.elapsed()),
+              searches[0], searches[1], searches[2],
+              overview.quickScan[0].usable + overview.quickScan[1].usable,
+              overview.quickScan[0].unusable + overview.quickScan[1].unusable,
+              overview.refinementPositions.size());
+    }
     void refinementComparesAlternativesAndUpdatesSummary() {
         Fixture f;
         QVERIFY(f.seed("1. e4 e5 *", true));
@@ -1872,10 +1968,16 @@ class QuickReviewTest final : public QObject {
         QVERIFY(controller.state().overviewError.isEmpty());
         QCOMPARE(controller.state().overview->sides[1].accuracy, std::optional<double>(100));
     }
+    void refinementCancellationResumesOnlyMissingPositions_data() {
+        QTest::addColumn<bool>("gap");
+        QTest::newRow("ordinary-targets") << false;
+        QTest::newRow("gap-targets") << true;
+    }
     void refinementCancellationResumesOnlyMissingPositions() {
+        QFETCH(bool, gap);
         Fixture f;
         QVERIFY(f.seed());
-        f.script();
+        f.script(0, -1, 0, gap);
         QFile runtime(f.directory.filePath(QStringLiteral("runtime.json")));
         QVERIFY(runtime.open(QIODevice::ReadOnly));
         auto script = QJsonDocument::fromJson(runtime.readAll()).object()["steps"].toArray();

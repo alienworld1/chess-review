@@ -5,20 +5,23 @@
 namespace chess_review::review {
 namespace {
 std::optional<int> ticks(const PositionEvidence& evidence, chess::Color perspective);
-}
-bool needsRefinement(const ClassificationResult& result, const MoveEvidence& pair,
-                     const RefinementConfig& config) {
-    if (pair.mate.before || pair.mate.after ||
-        pair.issue == EvidenceIssue::ContradictoryCandidates ||
+std::vector<RefinementReason> refinementReasons(const ClassificationResult& result,
+                                                const MoveEvidence& pair,
+                                                const RefinementConfig& config) {
+    std::vector<RefinementReason> reasons;
+    if (pair.mate.before || pair.mate.after) {
+        reasons.push_back(RefinementReason::MateSignal);
+    }
+    if (pair.issue == EvidenceIssue::ContradictoryCandidates ||
         pair.issue == EvidenceIssue::NegativeLoss ||
         result.issue == ClassificationIssue::BestMoveConflict) {
-        return true;
+        reasons.push_back(RefinementReason::SearchConflict);
     }
     if (!result.loss) {
-        return false;
+        return reasons;
     }
     if (*result.loss >= result.thresholds.mistakeLoss) {
-        return true;
+        reasons.push_back(RefinementReason::MajorLoss);
     }
     double measuredTicks = *result.loss * 2000;
     if (!pair.issue && pair.beforeEvaluation.expected && pair.afterEvaluation.expected &&
@@ -30,16 +33,81 @@ bool needsRefinement(const ClassificationResult& result, const MoveEvidence& pai
             measuredTicks = static_cast<double>(*before - *after);
         }
     }
-    // Compare in the native half-permille unit; subtracting decimal thresholds
-    // first can incorrectly exclude an exact one-point boundary (e.g. 9% vs 10%).
+    // Keep threshold comparisons in the native half-permille unit.
     for (const double boundary : {result.thresholds.excellentLoss, result.thresholds.inaccuracyLoss,
                                   result.thresholds.mistakeLoss, result.thresholds.blunderLoss}) {
         if (std::abs(measuredTicks - boundary * 2000) <= config.boundaryMargin * 2000) {
-            return true;
+            reasons.push_back(RefinementReason::ThresholdProximity);
+            break;
         }
     }
-    return false;
+    return reasons;
 }
+bool invalidIssue(std::optional<EvidenceIssue> issue) {
+    return issue == EvidenceIssue::Invalid || issue == EvidenceIssue::ContextMismatch ||
+           issue == EvidenceIssue::IncompatibleEngine ||
+           issue == EvidenceIssue::IncompatibleModel || issue == EvidenceIssue::RestrictedSearch;
+}
+} // namespace
+bool needsRefinement(const ClassificationResult& result, const MoveEvidence& pair,
+                     const RefinementConfig& config) {
+    return !refinementReasons(result, pair, config).empty();
+}
+ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvidence& pair,
+                               const RefinementConfig& config, std::uint32_t pipelineVersion) {
+    ScanAssessment scan;
+    if (pipelineVersion == 1) {
+        scan.reasons = refinementReasons(result, pair, config);
+    }
+    scan.state = ScanState::Unusable;
+    scan.issue = pair.issue ? pair.issue : result.evidenceIssue;
+    const auto rawIssue = [](const PositionEvidence& evidence) -> std::optional<EvidenceIssue> {
+        if (evidence.terminal) {
+            return std::nullopt;
+        }
+        return convertEvaluation(evidence.evaluation, evidence.evaluation.perspective).issue;
+    };
+    const auto rawBeforeIssue = rawIssue(pair.before);
+    const auto rawAfterIssue = rawIssue(pair.after);
+    if (!supportsPipelineModel(pipelineVersion) ||
+        result.issue == ClassificationIssue::InvalidConfiguration ||
+        !std::isfinite(config.boundaryMargin) || config.boundaryMargin < 0 ||
+        config.boundaryMargin > 1 || !std::isfinite(config.maximumDrift) ||
+        config.maximumDrift < 0 || config.maximumDrift > 1 || config.multiPv < 1 ||
+        config.multiPv > 256 || invalidIssue(scan.issue) ||
+        invalidIssue(pair.beforeEvaluation.issue) || invalidIssue(pair.afterEvaluation.issue) ||
+        invalidIssue(rawBeforeIssue) || invalidIssue(rawAfterIssue)) {
+        scan.state = ScanState::Invalid;
+        return scan;
+    }
+    if (!pair.issue && !result.issue && pair.loss && result.loss && pair.signedDelta &&
+        std::isfinite(*pair.loss) && std::isfinite(*result.loss) &&
+        std::isfinite(*pair.signedDelta)) {
+        scan.state = ScanState::Usable;
+        scan.signedDelta = pair.signedDelta;
+        scan.loss = result.loss;
+    }
+    scan.reasons = refinementReasons(result, pair, config);
+    if (pipelineVersion == 1) {
+        return scan;
+    }
+    const auto addGap = [&](EvidenceIssue issue, RefinementReason reason) {
+        if (scan.issue == issue || pair.beforeEvaluation.issue == issue ||
+            pair.afterEvaluation.issue == issue || rawBeforeIssue == issue ||
+            rawAfterIssue == issue) {
+            scan.reasons.push_back(reason);
+        }
+    };
+    addGap(EvidenceIssue::Incomplete, RefinementReason::InsufficientStrength);
+    if ((!pair.before.terminal && !pair.before.evaluation.score) ||
+        (!pair.after.terminal && !pair.after.evaluation.score)) {
+        scan.reasons.push_back(RefinementReason::MissingEvaluation);
+    }
+    addGap(EvidenceIssue::Bounded, RefinementReason::BoundedEvaluation);
+    addGap(EvidenceIssue::MixedConversion, RefinementReason::MixedConversion);
+    return scan;
+}
+
 namespace {
 bool stronger(const PositionEvidence& first, const PositionEvidence& second) {
     if (first.terminal && second.terminal) {

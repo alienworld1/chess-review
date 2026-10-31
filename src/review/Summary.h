@@ -8,6 +8,43 @@
 namespace chess_review::review {
 inline constexpr std::uint32_t stabilityModelVersion = 1;
 inline constexpr std::uint32_t accuracyModelVersion = 1;
+inline constexpr std::uint32_t pipelineModelVersion = 2;
+[[nodiscard]] constexpr bool supportsPipelineModel(std::uint32_t version) {
+    return version == 1 || version == pipelineModelVersion;
+}
+enum class ScanState { AwaitingEvidence, Usable, Unusable, Invalid };
+enum class RefinementReason {
+    MajorLoss,
+    ThresholdProximity,
+    MateSignal,
+    SearchConflict,
+    InsufficientStrength,
+    MissingEvaluation,
+    BoundedEvaluation,
+    MixedConversion
+};
+struct ScanAssessment {
+    ScanState state = ScanState::AwaitingEvidence;
+    std::optional<EvidenceIssue> issue;
+    std::optional<double> signedDelta;
+    std::optional<double> loss;
+    std::vector<RefinementReason> reasons;
+    [[nodiscard]] bool needsRefinement() const { return !reasons.empty(); }
+    bool operator==(const ScanAssessment&) const = default;
+};
+struct ScanCoverage {
+    int awaiting = 0;
+    int usable = 0;
+    int unusable = 0;
+    int invalid = 0;
+    bool operator==(const ScanCoverage&) const = default;
+};
+// Inputs must come from validated owned quick evidence and its original-board classifier.
+// An absent pair is represented by the default (AwaitingEvidence) assessment.
+[[nodiscard]] ScanAssessment assessQuickScan(const ClassificationResult& result,
+                                             const MoveEvidence& pair,
+                                             const RefinementConfig& config,
+                                             std::uint32_t pipelineVersion = pipelineModelVersion);
 enum class EvidenceStage { Quick = 0, Deepening = 1, Verification = 2 };
 enum class StabilityReason {
     Unselected,

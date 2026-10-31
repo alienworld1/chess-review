@@ -66,3 +66,32 @@ whole-number accuracy alongside coverage and provisional status.
 Advanced margins and MultiPV belong in the validated TOML configuration; see
 [the example](config.example.toml). Changes apply after restart and are captured by
 new runs. Accuracy model constants are not classification configuration.
+
+## Quick-scan evidence map (pipeline policy 2)
+
+New runs retain the existing quick-scan node budgets: Fast 50,000, Standard
+100,000 and Thorough 250,000 nodes per position, with MultiPV=1. The scan covers
+both players, the root and the final position before any automatic deepening.
+Saved evidence becomes readable progressively while the scan runs.
+
+**Positions saved** measures durable processing progress. **Quick-scan coverage**
+counts moves separately for each side: usable provisional evaluations, retained
+gaps and moves awaiting adjacent evidence. Neither saved coverage nor a usable
+quick estimate establishes stability. An engine mate signal remains nonnumeric.
+The evidence inspector explains the original scan's gaps and refinement reasons.
+These scan facts remain tied to the original quick attempts even after stronger
+results update the displayed label, accuracy or stability.
+
+Alongside the existing large-loss, threshold, mate and conflicting-search targets,
+policy 2 targets valid completed attempts with insufficient measured strength,
+missing evaluations, bounds or incompatible WDL/centipawn conversions. Shared
+before/after positions enter one chronological queue. Each receives at most the
+existing deepening and verification cycle; verification is a fresh search.
+Unresolved results remain provisional or unclassified when processing finishes.
+Damaged records, unsupported policies and incompatible evidence identities are
+errors, not permission to overwrite evidence or retry indefinitely.
+
+The pipeline policy is captured in each run's checksummed settings. Existing
+policy-1 runs retain their original targeting and explicit-resume behavior;
+opening a saved review does not upgrade it. Quick-scan facts can be inspected
+without an engine or the disposable cache. Start a new run to use policy 2.

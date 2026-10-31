@@ -1147,3 +1147,16 @@ a nested event loop. Navigation and exploration defer `closed()` until their
 notification stacks have returned and accepted work has drained. Observe closure
 asynchronously; waiting for `closed()` inside the callback that must first return
 would wait on that callback itself.
+
+### Quick-scan evidence handoff
+
+`review_classification_tests '[scan]'` exercises scan states, recoverable gaps,
+combined reasons, mover perspective, invalid inputs and legacy targeting agreement.
+`review_repository_tests pipelineSettingsRetainReleasedAndNewPolicies scanMapPolicyAndCompletion`
+checks policy wire compatibility, progressive coverage, queue deduplication,
+completion rollback and scan projections after refinement and engine-free reopen.
+`quick_review_tests scanGapsFeedOneRefinementCycle` checks progressive review access,
+the full-scan barrier, repaired/unresolved gaps and exactly one refinement cycle.
+Its log records scan/total duration, searches per stage, usable/gap counts and
+unique target positions. Timing is observational; budgets and search counts are
+asserted, without a hardware-dependent speed requirement.
