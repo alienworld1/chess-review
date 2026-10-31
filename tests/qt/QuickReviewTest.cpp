@@ -1146,6 +1146,51 @@ class QuickReviewTest final : public QObject {
         QTRY_VERIFY(!controller);
         QVERIFY(survivedNestedNotification);
     }
+    void closingDuringWorkspaceNotificationDefersDestruction_data() {
+        QTest::addColumn<bool>("navigation");
+        QTest::newRow("navigation") << true;
+        QTest::newRow("exploration") << false;
+    }
+    void closingDuringWorkspaceNotificationDefersDestruction() {
+        QFETCH(bool, navigation);
+        Fixture f;
+        QVERIFY(f.seed());
+        auto controller = std::make_unique<app::ReviewGameController>(
+            f.startup.gameRepository(), f.startup.engines(), f.supervisor(),
+            f.startup.reviewConfiguration());
+        controller->setReady(true);
+        controller->selectGame(f.gameId);
+        QTRY_VERIFY(!controller->state().busy && controller->navigation().ready());
+        bool closing = false;
+        bool survived = false;
+        const auto observer = [&] {
+            if (!closing && controller &&
+                (!navigation || controller->navigation().selected() == 1)) {
+                closing = true;
+                controller->close();
+                QEventLoop loop;
+                QTimer::singleShot(100, &loop, &QEventLoop::quit);
+                loop.exec();
+                survived = static_cast<bool>(controller);
+            }
+        };
+        if (navigation) {
+            connect(&controller->navigation(), &app::ReviewNavigationController::changed, &f.window,
+                    observer);
+        } else {
+            connect(&controller->exploration(), &app::ReviewExplorationController::changed,
+                    &f.window, observer);
+        }
+        connect(controller.get(), &app::ReviewGameController::closed, &f.window,
+                [&] { controller.reset(); });
+        if (navigation) {
+            controller->selectMoment(1);
+        } else {
+            controller->exploration().returnToGame();
+        }
+        QTRY_VERIFY(!controller);
+        QVERIFY(survived);
+    }
     void closingDuringEngineNotificationAllowsDestruction() {
         Fixture f;
         QVERIFY(f.seed());
@@ -1409,6 +1454,75 @@ class QuickReviewTest final : public QObject {
         QTRY_VERIFY(!linked.busy() && linked.error().isEmpty());
         QVERIFY(exploration.sameAnalysisOrigin());
         QCOMPARE(linked.position()->context(), review.navigation().position()->context());
+    }
+    void navigationDuringPreviewClearCancelsExploration_data() {
+        QTest::addColumn<bool>("practice");
+        QTest::newRow("candidate-line") << false;
+        QTest::newRow("try-again") << true;
+    }
+    void navigationDuringPreviewClearCancelsExploration() {
+        QFETCH(bool, practice);
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& navigation = review.navigation();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(exploration.state().canRetry);
+        navigation.preview(navigation.target(1));
+        QTRY_COMPARE(navigation.displayed(), 1);
+        bool redirected = false;
+        QObject observer;
+        connect(&navigation, &app::ReviewNavigationController::changed, &observer, [&] {
+            if (!redirected && !navigation.previewing()) {
+                redirected = true;
+                review.selectMoment(0);
+            }
+        });
+        if (practice) {
+            exploration.tryAgain();
+        } else {
+            exploration.showLine();
+        }
+        QVERIFY(redirected);
+        QTRY_COMPARE(navigation.displayed(), 0);
+        QCOMPARE(navigation.selected(), 0);
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Game);
+        QVERIFY(!exploration.active());
+        QVERIFY(!exploration.hidesSolution());
+    }
+    void navigationDuringReviewReturnKeepsNewerMoment() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(exploration.state().canAnalyze && exploration.state().canRetry);
+        exploration.showLine();
+        QTRY_VERIFY(exploration.state().canAnalyze);
+        exploration.openAnalysis();
+        QTRY_VERIFY(!exploration.linkedAnalysis().busy() && exploration.sameAnalysisOrigin());
+        bool redirected = false;
+        QObject observer;
+        connect(&exploration, &app::ReviewExplorationController::changed, &observer, [&] {
+            if (!redirected && exploration.state().mode == app::ExplorationMode::Game) {
+                redirected = true;
+                review.selectMoment(0);
+            }
+        });
+        exploration.restoreReviewOrigin();
+        QVERIFY(redirected);
+        QTRY_COMPARE(review.navigation().displayed(), 0);
+        QCOMPARE(review.navigation().selected(), 0);
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Game);
     }
     void candidateSelectorTracksDisplayedLine() {
         Fixture f;

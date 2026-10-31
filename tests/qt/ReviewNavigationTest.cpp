@@ -3,6 +3,7 @@
 #include "ui/chess/MoveTimeline.h"
 #include <QAbstractItemModelTester>
 #include <QApplication>
+#include <QEventLoop>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -22,21 +23,30 @@ class Fixture {
         }
     }
     ~Fixture() {
-        QSignalSpy closed(&nav, &app::ReviewNavigationController::closed);
+        // A failed assertion must not prevent the fixture's workers from draining.
+        QEventLoop loop;
+        QTimer deadline;
+        deadline.setSingleShot(true);
+        bool databaseClosed = false;
+        QObject::connect(&nav, &app::ReviewNavigationController::closed, &loop, [&] {
+            moves.close();
+            database.close();
+        });
+        QObject::connect(&database, &persistence::Database::closed, &loop, [&] {
+            databaseClosed = true;
+            loop.quit();
+        });
+        QObject::connect(&deadline, &QTimer::timeout, &loop, &QEventLoop::quit);
+        deadline.start(10000);
         nav.close();
-        if (closed.isEmpty() && !closed.wait()) {
-            qFatal("Navigation did not close");
+        if (!databaseClosed) {
+            loop.exec();
         }
-        moves.close();
-        if (!QTest::qWaitFor([this] { return moves.drained(); })) {
-            qFatal("Evidence did not drain");
-        }
-        QSignalSpy databaseClosed(&database, &persistence::Database::closed);
-        database.close();
-        if (databaseClosed.isEmpty() && !databaseClosed.wait()) {
-            qFatal("Database did not close");
+        if (!databaseClosed || !moves.drained()) {
+            qFatal("Navigation fixture did not drain");
         }
     }
+
     void open(const std::string& text, persistence::GameId id = 1) {
         pgn::PgnReader reader(text);
         auto result = reader.next();
@@ -60,6 +70,72 @@ class Fixture {
 class ReviewNavigationTest final : public QObject {
     Q_OBJECT
   private slots:
+    void newerOpenDuringClearWins() {
+        Fixture f;
+        f.open("1. e4 e5 *");
+        QTRY_VERIFY(f.nav.ready());
+        bool redirected = false;
+        QObject observer;
+        connect(&f.nav, &app::ReviewNavigationController::changed, &observer, [&] {
+            if (!redirected && !f.nav.ready()) {
+                redirected = true;
+                f.open("1. d4 d5 *", 3);
+            }
+        });
+        f.open("1. c4 e5 *", 2);
+        QVERIFY(redirected);
+        QTRY_VERIFY(f.nav.ready());
+        f.nav.end();
+        QTRY_COMPARE(f.nav.displayed(), 2);
+        auto expected = chess::Position::initial();
+        for (const auto* uci : {"d2d4", "d7d5"}) {
+            const auto parsed = expected.parseUci(uci);
+            QVERIFY(std::holds_alternative<chess::Move>(parsed));
+            QVERIFY(std::holds_alternative<std::monostate>(
+                expected.play(std::get<chess::Move>(parsed))));
+        }
+        QCOMPARE(f.nav.position()->context(), expected.context());
+    }
+    void flipDoesNotApplyToAReentrantNewGame() {
+        Fixture f;
+        f.open("1. e4 e5 *");
+        QTRY_VERIFY(f.nav.ready());
+        f.nav.preview(f.nav.target(1));
+        QTRY_COMPARE(f.nav.displayed(), 1);
+        bool redirected = false;
+        QObject observer;
+        connect(&f.nav, &app::ReviewNavigationController::changed, &observer, [&] {
+            if (!redirected && !f.nav.previewing()) {
+                redirected = true;
+                f.open("1. d4 d5 *", 2);
+            }
+        });
+        f.nav.flip();
+        QVERIFY(redirected);
+        QTRY_VERIFY(f.nav.ready());
+        QVERIFY(!f.nav.board().blackAtBottom);
+    }
+    void supersededSelectionDoesNotCommitAnOldMoment() {
+        Fixture f;
+        f.open("1. e4 e5 *");
+        QTRY_VERIFY(f.nav.ready());
+        QSignalSpy committed(&f.nav, &app::ReviewNavigationController::selectionCommitted);
+        bool redirected = false;
+        QObject observer;
+        connect(&f.nav, &app::ReviewNavigationController::changed, &observer, [&] {
+            if (!redirected && f.nav.selected() == 1) {
+                redirected = true;
+                f.nav.select(f.nav.target(2));
+            }
+        });
+        f.nav.select(f.nav.target(1));
+        QTRY_COMPARE(f.nav.displayed(), 2);
+        QVERIFY(redirected);
+        QVERIFY(!committed.empty());
+        for (const auto& event : committed) {
+            QCOMPARE(event.front().toInt(), 2);
+        }
+    }
     void expectedScorePresentationFailsClosed() {
         persistence::ReviewMove move;
         QVERIFY(!app::reviewPositionEvaluation(&move, false).whiteExpected);

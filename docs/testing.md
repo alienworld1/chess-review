@@ -1136,3 +1136,14 @@ keyboard traversal and focus, file dialogs, screen-reader names/status updates,
 light/dark changes, monitor transitions at the supported scales, and the same
 import → review → exploration → close/reopen journey. Record those checks as
 unverified until run on their actual platforms.
+
+### Final review-phase notification regressions
+
+`review_navigation` checks that reentrant game opens, selections and board flips
+retain the latest intent and never commit an older moment. `quick_review` checks
+navigation during preview removal, candidate/retry startup and Back to Review,
+including destruction requested inside navigation/exploration notifications with
+a nested event loop. Navigation and exploration defer `closed()` until their
+notification stacks have returned and accepted work has drained. Observe closure
+asynchronously; waiting for `closed()` inside the callback that must first return
+would wait on that callback itself.

@@ -1,4 +1,5 @@
 #include "app/ReviewNavigationController.h"
+#include <QScopedValueRollback>
 #include <QTimer>
 #include <algorithm>
 #include <iterator>
@@ -31,7 +32,7 @@ ReviewNavigationController::ReviewNavigationController(persistence::Database& da
         opening_ = false;
         ready_ = false;
         error_ = error;
-        emit changed();
+        publish();
     });
     connect(&replay_, &AnalysisController::closed, this, [this] {
         replayClosed_ = true;
@@ -43,7 +44,14 @@ ReviewNavigationController::ReviewNavigationController(persistence::Database& da
             [this] { cachePage(previewEvidence_.state()); });
     connect(&moves_, &ReviewMovesController::changed, this, [this] { cachePage(moves_.state()); });
 }
+void ReviewNavigationController::publish() {
+    const QScopedValueRollback notification(notifying_, true);
+    if (!closing_) {
+        emit changed();
+    }
+}
 void ReviewNavigationController::clear() {
+    const QScopedValueRollback notification(notifying_, true);
     if (closing_) {
         return;
     }
@@ -62,11 +70,13 @@ void ReviewNavigationController::clear() {
     board_ = {};
     error_.clear();
     userNavigated_ = entryChosen_ = false;
-    emit changed();
+    publish();
 }
 void ReviewNavigationController::open(const persistence::StoredGame& game) {
+    const QScopedValueRollback notification(notifying_, true);
+    const auto session = session_ + 1;
     clear();
-    if (closing_) {
+    if (closing_ || session_ != session) {
         return;
     }
     opening_ = true;
@@ -74,6 +84,7 @@ void ReviewNavigationController::open(const persistence::StoredGame& game) {
 }
 void ReviewNavigationController::bind(const std::optional<persistence::ReviewSummary>& run,
                                       const std::optional<persistence::ReviewOverview>& overview) {
+    const QScopedValueRollback notification(notifying_, true);
     if (closing_) {
         return;
     }
@@ -106,16 +117,27 @@ bool ReviewNavigationController::valid(ReviewTarget target) const {
            target.position < static_cast<int>(line_.size());
 }
 void ReviewNavigationController::navigate(int position, bool user) {
+    const QScopedValueRollback notification(notifying_, true);
     if (!valid(target(position))) {
         return;
     }
     userNavigated_ = userNavigated_ || user;
     selected_ = position;
     preview_.reset();
+    const auto session = session_;
+    const auto current = [this, session, position] {
+        return !closing_ && ready_ && session_ == session && selected_ == position;
+    };
     requestEvidence(position, true);
+    if (!current()) {
+        return;
+    }
     dispatch();
-    emit changed();
-    if (user) {
+    if (!current()) {
+        return;
+    }
+    publish();
+    if (user && current()) {
         emit selectionCommitted(position);
     }
 }
@@ -125,21 +147,23 @@ void ReviewNavigationController::select(ReviewTarget target) {
     }
 }
 void ReviewNavigationController::preview(ReviewTarget target) {
+    const QScopedValueRollback notification(notifying_, true);
     if (!valid(target) || preview_ == target.position) {
         return;
     }
     preview_ = target.position;
     requestEvidence(target.position, false);
     dispatch();
-    emit changed();
+    publish();
 }
 void ReviewNavigationController::clearPreview() {
+    const QScopedValueRollback notification(notifying_, true);
     if (!preview_) {
         return;
     }
     preview_.reset();
     dispatch();
-    emit changed();
+    publish();
 }
 void ReviewNavigationController::visible(ReviewTarget first, ReviewTarget last) {
     if (valid(first) && valid(last)) {
@@ -173,7 +197,7 @@ void ReviewNavigationController::dispatch() {
     }
 }
 void ReviewNavigationController::refreshBoard() {
-    if (!ready_ || replay_.busy() || line_.empty() ||
+    if (closing_ || !ready_ || replay_.busy() || line_.empty() ||
         replay_.currentNode() != line_[static_cast<std::size_t>(requested())]) {
         return;
     }
@@ -182,15 +206,16 @@ void ReviewNavigationController::refreshBoard() {
     board_.interactive = false;
     board_.legalMoves.clear();
     board_.captureMoves.clear();
-    emit changed();
+    publish();
 }
 void ReviewNavigationController::cachePage(const ReviewMovesState& state) {
+    const QScopedValueRollback notification(notifying_, true);
     if (closing_) {
         return;
     }
     if (!moves_.state().error.isEmpty() || !previewEvidence_.state().error.isEmpty()) {
         pages_.clear();
-        emit changed();
+        publish();
         return;
     }
     if (state.page && run_ && state.page->reviewId == run_->id &&
@@ -215,7 +240,7 @@ void ReviewNavigationController::cachePage(const ReviewMovesState& state) {
         }
     }
     requestVisibleEvidence();
-    emit changed();
+    publish();
 }
 const persistence::ReviewMove* ReviewNavigationController::move(int position) const {
     for (const auto& page : pages_) {
@@ -232,6 +257,7 @@ void ReviewNavigationController::requestEvidence(int position, bool committed) {
     }
     const int evidencePosition = std::max(1, position);
     const int offset = ((evidencePosition - 1) / 50) * 50;
+    const auto session = session_;
     if (!committed) {
         if (move(evidencePosition) ||
             (moves_.state().offset == offset && (moves_.state().loading || moves_.state().page))) {
@@ -244,6 +270,9 @@ void ReviewNavigationController::requestEvidence(int position, bool committed) {
         if (evidence.state().offset != offset || !evidence.state().loading) {
             evidence.showPage(offset);
         }
+    }
+    if (closing_ || session_ != session || (committed && selected_ != position)) {
+        return;
     }
     if (committed && position > 0 && evidence.state().selectedPosition != position) {
         evidence.select(position);
@@ -274,7 +303,12 @@ void ReviewNavigationController::next() {
 void ReviewNavigationController::beginning() { navigate(0, true); }
 void ReviewNavigationController::end() { navigate(static_cast<int>(line_.size()) - 1, true); }
 void ReviewNavigationController::flip() {
+    const QScopedValueRollback notification(notifying_, true);
+    const auto session = session_;
     clearPreview();
+    if (closing_ || session_ != session) {
+        return;
+    }
     replay_.flip();
     refreshBoard();
 }
@@ -329,8 +363,16 @@ void ReviewNavigationController::close() {
     finishClose();
 }
 void ReviewNavigationController::finishClose() {
-    if (closing_ && drained()) {
-        QTimer::singleShot(0, this, &ReviewNavigationController::closed);
+    if (closing_ && replayClosed_ && previewEvidence_.drained() && !closeQueued_) {
+        closeQueued_ = true;
+        QTimer::singleShot(0, this, &ReviewNavigationController::deliverClose);
     }
+}
+void ReviewNavigationController::deliverClose() {
+    if (notifying_) {
+        QTimer::singleShot(5, this, &ReviewNavigationController::deliverClose);
+        return;
+    }
+    emit closed();
 }
 } // namespace chess_review::app

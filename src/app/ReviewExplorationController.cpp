@@ -2,6 +2,7 @@
 #include "analysis/ReviewEvidenceAdapter.h"
 #include "engine/EffectiveSearch.h"
 #include <QMetaObject>
+#include <QScopedValueRollback>
 #include <algorithm>
 #include <exception>
 #include <utility>
@@ -161,6 +162,7 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
 }
 ReviewExplorationController::~ReviewExplorationController() { Q_ASSERT(worker_.waitForDone(0)); }
 void ReviewExplorationController::publish() {
+    const QScopedValueRollback notification(notifying_, true);
     if (closing_) {
         return;
     }
@@ -196,6 +198,10 @@ const BoardViewState& ReviewExplorationController::board() const {
     return active() ? displayedBoard_ : navigation_.board();
 }
 void ReviewExplorationController::bind(const std::optional<persistence::ReviewSummary>& run) {
+    const QScopedValueRollback notification(notifying_, true);
+    if (closing_) {
+        return;
+    }
     const bool replaced = (run ? run->id : 0) != (run_ ? run_->id : 0);
     const bool changed = replaced || (!active() && run && run_ && run->revision != run_->revision);
     run_ = run;
@@ -205,6 +211,7 @@ void ReviewExplorationController::bind(const std::optional<persistence::ReviewSu
     synchronize();
 }
 void ReviewExplorationController::synchronize() {
+    const QScopedValueRollback notification(notifying_, true);
     if (closing_) {
         return;
     }
@@ -259,21 +266,33 @@ void ReviewExplorationController::reload() {
     publish();
 }
 void ReviewExplorationController::showLine(int candidate) {
+    const QScopedValueRollback notification(notifying_, true);
     if (closing_ || hidesSolution() || !evidence_ || candidate < 0 ||
         candidate >= static_cast<int>(evidence_->evidence.candidates.size())) {
         return;
     }
+    const auto generation = ++generation_;
+    const auto evidence = evidence_;
     navigation_.clearPreview();
+    if (closing_ || generation != generation_) {
+        return;
+    }
     sandbox_.setOrientation(navigation_.board().blackAtBottom);
+    if (closing_ || generation != generation_) {
+        return;
+    }
     state_.mode = ExplorationMode::Line;
     state_.pendingBoard = true;
     displayedBoard_.interactive = false;
     state_.candidate = candidate;
     state_.step = 0;
     const auto& moves =
-        evidence_->evidence.candidates[static_cast<std::size_t>(candidate)].continuation;
+        evidence->evidence.candidates[static_cast<std::size_t>(candidate)].continuation;
     state_.length = static_cast<int>(moves.size());
-    sandbox_.openLine(evidence_->before, moves, 0);
+    sandbox_.openLine(evidence->before, moves, 0);
+    if (closing_ || generation != generation_) {
+        return;
+    }
     state_.message =
         tr("Candidate continuation · evaluation belongs to its root, not each position.");
     publish();
@@ -314,6 +333,7 @@ void ReviewExplorationController::end() {
     }
 }
 void ReviewExplorationController::returnToGame() {
+    const QScopedValueRollback notification(notifying_, true);
     ++generation_;
     success_.stop();
     retryRead_.stop();
@@ -333,19 +353,30 @@ void ReviewExplorationController::returnToGame() {
     publish();
 }
 void ReviewExplorationController::tryAgain() {
+    const QScopedValueRollback notification(notifying_, true);
     if (closing_ || !state_.canRetry || !evidence_ || workerBusy_ || !search_.isNull() ||
         !cacheRead_.isNull()) {
         return;
     }
+    const auto generation = ++generation_;
+    const auto evidence = evidence_;
     navigation_.clearPreview();
+    if (closing_ || generation != generation_) {
+        return;
+    }
     sandbox_.setOrientation(navigation_.board().blackAtBottom);
-    ++generation_;
+    if (closing_ || generation != generation_) {
+        return;
+    }
     hint_ = 0;
     state_.mode = ExplorationMode::Retry;
     state_.pendingBoard = true;
     displayedBoard_.interactive = false;
     state_.message = tr("Find a stronger move. You can request a hint or show the solution.");
-    sandbox_.openPosition(evidence_->before);
+    sandbox_.openPosition(evidence->before);
+    if (closing_ || generation != generation_) {
+        return;
+    }
     publish();
 }
 void ReviewExplorationController::hint() {
@@ -552,6 +583,7 @@ void ReviewExplorationController::evaluateChild(engine::AnalysisResult result, b
         });
 }
 void ReviewExplorationController::showGrade(review::RetryResult result) {
+    const QScopedValueRollback notification(notifying_, true);
     const auto generation = generation_;
     if (!result.grade) {
         state_.message = tr(
@@ -603,6 +635,7 @@ bool ReviewExplorationController::sameAnalysisOrigin() const {
     return !openingLinked_ && linkedOrigin_ && analysisOrigin() == linkedOrigin_;
 }
 void ReviewExplorationController::openAnalysis() {
+    const QScopedValueRollback notification(notifying_, true);
     const auto origin = analysisOrigin();
     if (!origin || closing_) {
         return;
@@ -615,7 +648,11 @@ void ReviewExplorationController::openAnalysis() {
     if (!position) {
         return;
     }
+    const auto generation = generation_;
     linked_.setOrientation(board().blackAtBottom);
+    if (closing_ || generation != generation_ || analysisOrigin() != origin) {
+        return;
+    }
     linkedOrigin_ = origin;
     linkedEvidence_ = evidence_;
     linkedState_ = state_;
@@ -623,20 +660,38 @@ void ReviewExplorationController::openAnalysis() {
     linked_.openPosition(position);
 }
 void ReviewExplorationController::restoreReviewOrigin() {
+    const QScopedValueRollback notification(notifying_, true);
     if (closing_ || openingLinked_ || !linkedOrigin_ || !run_ || run_->id != linkedOrigin_->run ||
         navigation_.target(0).session != linkedOrigin_->target.session) {
         return;
     }
     const auto origin = *linkedOrigin_;
+    const auto evidence = linkedEvidence_;
+    const auto linkedState = linkedState_;
+    auto generation = generation_ + 1;
     returnToGame();
+    if (closing_ || generation != generation_) {
+        return;
+    }
+    // Selecting a different moment retires the preceding exploration once.
+    if (target_ != origin.target) {
+        ++generation;
+    }
     navigation_.select(origin.target);
+    if (closing_ || generation != generation_ || !run_ || run_->id != origin.run ||
+        navigation_.target(navigation_.selected()) != origin.target) {
+        return;
+    }
     if (origin.candidate < 0 && navigation_.board().blackAtBottom != origin.blackAtBottom) {
         navigation_.flip();
     }
-    if (origin.candidate >= 0 && linkedEvidence_ && !evidenceReadFailed_) {
+    if (origin.candidate >= 0 && evidence && !evidenceReadFailed_) {
         sandbox_.setOrientation(origin.blackAtBottom);
-        evidence_ = linkedEvidence_;
-        state_ = linkedState_;
+        if (closing_ || generation != generation_) {
+            return;
+        }
+        evidence_ = evidence;
+        state_ = linkedState;
         state_.pendingBoard = true;
         displayedBoard_.interactive = false;
         sandbox_.openLine(
@@ -658,15 +713,24 @@ void ReviewExplorationController::close() {
     finishClose();
 }
 void ReviewExplorationController::finishClose() {
-    if (!closing_ || closed_ || workerBusy_ || !search_.isNull() || !pending_.isNull() ||
-        !cacheRead_.isNull() || !sandboxClosed_ || !linkedClosed_ || !engineClosed_) {
+    if (!closing_ || closed_ || closeQueued_ || workerBusy_ || !search_.isNull() ||
+        !pending_.isNull() || !cacheRead_.isNull() || !sandboxClosed_ || !linkedClosed_ ||
+        !engineClosed_) {
         return;
     }
     if (!worker_.waitForDone(0)) {
         QTimer::singleShot(5, this, &ReviewExplorationController::finishClose);
         return;
     }
+    closeQueued_ = true;
+    QTimer::singleShot(0, this, &ReviewExplorationController::deliverClose);
+}
+void ReviewExplorationController::deliverClose() {
+    if (notifying_) {
+        QTimer::singleShot(5, this, &ReviewExplorationController::deliverClose);
+        return;
+    }
     closed_ = true;
-    QTimer::singleShot(0, this, [this] { emit closed(); });
+    emit closed();
 }
 } // namespace chess_review::app

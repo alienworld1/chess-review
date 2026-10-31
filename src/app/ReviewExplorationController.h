@@ -84,6 +84,7 @@ class ReviewExplorationController final : public QObject {
     void evaluateChild(engine::AnalysisResult result, bool cached = false);
     void showGrade(review::RetryResult result);
     void finishClose();
+    void deliverClose();
     persistence::Database& database_;
     ReviewNavigationController& navigation_;
     EngineSettingsController& settings_;
@@ -118,6 +119,8 @@ class ReviewExplorationController final : public QObject {
     bool evidenceReadFailed_ = false;
     bool openingLinked_ = false;
     bool closing_ = false;
+    bool notifying_ = false;
+    bool closeQueued_ = false;
     bool sandboxClosed_ = false;
     bool linkedClosed_ = false;
     bool engineClosed_ = false;

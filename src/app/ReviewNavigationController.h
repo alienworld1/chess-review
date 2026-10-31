@@ -56,13 +56,14 @@ class ReviewNavigationController final : public QObject {
     bool canPreviousMoment() const;
     bool canNextMoment() const;
     void close();
-    bool drained() const { return replayClosed_ && previewEvidence_.drained(); }
+    bool drained() const { return replayClosed_ && previewEvidence_.drained() && !notifying_; }
   signals:
     void changed();
     void selectionCommitted(int position);
     void closed();
 
   private:
+    void publish();
     bool valid(ReviewTarget target) const;
     void navigate(int position, bool user);
     void dispatch();
@@ -72,6 +73,7 @@ class ReviewNavigationController final : public QObject {
     void requestVisibleEvidence();
     void moment(int direction);
     void finishClose();
+    void deliverClose();
     AnalysisController replay_;
     ReviewMovesController& moves_;
     ReviewMovesController previewEvidence_;
@@ -91,6 +93,8 @@ class ReviewNavigationController final : public QObject {
     bool userNavigated_ = false;
     bool entryChosen_ = false;
     bool closing_ = false;
+    bool notifying_ = false;
+    bool closeQueued_ = false;
     bool replayClosed_ = false;
     QString error_;
 };
