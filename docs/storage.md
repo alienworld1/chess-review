@@ -581,3 +581,8 @@ policy. Policy 2 requires both refinement stages for its deduplicated targeted
 positions before completion, but does not promise numeric usability or stability.
 Existing corruption, revision, resource-identity and cache-compatibility checks
 remain prerequisites; an invalid policy-2 assessment is a record error.
+
+Completion validates the saved quick classification document under its recorded
+supported model, using the same interpretation as move pages and queue selection.
+A malformed document blocks completion and rolls back its status/revision change;
+completion does not silently replace damaged derived data with a fresh label.

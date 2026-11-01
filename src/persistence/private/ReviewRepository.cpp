@@ -1105,9 +1105,13 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
             }
             if (run.settings.refinement) {
                 const auto& quickPair = std::get<review::MoveEvidence>(pair);
-                const auto classified = review::classify(
-                    beforePosition, quickPair, run.settings.configuration.values.classification,
-                    run.settings.configuration.values.conversion);
+                review::ClassificationResult classified;
+                if (const auto failure = retainClassification(
+                        database_, run, beforePosition, quickPair, index,
+                        std::get<StoredReviewEvidence>(previous).evidenceId,
+                        std::get<StoredReviewEvidence>(current).evidenceId, false, classified)) {
+                    return *failure;
+                }
                 const auto scan = review::assessQuickScan(
                     classified, quickPair, run.settings.configuration.values.refinement,
                     run.settings.pipelineVersion);

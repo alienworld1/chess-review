@@ -1927,6 +1927,12 @@ class QuickReviewTest final : public QObject {
         QVERIFY(move.quickScan.needsRefinement());
         QVERIFY(
             app::reviewMoveDetails(move).contains(QStringLiteral("Quick-scan refinement reasons")));
+        const auto details = app::reviewMoveDetails(move);
+        QVERIFY(details.contains(QStringLiteral("Original quick scan:")));
+        QVERIFY(!details.contains(QStringLiteral("Stronger evidence is pending")));
+        QVERIFY(app::reviewOverviewText(overview, chess::Color::White)
+                    .contains(QStringLiteral("original quick-scan coverage")));
+
         qInfo("scan map: scan=%lld ms total=%lld ms quick=%d deep=%d verification=%d usable=%d "
               "gaps=%d targets=%zu",
               static_cast<long long>(scanMilliseconds), static_cast<long long>(elapsed.elapsed()),

@@ -1010,7 +1010,7 @@ void ReviewPage::updateNavigation() {
                 .arg(state.overview->totalKeyMoments);
         const auto& scan =
             state.overview->quickScan[static_cast<std::size_t>(state.run->selectedSide)];
-        compact += tr(" · quick scan: usable %1/%2 · gaps %3 · awaiting %4")
+        compact += tr(" · original quick scan: usable %1/%2 · gaps %3 · awaiting %4")
                        .arg(scan.usable)
                        .arg(side.total)
                        .arg(scan.unusable)

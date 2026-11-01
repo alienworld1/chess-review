@@ -62,19 +62,19 @@ QString scanDetails(const review::ScanAssessment& scan) {
     QStringList text;
     switch (scan.state) {
     case review::ScanState::AwaitingEvidence:
-        text << QObject::tr("Quick scan: awaiting adjacent saved evidence.");
+        text << QObject::tr("Original quick scan: awaiting adjacent saved evidence.");
         break;
     case review::ScanState::Usable:
-        text << QObject::tr(
-            "Quick scan: usable provisional evaluation. This does not establish stability.");
+        text << QObject::tr("Original quick scan: usable evaluation; this single pass did not "
+                            "establish stability.");
         break;
     case review::ScanState::Unusable:
         text << QObject::tr(
-            "Quick scan: evidence retained; a usable numeric evaluation is withheld.");
+            "Original quick scan: evidence retained; a usable numeric evaluation was withheld.");
         break;
     case review::ScanState::Invalid:
         text << QObject::tr(
-            "Quick scan: invalid evidence or policy; automatic repair is unavailable.");
+            "Original quick scan: invalid evidence or policy; automatic repair is unavailable.");
         break;
     }
     if (scan.issue) {
@@ -295,8 +295,9 @@ QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::C
     for (std::size_t index = 0; index < 2; ++index) {
         const auto& side = overview.sides[index];
         const auto& scan = overview.quickScan[index];
-        text << QObject::tr("%1 quick-scan coverage: usable %2/%3 moves · retained gaps %4 · "
-                            "awaiting %5 · invalid %6")
+        text << QObject::tr(
+                    "%1 original quick-scan coverage: usable %2/%3 moves · retained gaps %4 · "
+                    "awaiting %5 · invalid %6")
                     .arg(index == 0 ? QObject::tr("White") : QObject::tr("Black"))
                     .arg(scan.usable)
                     .arg(side.total)
@@ -360,7 +361,7 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
         text << QObject::tr("Not selected for targeted refinement.");
         break;
     case review::StabilityReason::Pending:
-        text << QObject::tr("Stronger evidence is pending.");
+        text << QObject::tr("Stability requires completed deepening and verification evidence.");
         break;
     case review::StabilityReason::Insufficient:
         text << QObject::tr("Stronger evidence does not meet stability requirements.");

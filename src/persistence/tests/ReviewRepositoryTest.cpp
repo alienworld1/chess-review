@@ -14,6 +14,7 @@
 #include <QTest>
 #include <QTimer>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 using namespace chess_review;
 using namespace chess_review::persistence;
@@ -127,6 +128,85 @@ class AsyncDatabase {
 class ReviewRepositoryTest final : public QObject {
     Q_OBJECT
   private slots:
+    void completionUsesTheSavedClassificationModel() {
+        Fixture f;
+        const auto doc = document("1. e4 *");
+        auto request = seed(f.session, doc);
+        request.refinement = true;
+        auto config = request.configuration.values;
+        config.refinement.boundaryMargin = 0;
+        config.classification.mistakeLoss = std::nextafter(.1, 0.0);
+        request.configuration = *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
+            config::validate(config));
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        for (int index = 0; index < 2; ++index) {
+            auto analysis = resultAt(request, *doc, index);
+            analysis.evidence.lines.front().wdl =
+                index == 0 ? engine::Wdl{600, 0, 400} : engine::Wdl{500, 0, 500};
+            run = std::get<ReviewSummary>(
+                f.session.checkpointReview(checkpoint(run.id, run.revision, index, analysis)));
+        }
+        const auto evidence =
+            std::get<StoredReviewEvidence>(f.session.loadReviewEvidence(run.id, 1));
+        const auto legacy = review::classify(positionAt(*doc, 0), *evidence.precedingMove,
+                                             config.classification, config.conversion, 1);
+        QVERIFY(legacy.loss && *legacy.loss < config.classification.mistakeLoss);
+        QVERIFY(!review::needsRefinement(legacy, *evidence.precedingMove, config.refinement));
+        const auto beforeId =
+            f.scalar(QStringLiteral("SELECT before_id FROM review_classifications")).toLongLong();
+        const auto afterId =
+            f.scalar(QStringLiteral("SELECT after_id FROM review_classifications")).toLongLong();
+        const auto bytes = classificationDocument(legacy, beforeId, afterId,
+                                                  request.configuration.identities.classification);
+        QSqlQuery update(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+        QVERIFY(update.prepare(QStringLiteral("UPDATE review_classifications SET document=?")));
+        update.addBindValue(bytes);
+        QVERIFY(update.exec());
+        const auto overview =
+            std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        QVERIFY(overview.refinementPositions.empty());
+        ReviewCheckpoint finish;
+        finish.reviewId = run.id;
+        finish.expectedRevision = run.revision;
+        finish.status = JobStatus::Complete;
+        const auto completed = f.session.checkpointReview(finish);
+        QVERIFY2(std::holds_alternative<ReviewSummary>(completed),
+                 "Completion must use the same saved model as queue selection");
+        const auto page = std::get<ReviewMovePage>(f.session.deriveReviewMoves(
+            run.id, std::get<ReviewSummary>(completed).revision, 0, 50));
+        QCOMPARE(page.moves.front().classification->modelVersion, 1U);
+    }
+    void completionRejectsDamagedClassificationDocuments() {
+        Fixture f;
+        const auto doc = document("1. e4 *");
+        auto request = seed(f.session, doc);
+        request.refinement = true;
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        for (int index = 0; index < 2; ++index) {
+            auto analysis = resultAt(request, *doc, index);
+            analysis.evidence.lines.front().wdl =
+                index == 0 ? engine::Wdl{530, 0, 470} : engine::Wdl{500, 0, 500};
+            run = std::get<ReviewSummary>(
+                f.session.checkpointReview(checkpoint(run.id, run.revision, index, analysis)));
+        }
+        const auto overview =
+            std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        QVERIFY(overview.refinementPositions.empty());
+        QVERIFY(f.exec(QStringLiteral("UPDATE review_classifications SET document=zeroblob(128)")));
+        ReviewCheckpoint finish;
+        finish.reviewId = run.id;
+        finish.expectedRevision = run.revision;
+        finish.status = JobStatus::Complete;
+        const auto completed = f.session.checkpointReview(finish);
+        QVERIFY(std::holds_alternative<ReviewError>(completed));
+        QCOMPARE(std::get<ReviewError>(completed).code, ReviewErrorCode::InvalidRecord);
+        const auto unchanged = std::get<StoredReview>(f.session.loadReview(run.id));
+        QCOMPARE(unchanged.summary.revision, run.revision);
+        QCOMPARE(unchanged.summary.status, run.status);
+        QCOMPARE(
+            f.scalar(QStringLiteral("SELECT length(document) FROM review_classifications")).toInt(),
+            128);
+    }
     void pipelineSettingsRetainReleasedAndNewPolicies() {
         Fixture f;
         auto request = seed(f.session);

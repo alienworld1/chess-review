@@ -1,6 +1,7 @@
 #include "review/Summary.h"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <cmath>
 #include <limits>
 using namespace chess_review;
@@ -356,6 +357,42 @@ TEST_CASE("Quick scan rejects invalid inputs instead of scheduling repair",
     const auto paired = pairEvidence(position, raw.playedMove, raw.before, raw.after);
     const auto scan =
         assessQuickScan(classify(position, paired, configuration), paired, refinement, policy);
+    CHECK(scan.state == ScanState::Invalid);
+    CHECK(!scan.needsRefinement());
+}
+
+TEST_CASE("Quick scan rejects unsupported and malformed derived values", "[unit][review][scan]") {
+    const auto position = chess::Position::initial();
+    auto paired = pair(position, 30);
+    auto result = classify(position, paired, {});
+    SECTION("unsupported classification model") { result.modelVersion = 99; }
+    SECTION("wrong mover") { result.mover = chess::Color::Black; }
+    SECTION("unsupported conversion model") { result.before.expected->modelVersion = 99; }
+    SECTION("wrong expected-score perspective") {
+        result.before.expected->perspective = chess::Color::Black;
+    }
+    SECTION("nonfinite expected score") {
+        result.before.expected->value = std::numeric_limits<double>::quiet_NaN();
+    }
+    SECTION("out-of-range expected score") { result.after.expected->value = 2; }
+    SECTION("missing numeric evidence") { result.before.expected.reset(); }
+    SECTION("inconsistent loss") {
+        result.loss = .4;
+        result.signedDelta = .4;
+    }
+    SECTION("inconsistent pair delta") { paired.signedDelta = .4; }
+    SECTION("negative loss") { result.loss = -.01; }
+    SECTION("nonfinite loss") { result.loss = std::numeric_limits<double>::quiet_NaN(); }
+    SECTION("out-of-range loss") { result.loss = 2; }
+    SECTION("unknown issue") {
+        const auto value = GENERATE(99);
+        paired.issue = static_cast<EvidenceIssue>(value);
+    }
+    SECTION("unknown classification issue") {
+        const auto value = GENERATE(99);
+        result.issue = static_cast<ClassificationIssue>(value);
+    }
+    const auto scan = assessQuickScan(result, paired, {});
     CHECK(scan.state == ScanState::Invalid);
     CHECK(!scan.needsRefinement());
 }

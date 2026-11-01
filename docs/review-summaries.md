@@ -74,7 +74,7 @@ New runs retain the existing quick-scan node budgets: Fast 50,000, Standard
 both players, the root and the final position before any automatic deepening.
 Saved evidence becomes readable progressively while the scan runs.
 
-**Positions saved** measures durable processing progress. **Quick-scan coverage**
+**Positions saved** measures durable processing progress. **Original quick-scan coverage**
 counts moves separately for each side: usable provisional evaluations, retained
 gaps and moves awaiting adjacent evidence. Neither saved coverage nor a usable
 quick estimate establishes stability. An engine mate signal remains nonnumeric.
@@ -95,3 +95,8 @@ The pipeline policy is captured in each run's checksummed settings. Existing
 policy-1 runs retain their original targeting and explicit-resume behavior;
 opening a saved review does not upgrade it. Quick-scan facts can be inspected
 without an engine or the disposable cache. Start a new run to use policy 2.
+
+Original scan gaps are historical facts, not a count of currently unresolved moves.
+Use the current evaluated/stable coverage and per-move stability details to inspect
+stronger results. If more evidence is required, this does not promise automatic
+work after cancellation, interruption or application exit; resume remains explicit.

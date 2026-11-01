@@ -10,7 +10,8 @@ inline constexpr std::uint32_t stabilityModelVersion = 1;
 inline constexpr std::uint32_t accuracyModelVersion = 1;
 inline constexpr std::uint32_t pipelineModelVersion = 2;
 [[nodiscard]] constexpr bool supportsPipelineModel(std::uint32_t version) {
-    return version == 1 || version == pipelineModelVersion;
+    // Keep released policies explicit when the default advances.
+    return version == 1 || version == 2;
 }
 enum class ScanState { AwaitingEvidence, Usable, Unusable, Invalid };
 enum class RefinementReason {

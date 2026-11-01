@@ -5,6 +5,7 @@
 namespace chess_review::review {
 namespace {
 std::optional<int> ticks(const PositionEvidence& evidence, chess::Color perspective);
+bool validExpected(const EvaluationResult& result, chess::Color mover);
 std::vector<RefinementReason> refinementReasons(const ClassificationResult& result,
                                                 const MoveEvidence& pair,
                                                 const RefinementConfig& config) {
@@ -44,9 +45,26 @@ std::vector<RefinementReason> refinementReasons(const ClassificationResult& resu
     return reasons;
 }
 bool invalidIssue(std::optional<EvidenceIssue> issue) {
-    return issue == EvidenceIssue::Invalid || issue == EvidenceIssue::ContextMismatch ||
-           issue == EvidenceIssue::IncompatibleEngine ||
-           issue == EvidenceIssue::IncompatibleModel || issue == EvidenceIssue::RestrictedSearch;
+    if (!issue) {
+        return false;
+    }
+    switch (*issue) {
+    case EvidenceIssue::Incomplete:
+    case EvidenceIssue::Bounded:
+    case EvidenceIssue::MateClaim:
+    case EvidenceIssue::MissingEvaluation:
+    case EvidenceIssue::MixedConversion:
+    case EvidenceIssue::NegativeLoss:
+    case EvidenceIssue::ContradictoryCandidates:
+        return false;
+    case EvidenceIssue::Invalid:
+    case EvidenceIssue::ContextMismatch:
+    case EvidenceIssue::IncompatibleEngine:
+    case EvidenceIssue::IncompatibleModel:
+    case EvidenceIssue::RestrictedSearch:
+        return true;
+    }
+    return true;
 }
 } // namespace
 bool needsRefinement(const ClassificationResult& result, const MoveEvidence& pair,
@@ -56,9 +74,6 @@ bool needsRefinement(const ClassificationResult& result, const MoveEvidence& pai
 ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvidence& pair,
                                const RefinementConfig& config, std::uint32_t pipelineVersion) {
     ScanAssessment scan;
-    if (pipelineVersion == 1) {
-        scan.reasons = refinementReasons(result, pair, config);
-    }
     scan.state = ScanState::Unusable;
     scan.issue = pair.issue ? pair.issue : result.evidenceIssue;
     const auto rawIssue = [](const PositionEvidence& evidence) -> std::optional<EvidenceIssue> {
@@ -69,8 +84,35 @@ ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvi
     };
     const auto rawBeforeIssue = rawIssue(pair.before);
     const auto rawAfterIssue = rawIssue(pair.after);
+    const auto invalidLoss = [](std::optional<double> value) {
+        return value && (!std::isfinite(*value) || *value < 0 || *value > 1);
+    };
+    const auto invalidDelta = [](std::optional<double> value) {
+        return value && (!std::isfinite(*value) || std::abs(*value) > 1);
+    };
+    const auto invalidExpected = [&](const EvaluationResult& evaluation) {
+        return evaluation.expected && !validExpected(evaluation, pair.mover);
+    };
+    const bool numeric = pair.loss || result.loss || pair.signedDelta || result.signedDelta;
+    const bool missingNumericEvidence =
+        numeric && (!pair.beforeEvaluation.expected || !pair.afterEvaluation.expected ||
+                    !result.before.expected || !result.after.expected);
+    const auto expectedLoss = result.modelVersion == 1 ? pair.loss : accuracyLoss(pair);
+    const bool inconsistentLoss =
+        (result.loss && (result.loss != expectedLoss || result.signedDelta != result.loss)) ||
+        (pair.loss && pair.signedDelta != pair.loss);
     if (!supportsPipelineModel(pipelineVersion) ||
-        result.issue == ClassificationIssue::InvalidConfiguration ||
+        !supportsClassificationModel(result.modelVersion) ||
+        pair.before.modelVersion != evidenceModelVersion ||
+        pair.after.modelVersion != evidenceModelVersion ||
+        (pair.mover != chess::Color::White && pair.mover != chess::Color::Black) ||
+        result.mover != pair.mover || missingNumericEvidence || inconsistentLoss ||
+        invalidExpected(result.before) || invalidExpected(result.after) ||
+        invalidExpected(pair.beforeEvaluation) || invalidExpected(pair.afterEvaluation) ||
+        invalidLoss(result.loss) || invalidLoss(pair.loss) || invalidDelta(result.signedDelta) ||
+        invalidDelta(pair.signedDelta) ||
+        (result.issue && *result.issue != ClassificationIssue::Evidence &&
+         *result.issue != ClassificationIssue::BestMoveConflict) ||
         !std::isfinite(config.boundaryMargin) || config.boundaryMargin < 0 ||
         config.boundaryMargin > 1 || !std::isfinite(config.maximumDrift) ||
         config.maximumDrift < 0 || config.maximumDrift > 1 || config.multiPv < 1 ||
@@ -78,6 +120,9 @@ ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvi
         invalidIssue(pair.beforeEvaluation.issue) || invalidIssue(pair.afterEvaluation.issue) ||
         invalidIssue(rawBeforeIssue) || invalidIssue(rawAfterIssue)) {
         scan.state = ScanState::Invalid;
+        if (pipelineVersion == 1) {
+            scan.reasons = refinementReasons(result, pair, config);
+        }
         return scan;
     }
     if (!pair.issue && !result.issue && pair.loss && result.loss && pair.signedDelta &&
