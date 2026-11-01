@@ -5,9 +5,10 @@ The results become readable while targeted refinement continues automatically.
 Cancel retains completed work; Resume explicitly continues the original run with
 its captured configuration and compatible engine. A new run uses current settings.
 
-Refinement targets both players' major errors, expected-score losses within one
-percentage point of a classification boundary, mate signals and contradictory
-comparisons. Each target's adjacent positions receive the quality preset's
+New reviews refine both players' Inaccuracy-level expected-score losses (5% by
+default), replies immediately following those errors, losses near error-classification
+boundaries, mate signals, contradictory comparisons and repairable evidence gaps.
+Each target's adjacent positions receive the quality preset's
 deepening and verification budgets. Shared positions are analyzed once per pass.
 MultiPV defaults to three, constrained by the engine and legal move count. Width
 one remains usable but cannot establish alternative equivalence.
@@ -67,7 +68,7 @@ Advanced margins and MultiPV belong in the validated TOML configuration; see
 [the example](config.example.toml). Changes apply after restart and are captured by
 new runs. Accuracy model constants are not classification configuration.
 
-## Quick-scan evidence map (pipeline policy 2)
+## Quick-scan evidence map
 
 New runs retain the existing quick-scan node budgets: Fast 50,000, Standard
 100,000 and Thorough 250,000 nodes per position, with MultiPV=1. The scan covers
@@ -82,21 +83,44 @@ The evidence inspector explains the original scan's gaps and refinement reasons.
 These scan facts remain tied to the original quick attempts even after stronger
 results update the displayed label, accuracy or stability.
 
-Alongside the existing large-loss, threshold, mate and conflicting-search targets,
-policy 2 targets valid completed attempts with insufficient measured strength,
-missing evaluations, bounds or incompatible WDL/centipawn conversions. Shared
-before/after positions enter one chronological queue. Each receives at most the
+Alongside its large-loss, threshold, mate and conflicting-search targets,
+policy 2 introduced valid completed attempts with insufficient measured strength,
+missing evaluations, bounds or incompatible WDL/centipawn conversions. Under policy 2,
+shared before/after positions enter one chronological queue. Each receives at most the
 existing deepening and verification cycle; verification is a fresh search.
 Unresolved results remain provisional or unclassified when processing finishes.
 Damaged records, unsupported policies and incompatible evidence identities are
 errors, not permission to overwrite evidence or retry indefinitely.
 
 The pipeline policy is captured in each run's checksummed settings. Existing
-policy-1 runs retain their original targeting and explicit-resume behavior;
+policy-1 and policy-2 runs retain their original targeting and explicit-resume behavior;
 opening a saved review does not upgrade it. Quick-scan facts can be inspected
-without an engine or the disposable cache. Start a new run to use policy 2.
+without an engine or the disposable cache. Start a new run to use the current policy.
 
 Original scan gaps are historical facts, not a count of currently unresolved moves.
 Use the current evaluated/stable coverage and per-move stability details to inspect
 stronger results. If more evidence is required, this does not promise automatic
 work after cancellation, interruption or application exit; resume remains explicit.
+
+## Adaptive candidate selection (pipeline policy 3)
+
+New runs select usable quick-scan losses at or above the captured Inaccuracy
+threshold, plus losses within the configured margin of Inaccuracy, Mistake and
+Blunder boundaries. The Excellent boundary alone no longer selects routine moves.
+An immediate reply after either player's qualifying loss is also selected to
+investigate the opportunity, even if that reply loses no expected score. Missing
+or unusable numeric evidence cannot establish this opportunity signal.
+
+Refinement order is mate signals, conflicting estimates, qualifying losses from
+largest down, opportunity replies ordered by the preceding loss, repairable gaps,
+then threshold-only ambiguity. The strongest applicable reason determines priority;
+remaining ties use game order. Each move expands to its before/after positions,
+with shared positions analyzed once per pass at their earliest scheduled occurrence.
+Every selected target is processed; there is no candidate cap. All deepening searches
+finish before the separate fresh-verification pass uses the same order.
+
+The existing inspector explains original selection reasons and preceding-move
+context. An opportunity signal does not establish a verified missed chance or a
+special label. Stronger results do not change the original selection queue.
+Policies 1 and 2 retain their historical rules and ordering when resumed. Budgets,
+score conversion, classification and stability requirements are unchanged.

@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <initializer_list>
 #include <limits>
-#include <set>
 #include <utility>
 namespace chess_review::persistence::detail {
 namespace {
@@ -163,7 +162,8 @@ std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
         return error(ReviewErrorCode::UnsupportedVersion);
     }
     if (doc->contains("pipelineVersion") &&
-        (((*doc)["pipelineVersion"].toInt(-1) != 1 && (*doc)["pipelineVersion"].toInt(-1) != 2) ||
+        (((*doc)["pipelineVersion"].toInt(-1) != 1 && (*doc)["pipelineVersion"].toInt(-1) != 2 &&
+          (*doc)["pipelineVersion"].toInt(-1) != 3) ||
          (*doc)["accuracyModelVersion"].toInt(-1) != 1 ||
          (*doc)["stabilityModelVersion"].toInt(-1) != 1 ||
          (*doc)["reviewModelVersion"].toInt(-1) != 1)) {
@@ -1086,6 +1086,7 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
         if (const auto* e = std::get_if<ReviewError>(&previous)) {
             return *e;
         }
+        review::ScanAssessment previousScan;
         for (int index = 1; index < run.summary.totalPositions; ++index) {
             const auto beforePosition = *position;
             const auto move =
@@ -1112,12 +1113,16 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
                         std::get<StoredReviewEvidence>(current).evidenceId, false, classified)) {
                     return *failure;
                 }
-                const auto scan = review::assessQuickScan(
-                    classified, quickPair, run.settings.configuration.values.refinement,
-                    run.settings.pipelineVersion);
+                auto scan = review::assessQuickScan(classified, quickPair,
+                                                    run.settings.configuration.values.refinement,
+                                                    run.settings.pipelineVersion);
                 if (scan.state == review::ScanState::Invalid && run.settings.pipelineVersion >= 2) {
                     return invalid();
                 }
+                if (run.settings.pipelineVersion == 3) {
+                    review::addOpportunityContext(scan, previousScan, index - 1);
+                }
+                previousScan = scan;
                 if (scan.needsRefinement()) {
                     for (const auto stage :
                          {review::EvidenceStage::Deepening, review::EvidenceStage::Verification}) {
@@ -1192,8 +1197,52 @@ ContinueReviewResult StorageSession::continueReview(const ContinueReview& reques
 namespace {
 LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                    const StoredGame& game, chess::Position& cursor, int offset,
-                                   int limit) {
+                                   int limit,
+                                   const review::ScanAssessment* precedingScan = nullptr) {
     const int total = run.summary.totalPositions - 1;
+    review::ScanAssessment previousScan = precedingScan ? *precedingScan : review::ScanAssessment{};
+    if (!precedingScan && offset > 0 && run.settings.pipelineVersion == 3) {
+        auto restored = gamePosition(game, offset - 1);
+        auto* precedingPosition = std::get_if<chess::Position>(&restored);
+        if (!precedingPosition) {
+            return invalid();
+        }
+        const auto precedingMove =
+            game.document->originalMainline()[static_cast<std::size_t>(offset - 1)];
+        auto afterPosition = *precedingPosition;
+        if (std::holds_alternative<chess::Error>(afterPosition.play(precedingMove))) {
+            return invalid();
+        }
+        const auto before = readEvidence(db, run, *precedingPosition, offset - 1);
+        const auto after = readEvidence(db, run, afterPosition, offset);
+        for (const auto* value : {&before, &after}) {
+            if (const auto* failure = std::get_if<ReviewError>(value);
+                failure && failure->code != ReviewErrorCode::Missing) {
+                return *failure;
+            }
+        }
+        const auto* b = std::get_if<StoredReviewEvidence>(&before);
+        const auto* a = std::get_if<StoredReviewEvidence>(&after);
+        if (b && a) {
+            const auto pair = readPair(db, run, *precedingPosition, precedingMove, offset, *b, *a);
+            if (const auto* failure = std::get_if<ReviewError>(&pair)) {
+                return *failure;
+            }
+            review::ClassificationResult classified;
+            const auto& quickPair = std::get<review::MoveEvidence>(pair);
+            if (const auto failure =
+                    retainClassification(db, run, *precedingPosition, quickPair, offset,
+                                         b->evidenceId, a->evidenceId, false, classified)) {
+                return *failure;
+            }
+            previousScan = review::assessQuickScan(classified, quickPair,
+                                                   run.settings.configuration.values.refinement,
+                                                   run.settings.pipelineVersion);
+            if (previousScan.state == review::ScanState::Invalid) {
+                return invalid();
+            }
+        }
+    }
     auto* position = &cursor;
     ReviewMovePage page{run.summary.id, run.summary.revision, offset, total, {}};
     auto before = readEvidence(db, run, *position, offset);
@@ -1244,6 +1293,9 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
             if (row.quickScan.state == review::ScanState::Invalid &&
                 run.settings.pipelineVersion >= 2) {
                 return invalid();
+            }
+            if (run.settings.pipelineVersion == 3) {
+                review::addOpportunityContext(row.quickScan, previousScan, ply);
             }
             row.refinementTarget = row.quickScan.needsRefinement();
             std::optional<RefinedPair> chosen;
@@ -1339,6 +1391,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                 return storage();
             }
         }
+        previousScan = row.quickScan;
         page.moves.push_back(std::move(row));
         *position = std::move(afterPosition);
         before = std::move(after);
@@ -1409,7 +1462,7 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
     out.keyOffset = keyOffset;
     out.result = game.summary.result.left(32);
     review::SummaryBuilder summaryBuilder(run.summary.selectedSide);
-    std::set<int> positions;
+    std::vector<review::RefinementCandidate> candidates;
     int keyMoments = 0;
     auto restored = gamePosition(game, 0);
     auto* position = std::get_if<chess::Position>(&restored);
@@ -1421,12 +1474,14 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
     if (const auto* e = std::get_if<ReviewError>(&root); e && e->code != ReviewErrorCode::Missing) {
         return *e;
     }
+    review::ScanAssessment previousQuick;
     for (int offset = 0; offset < run.summary.totalPositions - 1; offset += 50) {
-        const auto page = readMovePage(database_, run, game, *position, offset, 50);
+        const auto page = readMovePage(database_, run, game, *position, offset, 50, &previousQuick);
         if (const auto* e = std::get_if<ReviewError>(&page)) {
             return *e;
         }
         for (const auto& move : std::get<ReviewMovePage>(page).moves) {
+            previousQuick = move.quickScan;
             auto& coverage = out.quickScan[static_cast<std::size_t>(move.mover)];
             switch (move.quickScan.state) {
             case review::ScanState::AwaitingEvidence:
@@ -1447,8 +1502,7 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
                 {move.positionIndex, move.mover, c.has_value(), c && c->stable,
                  c ? c->label : std::nullopt, move.accuracyLoss, move.rawBefore, move.rawAfter});
             if (move.refinementTarget) {
-                positions.insert(move.positionIndex - 1);
-                positions.insert(move.positionIndex);
+                candidates.push_back({move.positionIndex, move.quickScan});
             }
             if (selection.selected) {
                 out.keyPositions.push_back(move.positionIndex);
@@ -1464,7 +1518,7 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
             }
         }
     }
-    out.refinementPositions.assign(positions.begin(), positions.end());
+    out.refinementPositions = review::refinementQueue(candidates, run.settings.pipelineVersion);
     const auto facts = summaryBuilder.finish();
     out.sides = facts.sides;
     out.totalKeyMoments = facts.keyMoments;

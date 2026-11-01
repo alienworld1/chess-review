@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -58,7 +59,14 @@ inline QJsonArray searches(const chess_review::pgn::PgnDocument& document, int f
         const std::uint64_t budget = stage == 0 ? 100000 : stage == 1 ? 1000000 : 5000000;
         auto position = std::get<chess::Position>(document.tree.position(document.tree.rootId()));
         for (int index = 0; index < total; ++index) {
-            const auto legal = position.legalMoves();
+            auto legal = position.legalMoves();
+            // A rank-1 played move with a large child loss creates a search conflict.
+            // These general journey fixtures intend ordinary, equal non-best losses;
+            // the adaptive queue tests independently exercise conflict prioritization.
+            if (index < static_cast<int>(moves.size()) && legal.size() > 1 &&
+                legal.front() == moves[static_cast<std::size_t>(index)]) {
+                std::swap(legal[0], legal[1]);
+            }
             if ((stage != 0 || index >= first) && (end < 0 || index < end) && !legal.empty()) {
                 engine::AnalysisRequest request;
                 request.id = QUuid::createUuid();
@@ -90,7 +98,7 @@ inline QJsonArray searches(const chess_review::pgn::PgnDocument& document, int f
                                 break;
                             }
                             const auto move =
-                                choices[ply == 0 ? static_cast<std::size_t>(rank) : 0];
+                                ply == 0 ? legal[static_cast<std::size_t>(rank)] : choices.front();
                             if (!pv.isEmpty()) {
                                 pv += QLatin1Char(' ');
                             }

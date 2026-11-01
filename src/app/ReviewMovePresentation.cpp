@@ -53,6 +53,10 @@ QString refinementReason(review::RefinementReason reason) {
         return QObject::tr("a missing evaluation");
     case RefinementReason::BoundedEvaluation:
         return QObject::tr("a bounded evaluation");
+    case RefinementReason::ExpectedScoreLoss:
+        return QObject::tr("expected-score loss at or above the Inaccuracy threshold");
+    case RefinementReason::OpportunityReply:
+        return QObject::tr("a reply after an error, selected to investigate the opportunity");
     case RefinementReason::MixedConversion:
         return QObject::tr("incompatible score conversion methods");
     }
@@ -84,6 +88,13 @@ QString scanDetails(const review::ScanAssessment& scan) {
         text << QObject::tr("Quick-scan expected-score loss from the mover's perspective: %1 "
                             "percentage points.")
                     .arg(*scan.signedDelta * 100, 0, 'f', 3);
+    }
+    if (scan.opportunityPosition && scan.opportunityLoss) {
+        text << QObject::tr("The preceding move (ply %1) lost %2 expected-score percentage points "
+                            "in the original quick scan. This is an investigation signal, not a "
+                            "verified missed chance.")
+                    .arg(*scan.opportunityPosition)
+                    .arg(*scan.opportunityLoss * 100, 0, 'f', 3);
     }
     if (scan.needsRefinement()) {
         QStringList reasons;

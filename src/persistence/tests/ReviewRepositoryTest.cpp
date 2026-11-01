@@ -133,6 +133,7 @@ class ReviewRepositoryTest final : public QObject {
         const auto doc = document("1. e4 *");
         auto request = seed(f.session, doc);
         request.refinement = true;
+        request.pipelineVersion = 2;
         auto config = request.configuration.values;
         config.refinement.boundaryMargin = 0;
         config.classification.mistakeLoss = std::nextafter(.1, 0.0);
@@ -207,12 +208,93 @@ class ReviewRepositoryTest final : public QObject {
             f.scalar(QStringLiteral("SELECT length(document) FROM review_classifications")).toInt(),
             128);
     }
+    void opportunitySelectionCrossesPageBoundaryAndSurvivesReopen() {
+        QTemporaryDir directory;
+        const auto path = directory.filePath(QStringLiteral("opportunity.sqlite3"));
+        std::string pgn;
+        for (int number = 1; number <= 26; ++number) {
+            pgn += std::to_string(number) + (number % 2 ? ". Nf3 Nf6 " : ". Ng1 Ng8 ");
+        }
+        pgn += "*";
+        const auto doc = document(pgn);
+        ReviewId id = 0;
+        std::int64_t revision = 0;
+        {
+            StorageSession session;
+            QVERIFY(!session.initialize(path, migrations(), ignore));
+            auto request = seed(session, doc);
+            request.refinement = true;
+            auto run = std::get<ReviewSummary>(session.createReview(request));
+            id = run.id;
+            QCOMPARE(request.pipelineVersion, 3U);
+            for (int index = 0; index <= 52; ++index) {
+                auto result = resultAt(request, *doc, index);
+                const int white = index < 50 ? 500 : 700;
+                const int wins = index % 2 == 0 ? white : 1000 - white;
+                result.evidence.lines.front().wdl = engine::Wdl{wins, 0, 1000 - wins};
+                run = std::get<ReviewSummary>(
+                    session.checkpointReview(checkpoint(id, run.revision, index, result)));
+            }
+            revision = run.revision;
+            const auto overview =
+                std::get<ReviewOverview>(session.loadReviewOverview(id, revision));
+            QCOMPARE(overview.refinementPositions, (std::vector<int>{49, 50, 51}));
+            const auto page =
+                std::get<ReviewMovePage>(session.deriveReviewMoves(id, revision, 50, 2));
+            const auto& reply = page.moves.front();
+            QVERIFY(reply.refinementTarget);
+            QCOMPARE(reply.quickScan.opportunityPosition, std::optional<int>{50});
+            QCOMPARE(reply.quickScan.opportunityLoss, std::optional<double>{.2});
+            QCOMPARE(reply.quickScan.loss, std::optional<double>{0});
+            QVERIFY(!page.moves.back().refinementTarget);
+            const auto preceding =
+                std::get<ReviewMovePage>(session.deriveReviewMoves(id, revision, 49, 2));
+            QCOMPARE(preceding.moves.back().quickScan, reply.quickScan);
+            // Completing the error pair alone cannot satisfy its opportunity reply.
+            for (const auto stage :
+                 {review::EvidenceStage::Deepening, review::EvidenceStage::Verification}) {
+                for (const int index : {49, 50}) {
+                    auto result = resultAt(request, *doc, index);
+                    const std::uint64_t nodes =
+                        stage == review::EvidenceStage::Deepening ? 1000000 : 5000000;
+                    result.evidence.limit = engine::NodeLimit{nodes};
+                    result.evidence.statistics.nodes = nodes;
+                    result.evidence.lines.front().statistics.nodes = nodes;
+                    auto cp = checkpoint(id, run.revision, index, result);
+                    cp.stage = stage;
+                    cp.status = JobStatus::Deepening;
+                    const auto saved = session.checkpointReview(cp);
+                    QVERIFY(std::holds_alternative<ReviewSummary>(saved));
+                    run = std::get<ReviewSummary>(saved);
+                }
+            }
+            revision = run.revision;
+            ReviewCheckpoint finish;
+            finish.reviewId = id;
+            finish.expectedRevision = revision;
+            finish.status = JobStatus::Complete;
+            QCOMPARE(std::get<ReviewError>(session.checkpointReview(finish)).code,
+                     ReviewErrorCode::InvalidInput);
+            QCOMPARE(std::get<StoredReview>(session.loadReview(id)).summary.revision, revision);
+            QCOMPARE(std::get<ReviewOverview>(session.loadReviewOverview(id, revision))
+                         .refinementPositions,
+                     overview.refinementPositions);
+        }
+        StorageSession reopened;
+        QVERIFY(!reopened.initialize(path, migrations(), ignore));
+        revision = std::get<StoredReview>(reopened.loadReview(id)).summary.revision;
+        QCOMPARE(
+            std::get<ReviewOverview>(reopened.loadReviewOverview(id, revision)).refinementPositions,
+            (std::vector<int>{49, 50, 51}));
+        const auto page = std::get<ReviewMovePage>(reopened.deriveReviewMoves(id, revision, 50, 2));
+        QCOMPARE(page.moves.front().quickScan.opportunityPosition, std::optional<int>{50});
+    }
     void pipelineSettingsRetainReleasedAndNewPolicies() {
         Fixture f;
         auto request = seed(f.session);
         for (const bool refinement : {false, true}) {
             request.refinement = refinement;
-            for (const std::uint32_t version : {1U, 2U}) {
+            for (const std::uint32_t version : {1U, 2U, 3U}) {
                 request.pipelineVersion = version;
                 const auto bytes = encodeReviewSettings(request);
                 QVERIFY(!bytes.isEmpty());
@@ -243,7 +325,7 @@ class ReviewRepositoryTest final : public QObject {
     void scanMapPolicyAndCompletion_data() {
         QTest::addColumn<int>("policy");
         QTest::addColumn<QString>("gap");
-        for (const int policy : {1, 2}) {
+        for (const int policy : {1, 2, 3}) {
             for (const auto* gap : {"weak", "bound", "missing", "mixed"}) {
                 const auto name =
                     QStringLiteral("v%1-%2").arg(policy).arg(QString::fromLatin1(gap));
@@ -302,10 +384,10 @@ class ReviewRepositoryTest final : public QObject {
             for (std::size_t i = 0; i < scans.size(); ++i) {
                 scans[i] = page.moves[i].quickScan;
                 QCOMPARE(scans[i].state, review::ScanState::Unusable);
-                QCOMPARE(scans[i].needsRefinement(), policy == 2);
+                QCOMPARE(scans[i].needsRefinement(), policy >= 2);
             }
             QCOMPARE(overview.refinementPositions,
-                     policy == 2 ? (std::vector<int>{0, 1, 2}) : std::vector<int>{});
+                     policy >= 2 ? (std::vector<int>{0, 1, 2}) : std::vector<int>{});
             ReviewCheckpoint cancelled;
             cancelled.reviewId = id;
             cancelled.expectedRevision = run.revision;
@@ -319,7 +401,7 @@ class ReviewRepositoryTest final : public QObject {
             finish.reviewId = id;
             finish.expectedRevision = run.revision;
             finish.status = JobStatus::Complete;
-            if (policy == 2) {
+            if (policy >= 2) {
                 QCOMPARE(std::get<ReviewError>(session.checkpointReview(finish)).code,
                          ReviewErrorCode::InvalidInput);
                 QCOMPARE(std::get<StoredReview>(session.loadReview(id)).summary.revision,
@@ -359,7 +441,7 @@ class ReviewRepositoryTest final : public QObject {
             std::get<ReviewMovePage>(reopened.deriveReviewMoves(id, run.summary.revision, 0, 50));
         for (std::size_t i = 0; i < scans.size(); ++i) {
             QCOMPARE(page.moves[i].quickScan, scans[i]);
-            QCOMPARE(page.moves[i].stage, policy == 2 ? review::EvidenceStage::Verification
+            QCOMPARE(page.moves[i].stage, policy >= 2 ? review::EvidenceStage::Verification
                                                       : review::EvidenceStage::Quick);
         }
     }
@@ -507,6 +589,7 @@ class ReviewRepositoryTest final : public QObject {
         const auto doc = document();
         auto request = seed(f.session, doc);
         request.refinement = true;
+        request.pipelineVersion = 2;
         auto run = std::get<ReviewSummary>(f.session.createReview(request));
         for (int index = 0; index < 3; ++index) {
             auto result = resultAt(request, *doc, index);

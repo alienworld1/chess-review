@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
+#include <tuple>
 namespace chess_review::review {
 namespace {
 std::optional<int> ticks(const PositionEvidence& evidence, chess::Color perspective);
@@ -107,6 +109,13 @@ ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvi
         pair.after.modelVersion != evidenceModelVersion ||
         (pair.mover != chess::Color::White && pair.mover != chess::Color::Black) ||
         result.mover != pair.mover || missingNumericEvidence || inconsistentLoss ||
+        (pipelineVersion == 3 &&
+         (!std::isfinite(result.thresholds.inaccuracyLoss) ||
+          !std::isfinite(result.thresholds.mistakeLoss) ||
+          !std::isfinite(result.thresholds.blunderLoss) || result.thresholds.inaccuracyLoss <= 0 ||
+          result.thresholds.inaccuracyLoss >= result.thresholds.mistakeLoss ||
+          result.thresholds.mistakeLoss >= result.thresholds.blunderLoss ||
+          result.thresholds.blunderLoss >= 1)) ||
         invalidExpected(result.before) || invalidExpected(result.after) ||
         invalidExpected(pair.beforeEvaluation) || invalidExpected(pair.afterEvaluation) ||
         invalidLoss(result.loss) || invalidLoss(pair.loss) || invalidDelta(result.signedDelta) ||
@@ -133,6 +142,38 @@ ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvi
         scan.loss = result.loss;
     }
     scan.reasons = refinementReasons(result, pair, config);
+    if (pipelineVersion == 3) {
+        std::erase(scan.reasons, RefinementReason::MajorLoss);
+        std::erase(scan.reasons, RefinementReason::ThresholdProximity);
+        if (scan.state == ScanState::Usable) {
+            double measuredTicks = *scan.loss * 2000;
+            if (pair.beforeEvaluation.expected->source != ConversionSource::ApproximateCentipawns &&
+                pair.afterEvaluation.expected->source != ConversionSource::ApproximateCentipawns) {
+                const auto before = ticks(pair.before, pair.mover);
+                const auto after = ticks(pair.after, pair.mover);
+                if (!before || !after || *before < *after) {
+                    scan.state = ScanState::Invalid;
+                    scan.reasons.clear();
+                    scan.loss.reset();
+                    scan.signedDelta.reset();
+                    return scan;
+                }
+                measuredTicks = static_cast<double>(*before - *after);
+            }
+            if (measuredTicks >= result.thresholds.inaccuracyLoss * 2000) {
+                scan.reasons.push_back(RefinementReason::ExpectedScoreLoss);
+                scan.qualifyingLoss = measuredTicks / 2000;
+            }
+            for (const double boundary :
+                 {result.thresholds.inaccuracyLoss, result.thresholds.mistakeLoss,
+                  result.thresholds.blunderLoss}) {
+                if (std::abs(measuredTicks - boundary * 2000) <= config.boundaryMargin * 2000) {
+                    scan.reasons.push_back(RefinementReason::ThresholdProximity);
+                    break;
+                }
+            }
+        }
+    }
     if (pipelineVersion == 1) {
         return scan;
     }
@@ -153,6 +194,69 @@ ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvi
     return scan;
 }
 
+void addOpportunityContext(ScanAssessment& current, const ScanAssessment& previous,
+                           int previousPosition) {
+    if (previousPosition < 1 || current.state == ScanState::Invalid ||
+        current.state == ScanState::AwaitingEvidence || previous.state != ScanState::Usable ||
+        !previous.qualifyingLoss) {
+        return;
+    }
+    current.opportunityPosition = previousPosition;
+    current.opportunityLoss = previous.qualifyingLoss;
+    current.reasons.push_back(RefinementReason::OpportunityReply);
+}
+std::vector<int> refinementQueue(std::span<const RefinementCandidate> candidates,
+                                 std::uint32_t pipelineVersion) {
+    std::vector<const RefinementCandidate*> ranked;
+    for (const auto& candidate : candidates) {
+        if (candidate.positionIndex > 0 && candidate.scan.needsRefinement()) {
+            ranked.push_back(&candidate);
+        }
+    }
+    const auto priority = [](const RefinementCandidate& candidate) {
+        const auto& scan = candidate.scan;
+        const auto has = [&](RefinementReason reason) {
+            return std::find(scan.reasons.begin(), scan.reasons.end(), reason) !=
+                   scan.reasons.end();
+        };
+        int tier = 5;
+        double loss = 0;
+        if (has(RefinementReason::MateSignal)) {
+            tier = 0;
+        } else if (has(RefinementReason::SearchConflict)) {
+            tier = 1;
+        } else if (scan.qualifyingLoss) {
+            tier = 2;
+            loss = *scan.qualifyingLoss;
+        } else if (scan.opportunityLoss) {
+            tier = 3;
+            loss = *scan.opportunityLoss;
+        } else if (has(RefinementReason::InsufficientStrength) ||
+                   has(RefinementReason::MissingEvaluation) ||
+                   has(RefinementReason::BoundedEvaluation) ||
+                   has(RefinementReason::MixedConversion)) {
+            tier = 4;
+        }
+        return std::tuple{tier, -loss, candidate.positionIndex};
+    };
+    if (pipelineVersion == 3) {
+        std::sort(ranked.begin(), ranked.end(),
+                  [&](const auto* a, const auto* b) { return priority(*a) < priority(*b); });
+    }
+    std::set<int> seen;
+    std::vector<int> positions;
+    for (const auto* candidate : ranked) {
+        for (const int index : {candidate->positionIndex - 1, candidate->positionIndex}) {
+            if (seen.insert(index).second) {
+                positions.push_back(index);
+            }
+        }
+    }
+    if (pipelineVersion != 3) {
+        std::sort(positions.begin(), positions.end());
+    }
+    return positions;
+}
 namespace {
 bool stronger(const PositionEvidence& first, const PositionEvidence& second) {
     if (first.terminal && second.terminal) {

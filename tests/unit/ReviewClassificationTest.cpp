@@ -1,4 +1,5 @@
 #include "review/Summary.h"
+#include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -303,7 +304,7 @@ TEST_CASE("Quick scan retains combined triggers and exact legacy decisions",
         // Golden policy-1 decisions for rank-1 native-WDL evidence: low-loss
         // threshold proximity, the Inaccuracy margin, then search conflict.
         CHECK(legacy.needsRefinement() == (loss <= 20 || loss >= 40));
-        const auto scan = assessQuickScan(result, paired, {});
+        const auto scan = assessQuickScan(result, paired, {}, 2);
         CHECK(scan.needsRefinement() == legacy.needsRefinement());
         if (loss == 200) {
             CHECK(scan.reasons == std::vector{RefinementReason::SearchConflict,
@@ -376,6 +377,10 @@ TEST_CASE("Quick scan rejects unsupported and malformed derived values", "[unit]
     }
     SECTION("out-of-range expected score") { result.after.expected->value = 2; }
     SECTION("missing numeric evidence") { result.before.expected.reset(); }
+    SECTION("nonfinite selection threshold") {
+        result.thresholds.inaccuracyLoss = std::numeric_limits<double>::quiet_NaN();
+    }
+    SECTION("unordered selection thresholds") { result.thresholds.mistakeLoss = .01; }
     SECTION("inconsistent loss") {
         result.loss = .4;
         result.signedDelta = .4;
@@ -395,4 +400,131 @@ TEST_CASE("Quick scan rejects unsupported and malformed derived values", "[unit]
     const auto scan = assessQuickScan(result, paired, {});
     CHECK(scan.state == ScanState::Invalid);
     CHECK(!scan.needsRefinement());
+}
+
+TEST_CASE("Policy three selects errors without selecting routine excellent moves",
+          "[unit][review][adaptive]") {
+    auto position = chess::Position::initial();
+    const auto root = GENERATE(0, 1, 2);
+    if (root == 1) {
+        REQUIRE(std::holds_alternative<std::monostate>(position.play(move(position, "e2e4"))));
+    }
+    if (root == 2) {
+        position = std::get<chess::Position>(
+            chess::Position::fromFen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 40"));
+    }
+    for (const int loss : {0, 10, 20, 39, 40, 49, 50, 51, 100, 200}) {
+        const auto paired = pair(position, loss);
+        const auto classified = classify(position, paired, {});
+        const auto scan = assessQuickScan(classified, paired, {}, 3);
+        REQUIRE(scan.state == ScanState::Usable);
+        CHECK(scan.qualifyingLoss.has_value() == (loss >= 50));
+        CHECK(scan.needsRefinement() == (loss >= 40));
+        const auto legacy = assessQuickScan(classified, paired, {}, 2);
+        if (loss == 0) {
+            CHECK(legacy.needsRefinement());
+        }
+    }
+    const auto paired = pair(position, 50);
+    auto configuration = ClassificationConfig{};
+    configuration.inaccuracyLoss = std::nextafter(.05, 1.0);
+    CHECK(
+        !assessQuickScan(classify(position, paired, configuration), paired, {}, 3).qualifyingLoss);
+    configuration.inaccuracyLoss = .05;
+    CHECK(
+        assessQuickScan(classify(position, paired, configuration), paired, {}, 3).qualifyingLoss ==
+        .05);
+    // Recorded model 1's floating subtraction cannot change the new selection boundary.
+    CHECK(assessQuickScan(classify(position, paired, configuration, {}, 1), paired, {}, 3)
+              .qualifyingLoss == .05);
+}
+TEST_CASE("Opportunity context uses only the preceding usable quick loss",
+          "[unit][review][adaptive]") {
+    const auto position = chess::Position::initial();
+    const auto error = pair(position, 60);
+    const auto previous = assessQuickScan(classify(position, error, {}), error, {}, 3);
+    auto next = position;
+    REQUIRE(std::holds_alternative<std::monostate>(next.play(error.playedMove)));
+    const auto routine = pair(next, 0);
+    const auto reply = assessQuickScan(classify(next, routine, {}), routine, {}, 3);
+    REQUIRE(!reply.needsRefinement());
+    auto selected = reply;
+    addOpportunityContext(selected, previous, 50);
+    CHECK(selected.opportunityPosition == 50);
+    CHECK(selected.opportunityLoss == .06);
+    CHECK(selected.reasons == std::vector{RefinementReason::OpportunityReply});
+    for (const auto state :
+         {ScanState::AwaitingEvidence, ScanState::Unusable, ScanState::Invalid}) {
+        auto unavailable = previous;
+        unavailable.state = state;
+        selected = reply;
+        addOpportunityContext(selected, unavailable, 50);
+        CHECK(!selected.needsRefinement());
+    }
+    selected = reply;
+    addOpportunityContext(selected, previous, 0);
+    CHECK(!selected.needsRefinement());
+    selected = reply;
+    addOpportunityContext(selected, selected, 1);
+    CHECK(!selected.needsRefinement());
+    // A reply that also errs retains its own loss and can create another opportunity.
+    selected = previous;
+    addOpportunityContext(selected, previous, 1);
+    CHECK(selected.qualifyingLoss == .06);
+    CHECK(selected.opportunityLoss == .06);
+}
+TEST_CASE("Adaptive queue orders chess impact then expands unique adjacent positions",
+          "[unit][review][adaptive]") {
+    const auto candidate = [](int index, RefinementReason reason,
+                              std::optional<double> loss = std::nullopt) {
+        ScanAssessment scan;
+        scan.state = ScanState::Usable;
+        scan.reasons = {reason};
+        if (reason == RefinementReason::ExpectedScoreLoss) {
+            scan.qualifyingLoss = loss;
+        } else if (reason == RefinementReason::OpportunityReply) {
+            scan.opportunityLoss = loss;
+        }
+        return RefinementCandidate{index, scan};
+    };
+    std::vector<RefinementCandidate> candidates{
+        candidate(1, RefinementReason::ThresholdProximity),
+        candidate(3, RefinementReason::MissingEvaluation),
+        candidate(5, RefinementReason::OpportunityReply, .1),
+        candidate(6, RefinementReason::OpportunityReply, .2),
+        candidate(8, RefinementReason::ExpectedScoreLoss, .05),
+        candidate(10, RefinementReason::ExpectedScoreLoss, .2),
+        candidate(12, RefinementReason::SearchConflict),
+        candidate(14, RefinementReason::MateSignal),
+        candidate(16, RefinementReason::ExpectedScoreLoss, .2)};
+    const auto expected =
+        std::vector<int>{13, 14, 11, 12, 9, 10, 15, 16, 7, 8, 5, 6, 4, 2, 3, 0, 1};
+    CHECK(refinementQueue(candidates, 3) == expected);
+    std::reverse(candidates.begin(), candidates.end());
+    CHECK(refinementQueue(candidates, 3) == expected);
+    CHECK(refinementQueue(candidates, 2) ==
+          std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
+    CHECK(refinementQueue({}, 3).empty());
+}
+
+TEST_CASE("Adaptive selection uses the captured fallback conversion and error cutoff",
+          "[unit][review][adaptive]") {
+    const auto position = chess::Position::initial();
+    auto original = pair(position, 0);
+    original.before.evaluation.wdl.reset();
+    original.after.evaluation.wdl.reset();
+    original.before.evaluation.score->value = 40;
+    original.after.evaluation.score->value = 0;
+    original.before.candidates.front().evaluation = original.before.evaluation;
+    original.after.candidates.front().evaluation = original.after.evaluation;
+    const auto paired =
+        pairEvidence(position, original.playedMove, original.before, original.after);
+    auto classified = classify(position, paired, {});
+    REQUIRE(classified.loss);
+    REQUIRE(classified.before.expected->source == ConversionSource::ApproximateCentipawns);
+    classified.thresholds.inaccuracyLoss = *classified.loss;
+    REQUIRE(classified.thresholds.inaccuracyLoss < classified.thresholds.mistakeLoss);
+    CHECK(assessQuickScan(classified, paired, {}, 3).qualifyingLoss == classified.loss);
+    classified.thresholds.inaccuracyLoss = std::nextafter(*classified.loss, 1.0);
+    CHECK(!assessQuickScan(classified, paired, {}, 3).qualifyingLoss);
 }

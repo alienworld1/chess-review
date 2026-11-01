@@ -236,7 +236,7 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
     c.conversion = {o["fallbackScaleCp"].toDouble(), o["preferWdl"].toBool()};
     if (o.contains("pipelineVersion")) {
         const auto pipelineVersion = o["pipelineVersion"].toInt(-1);
-        if (pipelineVersion != 1 && pipelineVersion != 2) {
+        if (pipelineVersion != 1 && pipelineVersion != 2 && pipelineVersion != 3) {
             return std::nullopt;
         }
         out.refinement = true;
