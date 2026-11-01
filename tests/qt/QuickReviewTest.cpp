@@ -28,6 +28,7 @@
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSplitter>
@@ -37,6 +38,7 @@
 #include <QTableView>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextCursor>
 #include <QTimer>
 #include <QWheelEvent>
 #include <algorithm>
@@ -158,7 +160,9 @@ class Fixture {
                 int verifyFirst = 0, bool boundedFinal = false,
                 RetryScript retry = RetryScript::None, const std::vector<int>& refinementOrder = {},
                 const std::vector<int>& whiteScores = {},
-                const std::vector<int>& verificationOrder = {}) {
+                const std::vector<int>& verificationOrder = {}, int extraRounds = -1,
+                const std::vector<QString>& stageScores = {},
+                const std::array<std::vector<int>, 2>& escalationOrders = {}) {
         const bool retrySearches = retry != RetryScript::None;
         QJsonArray steps{
             engine_test::step(
@@ -183,12 +187,20 @@ class Fixture {
         auto position = std::get<chess::Position>(document->tree.position(document->tree.rootId()));
         const auto moves = document->originalMainline();
         const int total = static_cast<int>(moves.size()) + 1;
-        const int stages = end < 0 && total > 1 ? 3 : 1;
+        const int additional = extraRounds >= 0
+                                   ? extraRounds
+                                   : ((weak || score.isEmpty()) && refinedScore.isEmpty() ? 2 : 0);
+        const int stages = end < 0 && total > 1 ? 3 + additional : 1;
         for (int stage = 0; stage < stages; ++stage) {
-            const std::uint64_t budget = stage == 0 ? 100000 : stage == 1 ? 1000000 : 5000000;
+            const std::array<std::uint64_t, 5> budgets{100000, 1000000, 5000000, 10000000,
+                                                       20000000};
+            const auto budget = budgets[static_cast<std::size_t>(stage)];
             position = std::get<chess::Position>(document->tree.position(document->tree.rootId()));
             const auto& stageOrder =
-                stage == 2 && !verificationOrder.empty() ? verificationOrder : refinementOrder;
+                stage >= 3 && !escalationOrders[static_cast<std::size_t>(stage - 3)].empty()
+                    ? escalationOrders[static_cast<std::size_t>(stage - 3)]
+                : stage == 2 && !verificationOrder.empty() ? verificationOrder
+                                                           : refinementOrder;
             const int count =
                 stage > 0 && !stageOrder.empty() ? static_cast<int>(stageOrder.size()) : total;
             for (int ordinal = 0; ordinal < count; ++ordinal) {
@@ -233,6 +245,9 @@ class Fixture {
                         const bool weakStage = weak && (stage == 0 || refinedScore.isEmpty());
                         auto evaluation =
                             stage > 0 && !refinedScore.isEmpty() ? refinedScore : score;
+                        if (static_cast<std::size_t>(stage) < stageScores.size()) {
+                            evaluation = stageScores[static_cast<std::size_t>(stage)];
+                        }
                         if (!whiteScores.empty()) {
                             const int white = whiteScores[static_cast<std::size_t>(index)];
                             const int wins =
@@ -2127,7 +2142,7 @@ class QuickReviewTest final : public QObject {
                  QStringLiteral("Test engine"), 0, false,
                  repair ? QStringLiteral("cp 0") : QString{});
         auto& controller = f.startup.reviewGame();
-        std::array<int, 3> searches{};
+        std::array<int, 5> searches{};
         bool earlyReview = false;
         bool fullScanBarrier = true;
         QElapsedTimer elapsed;
@@ -2145,24 +2160,28 @@ class QuickReviewTest final : public QObject {
                     earlyReview = true;
                 }
             });
-        const auto scanFinished = connect(
-            &f.supervisor(), &engine::EngineSupervisor::scheduledFinished, &controller,
-            [&](const engine::ScheduledResult& result) {
-                if (!result.evidence) {
-                    return;
-                }
-                const auto* nodes =
-                    std::get_if<engine::NodeLimit>(&result.evidence->evidence.limit);
-                if (!nodes) {
-                    return;
-                }
-                const int stage = nodes->nodes == 100000 ? 0 : nodes->nodes == 1000000 ? 1 : 2;
-                ++searches[static_cast<std::size_t>(stage)];
-                if (stage > 0 && (!controller.taskState().run ||
-                                  controller.taskState().run->completedPositions != 3)) {
-                    fullScanBarrier = false;
-                }
-            });
+        const auto scanFinished =
+            connect(&f.supervisor(), &engine::EngineSupervisor::scheduledFinished, &controller,
+                    [&](const engine::ScheduledResult& result) {
+                        if (!result.evidence) {
+                            return;
+                        }
+                        const auto* nodes =
+                            std::get_if<engine::NodeLimit>(&result.evidence->evidence.limit);
+                        if (!nodes) {
+                            return;
+                        }
+                        const int stage = nodes->nodes == 100000     ? 0
+                                          : nodes->nodes == 1000000  ? 1
+                                          : nodes->nodes == 5000000  ? 2
+                                          : nodes->nodes == 10000000 ? 3
+                                                                     : 4;
+                        ++searches[static_cast<std::size_t>(stage)];
+                        if (stage > 0 && (!controller.taskState().run ||
+                                          controller.taskState().run->completedPositions != 3)) {
+                            fullScanBarrier = false;
+                        }
+                    });
         const auto disconnectObservers = qScopeGuard([&] {
             disconnect(scanChanged);
             disconnect(scanFinished);
@@ -2183,7 +2202,7 @@ class QuickReviewTest final : public QObject {
         QCOMPARE(overview.deepenedPositions, 3);
         QCOMPARE(overview.verifiedPositions, 3);
         QCOMPARE(overview.sides[0].evaluated, repair ? 1 : 0);
-        QCOMPARE(searches, (std::array<int, 3>{3, 3, 3}));
+        QCOMPARE(searches, (std::array<int, 5>{3, 3, 3, repair ? 0 : 3, repair ? 0 : 3}));
         QVERIFY(earlyReview);
         QVERIFY(fullScanBarrier);
         QTRY_VERIFY(controller.moves().state().page && !controller.moves().state().loading);
@@ -2205,6 +2224,278 @@ class QuickReviewTest final : public QObject {
               overview.quickScan[0].usable + overview.quickScan[1].usable,
               overview.quickScan[0].unusable + overview.quickScan[1].unusable,
               overview.refinementPositions.size());
+    }
+    void adaptiveDeeperSearches_data() {
+        QTest::addColumn<int>("policy");
+        QTest::addColumn<int>("rounds");
+        QTest::addColumn<bool>("unresolved");
+        QTest::newRow("already-stable") << 5 << 0 << false;
+        QTest::newRow("one-extra-round") << 5 << 1 << false;
+        QTest::newRow("two-extra-rounds") << 5 << 2 << false;
+        QTest::newRow("exhausted") << 5 << 2 << true;
+        QTest::newRow("policy4-stable") << 4 << 0 << false;
+        QTest::newRow("policy4-disagreement") << 4 << 1 << false;
+        QTest::newRow("policy4-missing") << 4 << 2 << false;
+        QTest::newRow("policy4-bounds") << 4 << 2 << true;
+    }
+    void adaptiveDeeperSearches() {
+        QFETCH(int, policy);
+        QFETCH(int, rounds);
+        QFETCH(bool, unresolved);
+        Fixture f;
+        QVERIFY(f.seed());
+        std::optional<review::ReviewId> baseline;
+        {
+            auto& controller = f.startup.reviewGame();
+            f.script(0, 1);
+            const auto cancel =
+                connect(&controller, &app::ReviewGameController::changed, &controller, [&] {
+                    if (controller.state().active && controller.state().run &&
+                        controller.state().run->completedPositions == 1) {
+                        controller.cancel();
+                    }
+                });
+            f.run();
+            QVERIFY(f.done());
+            disconnect(cancel);
+            auto& db = f.startup.gameRepository();
+            QSignalSpy loaded(&db, &persistence::Database::reviewLoaded);
+            db.loadReview(QUuid::createUuid(), controller.state().run->id);
+            QTRY_VERIFY(!loaded.empty());
+            auto settings = std::get<persistence::StoredReview>(
+                                qvariant_cast<persistence::LoadReviewResult>(loaded.front()[1]))
+                                .settings;
+            settings.pipelineVersion = static_cast<std::uint32_t>(policy);
+            QSignalSpy created(&db, &persistence::Database::reviewCreated);
+            db.createReview(QUuid::createUuid(), settings);
+            QTRY_VERIFY(!created.empty());
+            const auto run = std::get<persistence::ReviewSummary>(
+                qvariant_cast<persistence::CreateReviewResult>(created.front()[1]));
+            persistence::ReviewCheckpoint cp;
+            cp.reviewId = run.id;
+            cp.expectedRevision = run.revision;
+            cp.status = review::JobStatus::Cancelled;
+            QSignalSpy checkpointed(&db, &persistence::Database::reviewCheckpointed);
+            db.checkpointReview(QUuid::createUuid(), cp);
+            QTRY_VERIFY(!checkpointed.empty());
+            QVERIFY(std::holds_alternative<persistence::ReviewSummary>(
+                qvariant_cast<persistence::CheckpointReviewResult>(checkpointed.front()[1])));
+            baseline = run.id;
+        }
+        const std::vector<QString> scores =
+            rounds == 1 ? std::vector<QString>{QString{}, QStringLiteral("cp 0"),
+                                               QStringLiteral("cp 100"), QStringLiteral("cp 100")}
+            : rounds == 2 && !unresolved
+                ? std::vector<QString>{QString{}, QString{}, QString{}, QStringLiteral("cp 0"),
+                                       QStringLiteral("cp 0")}
+                : std::vector<QString>{};
+        f.script(0, -1, 0, unresolved, false, QStringLiteral("cp 25"),
+                 QStringLiteral("Test engine"), 0, false, {}, 0, 0, false, RetryScript::None, {},
+                 {}, {}, policy == 5 ? rounds : 0, scores);
+        std::array<int, 5> searches{};
+        QElapsedTimer elapsed;
+        qint64 quickMs = -1;
+        qint64 confirmedMs = -1;
+        int heartbeats = 0;
+        QTimer heartbeat;
+        heartbeat.setInterval(5);
+        auto& controller = f.startup.reviewGame();
+        const auto observer = connect(
+            &f.supervisor(), &engine::EngineSupervisor::scheduledFinished, &controller,
+            [&](const engine::ScheduledResult& result) {
+                if (result.evidence) {
+                    if (const auto* limit =
+                            std::get_if<engine::NodeLimit>(&result.evidence->evidence.limit)) {
+                        const std::array<std::uint64_t, 5> budgets{100000, 1000000, 5000000,
+                                                                   10000000, 20000000};
+                        const auto found = std::find(budgets.begin(), budgets.end(), limit->nodes);
+                        if (found != budgets.end()) {
+                            ++searches[static_cast<std::size_t>(found - budgets.begin())];
+                        }
+                    }
+                }
+            });
+        connect(&heartbeat, &QTimer::timeout, &heartbeat, [&] { ++heartbeats; });
+        const auto progress =
+            connect(&controller, &app::ReviewGameController::changed, &controller, [&] {
+                if (quickMs < 0 && controller.state().run &&
+                    controller.state().run->completedPositions == 3) {
+                    quickMs = elapsed.elapsed();
+                }
+                if (confirmedMs < 0 && controller.state().overview &&
+                    controller.state().overview->sides[0].stable +
+                            controller.state().overview->sides[1].stable ==
+                        2) {
+                    confirmedMs = elapsed.elapsed();
+                }
+            });
+        elapsed.start();
+        heartbeat.start();
+        if (baseline) {
+            controller.resume(*baseline);
+        } else {
+            f.run();
+        }
+        QVERIFY(f.done());
+        heartbeat.stop();
+        disconnect(observer);
+        disconnect(progress);
+        QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
+        QCOMPARE(controller.state().run->status, review::JobStatus::Complete);
+        QTRY_VERIFY(controller.state().overview &&
+                    controller.state().overview->revision == controller.state().run->revision);
+        QCOMPARE(searches[0], 3);
+        QCOMPARE(searches[1], 3);
+        QCOMPARE(searches[2], 3);
+        QCOMPARE(searches[3], policy == 5 && rounds >= 1 ? 3 : 0);
+        QCOMPARE(searches[4], policy == 5 && rounds >= 2 ? 3 : 0);
+        const auto stable = controller.state().overview->sides[0].stable +
+                            controller.state().overview->sides[1].stable;
+        QCOMPARE(stable, unresolved || (policy == 4 && rounds > 0) ? 0 : 2);
+        if (stable == 2 && confirmedMs < 0) {
+            confirmedMs = elapsed.elapsed();
+        }
+        QTRY_VERIFY(controller.moves().state().page && !controller.moves().state().loading);
+        const auto& move = controller.moves().state().page->moves.front();
+        QCOMPARE(move.escalationRound, policy == 5 ? rounds : 0);
+        if (policy == 5) {
+            QVERIFY(app::reviewMoveDetails(move).contains(
+                unresolved ? QStringLiteral("two-round limit")
+                           : QStringLiteral("confirm the result")));
+        }
+        QVERIFY(heartbeats > 0);
+        const auto output = qEnvironmentVariable("CHESS_REVIEW_QUICK_RENDER_DIR");
+        if (!output.isEmpty() && policy == 5 && rounds == 2) {
+            f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+            f.window.resize(1100, 720);
+            f.window.show();
+            QTest::qWait(30);
+            f.window.resize(1100, 720);
+            f.window.findChild<QPushButton*>(QStringLiteral("reviewDetailsToggle"))->click();
+            f.window.findChild<QTabWidget*>(QStringLiteral("reviewResultsTabs"))
+                ->setCurrentIndex(1);
+            controller.selectMoment(1);
+            QTRY_VERIFY(!controller.moves().state().loading &&
+                        !controller.exploration().state().loading);
+            auto* inspector =
+                f.window.findChild<QPlainTextEdit*>(QStringLiteral("reviewMoveDetails"));
+            const auto adaptive =
+                inspector->toPlainText().indexOf(QStringLiteral("Adaptive deeper searches"));
+            QVERIFY(adaptive >= 0);
+            auto cursor = inspector->textCursor();
+            cursor.setPosition(static_cast<int>(adaptive));
+            inspector->setTextCursor(cursor);
+            inspector->verticalScrollBar()->setValue(cursor.blockNumber());
+            for (auto* scroll : f.window.findChildren<QScrollArea*>()) {
+                scroll->ensureWidgetVisible(inspector);
+            }
+            QCoreApplication::processEvents();
+            const auto name = unresolved ? QStringLiteral("/escalation-unresolved")
+                                         : QStringLiteral("/escalation-confirmed");
+            QVERIFY(f.window.grab().save(output + name + QStringLiteral(".png")));
+            QVERIFY(inspector->grab().save(output + name + QStringLiteral("-details.png")));
+        }
+        const std::array<std::uint64_t, 5> requested{100000, 1000000, 5000000, 10000000, 20000000};
+        std::uint64_t requestedNodes = 0;
+        for (std::size_t i = 0; i < searches.size(); ++i) {
+            requestedNodes += requested[i] * static_cast<std::uint64_t>(searches[i]);
+        }
+        qInfo("adaptive escalation: policy=%d rounds=%d unresolved=%d quick=%lldms total=%lldms "
+              "confirmed=%lldms searches=%d/%d/%d/%d/%d requestedNodes=%llu stable=%d/2 "
+              "heartbeats=%d",
+              policy, rounds, unresolved, static_cast<long long>(quickMs),
+              static_cast<long long>(elapsed.elapsed()), static_cast<long long>(confirmedMs),
+              searches[0], searches[1], searches[2], searches[3], searches[4],
+              static_cast<unsigned long long>(requestedNodes), stable, heartbeats);
+    }
+    void escalationResumeRetainsAcknowledgedAttempt() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script(0, -1, 0, true);
+        QFile runtime(f.directory.filePath(QStringLiteral("runtime.json")));
+        QVERIFY(runtime.open(QIODevice::ReadOnly));
+        auto steps = QJsonDocument::fromJson(runtime.readAll()).object()["steps"].toArray();
+        runtime.close();
+        int searches = 0;
+        int keep = 0;
+        for (int i = 0; i < steps.size(); ++i) {
+            if (steps[i].toObject()["expect"].toString().startsWith(QStringLiteral("go nodes")) &&
+                ++searches == 10) {
+                keep = i + 2;
+                break;
+            }
+        }
+        QVERIFY(keep > 0);
+        while (steps.size() > keep) {
+            steps.removeLast();
+        }
+        steps.append(quit());
+        engine_test::scenario(runtime.fileName(), steps);
+        auto& controller = f.startup.reviewGame();
+        const auto cancel =
+            connect(&controller, &app::ReviewGameController::changed, &controller, [&] {
+                if (controller.state().active && controller.state().escalationRound == 1 &&
+                    controller.state().refinementDone == 1) {
+                    controller.cancel();
+                }
+            });
+        f.run();
+        QVERIFY(f.done());
+        disconnect(cancel);
+        QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
+        QCOMPARE(controller.state().run->status, review::JobStatus::Cancelled);
+        const auto id = controller.state().run->id;
+        const auto readSaved = [&]() {
+            QSignalSpy loaded(&f.startup.gameRepository(),
+                              &persistence::Database::reviewEvidenceLoaded);
+            f.startup.gameRepository().loadReviewEvidence(QUuid::createUuid(), id, 0,
+                                                          review::EvidenceStage::EscalationOne);
+            if (!loaded.wait()) {
+                return persistence::LoadReviewEvidenceResult{persistence::ReviewError{}};
+            }
+            return qvariant_cast<persistence::LoadReviewEvidenceResult>(loaded.front()[1]);
+        };
+        const auto saved = readSaved();
+        QVERIFY(std::holds_alternative<persistence::StoredReviewEvidence>(saved));
+        const auto attempt =
+            std::get<persistence::StoredReviewEvidence>(saved).evidence.attemptIdentity;
+        f.startup.engines().disconnectEngine();
+        QTRY_COMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnected);
+        f.script(0, -1, 0, true);
+        QVERIFY(runtime.open(QIODevice::ReadOnly));
+        steps = QJsonDocument::fromJson(runtime.readAll()).object()["steps"].toArray();
+        runtime.close();
+        searches = 0;
+        int eraseEnd = 2;
+        for (int i = 0; i < steps.size(); ++i) {
+            if (steps[i].toObject()["expect"].toString().startsWith(QStringLiteral("go nodes")) &&
+                ++searches == 10) {
+                eraseEnd = i + 2;
+                break;
+            }
+        }
+        while (eraseEnd-- > 2) {
+            steps.removeAt(2);
+        }
+        engine_test::scenario(runtime.fileName(), steps);
+        int resumed = 0;
+        const auto observer =
+            connect(&f.supervisor(), &engine::EngineSupervisor::scheduledFinished, &controller,
+                    [&](const engine::ScheduledResult& result) {
+                        if (result.outcome == engine::ScheduledOutcome::Completed) {
+                            ++resumed;
+                        }
+                    });
+        controller.resume(id);
+        QVERIFY(f.done());
+        disconnect(observer);
+        QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
+        QCOMPARE(controller.state().run->status, review::JobStatus::Complete);
+        QCOMPARE(resumed, 5);
+        const auto retained = readSaved();
+        QVERIFY(std::holds_alternative<persistence::StoredReviewEvidence>(retained));
+        QCOMPARE(std::get<persistence::StoredReviewEvidence>(retained).evidence.attemptIdentity,
+                 attempt);
     }
     void refinementComparesAlternativesAndUpdatesSummary() {
         Fixture f;
@@ -2282,8 +2573,10 @@ class QuickReviewTest final : public QObject {
         const auto runId = controller.state().run->id;
         f.startup.engines().disconnectEngine();
         QTRY_COMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnected);
+        const std::array<std::vector<int>, 2> extraOrder{{{0, 1}, {1, 2}}};
         f.script(3, -1, 0, false, false, QStringLiteral("cp 25"), QStringLiteral("Test engine"), 0,
-                 false, {}, 1);
+                 false, {}, 1, 0, false, RetryScript::None, {}, {}, {}, gap ? 2 : 0, {},
+                 extraOrder);
         controller.resume(runId);
         QVERIFY(f.done());
         QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));

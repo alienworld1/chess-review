@@ -117,6 +117,7 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                 profileId_ = run.settings.engineProfileId;
                 side_ = run.settings.selectedSide;
                 refinementEnabled_ = run.settings.refinement;
+                pipelineVersion_ = run.settings.pipelineVersion;
                 runConfiguration_ = run.settings.configuration;
                 connectSelected(true);
             });
@@ -155,11 +156,21 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                     planned_ = true;
                     refinementPositions_ = overview.refinementPositions;
                     refinementIndex_ = 0;
-                    stage_ = review::EvidenceStage::Deepening;
-                    state_.refinementTotal = static_cast<int>(refinementPositions_.size()) * 2;
-                    state_.refinementDone = 0;
-                    statusWrite_ = true;
-                    checkpoint(JobStatus::Reviewable);
+                    if (stage_ < review::EvidenceStage::EscalationOne) {
+                        stage_ = review::EvidenceStage::Deepening;
+                        state_.refinementTotal = static_cast<int>(refinementPositions_.size()) * 2;
+                        state_.escalationRound = 0;
+                        state_.refinementDone = 0;
+                        statusWrite_ = true;
+                        checkpoint(JobStatus::Reviewable);
+                    } else {
+                        const auto round = static_cast<std::size_t>(static_cast<int>(stage_) - 3);
+                        refinementPositions_ = overview.escalationPositions[round];
+                        state_.escalationRound = static_cast<int>(round) + 1;
+                        state_.refinementTotal = static_cast<int>(refinementPositions_.size());
+                        state_.refinementDone = 0;
+                        advance();
+                    }
                 } else {
                     publish();
                     if (state_.active) {
@@ -456,6 +467,7 @@ void ReviewGameController::startJob(chess::Color side, std::int64_t profileId,
     side_ = side;
     profileId_ = profileId;
     refinementEnabled_ = true;
+    pipelineVersion_ = review::pipelineModelVersion;
     resuming_ = false;
     stored_.reset();
     state_.run.reset();
@@ -474,6 +486,7 @@ void ReviewGameController::startJob(chess::Color side, std::int64_t profileId,
     refinementPositions_.clear();
     state_.overview.reset();
     state_.overviewError.clear();
+    state_.escalationRound = 0;
     state_.refinementDone = 0;
     state_.refinementTotal = 0;
     job_ = QUuid::createUuid();
@@ -505,6 +518,7 @@ void ReviewGameController::resumeJob(review::ReviewId id) {
     refinementPositions_.clear();
     state_.overview.reset();
     state_.overviewError.clear();
+    state_.escalationRound = 0;
     state_.refinementDone = 0;
     state_.refinementTotal = 0;
     job_ = QUuid::createUuid();
@@ -677,6 +691,10 @@ void ReviewGameController::advance() {
                 refinementIndex_ = 0;
                 statusWrite_ = true;
                 checkpoint(JobStatus::Deepening);
+            } else if (pipelineVersion_ == 5 && stage_ < review::EvidenceStage::EscalationTwo) {
+                stage_ = static_cast<review::EvidenceStage>(static_cast<int>(stage_) + 1);
+                planning_ = true;
+                refreshOverview();
             } else {
                 statusWrite_ = true;
                 checkpoint(JobStatus::Deriving);
@@ -719,16 +737,10 @@ void ReviewGameController::advancePosition() {
     }
     advance();
 }
-std::uint64_t ReviewGameController::nodeBudget() const {
+std::optional<std::uint64_t> ReviewGameController::nodeBudget() const {
     const auto& b = runConfiguration_.values
                         .budgets[static_cast<std::size_t>(runConfiguration_.values.quality)];
-    if (stage_ == review::EvidenceStage::Deepening) {
-        return b.deepeningNodes;
-    }
-    if (stage_ == review::EvidenceStage::Verification) {
-        return b.verificationNodes;
-    }
-    return b.quickScanNodes;
+    return review::stageBudget(b, stage_);
 }
 void ReviewGameController::refreshOverview(int keyOffset) {
     if (!state_.active) {
@@ -747,6 +759,12 @@ void ReviewGameController::refreshOverview(int keyOffset) {
 }
 void ReviewGameController::selectMoment(int index) { workspace_->selectMoment(index); }
 void ReviewGameController::preparePosition() {
+    const auto budget = nodeBudget();
+    if (!budget) {
+        fail(tr("The captured review has no stronger budget for this stage."),
+             review::JobFailure::Configuration);
+        return;
+    }
     workerBusy_ = true;
     state_.phase = ReviewPhase::Preparing;
     const auto document = game_->document;
@@ -754,7 +772,7 @@ void ReviewGameController::preparePosition() {
     const auto generation = generation_;
     const auto stop = stop_.get_token();
     const auto fingerprint = fingerprint_;
-    const auto nodes = nodeBudget();
+    const auto nodes = *budget;
     const auto stage = stage_;
     int maximumWidth = 1;
     if (stage != review::EvidenceStage::Quick && settings_.state().runtime.discovery) {
@@ -843,7 +861,7 @@ void ReviewGameController::positionReady(std::shared_ptr<const chess::Position> 
         save({}, true);
         return;
     }
-    if (stage_ == review::EvidenceStage::Verification ||
+    if (stage_ >= review::EvidenceStage::Verification ||
         !engine::verifiedResources(searchFingerprint_)) {
         search();
         return;
@@ -862,6 +880,12 @@ void ReviewGameController::search() {
              review::JobFailure::Engine);
         return;
     }
+    const auto budget = nodeBudget();
+    if (!budget) {
+        fail(tr("The captured review has no stronger budget for this stage."),
+             review::JobFailure::Configuration);
+        return;
+    }
     state_.phase =
         stage_ == review::EvidenceStage::Quick ? ReviewPhase::Scanning : ReviewPhase::Refining;
     search_ = QUuid::createUuid();
@@ -869,7 +893,7 @@ void ReviewGameController::search() {
     engine::AnalysisRequest request;
     request.id = search_;
     request.position = *position_;
-    request.limit = engine::NodeLimit{nodeBudget()};
+    request.limit = engine::NodeLimit{*budget};
     request.multiPv = searchWidth_;
     request.wantWdl = true;
     supervisor_.scheduleAnalysis(session_, request,

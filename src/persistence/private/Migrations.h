@@ -33,6 +33,7 @@ using Observe = std::function<void(StorageEvent, int)>;
 
 using Progress = std::function<void(const QString&)>;
 
+Migration escalationMigration();
 Migration reviewWorkspaceMigration();
 Migration refinementMigration();
 Migration classificationsMigration();

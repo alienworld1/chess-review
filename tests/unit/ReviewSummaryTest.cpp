@@ -203,3 +203,35 @@ TEST_CASE("Stability rejects invalid or incompatible derived evaluations",
     verified.modelVersion = 1;
     CHECK(!assessStability(deep, verified, first, second, {}).stable);
 }
+TEST_CASE("Escalation budgets are bounded and omit repeated ceiling rounds",
+          "[unit][review][escalation]") {
+    CHECK(escalationBudget(5000000, 1) == 10000000);
+    CHECK(escalationBudget(5000000, 2) == 20000000);
+    CHECK(escalationBudget(600000000000ULL, 1) == 1000000000000ULL);
+    CHECK(!escalationBudget(600000000000ULL, 2));
+    CHECK(!escalationBudget(1000000000000ULL, 1));
+    CHECK(!escalationBudget(std::numeric_limits<std::uint64_t>::max(), 2));
+    CHECK(!escalationBudget(0, 1));
+    CHECK(!escalationBudget(1, 0));
+    CHECK(!escalationBudget(1, 3));
+    const NodeBudgets budgets{100000, 1000000, 5000000};
+    CHECK(stageBudget(budgets, EvidenceStage::EscalationTwo) == 20000000);
+    CHECK(!stageBudget(budgets, static_cast<EvidenceStage>(99)));
+}
+TEST_CASE("Escalation stops only on supported confirmation or bounded work",
+          "[unit][review][escalation]") {
+    StabilityAssessment stability{StabilityReason::Disagreement};
+    CHECK(needsEscalation(true, true, stability));
+    CHECK(!needsEscalation(false, true, stability));
+    CHECK(!needsEscalation(true, false, stability));
+    CHECK(escalationStop(true, stability, 1, 5000000) == EscalationStop::Pending);
+    CHECK(escalationStop(true, stability, 2, 5000000) == EscalationStop::RoundLimit);
+    CHECK(escalationStop(true, stability, 0, 1000000000000ULL) == EscalationStop::BudgetCeiling);
+    stability.stable = true;
+    CHECK(!needsEscalation(true, true, stability));
+    CHECK(escalationStop(true, stability, 2, 5000000) == EscalationStop::Confirmed);
+    stability.stable = false;
+    stability.persistentMate = true;
+    CHECK(!needsEscalation(true, true, stability));
+    CHECK(escalationStop(true, stability, 1, 5000000) == EscalationStop::PersistentMate);
+}

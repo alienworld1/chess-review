@@ -104,6 +104,15 @@ struct ReviewMove {
     review::StabilityAssessment stability;
     bool refinementTarget = false;
     review::ScanAssessment quickScan;
+    std::array<bool, 2> escalationEligible{};
+    std::array<review::StabilityReason, 2> escalationReasons{};
+    review::EscalationStop escalationStop = review::EscalationStop::NotSelected;
+    int escalationRound = 0;
+    std::array<std::optional<review::Classification>, 2> comparisonLabels;
+    std::array<std::optional<double>, 4> comparisonExpected;
+    bool comparisonBestMoveChanged = false;
+    std::array<review::EvidenceStage, 2> comparisonStages{review::EvidenceStage::Deepening,
+                                                          review::EvidenceStage::Verification};
     review::EvidenceStage stage = review::EvidenceStage::Quick;
     std::optional<int> contextPosition;
     QString bestSan;
@@ -134,6 +143,7 @@ struct ReviewOverview {
     std::array<review::SideSummary, 2> sides;
     std::array<review::ScanCoverage, 2> quickScan;
     std::vector<int> refinementPositions;
+    std::array<std::vector<int>, 2> escalationPositions;
     int deepenedPositions = 0;
     int verifiedPositions = 0;
     std::vector<ReviewMove> keyMoments; // At most 50 compact entries per page.

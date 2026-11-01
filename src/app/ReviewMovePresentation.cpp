@@ -377,12 +377,79 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
     const auto& r = *move.classification;
     text << (r.stable ? QObject::tr("Stable — two stronger passes agree.")
                       : QObject::tr("Provisional — stability has not been established."));
+    if (move.quickScan.pipelineVersion == 5 && move.refinementTarget) {
+        text << QObject::tr("Adaptive deeper searches: round %1 of at most 2.")
+                    .arg(move.escalationRound);
+        const auto reason = [](review::StabilityReason value) {
+            switch (value) {
+            case review::StabilityReason::Disagreement:
+                return QObject::tr("label or best-move disagreement");
+            case review::StabilityReason::ScoreDrift:
+                return QObject::tr("expected-score drift");
+            case review::StabilityReason::Pending:
+                return QObject::tr("a newer adjacent pair is incomplete");
+            default:
+                return QObject::tr("insufficient comparable evidence");
+            }
+        };
+        for (std::size_t round = 0; round < 2; ++round) {
+            if (move.escalationEligible[round]) {
+                text << QObject::tr("Round %1 investigation reason: %2.")
+                            .arg(static_cast<qulonglong>(round + 1))
+                            .arg(reason(move.escalationReasons[round]));
+            }
+        }
+        switch (move.escalationStop) {
+        case review::EscalationStop::Confirmed:
+            text << QObject::tr("Stopped: two comparable passes confirm the result.");
+            break;
+        case review::EscalationStop::PersistentMate:
+            text << QObject::tr("Stopped: a persistent mate signal is supported; numeric "
+                                "interpretation remains withheld.");
+            break;
+        case review::EscalationStop::RoundLimit:
+            text << QObject::tr("Stopped at the two-round limit. Further evidence is required; the "
+                                "result remains unresolved.");
+            break;
+        case review::EscalationStop::BudgetCeiling:
+            text << QObject::tr("Stopped at the node-budget ceiling. Stronger confirmation is "
+                                "unavailable within this review budget.");
+            break;
+        case review::EscalationStop::Pending:
+            text << QObject::tr("Further confirmation is required. Automatic work runs only while "
+                                "this review is active; resume is explicit.");
+            break;
+        case review::EscalationStop::NotSelected:
+            break;
+        }
+        if (move.stabilityEvidenceIds[2] > 0) {
+            const auto label = [](std::optional<review::Classification> value) {
+                review::ClassificationResult result;
+                result.label = value;
+                return classificationText(result);
+            };
+            text << QObject::tr("Compared stages %1 → %2: %3 → %4; best move %5.")
+                        .arg(static_cast<int>(move.comparisonStages[0]))
+                        .arg(static_cast<int>(move.comparisonStages[1]))
+                        .arg(label(move.comparisonLabels[0]), label(move.comparisonLabels[1]),
+                             move.comparisonBestMoveChanged ? QObject::tr("changed")
+                                                            : QObject::tr("unchanged"));
+            const auto value = [](std::optional<double> score) {
+                return score ? QObject::tr("%1%").arg(*score * 100, 0, 'f', 1)
+                             : QObject::tr("unavailable");
+            };
+            text << QObject::tr("Mover expected scores: before %1 → %2; after %3 → %4.")
+                        .arg(value(move.comparisonExpected[0]), value(move.comparisonExpected[2]),
+                             value(move.comparisonExpected[1]), value(move.comparisonExpected[3]));
+        }
+    }
     switch (move.stability.reason) {
     case review::StabilityReason::Unselected:
         text << QObject::tr("Not selected for targeted refinement.");
         break;
     case review::StabilityReason::Pending:
-        text << QObject::tr("Stability requires completed deepening and verification evidence.");
+        text << QObject::tr(
+            "Stability requires a complete newer pair and comparable independent evidence.");
         break;
     case review::StabilityReason::Insufficient:
         text << QObject::tr("Stronger evidence does not meet stability requirements.");

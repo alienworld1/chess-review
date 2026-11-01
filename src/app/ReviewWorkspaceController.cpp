@@ -600,6 +600,7 @@ void ReviewWorkspaceController::taskChanged() {
         state_.phase = task.phase;
         state_.message = task.message;
         state_.error = task.error;
+        state_.escalationRound = task.escalationRound;
         state_.refinementDone = task.refinementDone;
         state_.refinementTotal = task.refinementTotal;
         if (task.overview &&

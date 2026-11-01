@@ -71,6 +71,7 @@ add_library(chess_review_persistence STATIC
     src/persistence/private/ReviewRepository.cpp
     src/persistence/migrations/006_reviews.cpp
     src/persistence/migrations/007_classifications.cpp
+    src/persistence/migrations/010_escalation.cpp
     src/persistence/migrations/009_review_workspace.cpp
     src/persistence/migrations/008_refinement.cpp
     src/persistence/private/AnalysisCodec.cpp

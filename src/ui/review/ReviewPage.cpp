@@ -831,7 +831,10 @@ void ReviewPage::update() {
     if (state.active && state.refinementTotal > 0) {
         progress_->setRange(0, state.refinementTotal);
         progress_->setValue(state.refinementDone);
-        progress_->setFormat(tr("Refinement: %v of %m positions"));
+        progress_->setFormat(
+            state.escalationRound > 0
+                ? tr("Deeper round %1 of 2: %v of %m positions").arg(state.escalationRound)
+                : tr("Refinement: %v of %m positions"));
     } else {
         progress_->setFormat(QStringLiteral("%p%"));
     }

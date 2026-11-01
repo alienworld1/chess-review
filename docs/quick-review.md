@@ -238,3 +238,10 @@ step and orientation. Reopening the same origin retains temporary analysis edits
 replacing edited linked analysis asks before discarding them. Both workspaces'
 temporary edits participate in the normal quit confirmation. Linked workspaces
 and practice attempts are not restored after application restart.
+
+New reviews may run up to two additional deeper-search rounds for selected moves
+that remain uncertain after verification. The inspector explains why, which evidence
+changed, and whether the result was confirmed or reached the review's work limit.
+Shared-position updates may make a neighboring result provisional again. Completed
+reviews can retain unresolved moves; cancellation and explicit resume preserve work.
+See [bounded deeper searches](review-summaries.md#bounded-deeper-searches-pipeline-policy-5).

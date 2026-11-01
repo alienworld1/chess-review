@@ -399,6 +399,58 @@ std::optional<double> accuracyLoss(const MoveEvidence& pair) {
     }
     return pair.loss;
 }
+std::optional<std::uint64_t> escalationBudget(std::uint64_t verificationNodes, int round) {
+    constexpr std::uint64_t ceiling = 1000000000000ULL;
+    if (verificationNodes == 0 || verificationNodes > ceiling || round < 1 || round > 2) {
+        return {};
+    }
+    auto previous = verificationNodes;
+    for (int i = 1; i <= round; ++i) {
+        const auto next = previous > ceiling / 2 ? ceiling : previous * 2;
+        if (next == previous) {
+            return {};
+        }
+        previous = next;
+    }
+    return previous;
+}
+std::optional<std::uint64_t> stageBudget(const NodeBudgets& budgets, EvidenceStage stage) {
+    switch (stage) {
+    case EvidenceStage::Quick:
+        return budgets.quickScanNodes;
+    case EvidenceStage::Deepening:
+        return budgets.deepeningNodes;
+    case EvidenceStage::Verification:
+        return budgets.verificationNodes;
+    case EvidenceStage::EscalationOne:
+        return escalationBudget(budgets.verificationNodes, 1);
+    case EvidenceStage::EscalationTwo:
+        return escalationBudget(budgets.verificationNodes, 2);
+    }
+    return {};
+}
+bool needsEscalation(bool selected, bool complete, const StabilityAssessment& stability) {
+    return selected && complete && !stability.stable && !stability.persistentMate;
+}
+EscalationStop escalationStop(bool selected, const StabilityAssessment& stability,
+                              int completedRound, std::uint64_t verificationNodes) {
+    if (!selected) {
+        return EscalationStop::NotSelected;
+    }
+    if (stability.stable) {
+        return EscalationStop::Confirmed;
+    }
+    if (stability.persistentMate) {
+        return EscalationStop::PersistentMate;
+    }
+    if (completedRound >= 2) {
+        return EscalationStop::RoundLimit;
+    }
+    if (!escalationBudget(verificationNodes, completedRound + 1)) {
+        return EscalationStop::BudgetCeiling;
+    }
+    return EscalationStop::Pending;
+}
 StabilityAssessment assessStability(const ClassificationResult& deep,
                                     const ClassificationResult& verified,
                                     const MoveEvidence& deepPair, const MoveEvidence& verifiedPair,

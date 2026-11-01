@@ -71,7 +71,7 @@ class ReviewGameController final : public QObject {
                        engine::CacheQuery query);
     void advance();
     void advancePosition();
-    std::uint64_t nodeBudget() const;
+    std::optional<std::uint64_t> nodeBudget() const;
     void search();
     void save(std::optional<engine::AnalysisResult> evidence = std::nullopt, bool terminal = false);
     void checkpoint(review::JobStatus status, review::JobFailure failure = review::JobFailure::None,
@@ -97,6 +97,7 @@ class ReviewGameController final : public QObject {
     std::vector<int> refinementPositions_;
     std::size_t refinementIndex_ = 0;
     bool refinementEnabled_ = true;
+    std::uint32_t pipelineVersion_ = review::pipelineModelVersion;
     bool planned_ = false;
     bool statusWrite_ = false;
     bool planning_ = false;

@@ -1156,7 +1156,19 @@ combined reasons, mover perspective, invalid inputs and legacy targeting agreeme
 checks policy wire compatibility, progressive coverage, queue deduplication,
 completion rollback and scan projections after refinement and engine-free reopen.
 `quick_review_tests scanGapsFeedOneRefinementCycle` checks progressive review access,
-the full-scan barrier, repaired/unresolved gaps and exactly one refinement cycle.
+the full-scan barrier, repaired/unresolved gaps, the initial refinement cycle and
+policy-5 extra rounds only for unresolved gaps.
 Its log records scan/total duration, searches per stage, usable/gap counts and
 unique target positions. Timing is observational; budgets and search counts are
 asserted, without a hardware-dependent speed requirement.
+
+### Adaptive deeper searches
+
+Policy-5 fixtures exercise zero, one and two extra rounds, exhausted evidence,
+exact 2×/4× budgets, fresh attempts, shared-position deduplication and provisional
+neighbor reopening. Repository checks cover skipped-round/completion rejection,
+confirming evidence used for exploration, engine-free reads and damaged mappings.
+Domain checks cover budget overflow, the one-trillion-node ceiling and stopping.
+The fake-engine measurements report quick-scan time, total time, per-stage search
+counts and stable coverage; they test bounded orchestration, not objective chess
+strength or universal speed gains.

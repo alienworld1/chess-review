@@ -9,10 +9,10 @@
 namespace chess_review::review {
 inline constexpr std::uint32_t stabilityModelVersion = 1;
 inline constexpr std::uint32_t accuracyModelVersion = 1;
-inline constexpr std::uint32_t pipelineModelVersion = 4;
+inline constexpr std::uint32_t pipelineModelVersion = 5;
 [[nodiscard]] constexpr bool supportsPipelineModel(std::uint32_t version) {
     // Keep released policies explicit when the default advances.
-    return version == 1 || version == 2 || version == 3 || version == 4;
+    return version == 1 || version == 2 || version == 3 || version == 4 || version == 5;
 }
 enum class ScanState { AwaitingEvidence, Usable, Unusable, Invalid };
 enum class RefinementReason {
@@ -68,7 +68,26 @@ using RefinementQueueResult = std::variant<std::vector<int>, RefinementQueueIssu
 // Policies 1/2 retain chronological position order; adaptive policies rank then expand pairs.
 [[nodiscard]] RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candidates,
                                                     std::uint32_t pipelineVersion);
-enum class EvidenceStage { Quick = 0, Deepening = 1, Verification = 2 };
+enum class EvidenceStage {
+    Quick = 0,
+    Deepening = 1,
+    Verification = 2,
+    EscalationOne = 3,
+    EscalationTwo = 4
+};
+// Fixed policy-5 limits; no requested budget alone establishes measured strength.
+[[nodiscard]] std::optional<std::uint64_t> escalationBudget(std::uint64_t verificationNodes,
+                                                            int round);
+[[nodiscard]] std::optional<std::uint64_t> stageBudget(const NodeBudgets& budgets,
+                                                       EvidenceStage stage);
+enum class EscalationStop {
+    NotSelected,
+    Pending,
+    Confirmed,
+    PersistentMate,
+    RoundLimit,
+    BudgetCeiling
+};
 enum class StabilityReason {
     Unselected,
     Pending,
@@ -83,6 +102,10 @@ struct StabilityAssessment {
     bool persistentMate = false;
     std::uint32_t modelVersion = stabilityModelVersion;
 };
+[[nodiscard]] bool needsEscalation(bool selected, bool complete,
+                                   const StabilityAssessment& stability);
+[[nodiscard]] EscalationStop escalationStop(bool selected, const StabilityAssessment& stability,
+                                            int completedRound, std::uint64_t verificationNodes);
 [[nodiscard]] bool needsRefinement(const ClassificationResult& result, const MoveEvidence& pair,
                                    const RefinementConfig& config);
 // Pairs/classifications must come from validated original-board witnesses. Incompatible

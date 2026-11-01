@@ -562,11 +562,12 @@ See [reopen and recovery](reopen-recovery.md) for user-facing behavior.
 
 ### Quick-scan projections and pipeline policy
 
-`CreateReview::pipelineVersion` selects supported refinement policy 1, 2, 3 or 4; new
-runs default to 4. The checksummed settings document includes `pipelineVersion`
-when refinement is enabled. Released policy-1, policy-2 and policy-3 settings round-trip
+`CreateReview::pipelineVersion` selects supported refinement policy 1, 2, 3, 4 or 5; new
+runs default to 5. The checksummed settings document includes `pipelineVersion`
+when refinement is enabled. Released policy-1 through policy-4 settings round-trip
 unchanged; settings without pipeline metadata retain the original scan-only semantics.
-Unsupported pipeline versions are rejected. No schema migration is needed.
+Unsupported pipeline versions are rejected. Policies 1–4 use the existing stage schema;
+policy 5 adds escalation mappings through schema 010.
 
 `ReviewMove::quickScan` is a compact domain assessment of the owned **quick-stage**
 pair, independently of whichever stronger pair supplies the current presentation.
@@ -578,10 +579,10 @@ awaiting; a completed attempt with insufficient interpretation counts as a gap.
 These are reproducible worker-derived projections, not separately stored claims.
 
 Move pages, overview queue selection and completion validation share the captured
-policy. Policies 2, 3 and 4 require both refinement stages for their deduplicated targeted
+policy. Policies 2–5 require both initial refinement stages for their deduplicated targeted
 positions before completion, but do not promise numeric usability or stability.
 Existing corruption, revision, resource-identity and cache-compatibility checks
-remain prerequisites; an invalid policy-2, policy-3 or policy-4 assessment is a record error.
+remain prerequisites; an invalid policy-2 through policy-5 assessment is a record error.
 
 Completion validates the saved quick classification document under its recorded
 supported model, using the same interpretation as move pages and queue selection.
@@ -603,3 +604,20 @@ construction reject mixed-policy inputs. Queue construction returns explicit
 unsupported-policy or invalid-candidate errors before sorting nonfinite or inconsistent
 keys; storage maps these errors to the existing record/version diagnostics. These
 changes add no schema, raw format, cache identity or classification model.
+
+### Policy-5 escalation evidence
+
+Schema 010 adds `review_escalation_positions`, keyed by review, stage and position.
+Stages 3 and 4 refer to immutable owned `review_evidence` records, with the same
+review ownership foreign key as existing refinement mappings. Released migrations
+and stage-1/2 mappings remain unchanged. New refined settings capture pipeline policy
+5; older settings keep their serialized policy and semantics.
+
+Extra-round budgets are fixed by policy 5 and the captured verification budget.
+Stage writes validate the exact requested escalation budget, original position,
+engine identity, MultiPV, fresh attempt, preceding-round completion and eligibility.
+Queues derive only from preceding stages. Completion validates all required rounds;
+invalid writes or completion requests roll back their revision and evidence changes.
+Escalated reviews and their actual confirming evidence remain readable without the
+engine or disposable analysis cache. Migration uses the existing backup and
+transactional upgrade path.

@@ -125,10 +125,37 @@ special label. Stronger results do not change the original selection queue.
 Policies 1, 2 and 3 retain their historical rules and ordering when resumed. Budgets,
 score conversion, classification and stability requirements are unchanged.
 
-New runs capture policy 4, which compares the canonical expected-score loss directly
+Policy 4 introduced selection that compares the canonical expected-score loss directly
 to the captured Inaccuracy cutoff. This corrects rounding at extremely close custom
 cutoffs without changing the score-conversion or classification model. Saved policy-3
 runs retain their rounded cutoff decisions; start a new review to use the corrected
 policy. The evidence inspector identifies the captured selection policy, and labels
 policy-3 cutoff reasons as historical rounded comparisons. Reply selection is
 described as investigating the preceding loss, independently of the final label.
+
+## Bounded deeper searches (pipeline policy 5)
+
+New reviews keep the same quick scan, candidate selection, ranked deepening and
+fresh verification. Selected moves that remain unresolved can receive two further
+rounds. Each round searches the before/after positions freshly, using twice then
+four times the captured verification node budget, with the same MultiPV constraints.
+Positions shared by targets are searched once per round. All targets in one round
+finish before the next round is planned in the original risk order.
+
+A complete newer pair is compared with the preceding complete pair using the same
+independent-attempt, measured-strength, label/best-move agreement and score-drift
+rules. A larger requested budget does not itself prove stronger evidence. Confirmed
+moves and supported persistent mate signals need no further automatic searches.
+Persistent mate signals remain separate from numeric labels and accuracy.
+
+A shared-position search can reopen a neighbor's uncertainty. Until a newer complete
+pair is available, its last usable label stays visible as provisional. The inspector
+shows the investigation reason, compared stages, label/best-move changes, expected
+scores, and supporting evidence IDs. It also distinguishes confirmation from exhausted
+rounds or the node-budget ceiling. Finishing a review still does not guarantee stability.
+
+The ceiling is one trillion requested nodes per search; repeated capped budgets are
+omitted. There is no third round. Difficult reviews can cost more than policy 4;
+already confirmed targets receive no extra searches. Cancellation retains acknowledged
+attempts, and explicit resume reconstructs the same round queues and skips saved work.
+Saved policies 1–4 retain their historical behavior. Reopening never upgrades a review.

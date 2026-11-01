@@ -37,6 +37,7 @@ engine::ValidatedEngine engineValue() {
 CreateReview seed(StorageSession& session,
                   const std::shared_ptr<const pgn::PgnDocument>& doc = document()) {
     CreateReview request;
+    request.pipelineVersion = 4;
     request.gameId = std::get<Inserted>(session.insertGame(*doc, {})).id;
     request.engineProfileId =
         std::get<RegisteredEngine>(session.registerEngine(engineValue())).profile.id;
@@ -660,6 +661,175 @@ class ReviewRepositoryTest final : public QObject {
         QCOMPARE(f.scalar(QStringLiteral("SELECT count(*) FROM review_stage_positions")).toInt(),
                  1);
     }
+    void adaptiveEscalation_data() {
+        QTest::addColumn<bool>("exhausted");
+        QTest::newRow("confirmation") << false;
+        QTest::newRow("round-limit") << true;
+    }
+    void adaptiveEscalation() {
+        QFETCH(bool, exhausted);
+        Fixture f;
+        const auto doc = document();
+        auto request = seed(f.session, doc);
+        request.refinement = true;
+        request.pipelineVersion = 5;
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        const auto save = [&](review::EvidenceStage stage, int index) {
+            auto result = resultAt(request, *doc, index);
+            const auto budget = review::stageBudget(request.configuration.values.budgets[1], stage);
+            QVERIFY(budget);
+            const auto nodes = *budget;
+            result.evidence.limit = engine::NodeLimit{nodes};
+            result.evidence.statistics.nodes = nodes;
+            result.evidence.lines.front().statistics.nodes = nodes;
+            // All quick moves have a repairable bound. Later rounds either repair it or
+            // remain bounded through the cap; all raw attempts are independently owned.
+            if (stage <= review::EvidenceStage::Verification || exhausted) {
+                result.evidence.lines.front().score->bound = engine::ScoreBound::Lower;
+            }
+            auto cp = checkpoint(run.id, run.revision, index, result);
+            cp.stage = stage;
+            cp.status = stage == review::EvidenceStage::Quick ? JobStatus::QuickScanning
+                                                              : JobStatus::Deepening;
+            const auto saved = f.session.checkpointReview(cp);
+            QVERIFY2(std::holds_alternative<ReviewSummary>(saved),
+                     std::holds_alternative<ReviewError>(saved)
+                         ? qPrintable(std::get<ReviewError>(saved).message)
+                         : "");
+            run = std::get<ReviewSummary>(saved);
+        };
+        for (int stage = 0; stage < 3; ++stage) {
+            for (int index = 0; index < 3; ++index) {
+                save(static_cast<review::EvidenceStage>(stage), index);
+            }
+        }
+        const auto overview = f.session.loadReviewOverview(run.id, run.revision);
+        QVERIFY(std::holds_alternative<ReviewOverview>(overview));
+        QCOMPARE(std::get<ReviewOverview>(overview).escalationPositions[0],
+                 (std::vector<int>{0, 1, 2}));
+        ReviewCheckpoint complete;
+        complete.reviewId = run.id;
+        complete.expectedRevision = run.revision;
+        complete.status = JobStatus::Complete;
+        QVERIFY(std::holds_alternative<ReviewError>(f.session.checkpointReview(complete)));
+        QCOMPARE(std::get<StoredReview>(f.session.loadReview(run.id)).summary.revision,
+                 run.revision);
+        // Starting round 2 before round 1 is rejected without changing the revision.
+        auto premature = resultAt(request, *doc, 0);
+        premature.evidence.limit = engine::NodeLimit{20000000};
+        auto early = checkpoint(run.id, run.revision, 0, premature);
+        early.stage = review::EvidenceStage::EscalationTwo;
+        early.status = JobStatus::Deepening;
+        QVERIFY(std::holds_alternative<ReviewError>(f.session.checkpointReview(early)));
+        for (int stage = 3; stage <= 4; ++stage) {
+            for (int index = 0; index < 3; ++index) {
+                save(static_cast<review::EvidenceStage>(stage), index);
+            }
+        }
+        const auto page = f.session.deriveReviewMoves(run.id, run.revision, 0, 50);
+        QVERIFY(std::holds_alternative<ReviewMovePage>(page));
+        const auto& move = std::get<ReviewMovePage>(page).moves.front();
+        QCOMPARE(move.classification->stable, !exhausted);
+        QCOMPARE(move.escalationRound, 2);
+        QCOMPARE(move.escalationStop, exhausted ? review::EscalationStop::RoundLimit
+                                                : review::EscalationStop::Confirmed);
+        if (!exhausted) {
+            QCOMPARE(move.comparisonStages, (std::array{review::EvidenceStage::EscalationOne,
+                                                        review::EvidenceStage::EscalationTwo}));
+            const auto exploration = f.session.loadReviewExploration(run.id, run.revision, 1);
+            QVERIFY(std::holds_alternative<std::shared_ptr<const ReviewExploration>>(exploration));
+            const auto& evidence = *std::get<std::shared_ptr<const ReviewExploration>>(exploration);
+            QCOMPARE(evidence.deep->before.strength.nodes, std::optional<std::uint64_t>(10000000));
+            QCOMPARE(evidence.verified->before.strength.nodes,
+                     std::optional<std::uint64_t>(20000000));
+        }
+        complete.expectedRevision = run.revision;
+        const auto finished = f.session.checkpointReview(complete);
+        QVERIFY(std::holds_alternative<ReviewSummary>(finished));
+        QVERIFY(f.exec(QStringLiteral("DELETE FROM analysis_results")));
+        const auto revision = std::get<ReviewSummary>(finished).revision;
+        QVERIFY(
+            std::holds_alternative<ReviewOverview>(f.session.loadReviewOverview(run.id, revision)));
+        QVERIFY(f.exec(QStringLiteral(
+                    "UPDATE review_escalation_positions SET evidence_id=999999")) == false);
+        QVERIFY(f.exec(QStringLiteral("PRAGMA foreign_keys=OFF")));
+        QVERIFY(
+            f.exec(QStringLiteral("UPDATE review_escalation_positions SET evidence_id=999999")));
+        QCOMPARE(std::get<ReviewError>(f.session.loadReviewOverview(run.id, revision)).code,
+                 ReviewErrorCode::InvalidRecord);
+    }
+    void escalationReopensSharedStableNeighbors() {
+        Fixture f;
+        const auto doc = document();
+        auto request = seed(f.session, doc);
+        request.refinement = true;
+        request.pipelineVersion = 5;
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        const auto save = [&](int stage, int index) {
+            auto result = resultAt(request, *doc, index);
+            const auto budget = review::stageBudget(request.configuration.values.budgets[1],
+                                                    static_cast<review::EvidenceStage>(stage));
+            QVERIFY(budget);
+            const auto nodes = *budget;
+            result.evidence.limit = engine::NodeLimit{nodes};
+            result.evidence.statistics.nodes = nodes;
+            result.evidence.lines.front().statistics.nodes = nodes;
+            if (stage == 0) {
+                result.evidence.lines.front().score->bound = engine::ScoreBound::Lower;
+            }
+            if (stage >= 2 && index == 2) {
+                result.evidence.lines.front().score->value = 100;
+            }
+            auto cp = checkpoint(run.id, run.revision, index, result);
+            cp.stage = static_cast<review::EvidenceStage>(stage);
+            cp.status = stage == 0 ? JobStatus::QuickScanning : JobStatus::Deepening;
+            const auto saved = f.session.checkpointReview(cp);
+            QVERIFY(std::holds_alternative<ReviewSummary>(saved));
+            run = std::get<ReviewSummary>(saved);
+        };
+        for (int stage = 0; stage < 3; ++stage) {
+            for (int index = 0; index < 3; ++index) {
+                save(stage, index);
+            }
+        }
+        auto overview =
+            std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        QCOMPARE(overview.escalationPositions[0], (std::vector<int>{1, 2}));
+        auto page =
+            std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50));
+        QVERIFY(page.moves[0].classification->stable);
+        save(3, 1);
+        page = std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50));
+        QVERIFY(!page.moves[0].classification->stable);
+        QCOMPARE(page.moves[0].stability.reason, review::StabilityReason::Pending);
+        QVERIFY(page.moves[0].classification->label);
+        save(3, 2);
+        overview = std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        QCOMPARE(overview.escalationPositions[1], (std::vector<int>{0, 1}));
+        save(4, 0);
+        page = std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50));
+        QCOMPARE(page.moves[0].escalationStop, review::EscalationStop::Pending);
+        save(4, 1);
+        page = std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50));
+        QVERIFY(page.moves[0].classification->stable);
+        QVERIFY(!page.moves[1].classification->stable);
+        QCOMPARE(page.moves[1].escalationStop, review::EscalationStop::Pending);
+        ReviewCheckpoint complete;
+        complete.reviewId = run.id;
+        complete.expectedRevision = run.revision;
+        complete.status = JobStatus::Complete;
+        const auto finished = f.session.checkpointReview(complete);
+        QVERIFY(std::holds_alternative<ReviewSummary>(finished));
+        page = std::get<ReviewMovePage>(
+            f.session.deriveReviewMoves(run.id, std::get<ReviewSummary>(finished).revision, 0, 50));
+        QCOMPARE(page.moves[1].escalationStop, review::EscalationStop::RoundLimit);
+        QVERIFY(f.exec(QStringLiteral(
+            "DELETE FROM review_stage_positions WHERE stage=2 AND position_index=2")));
+        QCOMPARE(std::get<ReviewError>(f.session.loadReviewOverview(
+                                           run.id, std::get<ReviewSummary>(finished).revision))
+                     .code,
+                 ReviewErrorCode::InvalidRecord);
+    }
     void refinementSurvivesReopenWithIndependentAccuracy() {
         Fixture f;
         const auto doc = document();
@@ -1061,6 +1231,7 @@ class ReviewRepositoryTest final : public QObject {
             QVERIFY(std::holds_alternative<ReviewSummary>(session.checkpointReview(complete)));
             QSqlQuery q(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE review_classifications")));
+            QVERIFY(q.exec(QStringLiteral("DROP TABLE review_escalation_positions")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE review_stage_positions")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE review_workspace")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE review_selection")));
@@ -1767,7 +1938,7 @@ class ReviewRepositoryTest final : public QObject {
                  ReviewErrorCode::Unavailable);
         db.value.initialize(path);
         QTRY_COMPARE(ready.size(), 1);
-        QCOMPARE(ready[0][0].toInt(), 9);
+        QCOMPARE(ready[0][0].toInt(), 10);
         std::vector<QUuid> ids;
         for (int i = 0; i < 17; ++i) {
             ids.push_back(QUuid::createUuid());
