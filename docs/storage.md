@@ -562,36 +562,44 @@ See [reopen and recovery](reopen-recovery.md) for user-facing behavior.
 
 ### Quick-scan projections and pipeline policy
 
-`CreateReview::pipelineVersion` selects supported refinement policy 1, 2 or 3; new
-runs default to 3. The checksummed settings document includes `pipelineVersion`
-when refinement is enabled. Released policy-1 and policy-2 settings round-trip
+`CreateReview::pipelineVersion` selects supported refinement policy 1, 2, 3 or 4; new
+runs default to 4. The checksummed settings document includes `pipelineVersion`
+when refinement is enabled. Released policy-1, policy-2 and policy-3 settings round-trip
 unchanged; settings without pipeline metadata retain the original scan-only semantics.
 Unsupported pipeline versions are rejected. No schema migration is needed.
 
 `ReviewMove::quickScan` is a compact domain assessment of the owned **quick-stage**
 pair, independently of whichever stronger pair supplies the current presentation.
 It contains availability/usability, a withholding issue, optional numeric loss and
-typed refinement reasons. Policy 3 also projects qualifying loss and optional
+typed refinement reasons. Adaptive policies also project their captured policy, qualifying loss and optional
 preceding-move position/loss for opportunity replies. `ReviewOverview::quickScan`
 contains per-side move counts (awaiting, usable, unusable and invalid). Missing adjacent evidence counts as
 awaiting; a completed attempt with insufficient interpretation counts as a gap.
 These are reproducible worker-derived projections, not separately stored claims.
 
 Move pages, overview queue selection and completion validation share the captured
-policy. Policies 2 and 3 require both refinement stages for their deduplicated targeted
+policy. Policies 2, 3 and 4 require both refinement stages for their deduplicated targeted
 positions before completion, but do not promise numeric usability or stability.
 Existing corruption, revision, resource-identity and cache-compatibility checks
-remain prerequisites; an invalid policy-2 or policy-3 assessment is a record error.
+remain prerequisites; an invalid policy-2, policy-3 or policy-4 assessment is a record error.
 
 Completion validates the saved quick classification document under its recorded
 supported model, using the same interpretation as move pages and queue selection.
 A malformed document blocks completion and rolls back its status/revision change;
 completion does not silently replace damaged derived data with a fresh label.
 
-Policy 3 ranks selected moves by mate signals, conflicts, descending qualifying
+Adaptive policies rank selected moves by mate signals, conflicts, descending qualifying
 loss, opportunity replies ordered by preceding loss, repairable gaps, then
 threshold-only ambiguity. Chronology breaks ties. Adjacent positions expand
 before-first and are deduplicated at their earliest occurrence. Random-access move
 pages load one preceding quick pair for opportunity context; overview and completion
 stream that context. No refined presentation pair changes the saved quick queue.
-See [adaptive candidate selection](review-summaries.md#adaptive-candidate-selection-pipeline-policy-3).
+See [adaptive candidate selection](review-summaries.md#adaptive-candidate-selection-pipeline-policies-3-and-4).
+
+Policy 4 compares canonical native-WDL or fallback loss directly to the captured
+Inaccuracy cutoff. Policy 3 retains the released scaled comparison and ordering.
+Assessment projections include the captured policy, so opportunity context and queue
+construction reject mixed-policy inputs. Queue construction returns explicit
+unsupported-policy or invalid-candidate errors before sorting nonfinite or inconsistent
+keys; storage maps these errors to the existing record/version diagnostics. These
+changes add no schema, raw format, cache identity or classification model.

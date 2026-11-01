@@ -3,6 +3,8 @@
 #include <QObject>
 #include <QStringList>
 #include <cmath>
+#include <cstdint>
+#include <optional>
 namespace chess_review::app {
 namespace {
 QString evidenceReason(review::EvidenceIssue issue) {
@@ -36,7 +38,7 @@ QString evidenceReason(review::EvidenceIssue issue) {
     }
     return QObject::tr("Evidence is unavailable.");
 }
-QString refinementReason(review::RefinementReason reason) {
+QString refinementReason(review::RefinementReason reason, std::optional<std::uint32_t> policy) {
     using review::RefinementReason;
     switch (reason) {
     case RefinementReason::MajorLoss:
@@ -54,9 +56,13 @@ QString refinementReason(review::RefinementReason reason) {
     case RefinementReason::BoundedEvaluation:
         return QObject::tr("a bounded evaluation");
     case RefinementReason::ExpectedScoreLoss:
-        return QObject::tr("expected-score loss at or above the Inaccuracy threshold");
+        return policy == 3
+                   ? QObject::tr(
+                         "expected-score loss selected by the recorded policy-3 rounded cutoff")
+                   : QObject::tr("expected-score loss at or above the Inaccuracy threshold");
     case RefinementReason::OpportunityReply:
-        return QObject::tr("a reply after an error, selected to investigate the opportunity");
+        return QObject::tr(
+            "a reply selected to investigate the preceding move's expected-score loss");
     case RefinementReason::MixedConversion:
         return QObject::tr("incompatible score conversion methods");
     }
@@ -64,6 +70,10 @@ QString refinementReason(review::RefinementReason reason) {
 }
 QString scanDetails(const review::ScanAssessment& scan) {
     QStringList text;
+    if (scan.pipelineVersion) {
+        text << QObject::tr("Selection policy: %1 (captured for this review).")
+                    .arg(*scan.pipelineVersion);
+    }
     switch (scan.state) {
     case review::ScanState::AwaitingEvidence:
         text << QObject::tr("Original quick scan: awaiting adjacent saved evidence.");
@@ -99,7 +109,7 @@ QString scanDetails(const review::ScanAssessment& scan) {
     if (scan.needsRefinement()) {
         QStringList reasons;
         for (const auto reason : scan.reasons) {
-            reasons << refinementReason(reason);
+            reasons << refinementReason(reason, scan.pipelineVersion);
         }
         text << QObject::tr("Quick-scan refinement reasons: %1.")
                     .arg(reasons.join(QStringLiteral("; ")));

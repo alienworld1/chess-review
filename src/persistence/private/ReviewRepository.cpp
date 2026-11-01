@@ -162,8 +162,8 @@ std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
         return error(ReviewErrorCode::UnsupportedVersion);
     }
     if (doc->contains("pipelineVersion") &&
-        (((*doc)["pipelineVersion"].toInt(-1) != 1 && (*doc)["pipelineVersion"].toInt(-1) != 2 &&
-          (*doc)["pipelineVersion"].toInt(-1) != 3) ||
+        (!review::supportsPipelineModel(
+             static_cast<std::uint32_t>((*doc)["pipelineVersion"].toInt(-1))) ||
          (*doc)["accuracyModelVersion"].toInt(-1) != 1 ||
          (*doc)["stabilityModelVersion"].toInt(-1) != 1 ||
          (*doc)["reviewModelVersion"].toInt(-1) != 1)) {
@@ -1119,7 +1119,7 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
                 if (scan.state == review::ScanState::Invalid && run.settings.pipelineVersion >= 2) {
                     return invalid();
                 }
-                if (run.settings.pipelineVersion == 3) {
+                if (run.settings.pipelineVersion >= 3) {
                     review::addOpportunityContext(scan, previousScan, index - 1);
                 }
                 previousScan = scan;
@@ -1201,7 +1201,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                    const review::ScanAssessment* precedingScan = nullptr) {
     const int total = run.summary.totalPositions - 1;
     review::ScanAssessment previousScan = precedingScan ? *precedingScan : review::ScanAssessment{};
-    if (!precedingScan && offset > 0 && run.settings.pipelineVersion == 3) {
+    if (!precedingScan && offset > 0 && run.settings.pipelineVersion >= 3) {
         auto restored = gamePosition(game, offset - 1);
         auto* precedingPosition = std::get_if<chess::Position>(&restored);
         if (!precedingPosition) {
@@ -1294,7 +1294,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                 run.settings.pipelineVersion >= 2) {
                 return invalid();
             }
-            if (run.settings.pipelineVersion == 3) {
+            if (run.settings.pipelineVersion >= 3) {
                 review::addOpportunityContext(row.quickScan, previousScan, ply);
             }
             row.refinementTarget = row.quickScan.needsRefinement();
@@ -1518,7 +1518,13 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
             }
         }
     }
-    out.refinementPositions = review::refinementQueue(candidates, run.settings.pipelineVersion);
+    auto queue = review::refinementQueue(candidates, run.settings.pipelineVersion);
+    if (const auto* issue = std::get_if<review::RefinementQueueIssue>(&queue)) {
+        return *issue == review::RefinementQueueIssue::UnsupportedPolicy
+                   ? error(ReviewErrorCode::UnsupportedVersion)
+                   : invalid();
+    }
+    out.refinementPositions = std::get<std::vector<int>>(std::move(queue));
     const auto facts = summaryBuilder.finish();
     out.sides = facts.sides;
     out.totalKeyMoments = facts.keyMoments;

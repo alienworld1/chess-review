@@ -10,7 +10,8 @@ std::optional<int> ticks(const PositionEvidence& evidence, chess::Color perspect
 bool validExpected(const EvaluationResult& result, chess::Color mover);
 std::vector<RefinementReason> refinementReasons(const ClassificationResult& result,
                                                 const MoveEvidence& pair,
-                                                const RefinementConfig& config) {
+                                                const RefinementConfig& config,
+                                                bool includeLegacyLoss = true) {
     std::vector<RefinementReason> reasons;
     if (pair.mate.before || pair.mate.after) {
         reasons.push_back(RefinementReason::MateSignal);
@@ -20,7 +21,7 @@ std::vector<RefinementReason> refinementReasons(const ClassificationResult& resu
         result.issue == ClassificationIssue::BestMoveConflict) {
         reasons.push_back(RefinementReason::SearchConflict);
     }
-    if (!result.loss) {
+    if (!includeLegacyLoss || !result.loss) {
         return reasons;
     }
     if (*result.loss >= result.thresholds.mistakeLoss) {
@@ -76,6 +77,7 @@ bool needsRefinement(const ClassificationResult& result, const MoveEvidence& pai
 ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvidence& pair,
                                const RefinementConfig& config, std::uint32_t pipelineVersion) {
     ScanAssessment scan;
+    scan.pipelineVersion = pipelineVersion;
     scan.state = ScanState::Unusable;
     scan.issue = pair.issue ? pair.issue : result.evidenceIssue;
     const auto rawIssue = [](const PositionEvidence& evidence) -> std::optional<EvidenceIssue> {
@@ -109,7 +111,7 @@ ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvi
         pair.after.modelVersion != evidenceModelVersion ||
         (pair.mover != chess::Color::White && pair.mover != chess::Color::Black) ||
         result.mover != pair.mover || missingNumericEvidence || inconsistentLoss ||
-        (pipelineVersion == 3 &&
+        (pipelineVersion >= 3 &&
          (!std::isfinite(result.thresholds.inaccuracyLoss) ||
           !std::isfinite(result.thresholds.mistakeLoss) ||
           !std::isfinite(result.thresholds.blunderLoss) || result.thresholds.inaccuracyLoss <= 0 ||
@@ -141,10 +143,8 @@ ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvi
         scan.signedDelta = pair.signedDelta;
         scan.loss = result.loss;
     }
-    scan.reasons = refinementReasons(result, pair, config);
-    if (pipelineVersion == 3) {
-        std::erase(scan.reasons, RefinementReason::MajorLoss);
-        std::erase(scan.reasons, RefinementReason::ThresholdProximity);
+    scan.reasons = refinementReasons(result, pair, config, pipelineVersion < 3);
+    if (pipelineVersion >= 3) {
         if (scan.state == ScanState::Usable) {
             double measuredTicks = *scan.loss * 2000;
             if (pair.beforeEvaluation.expected->source != ConversionSource::ApproximateCentipawns &&
@@ -160,9 +160,18 @@ ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvi
                 }
                 measuredTicks = static_cast<double>(*before - *after);
             }
-            if (measuredTicks >= result.thresholds.inaccuracyLoss * 2000) {
+            // Keep released policy 3's decisions reproducible. Scaling adjacent floating
+            // values can merge them; policy 4 compares the canonical loss directly.
+            const double measuredLoss =
+                pair.beforeEvaluation.expected->source == ConversionSource::ApproximateCentipawns
+                    ? *scan.loss
+                    : measuredTicks / 2000;
+            const bool qualifies = pipelineVersion == 3
+                                       ? measuredTicks >= result.thresholds.inaccuracyLoss * 2000
+                                       : measuredLoss >= result.thresholds.inaccuracyLoss;
+            if (qualifies) {
                 scan.reasons.push_back(RefinementReason::ExpectedScoreLoss);
-                scan.qualifyingLoss = measuredTicks / 2000;
+                scan.qualifyingLoss = pipelineVersion == 3 ? measuredTicks / 2000 : measuredLoss;
             }
             for (const double boundary :
                  {result.thresholds.inaccuracyLoss, result.thresholds.mistakeLoss,
@@ -196,23 +205,28 @@ ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvi
 
 void addOpportunityContext(ScanAssessment& current, const ScanAssessment& previous,
                            int previousPosition) {
-    if (previousPosition < 1 || current.state == ScanState::Invalid ||
-        current.state == ScanState::AwaitingEvidence || previous.state != ScanState::Usable ||
-        !previous.qualifyingLoss) {
+    std::erase(current.reasons, RefinementReason::OpportunityReply);
+    current.opportunityPosition.reset();
+    current.opportunityLoss.reset();
+    if (previousPosition < 1 || !current.pipelineVersion ||
+        current.pipelineVersion != previous.pipelineVersion ||
+        !supportsPipelineModel(*current.pipelineVersion) || *current.pipelineVersion < 3 ||
+        (current.state != ScanState::Usable && current.state != ScanState::Unusable) ||
+        previous.state != ScanState::Usable || !previous.qualifyingLoss ||
+        !std::isfinite(*previous.qualifyingLoss) || *previous.qualifyingLoss <= 0 ||
+        *previous.qualifyingLoss > 1) {
         return;
     }
     current.opportunityPosition = previousPosition;
     current.opportunityLoss = previous.qualifyingLoss;
     current.reasons.push_back(RefinementReason::OpportunityReply);
 }
-std::vector<int> refinementQueue(std::span<const RefinementCandidate> candidates,
-                                 std::uint32_t pipelineVersion) {
-    std::vector<const RefinementCandidate*> ranked;
-    for (const auto& candidate : candidates) {
-        if (candidate.positionIndex > 0 && candidate.scan.needsRefinement()) {
-            ranked.push_back(&candidate);
-        }
+RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candidates,
+                                      std::uint32_t pipelineVersion) {
+    if (!supportsPipelineModel(pipelineVersion)) {
+        return RefinementQueueIssue::UnsupportedPolicy;
     }
+    std::vector<std::tuple<int, double, int>> ranked;
     const auto priority = [](const RefinementCandidate& candidate) {
         const auto& scan = candidate.scan;
         const auto has = [&](RefinementReason reason) {
@@ -239,21 +253,69 @@ std::vector<int> refinementQueue(std::span<const RefinementCandidate> candidates
         }
         return std::tuple{tier, -loss, candidate.positionIndex};
     };
-    if (pipelineVersion == 3) {
-        std::sort(ranked.begin(), ranked.end(),
-                  [&](const auto* a, const auto* b) { return priority(*a) < priority(*b); });
+    for (const auto& candidate : candidates) {
+        const auto& scan = candidate.scan;
+        if (candidate.positionIndex < 1) {
+            return RefinementQueueIssue::InvalidCandidate;
+        }
+        if (pipelineVersion >= 3) {
+            const auto validLoss = [](std::optional<double> value) {
+                return !value || (std::isfinite(*value) && *value >= 0 && *value <= 1);
+            };
+            const auto has = [&](RefinementReason reason) {
+                return std::find(scan.reasons.begin(), scan.reasons.end(), reason) !=
+                       scan.reasons.end();
+            };
+            if (scan.pipelineVersion != pipelineVersion ||
+                (scan.state != ScanState::Usable && scan.state != ScanState::Unusable &&
+                 scan.state != ScanState::AwaitingEvidence) ||
+                !validLoss(scan.loss) || !validLoss(scan.signedDelta) ||
+                !validLoss(scan.qualifyingLoss) || !validLoss(scan.opportunityLoss) ||
+                (scan.state == ScanState::AwaitingEvidence && scan.needsRefinement()) ||
+                (scan.qualifyingLoss &&
+                 (scan.state != ScanState::Usable || *scan.qualifyingLoss == 0)) ||
+                has(RefinementReason::ExpectedScoreLoss) != scan.qualifyingLoss.has_value() ||
+                has(RefinementReason::OpportunityReply) != scan.opportunityLoss.has_value() ||
+                scan.opportunityLoss.has_value() != scan.opportunityPosition.has_value() ||
+                (scan.opportunityLoss &&
+                 (*scan.opportunityLoss == 0 || *scan.opportunityPosition < 1 ||
+                  *scan.opportunityPosition != candidate.positionIndex - 1))) {
+                return RefinementQueueIssue::InvalidCandidate;
+            }
+            for (const auto reason : scan.reasons) {
+                switch (reason) {
+                case RefinementReason::MajorLoss:
+                case RefinementReason::ThresholdProximity:
+                case RefinementReason::MateSignal:
+                case RefinementReason::SearchConflict:
+                case RefinementReason::InsufficientStrength:
+                case RefinementReason::MissingEvaluation:
+                case RefinementReason::BoundedEvaluation:
+                case RefinementReason::MixedConversion:
+                case RefinementReason::ExpectedScoreLoss:
+                case RefinementReason::OpportunityReply:
+                    break;
+                default:
+                    return RefinementQueueIssue::InvalidCandidate;
+                }
+            }
+        }
+        if (scan.needsRefinement()) {
+            ranked.push_back(pipelineVersion >= 3 ? priority(candidate)
+                                                  : std::tuple{0, 0.0, candidate.positionIndex});
+        }
     }
+    // All sort keys are finite, and each priority is derived once per candidate.
+    std::sort(ranked.begin(), ranked.end());
     std::set<int> seen;
     std::vector<int> positions;
-    for (const auto* candidate : ranked) {
-        for (const int index : {candidate->positionIndex - 1, candidate->positionIndex}) {
+    for (const auto& candidate : ranked) {
+        const int positionIndex = std::get<2>(candidate);
+        for (const int index : {positionIndex - 1, positionIndex}) {
             if (seen.insert(index).second) {
                 positions.push_back(index);
             }
         }
-    }
-    if (pipelineVersion != 3) {
-        std::sort(positions.begin(), positions.end());
     }
     return positions;
 }

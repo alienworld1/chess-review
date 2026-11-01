@@ -102,7 +102,7 @@ Use the current evaluated/stable coverage and per-move stability details to insp
 stronger results. If more evidence is required, this does not promise automatic
 work after cancellation, interruption or application exit; resume remains explicit.
 
-## Adaptive candidate selection (pipeline policy 3)
+## Adaptive candidate selection (pipeline policies 3 and 4)
 
 New runs select usable quick-scan losses at or above the captured Inaccuracy
 threshold, plus losses within the configured margin of Inaccuracy, Mistake and
@@ -122,5 +122,13 @@ finish before the separate fresh-verification pass uses the same order.
 The existing inspector explains original selection reasons and preceding-move
 context. An opportunity signal does not establish a verified missed chance or a
 special label. Stronger results do not change the original selection queue.
-Policies 1 and 2 retain their historical rules and ordering when resumed. Budgets,
+Policies 1, 2 and 3 retain their historical rules and ordering when resumed. Budgets,
 score conversion, classification and stability requirements are unchanged.
+
+New runs capture policy 4, which compares the canonical expected-score loss directly
+to the captured Inaccuracy cutoff. This corrects rounding at extremely close custom
+cutoffs without changing the score-conversion or classification model. Saved policy-3
+runs retain their rounded cutoff decisions; start a new review to use the corrected
+policy. The evidence inspector identifies the captured selection policy, and labels
+policy-3 cutoff reasons as historical rounded comparisons. Reply selection is
+described as investigating the preceding loss, independently of the final label.

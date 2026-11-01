@@ -4,14 +4,15 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <variant>
 #include <vector>
 namespace chess_review::review {
 inline constexpr std::uint32_t stabilityModelVersion = 1;
 inline constexpr std::uint32_t accuracyModelVersion = 1;
-inline constexpr std::uint32_t pipelineModelVersion = 3;
+inline constexpr std::uint32_t pipelineModelVersion = 4;
 [[nodiscard]] constexpr bool supportsPipelineModel(std::uint32_t version) {
     // Keep released policies explicit when the default advances.
-    return version == 1 || version == 2 || version == 3;
+    return version == 1 || version == 2 || version == 3 || version == 4;
 }
 enum class ScanState { AwaitingEvidence, Usable, Unusable, Invalid };
 enum class RefinementReason {
@@ -27,12 +28,13 @@ enum class RefinementReason {
     OpportunityReply
 };
 struct ScanAssessment {
+    std::optional<std::uint32_t> pipelineVersion;
     ScanState state = ScanState::AwaitingEvidence;
     std::optional<EvidenceIssue> issue;
     std::optional<double> signedDelta;
     std::optional<double> loss;
     std::vector<RefinementReason> reasons;
-    // Set only by policy 3 from usable original quick evidence.
+    // Set only by adaptive policies from usable original quick evidence.
     std::optional<double> qualifyingLoss;
     std::optional<double> opportunityLoss;
     std::optional<int> opportunityPosition;
@@ -59,9 +61,13 @@ struct RefinementCandidate {
     int positionIndex;
     ScanAssessment scan;
 };
-// Policies 1/2 retain chronological position order; policy 3 ranks moves then expands pairs.
-[[nodiscard]] std::vector<int> refinementQueue(std::span<const RefinementCandidate> candidates,
-                                               std::uint32_t pipelineVersion);
+enum class RefinementQueueIssue { UnsupportedPolicy, InvalidCandidate };
+using RefinementQueueResult = std::variant<std::vector<int>, RefinementQueueIssue>;
+// Assessments must come from validated quick evidence and adjacent opportunity context.
+// Invalid inputs are errors, never an empty successful plan or a fallback policy.
+// Policies 1/2 retain chronological position order; adaptive policies rank then expand pairs.
+[[nodiscard]] RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candidates,
+                                                    std::uint32_t pipelineVersion);
 enum class EvidenceStage { Quick = 0, Deepening = 1, Verification = 2 };
 enum class StabilityReason {
     Unselected,
