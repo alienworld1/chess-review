@@ -58,6 +58,13 @@ TEST_CASE("Stability requires independent stronger evidence and agreement",
     b.before.attemptIdentity = "verify-before";
     b.after.attemptIdentity = "verify-after";
     CHECK(assessStability(deep, verified, a, b, {}).stable);
+    a.before.engineIdentity = a.after.engineIdentity = "engine-a";
+    b.before.engineIdentity = b.after.engineIdentity = "engine-b";
+    CHECK(!assessStability(deep, verified, a, b, {}).stable);
+    b.before.engineIdentity = b.after.engineIdentity = "engine-a";
+    b.after.position.halfmoveClock = 1;
+    CHECK(!assessStability(deep, verified, a, b, {}).stable);
+    b.after.position.halfmoveClock = a.after.position.halfmoveClock;
     verified.label = Classification::Blunder;
     CHECK(assessStability(deep, verified, a, b, {}).reason == StabilityReason::Disagreement);
     verified = deep;
@@ -216,7 +223,7 @@ TEST_CASE("Escalation budgets are bounded and omit repeated ceiling rounds",
     CHECK(!escalationBudget(1, 3));
     const NodeBudgets budgets{100000, 1000000, 5000000};
     CHECK(stageBudget(budgets, EvidenceStage::EscalationTwo) == 20000000);
-    CHECK(!stageBudget(budgets, static_cast<EvidenceStage>(99)));
+    CHECK(!stageBudget(NodeBudgets{1, 1, 1000000000000ULL}, EvidenceStage::EscalationOne));
 }
 TEST_CASE("Escalation stops only on supported confirmation or bounded work",
           "[unit][review][escalation]") {

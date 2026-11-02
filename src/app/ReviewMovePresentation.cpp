@@ -432,8 +432,9 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
                         .arg(static_cast<int>(move.comparisonStages[0]))
                         .arg(static_cast<int>(move.comparisonStages[1]))
                         .arg(label(move.comparisonLabels[0]), label(move.comparisonLabels[1]),
-                             move.comparisonBestMoveChanged ? QObject::tr("changed")
-                                                            : QObject::tr("unchanged"));
+                             !move.comparisonBestMoveChanged   ? QObject::tr("not comparable")
+                             : *move.comparisonBestMoveChanged ? QObject::tr("changed")
+                                                               : QObject::tr("unchanged"));
             const auto value = [](std::optional<double> score) {
                 return score ? QObject::tr("%1%").arg(*score * 100, 0, 'f', 1)
                              : QObject::tr("unavailable");

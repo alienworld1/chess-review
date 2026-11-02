@@ -2225,6 +2225,18 @@ class QuickReviewTest final : public QObject {
               overview.quickScan[0].unusable + overview.quickScan[1].unusable,
               overview.refinementPositions.size());
     }
+    void unavailableBestMovesAreNotReportedAsUnchanged() {
+        persistence::ReviewMove move;
+        move.refinementTarget = true;
+        move.quickScan.pipelineVersion = 5;
+        move.classification.emplace();
+        move.stabilityEvidenceIds[2] = 1;
+        QVERIFY(app::reviewMoveDetails(move).contains(QStringLiteral("best move not comparable")));
+        move.comparisonBestMoveChanged = false;
+        QVERIFY(app::reviewMoveDetails(move).contains(QStringLiteral("best move unchanged")));
+        move.comparisonBestMoveChanged = true;
+        QVERIFY(app::reviewMoveDetails(move).contains(QStringLiteral("best move changed")));
+    }
     void adaptiveDeeperSearches_data() {
         QTest::addColumn<int>("policy");
         QTest::addColumn<int>("rounds");

@@ -321,14 +321,18 @@ RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candi
 }
 namespace {
 bool stronger(const PositionEvidence& first, const PositionEvidence& second) {
+    if (first.position != second.position) {
+        return false;
+    }
     if (first.terminal && second.terminal) {
         return first.terminal == second.terminal;
     }
-    return first.complete && second.complete && !first.attemptIdentity.empty() &&
-           !second.attemptIdentity.empty() && first.attemptIdentity != second.attemptIdentity &&
-           first.strength.nodes && second.strength.nodes &&
-           *second.strength.nodes > *first.strength.nodes && first.strength.depth &&
-           second.strength.depth && *second.strength.depth >= *first.strength.depth;
+    return first.complete && second.complete && first.engineIdentity == second.engineIdentity &&
+           !first.attemptIdentity.empty() && !second.attemptIdentity.empty() &&
+           first.attemptIdentity != second.attemptIdentity && first.strength.nodes &&
+           second.strength.nodes && *second.strength.nodes > *first.strength.nodes &&
+           first.strength.depth && second.strength.depth &&
+           *second.strength.depth >= *first.strength.depth;
 }
 bool sameMate(const std::optional<RawScore>& a, const std::optional<RawScore>& b) {
     return a && b && a->kind == ScoreKind::Mate && b->kind == ScoreKind::Mate &&
@@ -456,7 +460,8 @@ StabilityAssessment assessStability(const ClassificationResult& deep,
                                     const MoveEvidence& deepPair, const MoveEvidence& verifiedPair,
                                     const RefinementConfig& config) {
     StabilityAssessment out{StabilityReason::Insufficient};
-    if (!std::isfinite(config.maximumDrift) || config.maximumDrift < 0 || config.maximumDrift > 1) {
+    if (deepPair.mover != verifiedPair.mover || deepPair.playedMove != verifiedPair.playedMove ||
+        !std::isfinite(config.maximumDrift) || config.maximumDrift < 0 || config.maximumDrift > 1) {
         return out;
     }
     if (!stronger(deepPair.before, verifiedPair.before) ||

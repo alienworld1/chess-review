@@ -1172,3 +1172,8 @@ Domain checks cover budget overflow, the one-trillion-node ceiling and stopping.
 The fake-engine measurements report quick-scan time, total time, per-stage search
 counts and stable coverage; they test bounded orchestration, not objective chess
 strength or universal speed gains.
+
+The escalation audit regressions additionally cover frozen quick evidence,
+rejected writes to preceding stages, missing prerequisite mappings on direct
+reads, reused engine attempts, repeated local terminal proofs, cross-engine and
+position-context stability rejection, and unavailable best-move comparisons.

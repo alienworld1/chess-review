@@ -110,7 +110,7 @@ struct ReviewMove {
     int escalationRound = 0;
     std::array<std::optional<review::Classification>, 2> comparisonLabels;
     std::array<std::optional<double>, 4> comparisonExpected;
-    bool comparisonBestMoveChanged = false;
+    std::optional<bool> comparisonBestMoveChanged;
     std::array<review::EvidenceStage, 2> comparisonStages{review::EvidenceStage::Deepening,
                                                           review::EvidenceStage::Verification};
     review::EvidenceStage stage = review::EvidenceStage::Quick;

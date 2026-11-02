@@ -159,3 +159,8 @@ omitted. There is no third round. Difficult reviews can cost more than policy 4;
 already confirmed targets receive no extra searches. Cancellation retains acknowledged
 attempts, and explicit resume reconstructs the same round queues and skips saved work.
 Saved policies 1–4 retain their historical behavior. Reopening never upgrades a review.
+
+A best-move comparison is shown only when both compared passes provide that
+witness. Missing witnesses are reported as **not comparable**, rather than an
+engine changing or retaining its choice. Cross-engine or different-position
+witnesses cannot establish a stable result.

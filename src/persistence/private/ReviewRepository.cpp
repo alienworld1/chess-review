@@ -863,13 +863,25 @@ LoadReviewResult StorageSession::loadReviewRecord(ReviewId id, StoredGame* ownin
     if (!exec(q,
               QStringLiteral(
                   "SELECT 1 FROM review_escalation_positions p LEFT JOIN review_evidence e "
-                  "ON e.review_id=p.review_id AND e.id=p.evidence_id WHERE p.review_id=? AND "
+                  "ON e.review_id=p.review_id AND e.id=p.evidence_id "
+                  "LEFT JOIN review_stage_positions d ON d.review_id=p.review_id AND d.stage=1 "
+                  "AND d.position_index=p.position_index "
+                  "LEFT JOIN review_stage_positions v ON v.review_id=p.review_id AND v.stage=2 "
+                  "AND v.position_index=p.position_index "
+                  "LEFT JOIN review_positions q ON q.review_id=p.review_id "
+                  "AND q.position_index=p.position_index "
+                  "LEFT JOIN review_escalation_positions x ON x.review_id=p.review_id "
+                  "AND x.stage=CASE WHEN p.stage=3 THEN 4 ELSE 3 END "
+                  "AND x.position_index=p.position_index WHERE p.review_id=? AND "
                   "(?<>5 OR ?=0 OR ?<>? OR typeof(p.stage)<>'integer' OR p.stage NOT IN (3,4) OR "
                   "typeof(p.position_index)<>'integer' OR p.position_index<0 OR "
                   "p.position_index>=? OR "
                   "typeof(p.evidence_id)<>'integer' OR e.id IS NULL OR "
-                  "typeof(e.position_index)<>'integer' OR e.position_index<>p.position_index) "
-                  "LIMIT 1"),
+                  "typeof(e.position_index)<>'integer' OR e.position_index<>p.position_index OR "
+                  "d.evidence_id IS NULL OR v.evidence_id IS NULL OR "
+                  "(e.analysis IS NOT NULL AND (p.evidence_id=d.evidence_id OR "
+                  "p.evidence_id=v.evidence_id OR p.evidence_id=q.evidence_id OR "
+                  "p.evidence_id=x.evidence_id))) LIMIT 1"),
               {static_cast<qint64>(id), static_cast<int>(run->settings.pipelineVersion),
                run->settings.refinement ? 1 : 0, s->completedPositions, s->totalPositions,
                s->totalPositions})) {
@@ -888,13 +900,33 @@ LoadReviewResult StorageSession::loadReviewRecord(ReviewId id, StoredGame* ownin
               {static_cast<qint64>(id)})) {
         return storage();
     }
+    bool hasEscalation = false;
     while (q.next()) {
+        hasEscalation = true;
         if (!stageAllowed(*run, static_cast<review::EvidenceStage>(q.value(0).toInt()))) {
             return invalid();
         }
     }
     if (q.lastError().isValid()) {
         return storage();
+    }
+    q.finish();
+    if (hasEscalation) {
+        if (!exec(q,
+                  QStringLiteral(
+                      "SELECT 1 FROM review_stage_positions a WHERE a.review_id=? AND NOT EXISTS("
+                      "SELECT 1 FROM review_stage_positions b WHERE b.review_id=a.review_id "
+                      "AND b.stage IN (1,2) AND b.stage<>a.stage AND "
+                      "b.position_index=a.position_index) LIMIT 1"),
+                  {static_cast<qint64>(id)})) {
+            return storage();
+        }
+        if (q.next()) {
+            return invalid();
+        }
+        if (q.lastError().isValid()) {
+            return storage();
+        }
     }
     return std::move(*run);
 }
@@ -976,6 +1008,32 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
     if (!stageAllowed(run, request.stage)) {
         return error(ReviewErrorCode::InvalidInput);
     }
+    if (request.positionIndex &&
+        (*request.positionIndex < 0 || *request.positionIndex >= run.summary.totalPositions)) {
+        return error(ReviewErrorCode::InvalidInput);
+    }
+    if (run.settings.pipelineVersion == 5 && request.positionIndex) {
+        if (request.stage == review::EvidenceStage::Quick &&
+            run.summary.completedPositions == run.summary.totalPositions) {
+            return error(ReviewErrorCode::InvalidInput);
+        }
+        QSqlQuery later(database_);
+        if (!exec(later,
+                  QStringLiteral(
+                      "SELECT 1 FROM (SELECT stage FROM review_stage_positions WHERE review_id=? "
+                      "UNION ALL SELECT stage FROM review_escalation_positions WHERE review_id=?) "
+                      "WHERE stage>? LIMIT 1"),
+                  {static_cast<qint64>(run.summary.id), static_cast<qint64>(run.summary.id),
+                   static_cast<int>(request.stage)})) {
+            return storage();
+        }
+        if (later.next()) {
+            return error(ReviewErrorCode::InvalidInput);
+        }
+        if (later.lastError().isValid()) {
+            return storage();
+        }
+    }
     if (run.settings.pipelineVersion == 5 &&
         (request.stage >= review::EvidenceStage::EscalationOne ||
          request.status == JobStatus::Complete || request.status == JobStatus::Deriving)) {
@@ -988,9 +1046,6 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
     }
     QSqlQuery q(database_);
     if (request.positionIndex) {
-        if (*request.positionIndex < 0 || *request.positionIndex >= run.summary.totalPositions) {
-            return error(ReviewErrorCode::InvalidInput);
-        }
         const auto* game = &owningGame;
         const auto positionResult = gamePosition(*game, *request.positionIndex);
         const auto* position = std::get_if<chess::Position>(&positionResult);
@@ -1298,6 +1353,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                    int limit,
                                    const review::ScanAssessment* precedingScan = nullptr) {
     const int total = run.summary.totalPositions - 1;
+    std::optional<bool> escalationPresent;
     review::ScanAssessment previousScan = precedingScan ? *precedingScan : review::ScanAssessment{};
     if (!precedingScan && offset > 0 && run.settings.pipelineVersion >= 3) {
         auto restored = gamePosition(game, offset - 1);
@@ -1416,6 +1472,24 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     row.stability.reason = review::StabilityReason::Pending;
                 }
                 const bool initialComplete = deep && verified;
+                if (run.settings.pipelineVersion == 5 && row.refinementTarget && !initialComplete) {
+                    if (!escalationPresent.has_value()) {
+                        QSqlQuery present(db);
+                        if (!exec(present,
+                                  QStringLiteral("SELECT 1 FROM review_escalation_positions WHERE "
+                                                 "review_id=? LIMIT 1"),
+                                  {static_cast<qint64>(run.summary.id)})) {
+                            return storage();
+                        }
+                        escalationPresent = present.next();
+                        if (present.lastError().isValid()) {
+                            return storage();
+                        }
+                    }
+                    if (*escalationPresent) {
+                        return invalid();
+                    }
+                }
                 const auto* previous = deep;
                 auto previousStage = review::EvidenceStage::Deepening;
                 const auto acceptPair = [&](const RefinedPair& older, const RefinedPair& newer,
@@ -1427,7 +1501,10 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     row.comparisonStages = {olderStage, newerStage};
                     row.comparisonLabels = {older.classification.label, newer.classification.label};
                     row.comparisonBestMoveChanged =
-                        older.classification.bestMove != newer.classification.bestMove;
+                        older.classification.bestMove && newer.classification.bestMove
+                            ? std::optional(older.classification.bestMove !=
+                                            newer.classification.bestMove)
+                            : std::nullopt;
                     const auto expected =
                         [](const review::EvaluationResult& evaluation) -> std::optional<double> {
                         return evaluation.expected ? std::optional(evaluation.expected->value)
@@ -1586,6 +1663,9 @@ std::optional<ReviewError> validateEscalation(QSqlDatabase& db, const StoredRevi
                                               const StoredGame& game,
                                               std::optional<review::EvidenceStage> stage,
                                               std::optional<int> index) {
+    if (index && (*index < 0 || *index >= run.summary.totalPositions)) {
+        return error(ReviewErrorCode::InvalidInput);
+    }
     QSqlQuery q(db);
     bool boundary = !stage;
     if (stage) {

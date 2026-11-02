@@ -621,3 +621,9 @@ invalid writes or completion requests roll back their revision and evidence chan
 Escalated reviews and their actual confirming evidence remain readable without the
 engine or disposable analysis cache. Migration uses the existing backup and
 transactional upgrade path.
+
+Policy-5 readers also reject later engine attempts reused from earlier stages and
+missing prerequisite mappings before returning move pages or exploration data.
+Repeated local terminal proofs remain valid. Quick evidence is frozen once its
+scan is complete, and position checkpoints cannot write an earlier stage after a
+later stage has begun. Status-only cancellation/failure writes remain available.

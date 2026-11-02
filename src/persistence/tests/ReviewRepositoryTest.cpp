@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 using namespace chess_review;
 using namespace chess_review::persistence;
 using namespace chess_review::persistence::detail;
@@ -661,6 +662,35 @@ class ReviewRepositoryTest final : public QObject {
         QCOMPARE(f.scalar(QStringLiteral("SELECT count(*) FROM review_stage_positions")).toInt(),
                  1);
     }
+    void escalationAuditFreezesQuickEvidence() {
+        Fixture f;
+        const auto doc = document();
+        auto request = seed(f.session, doc);
+        request.refinement = true;
+        request.pipelineVersion = 5;
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        for (int index = 0; index < 3; ++index) {
+            auto evidence = resultAt(request, *doc, index);
+            evidence.evidence.lines.front().score->bound = engine::ScoreBound::Lower;
+            run = std::get<ReviewSummary>(
+                f.session.checkpointReview(checkpoint(run.id, run.revision, index, evidence)));
+        }
+        auto deep = resultAt(request, *doc, 0);
+        deep.evidence.limit = engine::NodeLimit{1000000};
+        deep.evidence.statistics.nodes = deep.evidence.lines.front().statistics.nodes = 1000000;
+        auto cp = checkpoint(run.id, run.revision, 0, deep);
+        cp.stage = review::EvidenceStage::Deepening;
+        cp.status = JobStatus::Deepening;
+        run = std::get<ReviewSummary>(f.session.checkpointReview(cp));
+        auto replacement = checkpoint(run.id, run.revision, 0, resultAt(request, *doc, 0));
+        replacement.status = JobStatus::Deepening;
+        const auto evidenceCount = f.scalar(QStringLiteral("SELECT count(*) FROM review_evidence"));
+        const auto rejected = f.session.checkpointReview(replacement);
+        QVERIFY(std::holds_alternative<ReviewError>(rejected));
+        QCOMPARE(f.scalar(QStringLiteral("SELECT count(*) FROM review_evidence")), evidenceCount);
+        QCOMPARE(std::get<StoredReview>(f.session.loadReview(run.id)).summary.revision,
+                 run.revision);
+    }
     void adaptiveEscalation_data() {
         QTest::addColumn<bool>("exhausted");
         QTest::newRow("confirmation") << false;
@@ -678,7 +708,9 @@ class ReviewRepositoryTest final : public QObject {
             auto result = resultAt(request, *doc, index);
             const auto budget = review::stageBudget(request.configuration.values.budgets[1], stage);
             QVERIFY(budget);
-            const auto nodes = *budget;
+            // A dominating deepening cache attempt is valid, but cannot be reused as a fresh extra
+            // round.
+            const auto nodes = stage == review::EvidenceStage::Deepening ? 10000000ULL : *budget;
             result.evidence.limit = engine::NodeLimit{nodes};
             result.evidence.statistics.nodes = nodes;
             result.evidence.lines.front().statistics.nodes = nodes;
@@ -726,6 +758,22 @@ class ReviewRepositoryTest final : public QObject {
                 save(static_cast<review::EvidenceStage>(stage), index);
             }
         }
+        const auto firstRound = std::get<StoredReviewEvidence>(
+            f.session.loadReviewEvidence(run.id, 0, review::EvidenceStage::EscalationOne));
+        QVERIFY(firstRound.analysis);
+        auto lateWrite = checkpoint(run.id, run.revision, 0, *firstRound.analysis);
+        lateWrite.stage = review::EvidenceStage::EscalationOne;
+        lateWrite.status = JobStatus::Deepening;
+        QVERIFY(std::holds_alternative<ReviewError>(f.session.checkpointReview(lateWrite)));
+        for (const int index : {std::numeric_limits<int>::min(), -1, run.totalPositions,
+                                std::numeric_limits<int>::max()}) {
+            auto invalid = lateWrite;
+            invalid.stage = review::EvidenceStage::EscalationTwo;
+            invalid.positionIndex = index;
+            const auto rejected = f.session.checkpointReview(invalid);
+            QVERIFY(std::holds_alternative<ReviewError>(rejected));
+            QCOMPARE(std::get<ReviewError>(rejected).code, ReviewErrorCode::InvalidInput);
+        }
         const auto page = f.session.deriveReviewMoves(run.id, run.revision, 0, 50);
         QVERIFY(std::holds_alternative<ReviewMovePage>(page));
         const auto& move = std::get<ReviewMovePage>(page).moves.front();
@@ -750,6 +798,34 @@ class ReviewRepositoryTest final : public QObject {
         const auto revision = std::get<ReviewSummary>(finished).revision;
         QVERIFY(
             std::holds_alternative<ReviewOverview>(f.session.loadReviewOverview(run.id, revision)));
+        const auto verifiedId =
+            f.scalar(QStringLiteral("SELECT evidence_id FROM review_stage_positions WHERE stage=2 "
+                                    "AND position_index=1"))
+                .toLongLong();
+        QVERIFY(f.exec(QStringLiteral(
+            "DELETE FROM review_stage_positions WHERE stage=2 AND position_index=1")));
+        const auto damagedPage = f.session.deriveReviewMoves(run.id, revision, 0, 50);
+        QVERIFY2(std::holds_alternative<ReviewError>(damagedPage),
+                 "A move page accepted a later-round proof after its prior checkpoint was lost");
+        QVERIFY(f.exec(QStringLiteral("INSERT INTO review_stage_positions VALUES(%1,2,1,%2)")
+                           .arg(run.id)
+                           .arg(verifiedId)));
+        const auto extraId =
+            f.scalar(QStringLiteral("SELECT evidence_id FROM review_escalation_positions WHERE "
+                                    "stage=3 AND position_index=1"))
+                .toLongLong();
+        const auto deepId =
+            f.scalar(QStringLiteral("SELECT evidence_id FROM review_stage_positions WHERE stage=1 "
+                                    "AND position_index=1"))
+                .toLongLong();
+        QVERIFY(f.exec(QStringLiteral("UPDATE review_escalation_positions SET evidence_id=%1 WHERE "
+                                      "stage=3 AND position_index=1")
+                           .arg(deepId)));
+        QVERIFY(std::holds_alternative<ReviewError>(f.session.loadReview(run.id)));
+        QVERIFY(f.exec(QStringLiteral("UPDATE review_escalation_positions SET evidence_id=%1 WHERE "
+                                      "stage=3 AND position_index=1")
+                           .arg(extraId)));
+
         QVERIFY(f.exec(QStringLiteral(
                     "UPDATE review_escalation_positions SET evidence_id=999999")) == false);
         QVERIFY(f.exec(QStringLiteral("PRAGMA foreign_keys=OFF")));
@@ -757,6 +833,94 @@ class ReviewRepositoryTest final : public QObject {
             f.exec(QStringLiteral("UPDATE review_escalation_positions SET evidence_id=999999")));
         QCOMPARE(std::get<ReviewError>(f.session.loadReviewOverview(run.id, revision)).code,
                  ReviewErrorCode::InvalidRecord);
+    }
+    void escalationCannotHidePairedLossOfEarlierMappings() {
+        Fixture f;
+        const auto doc = document("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *");
+        auto request = seed(f.session, doc);
+        request.refinement = true;
+        request.pipelineVersion = 5;
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        const auto save = [&](int stage, int index) {
+            auto result = resultAt(request, *doc, index);
+            const auto nodes = review::stageBudget(request.configuration.values.budgets[1],
+                                                   static_cast<review::EvidenceStage>(stage));
+            QVERIFY(nodes);
+            result.evidence.limit = engine::NodeLimit{*nodes};
+            result.evidence.statistics.nodes = result.evidence.lines.front().statistics.nodes =
+                *nodes;
+            if (stage == 0) {
+                result.evidence.lines.front().score->bound = engine::ScoreBound::Lower;
+            }
+            if (stage >= 2 && index == 6) {
+                result.evidence.lines.front().score->value = 100;
+            }
+            auto cp = checkpoint(run.id, run.revision, index, result);
+            cp.stage = static_cast<review::EvidenceStage>(stage);
+            cp.status = stage == 0 ? JobStatus::QuickScanning : JobStatus::Deepening;
+            const auto saved = f.session.checkpointReview(cp);
+            QVERIFY(std::holds_alternative<ReviewSummary>(saved));
+            run = std::get<ReviewSummary>(saved);
+        };
+        for (int stage = 0; stage < 3; ++stage) {
+            for (int index = 0; index < 7; ++index) {
+                save(stage, index);
+            }
+        }
+        QCOMPARE(std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision))
+                     .escalationPositions[0],
+                 (std::vector<int>{5, 6}));
+        save(3, 5);
+        save(3, 6);
+        QVERIFY(
+            f.exec(QStringLiteral("DELETE FROM review_stage_positions WHERE position_index=0")));
+        // Both stage sets still match, and the extra round is elsewhere in the game.
+        // This selected move cannot silently fall back to its original quick gap.
+        QVERIFY(std::holds_alternative<ReviewError>(
+            f.session.deriveReviewMoves(run.id, run.revision, 0, 1)));
+    }
+    void escalationAllowsRepeatedLocalTerminalProof() {
+        Fixture f;
+        const auto doc = document("1. f3 e5 2. g4 Qh4# 0-1");
+        auto request = seed(f.session, doc);
+        request.refinement = true;
+        request.pipelineVersion = 5;
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        for (int value = 0; value <= 4; ++value) {
+            const auto stage = static_cast<review::EvidenceStage>(value);
+            for (int index = 0; index < 5; ++index) {
+                ReviewCheckpoint cp;
+                cp.reviewId = run.id;
+                cp.expectedRevision = run.revision;
+                cp.positionIndex = index;
+                cp.stage = stage;
+                cp.status = value == 0 ? JobStatus::QuickScanning : JobStatus::Deepening;
+                if (index == 4) {
+                    cp.terminal = true;
+                } else {
+                    cp.analysis = resultAt(request, *doc, index);
+                    const auto nodes =
+                        review::stageBudget(request.configuration.values.budgets[1], stage);
+                    QVERIFY(nodes);
+                    cp.analysis->evidence.limit = engine::NodeLimit{*nodes};
+                    cp.analysis->evidence.statistics.nodes =
+                        cp.analysis->evidence.lines.front().statistics.nodes = *nodes;
+                    cp.analysis->evidence.lines.front().score->bound = engine::ScoreBound::Lower;
+                }
+                const auto saved = f.session.checkpointReview(cp);
+                QVERIFY(std::holds_alternative<ReviewSummary>(saved));
+                run = std::get<ReviewSummary>(saved);
+            }
+        }
+        const auto quick = f.session.loadReviewEvidence(run.id, 4);
+        const auto last =
+            f.session.loadReviewEvidence(run.id, 4, review::EvidenceStage::EscalationTwo);
+        QVERIFY(std::holds_alternative<StoredReviewEvidence>(quick));
+        QVERIFY(std::holds_alternative<StoredReviewEvidence>(last));
+        QCOMPARE(std::get<StoredReviewEvidence>(quick).evidenceId,
+                 std::get<StoredReviewEvidence>(last).evidenceId);
+        QVERIFY(std::holds_alternative<ReviewOverview>(
+            f.session.loadReviewOverview(run.id, run.revision)));
     }
     void escalationReopensSharedStableNeighbors() {
         Fixture f;
