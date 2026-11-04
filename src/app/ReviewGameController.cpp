@@ -691,7 +691,7 @@ void ReviewGameController::advance() {
                 refinementIndex_ = 0;
                 statusWrite_ = true;
                 checkpoint(JobStatus::Deepening);
-            } else if (pipelineVersion_ == 5 && stage_ < review::EvidenceStage::EscalationTwo) {
+            } else if (pipelineVersion_ >= 5 && stage_ < review::EvidenceStage::EscalationTwo) {
                 stage_ = static_cast<review::EvidenceStage>(static_cast<int>(stage_) + 1);
                 planning_ = true;
                 refreshOverview();

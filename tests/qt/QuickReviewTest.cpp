@@ -1568,6 +1568,214 @@ class QuickReviewTest final : public QObject {
         QCOMPARE(review.navigation().selected(), 0);
         QCOMPARE(exploration.state().mode, app::ExplorationMode::Game);
     }
+    void comparisonRowsReplayPlayedChildAndHideDuringRetry() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(!exploration.state().loading && exploration.state().canRetry);
+        QVERIFY(!exploration.state().comparisonRows.empty());
+        QVERIFY(exploration.state().comparisonRows.front().startsWith(QStringLiteral("Played:")));
+        QVERIFY(exploration.state().comparisonRows.front().contains(QStringLiteral("after-move")));
+        const auto original = review.navigation().board().pieces;
+        const int playedLine = exploration.state().comparisonLines.front();
+        QVERIFY(playedLine >= 0);
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        f.window.show();
+        auto* rows = f.window.findChild<QTableView*>(QStringLiteral("reviewComparisonRows"));
+        QVERIFY(rows && rows->model()->rowCount() > 0);
+        rows->setCurrentIndex(rows->model()->index(0, 1));
+        QTest::keyClick(rows, Qt::Key_Return);
+        QTRY_COMPARE(exploration.state().mode, app::ExplorationMode::Line);
+        QCOMPARE(exploration.state().candidate, playedLine);
+        QTRY_VERIFY(exploration.state().canAnalyze);
+        exploration.next();
+        QTRY_VERIFY(exploration.state().canAnalyze);
+        QCOMPARE(exploration.board().pieces, original);
+        exploration.openAnalysis();
+        QTRY_VERIFY(exploration.sameAnalysisOrigin());
+        exploration.restoreReviewOrigin();
+        QTRY_COMPARE(exploration.state().candidate, playedLine);
+        QCOMPARE(exploration.state().step, 1);
+        exploration.returnToGame();
+        QTRY_VERIFY(exploration.state().canRetry);
+        exploration.tryAgain();
+        QTRY_VERIFY(exploration.hidesSolution());
+        QVERIFY(!f.window.findChild<QWidget*>(QStringLiteral("reviewComparison"))->isVisible());
+        QCOMPARE(rows->model()->rowCount(), 0);
+        QVERIFY(f.window.findChild<QLabel*>(QStringLiteral("reviewComparisonStatus"))
+                    ->text()
+                    .isEmpty());
+        exploration.returnToGame();
+        QTRY_VERIFY(!exploration.state().comparisonRows.empty());
+    }
+    void comparisonUncertaintyUsesBoundedRounds_data() {
+        QTest::addColumn<bool>("unresolved");
+        QTest::addColumn<bool>("resume");
+        QTest::addColumn<bool>("steady");
+        QTest::newRow("already-confirmed") << false << false << true;
+        QTest::newRow("confirmed") << false << false << false;
+        QTest::newRow("exhausted") << true << false << false;
+        QTest::newRow("resume-comparison-only") << false << true << false;
+    }
+    void comparisonUncertaintyUsesBoundedRounds() {
+        QFETCH(bool, unresolved);
+        QFETCH(bool, resume);
+        QFETCH(bool, steady);
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        const int rounds = steady ? 0 : unresolved ? 2 : 1;
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true, QStringLiteral("cp 0"), 0, 0, false, RetryScript::None, {}, {}, {}, rounds);
+        QFile runtime(f.directory.filePath(QStringLiteral("runtime.json")));
+        QVERIFY(runtime.open(QIODevice::ReadOnly));
+        auto steps = QJsonDocument::fromJson(runtime.readAll()).object()["steps"].toArray();
+        runtime.close();
+        for (qsizetype i = 0; i < steps.size(); ++i) {
+            auto step = steps[i].toObject();
+            const auto command = step["expect"].toString();
+            if (command == QStringLiteral("go nodes 5000000") ||
+                command == QStringLiteral("go nodes 10000000") ||
+                command == QStringLiteral("go nodes 20000000")) {
+                auto actions = step["actions"].toArray();
+                auto write = actions[0].toObject();
+                auto output = write["data"].toString();
+                const auto score =
+                    steady || (unresolved && command == QStringLiteral("go nodes 10000000"))
+                        ? QStringLiteral("cp 0")
+                        : QStringLiteral("cp -30");
+                output.replace(QStringLiteral("multipv 2 score cp 0"),
+                               QStringLiteral("multipv 2 score ") + score);
+                output.replace(QStringLiteral("multipv 3 score cp 0"),
+                               QStringLiteral("multipv 3 score ") + score);
+                write["data"] = output;
+                actions[0] = write;
+                step["actions"] = actions;
+                steps[i] = step;
+            }
+        }
+        const auto fullSteps = steps;
+        int retainedPrefix = 0;
+        if (resume) {
+            int count = 0;
+            for (qsizetype i = 0; i < steps.size(); ++i) {
+                if (steps[i].toObject()["expect"].toString().startsWith(
+                        QStringLiteral("go nodes")) &&
+                    ++count == 10) {
+                    retainedPrefix = static_cast<int>(i) + 2;
+                    break;
+                }
+            }
+            QVERIFY(retainedPrefix > 2);
+            while (steps.size() > retainedPrefix) {
+                steps.removeLast();
+            }
+            steps.append(quit());
+        }
+        engine_test::scenario(runtime.fileName(), steps);
+        std::array<int, 5> searches{};
+        int heartbeats = 0;
+        QTimer heartbeat;
+        heartbeat.setInterval(5);
+        connect(&heartbeat, &QTimer::timeout, &heartbeat, [&] { ++heartbeats; });
+        connect(&f.supervisor(), &engine::EngineSupervisor::scheduledFinished, &heartbeat,
+                [&](const engine::ScheduledResult& result) {
+                    if (result.evidence) {
+                        const auto* nodes =
+                            std::get_if<engine::NodeLimit>(&result.evidence->evidence.limit);
+                        const std::array<std::uint64_t, 5> budgets{100000, 1000000, 5000000,
+                                                                   10000000, 20000000};
+                        if (nodes) {
+                            const auto found =
+                                std::find(budgets.begin(), budgets.end(), nodes->nodes);
+                            if (found != budgets.end()) {
+                                ++searches[static_cast<std::size_t>(found - budgets.begin())];
+                            }
+                        }
+                    }
+                });
+        QElapsedTimer elapsed;
+        elapsed.start();
+        heartbeat.start();
+        auto& controller = f.startup.reviewGame();
+        QMetaObject::Connection cancellation;
+        if (resume) {
+            cancellation =
+                connect(&controller, &app::ReviewGameController::changed, &heartbeat, [&] {
+                    if (controller.state().active && controller.state().escalationRound == 1 &&
+                        controller.state().refinementDone == 1) {
+                        controller.cancel();
+                    }
+                });
+        }
+        f.run();
+        QVERIFY(f.done());
+        disconnect(cancellation);
+        if (resume) {
+            QCOMPARE(controller.state().run->status, review::JobStatus::Cancelled);
+            const auto id = controller.state().run->id;
+            const auto savedAttempt = [&]() {
+                QSignalSpy loaded(&f.startup.gameRepository(),
+                                  &persistence::Database::reviewEvidenceLoaded);
+                f.startup.gameRepository().loadReviewEvidence(QUuid::createUuid(), id, 0,
+                                                              review::EvidenceStage::EscalationOne);
+                if (!loaded.wait()) {
+                    return std::string{};
+                }
+                const auto result =
+                    qvariant_cast<persistence::LoadReviewEvidenceResult>(loaded.front()[1]);
+                const auto* value = std::get_if<persistence::StoredReviewEvidence>(&result);
+                return value ? value->evidence.attemptIdentity : std::string{};
+            };
+            const auto retained = savedAttempt();
+            QVERIFY(!retained.empty());
+            f.startup.engines().disconnectEngine();
+            QTRY_COMPARE(f.startup.engines().state().runtime.phase,
+                         engine::RuntimePhase::Disconnected);
+            steps = fullSteps;
+            for (int i = 2; i < retainedPrefix; ++i) {
+                steps.removeAt(2);
+            }
+            engine_test::scenario(runtime.fileName(), steps);
+            controller.resume(id);
+            QVERIFY(f.done());
+            QCOMPARE(savedAttempt(), retained);
+        }
+        heartbeat.stop();
+        QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
+        QCOMPARE(controller.state().run->status, review::JobStatus::Complete);
+        QCOMPARE(searches, (std::array<int, 5>{3, 3, 3, steady ? 0 : 3, unresolved ? 3 : 0}));
+        controller.selectMoment(1);
+        QTRY_VERIFY(!controller.exploration().state().loading &&
+                    !controller.exploration().state().comparisonRows.empty());
+        const auto* moment = controller.exploration().moment();
+        QVERIFY(moment && moment->classification->stable);
+        QCOMPARE(moment->alternatives.reason, unresolved ? review::ComparisonReason::Disagreement
+                                                         : review::ComparisonReason::Confirmed);
+        QVERIFY(heartbeats > 0);
+        qInfo("alternative comparison: steady=%d resume=%d unresolved=%d total=%lldms "
+              "searches=%d/%d/%d/%d/%d "
+              "heartbeats=%d",
+              steady, resume, unresolved, static_cast<long long>(elapsed.elapsed()), searches[0],
+              searches[1], searches[2], searches[3], searches[4], heartbeats);
+        const auto output = qEnvironmentVariable("CHESS_REVIEW_QUICK_RENDER_DIR");
+        if (!output.isEmpty()) {
+            f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+            f.window.resize(1100, 720);
+            f.window.show();
+            QTest::qWait(30);
+            f.window.resize(1100, 720);
+            QCoreApplication::processEvents();
+            QVERIFY(f.window.grab().save(
+                output + (unresolved ? QStringLiteral("/comparison-unresolved.png")
+                                     : QStringLiteral("/comparison-confirmed.png"))));
+        }
+    }
     void candidateSelectorTracksDisplayedLine() {
         Fixture f;
         QVERIFY(f.seed("1. e4 e5 *", true));
@@ -1704,7 +1912,7 @@ class QuickReviewTest final : public QObject {
         review.selectMoment(2);
         QTRY_COMPARE(nav.displayed(), 2);
         QTRY_VERIFY(!exploration.state().loading && exploration.state().canRetry);
-        QCOMPARE(exploration.state().candidates.size(), 3);
+        QCOMPARE(exploration.state().candidates.size(), 4);
         const auto original = nav.board().pieces;
         const auto revision = review.state().run->revision;
         const auto storedNode = nav.tree()->nodes.size();

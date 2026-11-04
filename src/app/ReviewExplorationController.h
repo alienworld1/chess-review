@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <vector>
 
 namespace chess_review::app {
 enum class ExplorationMode { Game, Line, Retry, Grading, Success };
@@ -32,6 +33,9 @@ struct ExplorationState {
     QString message;
     QString notice;
     QStringList candidates;
+    QString comparisonStatus;
+    QStringList comparisonRows;
+    std::vector<int> comparisonLines;
 };
 // All injected services outlive closed(). Owns isolated replay, retry and linked Analysis sessions.
 class ReviewExplorationController final : public QObject {

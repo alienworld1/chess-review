@@ -3,6 +3,7 @@
 #include "config/Configuration.h"
 #include "persistence/GameRepository.h"
 #include "review/Classification.h"
+#include "review/Comparison.h"
 #include "review/Review.h"
 #include "review/Summary.h"
 #include <QByteArray>
@@ -102,6 +103,8 @@ struct ReviewMove {
     std::array<std::int64_t, 4> stabilityEvidenceIds{};
     std::array<review::AnalysisStrength, 4> stabilityStrength;
     review::StabilityAssessment stability;
+    review::AlternativeComparison alternatives;
+    std::vector<QString> comparisonSans;
     bool refinementTarget = false;
     review::ScanAssessment quickScan;
     std::array<bool, 2> escalationEligible{};
@@ -164,6 +167,8 @@ struct ReviewExploration {
     std::optional<review::MoveEvidence> deep;
     std::optional<review::MoveEvidence> verified;
     std::vector<QString> candidateSans;
+    // Independent replay lines; root candidates retain their existing indexes.
+    std::vector<std::vector<chess::Move>> continuations;
 };
 using LoadReviewExplorationResult =
     std::variant<std::shared_ptr<const ReviewExploration>, ReviewError>;

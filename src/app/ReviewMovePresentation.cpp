@@ -361,8 +361,53 @@ QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::C
                         "measure of playing strength. Missing evidence is excluded.");
     return text.join(QLatin1Char('\n'));
 }
+QString comparisonReasonText(review::ComparisonReason reason) {
+    switch (reason) {
+    case review::ComparisonReason::Pending:
+        return QObject::tr("Awaiting independent comparison");
+    case review::ComparisonReason::Confirmed:
+        return QObject::tr("Comparison confirmed");
+    case review::ComparisonReason::Coverage:
+        return QObject::tr("Alternative equivalence not assessed: saved search width is one");
+    case review::ComparisonReason::NoAlternative:
+        return QObject::tr("No other legal move");
+    case review::ComparisonReason::Insufficient:
+        return QObject::tr("Insufficient comparable evidence");
+    case review::ComparisonReason::MissingCandidate:
+        return QObject::tr("Candidate missing from preceding pass");
+    case review::ComparisonReason::Disagreement:
+        return QObject::tr("Independent comparisons disagree");
+    case review::ComparisonReason::ScoreDrift:
+        return QObject::tr("Comparison changed beyond the drift limit");
+    }
+    return {};
+}
+QString reviewComparisonRow(const review::MoveComparison& row, const QString& san) {
+    QStringList text;
+    text << (row.played ? QObject::tr("Played: %1").arg(san) : san);
+    if (row.gap) {
+        text << QObject::tr("%1 percentage points below best").arg(*row.gap * 100, 0, 'f', 1);
+    }
+    if (row.equivalent) {
+        text << (*row.equivalent ? QObject::tr("Equivalent quality") : QObject::tr("Weaker"));
+    }
+    if (row.reason != review::ComparisonReason::Coverage &&
+        row.reason != review::ComparisonReason::NoAlternative) {
+        text << (row.reason == review::ComparisonReason::Confirmed
+                     ? QObject::tr("Confirmed")
+                     : comparisonReasonText(row.reason));
+    }
+    if (row.expected && row.expected->source == review::ConversionSource::ApproximateCentipawns) {
+        text << QObject::tr("Approximate");
+    }
+    if (row.source == review::ComparisonSource::PlayedChild) {
+        text << QObject::tr("Saved after-move evaluation");
+    }
+    return text.join(QStringLiteral(" · "));
+}
 QString reviewMoveDetails(const persistence::ReviewMove& move) {
     QStringList text;
+    text << comparisonReasonText(move.alternatives.reason);
     text << QObject::tr("%1%2 %3 — %4")
                 .arg(move.moveNumber)
                 .arg(move.mover == chess::Color::White ? QStringLiteral(".")
@@ -377,7 +422,7 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
     const auto& r = *move.classification;
     text << (r.stable ? QObject::tr("Stable — two stronger passes agree.")
                       : QObject::tr("Provisional — stability has not been established."));
-    if (move.quickScan.pipelineVersion == 5 && move.refinementTarget) {
+    if (move.quickScan.pipelineVersion >= 5 && move.refinementTarget) {
         text << QObject::tr("Adaptive deeper searches: round %1 of at most 2.")
                     .arg(move.escalationRound);
         const auto reason = [](review::StabilityReason value) {

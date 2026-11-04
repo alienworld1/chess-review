@@ -297,7 +297,7 @@ const review::NodeBudgets& runBudgets(const StoredReview& run) {
 bool stageAllowed(const StoredReview& run, review::EvidenceStage stage) {
     return stage >= review::EvidenceStage::Quick && stage <= review::EvidenceStage::EscalationTwo &&
            (stage < review::EvidenceStage::EscalationOne ||
-            (run.settings.refinement && run.settings.pipelineVersion == 5 &&
+            (run.settings.refinement && run.settings.pipelineVersion >= 5 &&
              review::stageBudget(runBudgets(run), stage).has_value()));
 }
 bool stageAnalysisValid(const StoredReview& run, const chess::Position& position,
@@ -873,7 +873,7 @@ LoadReviewResult StorageSession::loadReviewRecord(ReviewId id, StoredGame* ownin
                   "LEFT JOIN review_escalation_positions x ON x.review_id=p.review_id "
                   "AND x.stage=CASE WHEN p.stage=3 THEN 4 ELSE 3 END "
                   "AND x.position_index=p.position_index WHERE p.review_id=? AND "
-                  "(?<>5 OR ?=0 OR ?<>? OR typeof(p.stage)<>'integer' OR p.stage NOT IN (3,4) OR "
+                  "(?<5 OR ?=0 OR ?<>? OR typeof(p.stage)<>'integer' OR p.stage NOT IN (3,4) OR "
                   "typeof(p.position_index)<>'integer' OR p.position_index<0 OR "
                   "p.position_index>=? OR "
                   "typeof(p.evidence_id)<>'integer' OR e.id IS NULL OR "
@@ -1012,7 +1012,7 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
         (*request.positionIndex < 0 || *request.positionIndex >= run.summary.totalPositions)) {
         return error(ReviewErrorCode::InvalidInput);
     }
-    if (run.settings.pipelineVersion == 5 && request.positionIndex) {
+    if (run.settings.pipelineVersion >= 5 && request.positionIndex) {
         if (request.stage == review::EvidenceStage::Quick &&
             run.summary.completedPositions == run.summary.totalPositions) {
             return error(ReviewErrorCode::InvalidInput);
@@ -1034,7 +1034,7 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
             return storage();
         }
     }
-    if (run.settings.pipelineVersion == 5 &&
+    if (run.settings.pipelineVersion >= 5 &&
         (request.stage >= review::EvidenceStage::EscalationOne ||
          request.status == JobStatus::Complete || request.status == JobStatus::Deriving)) {
         if (const auto failure = validateEscalation(
@@ -1472,7 +1472,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     row.stability.reason = review::StabilityReason::Pending;
                 }
                 const bool initialComplete = deep && verified;
-                if (run.settings.pipelineVersion == 5 && row.refinementTarget && !initialComplete) {
+                if (run.settings.pipelineVersion >= 5 && row.refinementTarget && !initialComplete) {
                     if (!escalationPresent.has_value()) {
                         QSqlQuery present(db);
                         if (!exec(present,
@@ -1498,6 +1498,8 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     row.stability = review::assessStability(
                         older.classification, newer.classification, older.pair, newer.pair,
                         run.settings.configuration.values.refinement);
+                    row.alternatives = review::compareAlternatives(
+                        *position, newer.pair, &older.pair, run.settings.configuration.values);
                     row.comparisonStages = {olderStage, newerStage};
                     row.comparisonLabels = {older.classification.label, newer.classification.label};
                     row.comparisonBestMoveChanged =
@@ -1535,6 +1537,9 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     if (previous) {
                         acceptPair(*previous, *verified, previousStage,
                                    review::EvidenceStage::Verification);
+                    } else {
+                        row.alternatives = review::compareAlternatives(
+                            *position, verified->pair, nullptr, run.settings.configuration.values);
                     }
                     if (verified->classification.loss || verified->pair.mate.before ||
                         verified->pair.mate.after) {
@@ -1544,7 +1549,26 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     previous = verified;
                     previousStage = review::EvidenceStage::Verification;
                 }
-                if (run.settings.pipelineVersion == 5) {
+                if (run.settings.pipelineVersion >= 5) {
+                    const auto workStability = [&] {
+                        auto assessment = row.stability;
+                        if (run.settings.pipelineVersion >= 6 && assessment.stable &&
+                            row.alternatives.needsEvidence()) {
+                            assessment.stable = false;
+                            switch (row.alternatives.reason) {
+                            case review::ComparisonReason::ScoreDrift:
+                                assessment.reason = review::StabilityReason::ScoreDrift;
+                                break;
+                            case review::ComparisonReason::Disagreement:
+                                assessment.reason = review::StabilityReason::Disagreement;
+                                break;
+                            default:
+                                assessment.reason = review::StabilityReason::Insufficient;
+                                break;
+                            }
+                        }
+                        return assessment;
+                    };
                     const auto& budgets = runBudgets(run);
                     // Eligibility snapshots exclude this and later rounds; partial current writes
                     // therefore cannot change the captured queue reconstructed on resume.
@@ -1553,8 +1577,8 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                         row.escalationEligible[slot] =
                             review::escalationBudget(budgets.verificationNodes, round) &&
                             review::needsEscalation(row.refinementTarget, initialComplete,
-                                                    row.stability);
-                        row.escalationReasons[slot] = row.stability.reason;
+                                                    workStability());
+                        row.escalationReasons[slot] = workStability().reason;
                         if (!review::escalationBudget(budgets.verificationNodes, round)) {
                             break;
                         }
@@ -1584,10 +1608,14 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                             previousStage = stage;
                         } else if (touched && row.refinementTarget) {
                             row.stability = {review::StabilityReason::Pending};
+                            row.alternatives.reason = review::ComparisonReason::Pending;
+                            for (auto& alternative : row.alternatives.moves) {
+                                alternative.reason = review::ComparisonReason::Pending;
+                            }
                         }
                     }
                     row.escalationStop =
-                        review::escalationStop(row.refinementTarget, row.stability,
+                        review::escalationStop(row.refinementTarget, workStability(),
                                                std::max(0, static_cast<int>(previousStage) - 2),
                                                budgets.verificationNodes);
                     if ((run.summary.status == JobStatus::Complete ||
@@ -1605,9 +1633,22 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     a = &chosen->after;
                 }
             }
+            if (!chosen || row.stage != row.comparisonStages[1]) {
+                row.alternatives =
+                    review::compareAlternatives(*position, chosen ? chosen->pair : quickPair,
+                                                nullptr, run.settings.configuration.values);
+            }
             result.stable = row.stability.stable;
             row.accuracyLoss = review::accuracyLoss(chosen ? chosen->pair : quickPair);
             row.classification = std::move(result);
+            for (const auto& alternative : row.alternatives.moves) {
+                const auto notation = position->san(alternative.move);
+                const auto* value = std::get_if<std::string>(&notation);
+                if (!value) {
+                    return invalid();
+                }
+                row.comparisonSans.push_back(QString::fromStdString(*value));
+            }
             row.beforeEvidenceId = b->evidenceId;
             row.afterEvidenceId = a->evidenceId;
             row.rawBefore = b->evidence.evaluation;
@@ -2023,6 +2064,7 @@ StorageSession::loadReviewExploration(ReviewId id, std::int64_t revision, int in
         return error(ReviewErrorCode::Missing);
     }
     for (const auto& c : out->evidence.candidates) {
+        out->continuations.push_back(c.continuation);
         auto position = *root;
         QStringList sans;
         for (const auto& move : c.continuation) {
@@ -2044,6 +2086,26 @@ StorageSession::loadReviewExploration(ReviewId id, std::int64_t revision, int in
             }
         }
         out->candidateSans.push_back(sans.join(QLatin1Char(' ')));
+    }
+    const auto played = game.document->originalMainline()[static_cast<std::size_t>(index - 1)];
+    if (std::none_of(out->evidence.candidates.begin(), out->evidence.candidates.end(),
+                     [&](const auto& c) { return c.continuation.front() == played; })) {
+        auto after = *root;
+        if (std::holds_alternative<chess::Error>(after.play(played))) {
+            return invalid();
+        }
+        const auto child = readEvidence(database_, run, after, index, out->move.stage);
+        if (const auto* failure = std::get_if<ReviewError>(&child)) {
+            return *failure;
+        }
+        std::vector<chess::Move> line{played};
+        const auto& childEvidence = std::get<StoredReviewEvidence>(child).evidence;
+        if (!childEvidence.candidates.empty()) {
+            const auto& reply = childEvidence.candidates.front().continuation;
+            line.insert(line.end(), reply.begin(), reply.end());
+        }
+        out->continuations.push_back(std::move(line));
+        out->candidateSans.push_back(out->move.san);
     }
     if (out->move.classification->stable) {
         for (auto stage : out->move.comparisonStages) {

@@ -1,5 +1,6 @@
 #include "app/ReviewExplorationController.h"
 #include "analysis/ReviewEvidenceAdapter.h"
+#include "app/ReviewMovePresentation.h"
 #include "engine/EffectiveSearch.h"
 #include <QMetaObject>
 #include <QScopedValueRollback>
@@ -95,7 +96,10 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
             } else {
                 evidence_ = std::get<std::shared_ptr<const persistence::ReviewExploration>>(result);
                 state_.candidates.clear();
-                for (std::size_t i = 0; i < evidence_->candidateSans.size(); ++i) {
+                state_.comparisonRows.clear();
+                state_.comparisonLines.clear();
+                state_.comparisonStatus.clear();
+                for (std::size_t i = 0; i < evidence_->evidence.candidates.size(); ++i) {
                     const auto& candidate = evidence_->evidence.candidates[i];
                     const auto score = review::convertEvaluation(
                         candidate.evaluation, evidence_->move.mover,
@@ -111,12 +115,37 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
                                            ? tr(" (approximate)")
                                            : QString{})
                             : tr("evaluation unavailable");
-                    state_.candidates
-                        << tr("%1 · %2 · root: %3 · %4")
-                               .arg(candidate.rank)
-                               .arg(evidence_->candidateSans[i], evaluation,
-                                    evidence_->move.classification->stable ? tr("stable")
-                                                                           : tr("provisional"));
+                    state_.candidates << tr("%1 · %2 · root: %3 · %4")
+                                             .arg(candidate.rank)
+                                             .arg(evidence_->candidateSans[i], evaluation,
+                                                  tr("saved root evaluation"));
+                }
+                if (evidence_->continuations.size() > evidence_->evidence.candidates.size()) {
+                    state_.candidates << tr("Played: %1 · saved after-move continuation")
+                                             .arg(evidence_->move.san);
+                }
+                state_.comparisonStatus = comparisonReasonText(evidence_->move.alternatives.reason);
+                if (evidence_->move.alternatives.needsEvidence()) {
+                    if (evidence_->move.escalationStop == review::EscalationStop::RoundLimit) {
+                        state_.comparisonStatus += tr(" · Stopped at the two-round limit.");
+                    } else if (evidence_->move.escalationStop ==
+                               review::EscalationStop::BudgetCeiling) {
+                        state_.comparisonStatus += tr(" · Stopped at the node-budget ceiling.");
+                    }
+                }
+                for (std::size_t index = 0; index < evidence_->move.alternatives.moves.size();
+                     ++index) {
+                    const auto& row = evidence_->move.alternatives.moves[index];
+                    int line = -1;
+                    for (std::size_t i = 0; i < evidence_->continuations.size(); ++i) {
+                        if (evidence_->continuations[i].front() == row.move) {
+                            line = static_cast<int>(i);
+                            break;
+                        }
+                    }
+                    state_.comparisonRows
+                        << reviewComparisonRow(row, evidence_->move.comparisonSans[index]);
+                    state_.comparisonLines.push_back(line);
                 }
                 state_.message.clear();
             }
@@ -221,6 +250,9 @@ void ReviewExplorationController::synchronize() {
             returnToGame();
             evidence_.reset();
             state_.candidates.clear();
+            state_.comparisonRows.clear();
+            state_.comparisonLines.clear();
+            state_.comparisonStatus.clear();
             state_.loading = false;
         }
         state_.message = tr("Move evidence could not be validated. Retry move evidence before "
@@ -237,6 +269,9 @@ void ReviewExplorationController::synchronize() {
         target_ = target;
         evidence_.reset();
         state_.candidates.clear();
+        state_.comparisonRows.clear();
+        state_.comparisonLines.clear();
+        state_.comparisonStatus.clear();
         state_.message.clear();
         state_.loading = false;
         returnToGame();
@@ -261,6 +296,9 @@ void ReviewExplorationController::reload() {
     ++generation_;
     evidence_.reset();
     state_.candidates.clear();
+    state_.comparisonRows.clear();
+    state_.comparisonLines.clear();
+    state_.comparisonStatus.clear();
     state_.message.clear();
     request();
     publish();
@@ -268,7 +306,7 @@ void ReviewExplorationController::reload() {
 void ReviewExplorationController::showLine(int candidate) {
     const QScopedValueRollback notification(notifying_, true);
     if (closing_ || hidesSolution() || !evidence_ || candidate < 0 ||
-        candidate >= static_cast<int>(evidence_->evidence.candidates.size())) {
+        candidate >= static_cast<int>(evidence_->continuations.size())) {
         return;
     }
     const auto generation = ++generation_;
@@ -286,8 +324,7 @@ void ReviewExplorationController::showLine(int candidate) {
     displayedBoard_.interactive = false;
     state_.candidate = candidate;
     state_.step = 0;
-    const auto& moves =
-        evidence->evidence.candidates[static_cast<std::size_t>(candidate)].continuation;
+    const auto& moves = evidence->continuations[static_cast<std::size_t>(candidate)];
     state_.length = static_cast<int>(moves.size());
     sandbox_.openLine(evidence->before, moves, 0);
     if (closing_ || generation != generation_) {
@@ -347,6 +384,9 @@ void ReviewExplorationController::returnToGame() {
     if (evidence_ && run_ && evidence_->run.summary.revision != run_->revision) {
         evidence_.reset();
         state_.candidates.clear();
+        state_.comparisonRows.clear();
+        state_.comparisonLines.clear();
+        state_.comparisonStatus.clear();
         state_.loading = false;
         request();
     }
@@ -694,10 +734,9 @@ void ReviewExplorationController::restoreReviewOrigin() {
         state_ = linkedState;
         state_.pendingBoard = true;
         displayedBoard_.interactive = false;
-        sandbox_.openLine(
-            evidence_->before,
-            evidence_->evidence.candidates[static_cast<std::size_t>(origin.candidate)].continuation,
-            origin.step);
+        sandbox_.openLine(evidence_->before,
+                          evidence_->continuations[static_cast<std::size_t>(origin.candidate)],
+                          origin.step);
     }
     publish();
 }

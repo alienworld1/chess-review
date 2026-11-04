@@ -89,6 +89,11 @@ inline QJsonArray searches(const chess_review::pgn::PgnDocument& document, int f
                     actions.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("crash")}});
                 } else {
                     QString output;
+                    const auto played = index < static_cast<int>(moves.size())
+                                            ? std::find(legal.begin(), legal.end(),
+                                                        moves[static_cast<std::size_t>(index)])
+                                            : legal.end();
+                    const auto playedRank = played - legal.begin();
                     for (int rank = 0; rank < prepared.effectiveMultiPv; ++rank) {
                         auto continuation = position;
                         QString pv;
@@ -109,9 +114,12 @@ inline QJsonArray searches(const chess_review::pgn::PgnDocument& document, int f
                             }
                         }
                         output +=
-                            QStringLiteral("info depth 7 nodes %1 multipv %2 score cp 200 pv %3\n")
+                            QStringLiteral("info depth 7 nodes %1 multipv %2 score cp %3 pv %4\n")
                                 .arg(budget)
                                 .arg(rank + 1)
+                                // Root candidates containing the played move must agree with
+                                // the opposite-perspective child search, including lower ranks.
+                                .arg(rank > 0 && rank >= playedRank ? -200 : 200)
                                 .arg(pv);
                     }
                     output += QStringLiteral("bestmove %1\n")

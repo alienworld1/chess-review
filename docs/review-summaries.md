@@ -164,3 +164,43 @@ A best-move comparison is shown only when both compared passes provide that
 witness. Missing witnesses are reported as **not comparable**, rather than an
 engine changing or retaining its choice. Cross-engine or different-position
 witnesses cannot establish a stable result.
+
+## Alternative move comparison (pipeline policy 6)
+
+Guided Review compares the played move with the saved engine candidates. Rows show
+expected-score loss relative to the best supported move, whether the move is
+within the captured Excellent threshold, and independent comparison confidence.
+These are expected-score **percentage points**, not the probability of winning a
+particular game. Centipawn-based conversions are identified as approximate.
+
+Comparison confirmation is separate from classification stability. Two independent,
+measurably stronger passes must support the latest candidates by move identity,
+including promotion. Candidate expected scores and gaps must agree within the
+captured maximum drift, and equivalent/weaker assessments must agree. Equivalent
+moves can exchange ranks without invalidating comparison confirmation. Classification
+still follows its existing label and best-move agreement rules.
+
+The played move appears first. If it is absent from root candidates, its saved
+after-move evaluation supplies its comparison and its reply continuation. This
+source is identified. Contradictory root/child values withhold the played move's
+numerical comparison. Show Line previews each saved continuation without editing
+the game; its evaluation belongs to the search root, not every replayed position.
+Try Again hides all comparison solutions. Analyze Position and Back to Review
+preserve the selected continuation and step.
+
+Policy 6 retains the original quick-scan targets, ordering, captured MultiPV width
+and budgets. After verification, unresolved comparisons for those targets may use
+the same two bounded escalation rounds as unresolved classifications. It adds no
+separate comparison pass or arbitrary-move searches. Shared positions remain
+searched once per round. A changing candidate set can remain unresolved at the
+round or node ceiling; the UI reports uncertainty instead of claiming confirmation.
+Supported persistent mate signals retain their existing stopping behavior.
+
+Width-one searches do not assess alternative equivalence and do not cause extra
+comparison work. A sole legal move is identified explicitly. Even confirmed
+comparisons cover only the captured candidates, not every legal move.
+
+Historical reviews gain comparisons where their retained evidence supports them.
+Policies 1–5 preserve their original scheduling and resume decisions; opening an
+old review does not upgrade it. Comparison facts are derived from owned review
+evidence and remain available without the engine or disposable analysis cache.

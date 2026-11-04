@@ -16,6 +16,7 @@ class ChessBoardWidget;
 class MoveTimeline;
 class ReviewRunsModel;
 class ReviewMovesModel;
+class ReviewComparisonModel;
 class ReviewPage final : public QWidget {
     Q_OBJECT
   public:
@@ -42,6 +43,10 @@ class ReviewPage final : public QWidget {
     void updateNavigation();
     void updateExploration();
     QComboBox* candidates_;
+    QWidget* comparison_;
+    QLabel* comparisonStatus_;
+    QTableView* comparisonRows_;
+    ReviewComparisonModel* comparisonModel_;
     QLabel* explorationStatus_;
     QPushButton* showLine_;
     QPushButton* tryAgain_;

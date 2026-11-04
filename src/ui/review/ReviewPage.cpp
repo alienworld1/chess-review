@@ -94,6 +94,47 @@ QString phaseText(app::ReviewPhase phase) {
     return {};
 }
 } // namespace
+class ReviewComparisonModel final : public QAbstractTableModel {
+  public:
+    explicit ReviewComparisonModel(QObject* parent) : QAbstractTableModel(parent) {}
+    int rowCount(const QModelIndex& parent = {}) const override {
+        return parent.isValid() ? 0 : static_cast<int>(rows_.size());
+    }
+    int columnCount(const QModelIndex& parent = {}) const override {
+        return parent.isValid() ? 0 : 2;
+    }
+    QVariant data(const QModelIndex& index, int role) const override {
+        if (!index.isValid() || index.row() < 0 || index.row() >= rowCount() ||
+            index.column() < 0 || index.column() >= 2) {
+            return {};
+        }
+        if (role == Qt::DisplayRole || role == Qt::AccessibleTextRole) {
+            return index.column() == 0 ? rows_[index.row()] : tr("Show Line");
+        }
+        if (role == Qt::AccessibleDescriptionRole || role == Qt::ToolTipRole) {
+            return tr("Gaps are expected-score percentage points from the best supported move. "
+                      "Activate to replay: %1")
+                .arg(rows_[index.row()]);
+        }
+        return {};
+    }
+    int line(int row) const {
+        return row >= 0 && row < rowCount() ? lines_[static_cast<std::size_t>(row)] : -1;
+    }
+    void bind(const QStringList& rows, const std::vector<int>& lines) {
+        if (rows_ == rows && lines_ == lines) {
+            return;
+        }
+        beginResetModel();
+        rows_ = rows;
+        lines_ = lines;
+        endResetModel();
+    }
+
+  private:
+    QStringList rows_;
+    std::vector<int> lines_;
+};
 class ReviewRunsModel final : public QAbstractTableModel {
   public:
     explicit ReviewRunsModel(QObject* parent) : QAbstractTableModel(parent) {}
@@ -404,6 +445,47 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     moment->addWidget(explanation_);
     momentRow->addLayout(moment, 1);
     rightLayout->addLayout(momentRow);
+    comparison_ = new QWidget(right);
+    comparison_->setObjectName(QStringLiteral("reviewComparison"));
+    auto* comparisonLayout = new QVBoxLayout(comparison_);
+    comparisonLayout->setContentsMargins(0, 0, 0, 0);
+    comparisonStatus_ = new QLabel(comparison_);
+    comparisonStatus_->setObjectName(QStringLiteral("reviewComparisonStatus"));
+    comparisonStatus_->setTextFormat(Qt::PlainText);
+    comparisonStatus_->setWordWrap(true);
+    comparisonLayout->addWidget(comparisonStatus_);
+    comparisonRows_ = new QTableView(comparison_);
+    comparisonRows_->setObjectName(QStringLiteral("reviewComparisonRows"));
+    comparisonRows_->setAccessibleName(tr("Played move and supported alternatives"));
+    comparisonModel_ = new ReviewComparisonModel(comparisonRows_);
+    comparisonRows_->setModel(comparisonModel_);
+    comparisonRows_->horizontalHeader()->hide();
+    comparisonRows_->verticalHeader()->hide();
+    comparisonRows_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    comparisonRows_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    comparisonRows_->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    comparisonRows_->setWordWrap(true);
+    comparisonRows_->setTextElideMode(Qt::ElideNone);
+    comparisonRows_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    comparisonRows_->setSelectionMode(QAbstractItemView::SingleSelection);
+    comparisonRows_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    comparisonRows_->setMinimumHeight(180);
+    comparisonRows_->setMaximumHeight(360);
+    comparisonLayout->addWidget(comparisonRows_);
+    const auto replayComparison = [this](const QModelIndex& index) {
+        const int line = comparisonModel_->line(index.row());
+        if (line >= 0) {
+            controller_.exploration().showLine(line);
+        }
+    };
+    connect(comparisonRows_, &QTableView::activated, this, replayComparison);
+    connect(comparisonRows_, &QTableView::clicked, this,
+            [replayComparison](const QModelIndex& index) {
+                if (index.column() == 1) {
+                    replayComparison(index);
+                }
+            });
+    rightLayout->addWidget(comparison_);
     candidates_ = new QComboBox(right);
     candidates_->setObjectName(QStringLiteral("reviewCandidates"));
     candidates_->setAccessibleName(tr("Saved candidate continuations and root evaluations"));
@@ -1080,6 +1162,12 @@ void ReviewPage::updateExploration() {
     }
     previousMoment_->setVisible(!hidden);
     nextMoment_->setVisible(!hidden);
+    comparison_->setVisible(!hidden);
+    const auto comparisonRows = hidden ? QStringList{} : state.comparisonRows;
+    const auto comparisonLines = hidden ? std::vector<int>{} : state.comparisonLines;
+    comparisonStatus_->setText(hidden ? QString{} : state.comparisonStatus);
+    comparisonModel_->bind(comparisonRows, comparisonLines);
+    comparisonRows_->setVisible(!comparisonRows.isEmpty());
     candidates_->setVisible(!hidden);
     if (hidden) {
         candidates_->clear();

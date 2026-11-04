@@ -372,7 +372,7 @@ class ReviewRepositoryTest final : public QObject {
         auto request = seed(f.session);
         for (const bool refinement : {false, true}) {
             request.refinement = refinement;
-            for (const std::uint32_t version : {1U, 2U, 3U, 4U}) {
+            for (const std::uint32_t version : {1U, 2U, 3U, 4U, 5U, 6U}) {
                 request.pipelineVersion = version;
                 const auto bytes = encodeReviewSettings(request);
                 QVERIFY(!bytes.isEmpty());
@@ -693,16 +693,20 @@ class ReviewRepositoryTest final : public QObject {
     }
     void adaptiveEscalation_data() {
         QTest::addColumn<bool>("exhausted");
-        QTest::newRow("confirmation") << false;
-        QTest::newRow("round-limit") << true;
+        QTest::addColumn<int>("policy");
+        QTest::newRow("policy5-confirmation") << false << 5;
+        QTest::newRow("policy5-round-limit") << true << 5;
+        QTest::newRow("policy6-confirmation") << false << 6;
+        QTest::newRow("policy6-round-limit") << true << 6;
     }
     void adaptiveEscalation() {
         QFETCH(bool, exhausted);
+        QFETCH(int, policy);
         Fixture f;
         const auto doc = document();
         auto request = seed(f.session, doc);
         request.refinement = true;
-        request.pipelineVersion = 5;
+        request.pipelineVersion = static_cast<std::uint32_t>(policy);
         auto run = std::get<ReviewSummary>(f.session.createReview(request));
         const auto save = [&](review::EvidenceStage stage, int index) {
             auto result = resultAt(request, *doc, index);

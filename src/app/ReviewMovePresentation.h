@@ -14,5 +14,7 @@ QString reviewMomentHeadline(const persistence::ReviewMove* move, int position);
 QString reviewMomentExplanation(const persistence::ReviewMove* move, int position);
 QString classificationText(const std::optional<review::ClassificationResult>& result);
 QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::Color selectedSide);
+QString comparisonReasonText(review::ComparisonReason reason);
+QString reviewComparisonRow(const review::MoveComparison& row, const QString& san);
 QString reviewMoveDetails(const persistence::ReviewMove& move);
 } // namespace chess_review::app

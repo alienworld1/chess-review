@@ -12,7 +12,10 @@ replays each mainline through the chess adapter before process acceptance runs.
 | `stress.pgn` | 512 legal plies of reversible knight moves, intentionally unfinished. Exercises history-bearing preparation, timeline navigation to both ends, background navigation and cancellation. Repetition is intentional; it is not a realistic engine-strength benchmark. |
 
 The fake engine supplies legal three-ply candidate lines and coherent synthetic
-`cp 200` scores from the side to move. These deliberately create errors for both
+`cp 200` best scores from the side to move. When a candidate contains the played
+move, its `cp -200` score agrees with the opposite-perspective child search;
+lower-ranked candidates receive the same lower score to keep ordering coherent.
+These deliberately create errors for both
 players so refinement, stable classifications and equivalent-candidate retry are
 exercised deterministically. They make no objective claim about the fixture games.
 Its executable/resources remain unverified and must never qualify for cache reuse.
