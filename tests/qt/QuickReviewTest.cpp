@@ -1590,7 +1590,10 @@ class QuickReviewTest final : public QObject {
         auto* rows = f.window.findChild<QTableView*>(QStringLiteral("reviewComparisonRows"));
         QVERIFY(rows && rows->model()->rowCount() > 0);
         rows->setCurrentIndex(rows->model()->index(0, 1));
-        QTest::keyClick(rows, Qt::Key_Return);
+        // The fixture retains the table across both events. Explicit press/release avoids
+        // clang-analyzer's false positive in QtTest's inline QPointer click guard.
+        QTest::keyPress(rows, Qt::Key_Return);
+        QTest::keyRelease(rows, Qt::Key_Return);
         QTRY_COMPARE(exploration.state().mode, app::ExplorationMode::Line);
         QCOMPARE(exploration.state().candidate, playedLine);
         QTRY_VERIFY(exploration.state().canAnalyze);
