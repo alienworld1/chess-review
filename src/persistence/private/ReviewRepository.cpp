@@ -1352,6 +1352,9 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                    const StoredGame& game, chess::Position& cursor, int offset,
                                    int limit,
                                    const review::ScanAssessment* precedingScan = nullptr) {
+    const auto comparisonModel = run.settings.pipelineVersion == 6
+                                     ? review::ComparisonModel::Version1
+                                     : review::ComparisonModel::Version2;
     const int total = run.summary.totalPositions - 1;
     std::optional<bool> escalationPresent;
     review::ScanAssessment previousScan = precedingScan ? *precedingScan : review::ScanAssessment{};
@@ -1499,7 +1502,8 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                         older.classification, newer.classification, older.pair, newer.pair,
                         run.settings.configuration.values.refinement);
                     row.alternatives = review::compareAlternatives(
-                        *position, newer.pair, &older.pair, run.settings.configuration.values);
+                        *position, newer.pair, &older.pair, run.settings.configuration.values,
+                        comparisonModel);
                     row.comparisonStages = {olderStage, newerStage};
                     row.comparisonLabels = {older.classification.label, newer.classification.label};
                     row.comparisonBestMoveChanged =
@@ -1539,7 +1543,8 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                    review::EvidenceStage::Verification);
                     } else {
                         row.alternatives = review::compareAlternatives(
-                            *position, verified->pair, nullptr, run.settings.configuration.values);
+                            *position, verified->pair, nullptr, run.settings.configuration.values,
+                            comparisonModel);
                     }
                     if (verified->classification.loss || verified->pair.mate.before ||
                         verified->pair.mate.after) {
@@ -1633,10 +1638,25 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     a = &chosen->after;
                 }
             }
-            if (!chosen || row.stage != row.comparisonStages[1]) {
+            if (!chosen || row.stage != row.comparisonStages[1] ||
+                run.settings.pipelineVersion == 6) {
+                // Legacy scheduling must remain reproducible; presentation uses the corrected
+                // comparison model without upgrading the saved work plan.
+                const auto olderIndex = static_cast<std::size_t>(row.comparisonStages[0]) - 1;
+                const auto* older =
+                    chosen && row.stage == row.comparisonStages[1] && pairs[olderIndex]
+                        ? &pairs[olderIndex]->pair
+                        : nullptr;
                 row.alternatives =
-                    review::compareAlternatives(*position, chosen ? chosen->pair : quickPair,
-                                                nullptr, run.settings.configuration.values);
+                    review::compareAlternatives(*position, chosen ? chosen->pair : quickPair, older,
+                                                run.settings.configuration.values);
+                if (row.refinementTarget &&
+                    row.escalationRound > std::max(0, static_cast<int>(row.stage) - 2)) {
+                    row.alternatives.reason = review::ComparisonReason::Pending;
+                    for (auto& alternative : row.alternatives.moves) {
+                        alternative.reason = review::ComparisonReason::Pending;
+                    }
+                }
             }
             result.stable = row.stability.stable;
             row.accuracyLoss = review::accuracyLoss(chosen ? chosen->pair : quickPair);
@@ -2064,7 +2084,6 @@ StorageSession::loadReviewExploration(ReviewId id, std::int64_t revision, int in
         return error(ReviewErrorCode::Missing);
     }
     for (const auto& c : out->evidence.candidates) {
-        out->continuations.push_back(c.continuation);
         auto position = *root;
         QStringList sans;
         for (const auto& move : c.continuation) {
@@ -2104,8 +2123,7 @@ StorageSession::loadReviewExploration(ReviewId id, std::int64_t revision, int in
             const auto& reply = childEvidence.candidates.front().continuation;
             line.insert(line.end(), reply.begin(), reply.end());
         }
-        out->continuations.push_back(std::move(line));
-        out->candidateSans.push_back(out->move.san);
+        out->playedContinuation = std::move(line);
     }
     if (out->move.classification->stable) {
         for (auto stage : out->move.comparisonStages) {

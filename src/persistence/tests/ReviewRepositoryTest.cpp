@@ -1,4 +1,5 @@
 #include "TestEnvironment.h"
+#include "engine/EffectiveSearch.h"
 #include "engine/private/Fingerprint.h"
 #include "persistence/private/ReviewCodec.h"
 #include "persistence/private/StorageSession.h"
@@ -367,12 +368,140 @@ class ReviewRepositoryTest final : public QObject {
         const auto empty = f.session.deriveReviewMoves(run.id, run.revision, 2, 1);
         QVERIFY(std::holds_alternative<ReviewMovePage>(empty));
     }
+    void comparisonPolicyKeepsCapturedPlans_data() {
+        QTest::addColumn<int>("policy");
+        QTest::addColumn<bool>("terminal");
+        QTest::newRow("legacy-terminal-boundary") << 6 << true;
+        QTest::newRow("current-terminal-boundary") << 7 << true;
+        QTest::newRow("legacy-quality-conflict") << 6 << false;
+        QTest::newRow("current-quality-conflict") << 7 << false;
+    }
+    void comparisonPolicyKeepsCapturedPlans() {
+        QFETCH(int, policy);
+        QFETCH(bool, terminal);
+        Fixture f;
+        const auto doc =
+            terminal
+                ? document("[SetUp \"1\"]\n[FEN \"7k/5Q2/6K1/8/8/8/8/8 w - - 0 1\"]\n\n1. Qe6 *")
+                : document("1. e4 *");
+        auto request = seed(f.session, doc);
+        request.refinement = true;
+        request.pipelineVersion = static_cast<std::uint32_t>(policy);
+        request.fingerprint = engine::makeFingerprint(
+            engineValue(),
+            {{QStringLiteral("multipv"), engine::OptionType::Spin, QStringLiteral("1")}});
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        const auto save = [&](review::EvidenceStage stage, int index) {
+            ReviewCheckpoint cp;
+            cp.reviewId = run.id;
+            cp.expectedRevision = run.revision;
+            cp.positionIndex = index;
+            cp.stage = stage;
+            cp.status = stage == review::EvidenceStage::Quick ? JobStatus::QuickScanning
+                                                              : JobStatus::Deepening;
+            if (terminal && index == 1) {
+                cp.terminal = true;
+                return f.session.checkpointReview(cp);
+            }
+            auto result = resultAt(request, *doc, index);
+            auto& snapshot = result.evidence;
+            const auto position = positionAt(*doc, index);
+            const auto nodes = *review::stageBudget(request.configuration.values.budgets[1], stage);
+            snapshot.limit = engine::NodeLimit{nodes};
+            snapshot.statistics.nodes = nodes;
+            snapshot.lines.front().statistics = snapshot.statistics;
+            if (index == 0) {
+                const auto best =
+                    std::get<chess::Move>(position.parseUci(terminal ? "f7g7" : "g1f3"));
+                snapshot.bestMove = best;
+                snapshot.lines.front().pv = {best};
+                snapshot.lines.front().wdl =
+                    terminal ? engine::Wdl{750, 0, 250} : engine::Wdl{600, 0, 400};
+                if (stage != review::EvidenceStage::Quick) {
+                    auto candidate = snapshot.lines.front();
+                    candidate.rank = 2;
+                    candidate.pv = {doc->originalMainline().front()};
+                    candidate.wdl = terminal ? engine::Wdl{520, 0, 480} : engine::Wdl{590, 0, 410};
+                    snapshot.lines.push_back(candidate);
+                    snapshot.requestedMultiPv = snapshot.effectiveMultiPv = snapshot.achievedWidth =
+                        2;
+                } else if (!terminal) {
+                    snapshot.lines.front().score->bound = engine::ScoreBound::Lower;
+                }
+            } else {
+                snapshot.lines.front().wdl = engine::Wdl{420, 0, 580};
+            }
+            auto provenance = std::make_shared<engine::AnalysisProvenance>(*snapshot.provenance);
+            provenance->fingerprint =
+                engine::reviewWidthFingerprint(request.fingerprint, snapshot.requestedMultiPv);
+            snapshot.provenance = std::move(provenance);
+            cp.analysis = std::move(result);
+            return f.session.checkpointReview(cp);
+        };
+        for (int stage = 0; stage < 3; ++stage) {
+            for (int index = 0; index < 2; ++index) {
+                const auto saved = save(static_cast<review::EvidenceStage>(stage), index);
+                QVERIFY2(std::holds_alternative<ReviewSummary>(saved),
+                         "Stage admission rejected coherent fixture");
+                run = std::get<ReviewSummary>(saved);
+            }
+        }
+        const bool extra = terminal ? policy == 6 : policy == 7;
+        const auto overview =
+            std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        QCOMPARE(overview.escalationPositions[0],
+                 extra ? (std::vector<int>{0, 1}) : std::vector<int>{});
+        auto page =
+            std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 1));
+        QVERIFY(page.moves.front().classification->stable);
+        QCOMPARE(page.moves.front().alternatives.reason,
+                 terminal ? review::ComparisonReason::Confirmed
+                          : review::ComparisonReason::Disagreement);
+        ReviewCheckpoint status;
+        status.reviewId = run.id;
+        status.expectedRevision = run.revision;
+        status.status = JobStatus::Cancelled;
+        run = std::get<ReviewSummary>(f.session.checkpointReview(status));
+        run = std::get<ReviewSummary>(f.session.continueReview(
+            {run.id, run.revision, request.fingerprint, request.configuration}));
+        QCOMPARE(std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision))
+                     .escalationPositions,
+                 overview.escalationPositions);
+        for (int stage = 3; extra && stage <= 4; ++stage) {
+            for (int index = 0; index < 2; ++index) {
+                const auto saved = save(static_cast<review::EvidenceStage>(stage), index);
+                QVERIFY(std::holds_alternative<ReviewSummary>(saved));
+                run = std::get<ReviewSummary>(saved);
+                if (index == 0) {
+                    const auto partial = std::get<ReviewMovePage>(
+                        f.session.deriveReviewMoves(run.id, run.revision, 0, 1));
+                    QCOMPARE(partial.moves.front().alternatives.reason,
+                             review::ComparisonReason::Pending);
+                    for (const auto& row : partial.moves.front().alternatives.moves) {
+                        QCOMPARE(row.reason, review::ComparisonReason::Pending);
+                    }
+                }
+            }
+        }
+        status.expectedRevision = run.revision;
+        status.status = JobStatus::Complete;
+        const auto completed = f.session.checkpointReview(status);
+        QVERIFY(std::holds_alternative<ReviewSummary>(completed));
+        run = std::get<ReviewSummary>(completed);
+        QVERIFY(f.exec(QStringLiteral("DELETE FROM analysis_results")));
+        page = std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 1));
+        QCOMPARE(page.moves.front().alternatives.reason,
+                 terminal ? review::ComparisonReason::Confirmed
+                          : review::ComparisonReason::Disagreement);
+        QCOMPARE(std::get<StoredReview>(f.session.loadReview(run.id)).summary.status,
+                 JobStatus::Complete);
+    }
     void pipelineSettingsRetainReleasedAndNewPolicies() {
         Fixture f;
         auto request = seed(f.session);
         for (const bool refinement : {false, true}) {
             request.refinement = refinement;
-            for (const std::uint32_t version : {1U, 2U, 3U, 4U, 5U, 6U}) {
+            for (const std::uint32_t version : {1U, 2U, 3U, 4U, 5U, 6U, 7U}) {
                 request.pipelineVersion = version;
                 const auto bytes = encodeReviewSettings(request);
                 QVERIFY(!bytes.isEmpty());
@@ -698,6 +827,8 @@ class ReviewRepositoryTest final : public QObject {
         QTest::newRow("policy5-round-limit") << true << 5;
         QTest::newRow("policy6-confirmation") << false << 6;
         QTest::newRow("policy6-round-limit") << true << 6;
+        QTest::newRow("policy7-confirmation") << false << 7;
+        QTest::newRow("policy7-round-limit") << true << 7;
     }
     void adaptiveEscalation() {
         QFETCH(bool, exhausted);

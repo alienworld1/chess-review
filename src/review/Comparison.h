@@ -15,6 +15,8 @@ enum class ComparisonReason {
     Disagreement,
     ScoreDrift
 };
+// Policy 6 captures Version1 planning; current presentation and policy 7 use Version2.
+enum class ComparisonModel { Version1 = 1, Version2 = 2 };
 enum class ComparisonSource { RootCandidate, PlayedChild };
 struct MoveComparison {
     chess::Move move;
@@ -35,8 +37,8 @@ struct AlternativeComparison {
     }
 };
 // Revalidates both pairs from the original board. An absent older pair cannot confirm anything.
-[[nodiscard]] AlternativeComparison compareAlternatives(const chess::Position& root,
-                                                        const MoveEvidence& latest,
-                                                        const MoveEvidence* older,
-                                                        const Configuration& config);
+[[nodiscard]] AlternativeComparison
+compareAlternatives(const chess::Position& root, const MoveEvidence& latest,
+                    const MoveEvidence* older, const Configuration& config,
+                    ComparisonModel model = ComparisonModel::Version2);
 } // namespace chess_review::review

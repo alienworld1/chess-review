@@ -408,6 +408,12 @@ QString reviewComparisonRow(const review::MoveComparison& row, const QString& sa
 QString reviewMoveDetails(const persistence::ReviewMove& move) {
     QStringList text;
     text << comparisonReasonText(move.alternatives.reason);
+    if (move.quickScan.pipelineVersion && *move.quickScan.pipelineVersion >= 6) {
+        text << QObject::tr("Displayed comparison model: 2. Captured policy %1 plans comparison "
+                            "work with model %2.")
+                    .arg(*move.quickScan.pipelineVersion)
+                    .arg(*move.quickScan.pipelineVersion == 6 ? 1 : 2);
+    }
     text << QObject::tr("%1%2 %3 — %4")
                 .arg(move.moveNumber)
                 .arg(move.mover == chess::Color::White ? QStringLiteral(".")

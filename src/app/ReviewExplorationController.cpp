@@ -120,7 +120,7 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
                                              .arg(evidence_->candidateSans[i], evaluation,
                                                   tr("saved root evaluation"));
                 }
-                if (evidence_->continuations.size() > evidence_->evidence.candidates.size()) {
+                if (!evidence_->playedContinuation.empty()) {
                     state_.candidates << tr("Played: %1 · saved after-move continuation")
                                              .arg(evidence_->move.san);
                 }
@@ -131,15 +131,21 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
                     } else if (evidence_->move.escalationStop ==
                                review::EscalationStop::BudgetCeiling) {
                         state_.comparisonStatus += tr(" · Stopped at the node-budget ceiling.");
+                    } else if (evidence_->run.settings.pipelineVersion == 6 &&
+                               evidence_->move.escalationStop ==
+                                   review::EscalationStop::Confirmed) {
+                        state_.comparisonStatus +=
+                            tr(" · The saved policy schedules no further work for this comparison. "
+                               "Start a new review to investigate it.");
                     }
                 }
                 for (std::size_t index = 0; index < evidence_->move.alternatives.moves.size();
                      ++index) {
                     const auto& row = evidence_->move.alternatives.moves[index];
                     int line = -1;
-                    for (std::size_t i = 0; i < evidence_->continuations.size(); ++i) {
-                        if (evidence_->continuations[i].front() == row.move) {
-                            line = static_cast<int>(i);
+                    for (int i = 0; i < evidence_->continuationCount(); ++i) {
+                        if (evidence_->continuation(i)->front() == row.move) {
+                            line = i;
                             break;
                         }
                     }
@@ -306,7 +312,9 @@ void ReviewExplorationController::reload() {
 void ReviewExplorationController::showLine(int candidate) {
     const QScopedValueRollback notification(notifying_, true);
     if (closing_ || hidesSolution() || !evidence_ || candidate < 0 ||
-        candidate >= static_cast<int>(evidence_->continuations.size())) {
+        candidate >= evidence_->continuationCount() ||
+        (state_.mode == ExplorationMode::Line && state_.candidate == candidate &&
+         state_.pendingBoard && state_.step == 0)) {
         return;
     }
     const auto generation = ++generation_;
@@ -324,14 +332,17 @@ void ReviewExplorationController::showLine(int candidate) {
     displayedBoard_.interactive = false;
     state_.candidate = candidate;
     state_.step = 0;
-    const auto& moves = evidence->continuations[static_cast<std::size_t>(candidate)];
+    const auto& moves = *evidence->continuation(candidate);
     state_.length = static_cast<int>(moves.size());
     sandbox_.openLine(evidence->before, moves, 0);
     if (closing_ || generation != generation_) {
         return;
     }
     state_.message =
-        tr("Candidate continuation · evaluation belongs to its root, not each position.");
+        candidate < static_cast<int>(evidence->evidence.candidates.size())
+            ? tr("Candidate continuation · evaluation belongs to its root, not each position.")
+            : tr("Played-move continuation · the saved evaluation belongs to the position after "
+                 "the played move, not each replayed position.");
     publish();
 }
 void ReviewExplorationController::step(int position) {
@@ -726,6 +737,10 @@ void ReviewExplorationController::restoreReviewOrigin() {
         navigation_.flip();
     }
     if (origin.candidate >= 0 && evidence && !evidenceReadFailed_) {
+        const auto* continuation = evidence->continuation(origin.candidate);
+        if (!continuation) {
+            return;
+        }
         sandbox_.setOrientation(origin.blackAtBottom);
         if (closing_ || generation != generation_) {
             return;
@@ -734,9 +749,7 @@ void ReviewExplorationController::restoreReviewOrigin() {
         state_ = linkedState;
         state_.pendingBoard = true;
         displayedBoard_.interactive = false;
-        sandbox_.openLine(evidence_->before,
-                          evidence_->continuations[static_cast<std::size_t>(origin.candidate)],
-                          origin.step);
+        sandbox_.openLine(evidence_->before, *continuation, origin.step);
     }
     publish();
 }

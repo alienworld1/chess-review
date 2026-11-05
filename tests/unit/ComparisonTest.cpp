@@ -200,3 +200,100 @@ TEST_CASE("Contradictory played-root and child values withhold numerical compari
     CHECK(!result.moves.front().gap);
     CHECK(result.needsEvidence());
 }
+TEST_CASE("Played comparisons use exact native and terminal disagreement boundaries",
+          "[unit][review][comparison][audit]") {
+    const auto root =
+        std::get<chess::Position>(chess::Position::fromFen("7k/5Q2/6K1/8/8/8/8/8 w - - 0 1"));
+    const auto played = move(root, "f7e6");
+    auto after = root;
+    REQUIRE(std::holds_alternative<std::monostate>(after.play(played)));
+    for (const int wins : {519, 520, 521}) {
+        auto before = proof(root, 750, "f7g7", "first", 1000000);
+        auto candidate = before.candidates.front();
+        candidate.rank = 2;
+        candidate.continuation = {played};
+        candidate.evaluation.wdl = Wdl{wins, 0, 1000 - wins};
+        before.candidates.push_back(candidate);
+        const auto a = pairEvidence(root, played, before, terminalEvidence(after));
+        before.attemptIdentity = "second";
+        before.strength.nodes = 5000000;
+        const auto b = pairEvidence(root, played, before, terminalEvidence(after));
+        const auto result = compareAlternatives(root, b, &a, {});
+        REQUIRE(!result.moves.empty());
+        CHECK(result.moves.front().reason ==
+              (wins <= 520 ? ComparisonReason::Confirmed : ComparisonReason::Disagreement));
+        CHECK(result.moves.front().gap.has_value() == (wins <= 520));
+        const auto legacy = compareAlternatives(root, b, &a, {}, ComparisonModel::Version1);
+        CHECK(legacy.moves.front().reason ==
+              (wins < 520 ? ComparisonReason::Confirmed : ComparisonReason::Disagreement));
+    }
+}
+TEST_CASE("Root and child equivalence disagreement cannot confirm played quality",
+          "[unit][review][comparison][audit]") {
+    const auto root = chess::Position::initial();
+    auto a = pair(root, false), b = pair(root, true);
+    for (auto* evidence : {&a, &b}) {
+        evidence->before.candidates.back().continuation = {evidence->playedMove};
+        evidence->after.evaluation.wdl = Wdl{420, 0, 580};
+        evidence->after.candidates.front().evaluation = evidence->after.evaluation;
+    }
+    const auto result = compareAlternatives(root, b, &a, {});
+    REQUIRE(!result.moves.empty());
+    CHECK(result.moves.front().reason == ComparisonReason::Disagreement);
+    CHECK(!result.moves.front().gap);
+    CHECK(result.needsEvidence());
+    CHECK(compareAlternatives(root, b, &a, {}, ComparisonModel::Version1).reason ==
+          ComparisonReason::Confirmed);
+}
+TEST_CASE("Comparison rejects reused attempts zero strength and invalid configuration",
+          "[unit][review][comparison][audit]") {
+    const auto root = chess::Position::initial();
+    auto a = pair(root, false), b = pair(root, true);
+    SECTION("cross position reuse") { b.after.attemptIdentity = a.before.attemptIdentity; }
+    SECTION("within pair reuse") { a.after.attemptIdentity = a.before.attemptIdentity; }
+    SECTION("zero first strength") { a.before.strength.nodes = 0; }
+    SECTION("invalid drift with width one") {
+        a.before.candidates.resize(1);
+        b.before.candidates.resize(1);
+        for (const double drift : {-0.01, 1.01, std::numeric_limits<double>::quiet_NaN()}) {
+            auto config = Configuration{};
+            config.refinement.maximumDrift = drift;
+            const auto result = compareAlternatives(root, b, &a, config);
+            CHECK(result.reason == ComparisonReason::Insufficient);
+            CHECK(result.moves.empty());
+        }
+        return;
+    }
+    const auto result = compareAlternatives(root, b, &a, {});
+    CHECK(result.reason == ComparisonReason::Insufficient);
+    CHECK(result.needsEvidence());
+}
+
+TEST_CASE("Comparison ignores supplied derived facts and rejects malformed raw witnesses",
+          "[unit][review][comparison][audit]") {
+    const auto root = chess::Position::initial();
+    auto a = pair(root, false), b = pair(root, true);
+    SECTION("derived facts") {
+        for (auto* evidence : {&a, &b}) {
+            evidence->mover = chess::Color::Black;
+            evidence->loss = 1;
+            evidence->playedMoveRank = 1;
+            evidence->beforeEvaluation = {};
+            evidence->afterEvaluation = {};
+        }
+        CHECK(compareAlternatives(root, b, &a, {}).reason == ComparisonReason::Confirmed);
+        return;
+    }
+    SECTION("duplicate root") {
+        b.before.candidates.back().continuation = b.before.candidates.front().continuation;
+    }
+    SECTION("oversized PV") { b.before.candidates.front().continuation.resize(1025); }
+    SECTION("oversized width") { b.before.candidates.resize(257); }
+    SECTION("invalid WDL") {
+        b.before.candidates.back().evaluation.wdl->wins = std::numeric_limits<int>::max();
+    }
+    SECTION("missing score") { b.before.candidates.back().evaluation.score.reset(); }
+    SECTION("bad rank") { b.before.candidates.back().rank = std::numeric_limits<int>::min(); }
+    SECTION("wrong child context") { b.after.position.halfmoveClock++; }
+    CHECK(compareAlternatives(root, b, &a, {}).moves.empty());
+}

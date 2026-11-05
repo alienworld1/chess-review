@@ -1168,6 +1168,15 @@ void ReviewPage::updateExploration() {
     comparisonStatus_->setText(hidden ? QString{} : state.comparisonStatus);
     comparisonModel_->bind(comparisonRows, comparisonLines);
     comparisonRows_->setVisible(!comparisonRows.isEmpty());
+    if (line) {
+        for (int row = 0; row < comparisonModel_->rowCount(); ++row) {
+            if (comparisonModel_->line(row) == state.candidate &&
+                comparisonRows_->currentIndex().row() != row) {
+                comparisonRows_->setCurrentIndex(comparisonModel_->index(row, 0));
+                break;
+            }
+        }
+    }
     candidates_->setVisible(!hidden);
     if (hidden) {
         candidates_->clear();

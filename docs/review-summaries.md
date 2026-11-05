@@ -204,3 +204,26 @@ Historical reviews gain comparisons where their retained evidence supports them.
 Policies 1–5 preserve their original scheduling and resume decisions; opening an
 old review does not upgrade it. Comparison facts are derived from owned review
 evidence and remain available without the engine or disposable analysis cache.
+
+## Comparison confidence hardening (pipeline policy 7)
+
+New reviews capture policy 7. Comparisons use exact native-WDL arithmetic when
+checking a root candidate against a locally proven terminal child, including the
+configured drift boundary. If root and child evidence disagree about whether the
+played move is equivalent to best, its numerical comparison is withheld even
+when the difference falls within the drift allowance. Classification confidence
+remains separate.
+
+Older policy-6 runs keep their original automatic work plans, including resume
+and completion decisions. Their displayed comparisons use the corrected
+interpretation. If that exposes unresolved quality that the saved policy does
+not investigate, the UI explains that a new review can collect current-policy
+evidence. Opening a saved run does not silently schedule extra work.
+
+The comparison table follows the displayed continuation when switching lines or
+returning from Analysis. Played-move replay explicitly identifies its saved
+after-move evaluation; it does not assign that evaluation to the pre-move board.
+
+Review sizing follows the active workspace's minimum size. Hidden workspaces do
+not push board navigation below the laptop viewport; the outer shell still
+scrolls when the active content or enlarged fonts require it.

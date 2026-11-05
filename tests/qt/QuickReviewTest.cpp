@@ -1790,10 +1790,21 @@ class QuickReviewTest final : public QObject {
         auto& exploration = review.exploration();
         review.selectMoment(2);
         QTRY_VERIFY(!exploration.state().loading && exploration.state().canRetry);
+        QSignalSpy updates(&exploration, &app::ReviewExplorationController::changed);
         exploration.showLine(1);
+        QVERIFY(exploration.state().pendingBoard);
+        const auto pendingUpdates = updates.count();
+        exploration.showLine(1);
+        QCOMPARE(updates.count(), pendingUpdates);
         QTRY_VERIFY(exploration.state().canAnalyze);
         auto* candidates = f.window.findChild<QComboBox*>(QStringLiteral("reviewCandidates"));
         QCOMPARE(candidates->currentIndex(), 1);
+        auto* comparisons = f.window.findChild<QTableView*>(QStringLiteral("reviewComparisonRows"));
+        QCOMPARE(comparisons->currentIndex().row(), 2);
+        exploration.showLine(3);
+        QTRY_VERIFY(exploration.state().canAnalyze);
+        QCOMPARE(comparisons->currentIndex().row(), 0);
+        QVERIFY(exploration.state().message.contains(QStringLiteral("after the played move")));
         QSignalSpy reads(&f.startup.gameRepository(),
                          &persistence::Database::reviewExplorationLoaded);
         QSignalSpy searches(&f.supervisor(), &engine::EngineSupervisor::scheduledChanged);
@@ -3613,6 +3624,25 @@ class QuickReviewTest final : public QObject {
         exploration.end();
         QTRY_COMPARE(exploration.state().step, 1);
         QTRY_VERIFY(exploration.state().canAnalyze);
+        auto* page = f.window.findChild<QWidget*>(QStringLiteral("reviewPage"));
+        auto* split = f.window.findChild<QSplitter*>(QStringLiteral("reviewSplitter"));
+        auto* geometryShell = f.window.findChild<QScrollArea*>(QStringLiteral("shellScrollArea"));
+        auto* explanation =
+            f.window.findChild<QScrollArea*>(QStringLiteral("reviewExplanationScroll"));
+        QVERIFY(page && split && geometryShell && explanation);
+        qInfo("review geometry: page=%dx%d min=%dx%d split=%dx%d min=%dx%d leftMin=%dx%d "
+              "rightMin=%dx%d viewport=%dx%d",
+              page->width(), page->height(), page->minimumSizeHint().width(),
+              page->minimumSizeHint().height(), split->width(), split->height(),
+              split->minimumSizeHint().width(), split->minimumSizeHint().height(),
+              split->widget(0)->minimumSizeHint().width(),
+              split->widget(0)->minimumSizeHint().height(), explanation->minimumSizeHint().width(),
+              explanation->minimumSizeHint().height(), geometryShell->viewport()->width(),
+              geometryShell->viewport()->height());
+        auto* replayNext = f.window.findChild<QPushButton*>(QStringLiteral("reviewNextMove"));
+        QVERIFY(replayNext);
+        QTRY_VERIFY(geometryShell->viewport()->rect().contains(
+            replayNext->mapTo(geometryShell->viewport(), replayNext->rect().bottomRight())));
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-line-light.png")));
         exploration.returnToGame();
         exploration.tryAgain();

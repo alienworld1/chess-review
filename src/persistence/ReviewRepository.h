@@ -167,8 +167,19 @@ struct ReviewExploration {
     std::optional<review::MoveEvidence> deep;
     std::optional<review::MoveEvidence> verified;
     std::vector<QString> candidateSans;
-    // Independent replay lines; root candidates retain their existing indexes.
-    std::vector<std::vector<chess::Move>> continuations;
+    // Root PVs stay in evidence; only the played-plus-reply line needs separate storage.
+    std::vector<chess::Move> playedContinuation;
+    [[nodiscard]] int continuationCount() const {
+        return static_cast<int>(evidence.candidates.size()) + (playedContinuation.empty() ? 0 : 1);
+    }
+    [[nodiscard]] const std::vector<chess::Move>* continuation(int index) const {
+        if (index < 0 || index >= continuationCount()) {
+            return nullptr;
+        }
+        return index < static_cast<int>(evidence.candidates.size())
+                   ? &evidence.candidates[static_cast<std::size_t>(index)].continuation
+                   : &playedContinuation;
+    }
 };
 using LoadReviewExplorationResult =
     std::variant<std::shared_ptr<const ReviewExploration>, ReviewError>;

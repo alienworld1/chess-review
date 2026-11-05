@@ -23,6 +23,7 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
@@ -45,6 +46,26 @@
 #include <algorithm>
 
 namespace chess_review::ui {
+namespace {
+// Hidden workspaces must not force the active page beyond the scroll viewport.
+// Each active page keeps its own real minimum; the shell still scrolls when needed.
+class DestinationStack final : public QStackedWidget {
+  public:
+    explicit DestinationStack(QWidget* parent) : QStackedWidget(parent) {
+        layout()->setSizeConstraint(QLayout::SetNoConstraint);
+        connect(this, &QStackedWidget::currentChanged, this, [this] { updateGeometry(); });
+    }
+    QSize sizeHint() const override {
+        const auto* page = currentWidget();
+        return page ? page->sizeHint() : QStackedWidget::sizeHint();
+    }
+    QSize minimumSizeHint() const override {
+        const auto* page = currentWidget();
+        return page ? page->minimumSizeHint().expandedTo(page->minimumSize())
+                    : QStackedWidget::minimumSizeHint();
+    }
+};
+} // namespace
 QRect fittedWindowGeometry(const QRect& desired, const QRect& available) {
     if (available.isEmpty()) {
         return desired;
@@ -83,7 +104,7 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     sidebar->setAccessibleName(tr("Destinations"));
     auto* buttons = new QVBoxLayout(sidebar);
     buttons->setContentsMargins(0, 0, 12, 0);
-    pages_ = new QStackedWidget(central);
+    pages_ = new DestinationStack(central);
     pages_->setObjectName(QStringLiteral("destinationPages"));
     auto* group = new QActionGroup(this);
     group->setExclusive(true);
