@@ -47,8 +47,8 @@ bounded, or unsupported numeric evidence leaves the bar unavailable.
 Drag the divider to resize the workspace; its Review-specific share survives an
 orderly exit. Explanations scroll independently. **Review setup** and **Saved
 review runs** expand on demand. Returning within the session retains the selected
-moment. Interactive better-move lines, Try Again, and Analyze/Back transitions are
-not yet implemented.
+moment. See [Better moves and practice](#better-moves-and-practice) for
+exploration and Analyze/Back transitions.
 
 ## Background work and cancellation
 
