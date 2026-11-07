@@ -502,6 +502,8 @@ class ReviewRepositoryTest final : public QObject {
         QTest::newRow("persistent-proximity") << false << 8;
         QTest::newRow("clears-in-extra-rounds") << true << 8;
         QTest::newRow("historical-policy-seven") << false << 7;
+        QTest::newRow("portable-persistent-proximity") << false << 9;
+        QTest::newRow("portable-clears-in-extra-rounds") << true << 9;
     }
     void thresholdStabilitySurvivesPartialWorkAndReopen() {
         QFETCH(bool, clear);
@@ -517,7 +519,7 @@ class ReviewRepositoryTest final : public QObject {
         request.pipelineVersion = static_cast<std::uint32_t>(policy);
         request.refinement = true;
         auto run = std::get<ReviewSummary>(session.createReview(request));
-        for (int stageIndex = 0; stageIndex < (policy == 8 ? 5 : 3); ++stageIndex) {
+        for (int stageIndex = 0; stageIndex < (policy >= 8 ? 5 : 3); ++stageIndex) {
             const auto stage = static_cast<review::EvidenceStage>(stageIndex);
             for (int index = 0; index < 2; ++index) {
                 auto result = resultAt(request, *doc, index);
@@ -542,7 +544,7 @@ class ReviewRepositoryTest final : public QObject {
                         session.deriveReviewMoves(run.id, run.revision, 0, 1));
                     QCOMPARE(partial.moves.front().stability.reason,
                              review::StabilityReason::Pending);
-                    QCOMPARE(partial.moves.front().stability.modelVersion, 2U);
+                    QCOMPARE(partial.moves.front().stability.modelVersion, policy == 9 ? 3U : 2U);
                     ReviewCheckpoint cancel;
                     cancel.reviewId = run.id;
                     cancel.expectedRevision = run.revision;
@@ -557,16 +559,16 @@ class ReviewRepositoryTest final : public QObject {
                 const auto page =
                     std::get<ReviewMovePage>(session.deriveReviewMoves(run.id, run.revision, 0, 1));
                 QCOMPARE(page.moves.front().stability.reason,
-                         policy == 8 ? review::StabilityReason::ThresholdProximity
+                         policy >= 8 ? review::StabilityReason::ThresholdProximity
                                      : review::StabilityReason::Confirmed);
-                if (policy == 8) {
+                if (policy >= 8) {
                     QCOMPARE(page.moves.front().stability.thresholds.front().cutoff, .1);
                 }
                 const auto overview =
                     std::get<ReviewOverview>(session.loadReviewOverview(run.id, run.revision));
                 QCOMPARE(overview.escalationPositions[0],
-                         (policy == 8 ? std::vector<int>{0, 1} : std::vector<int>{}));
-                QCOMPARE(overview.sides[0].stable, policy == 8 ? 0 : 1);
+                         (policy >= 8 ? std::vector<int>{0, 1} : std::vector<int>{}));
+                QCOMPARE(overview.sides[0].stable, policy >= 8 ? 0 : 1);
             }
         }
         ReviewCheckpoint done;
@@ -583,7 +585,9 @@ class ReviewRepositoryTest final : public QObject {
             std::get<ReviewMovePage>(reopened.deriveReviewMoves(run.id, run.revision, 0, 1));
         const auto& row = page.moves.front();
         QCOMPARE(row.classification->stable, confirmed);
-        QCOMPARE(row.stability.modelVersion, policy == 8 ? 2U : 1U);
+        QCOMPARE(row.stability.modelVersion, static_cast<std::uint32_t>(policy == 9   ? 3
+                                                                        : policy == 8 ? 2
+                                                                                      : 1));
         QCOMPARE(row.escalationStop, confirmed ? review::EscalationStop::Confirmed
                                                : review::EscalationStop::RoundLimit);
         QCOMPARE(row.stability.reason, confirmed ? review::StabilityReason::Confirmed
@@ -598,12 +602,47 @@ class ReviewRepositoryTest final : public QObject {
                      ->move.classification->stable,
                  confirmed);
     }
+    void portableThresholdPolicyUsesItsCapturedSelection() {
+        Fixture f;
+        const auto doc = document("1. e4 *");
+        auto request = seed(f.session, doc);
+        request.refinement = true;
+        auto values = request.configuration.values;
+        values.classification.excellentLoss = std::nextafter(.0045, 1.0);
+        values.refinement.boundaryMargin = .004;
+        request.configuration = *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
+            config::validate(values));
+        const bool legacyNear =
+            std::abs(static_cast<long double>(.0005) -
+                     static_cast<long double>(values.classification.excellentLoss)) <=
+            static_cast<long double>(values.refinement.boundaryMargin);
+        for (const auto policy : {8U, 9U}) {
+            request.pipelineVersion = policy;
+            auto run = std::get<ReviewSummary>(f.session.createReview(request));
+            for (int index = 0; index < 2; ++index) {
+                auto result = resultAt(request, *doc, index);
+                result.evidence.lines.front().wdl =
+                    index == 0 ? engine::Wdl{500, 0, 500} : engine::Wdl{500, 1, 499};
+                const auto saved =
+                    f.session.checkpointReview(checkpoint(run.id, run.revision, index, result));
+                QVERIFY(std::holds_alternative<ReviewSummary>(saved));
+                run = std::get<ReviewSummary>(saved);
+            }
+            const auto overview =
+                std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+            QCOMPARE(overview.refinementPositions.empty(), policy == 8 && !legacyNear);
+            const auto page =
+                std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 1));
+            QCOMPARE(page.moves.front().refinementTarget, policy == 9 || legacyNear);
+            QCOMPARE(page.moves.front().stability.modelVersion, policy == 9 ? 3U : 2U);
+        }
+    }
     void pipelineSettingsRetainReleasedAndNewPolicies() {
         Fixture f;
         auto request = seed(f.session);
         for (const bool refinement : {false, true}) {
             request.refinement = refinement;
-            for (const std::uint32_t version : {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U}) {
+            for (const std::uint32_t version : {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U}) {
                 request.pipelineVersion = version;
                 const auto bytes = encodeReviewSettings(request);
                 QVERIFY(!bytes.isEmpty());
@@ -617,7 +656,7 @@ class ReviewRepositoryTest final : public QObject {
                     refinement ? version : 1U);
             }
         }
-        for (const auto policy : {7U, 8U}) {
+        for (const auto policy : {7U, 8U, 9U}) {
             request.pipelineVersion = policy;
             request.refinement = true;
             auto wrong = *readReviewDocument(encodeReviewSettings(request), maxReviewSettingsBytes);

@@ -661,7 +661,7 @@ MoveEvidence stabilityPair(const chess::Position& root, int loss, bool verified,
 }
 StabilityAssessment stability(const chess::Position& root, const MoveEvidence& a,
                               const MoveEvidence& b, const ClassificationConfig& c = {},
-                              const RefinementConfig& r = {}, std::uint32_t model = 2) {
+                              const RefinementConfig& r = {}, std::uint32_t model = 3) {
     return assessStability(classify(root, a, c), classify(root, b, c), a, b, r, model);
 }
 } // namespace
@@ -679,7 +679,7 @@ TEST_CASE("Threshold stability protects all applicable bands symmetrically",
     const auto result = stability(root, a, b);
     REQUIRE(result.reason == StabilityReason::ThresholdProximity);
     REQUIRE(!result.stable);
-    REQUIRE(result.modelVersion == 2);
+    REQUIRE(result.modelVersion == 3);
     REQUIRE(!result.thresholds.empty());
     CHECK(result.thresholds.front().losses[0] == static_cast<double>(cutoff + offset) / 1000);
     CHECK(result.thresholds.front().margin == .01);
@@ -842,4 +842,49 @@ TEST_CASE("Threshold stability accepts local terminal proof and half-permille lo
     CHECK(!stability(initial, a, b, {}, r).stable);
     r.boundaryMargin = std::nextafter(.0005, 0.0);
     CHECK(stability(initial, a, b, {}, r).stable);
+}
+TEST_CASE("Stability rejects rank and score metadata inconsistent with its paired witness",
+          "[unit][review][threshold][audit]") {
+    const auto root = chess::Position::initial();
+    const auto a = stabilityPair(root, 10, false), b = stabilityPair(root, 10, true);
+    auto d = classify(root, a, {}), v = classify(root, b, {});
+    d.playedMoveRank = v.playedMoveRank = 1;
+    CHECK(!assessStability(d, v, a, b, {}, 2).stable);
+    const auto clearA = stabilityPair(root, 150, false), clearB = stabilityPair(root, 150, true);
+    d = classify(root, clearA, {});
+    v = classify(root, clearB, {});
+    d.before.expected->value = v.before.expected->value = .8;
+    CHECK(!assessStability(d, v, clearA, clearB, {}, 2).stable);
+}
+TEST_CASE("Unknown pipelines have no stability model", "[unit][review][threshold][audit]") {
+    CHECK(!stabilityModelForPipeline(0));
+    CHECK(!stabilityModelForPipeline(99));
+    CHECK(!stabilityModelForPipeline(std::numeric_limits<std::uint32_t>::max()));
+}
+
+TEST_CASE("Portable threshold arithmetic preserves captured policy eight decisions",
+          "[unit][review][threshold][audit]") {
+    const auto root = chess::Position::initial();
+    const auto half = [&](bool verified) {
+        auto p = stabilityPair(root, 0, verified);
+        p.after.evaluation.wdl = Wdl{500, 1, 499};
+        p.after.candidates.front().evaluation = p.after.evaluation;
+        return pairEvidence(root, p.playedMove, p.before, p.after);
+    };
+    const auto a = half(false), b = half(true);
+    auto c = ClassificationConfig{};
+    c.excellentLoss = std::nextafter(.0045, 1.0);
+    RefinementConfig r;
+    r.boundaryMargin = .004;
+    const auto d = classify(root, a, c), v = classify(root, b, c);
+    REQUIRE(d.loss == .0005);
+    const bool legacyNear =
+        std::abs(static_cast<long double>(*d.loss) - static_cast<long double>(c.excellentLoss)) <=
+        static_cast<long double>(r.boundaryMargin);
+    CHECK(assessStability(d, v, a, b, r, 2).stable == !legacyNear);
+    CHECK(assessStability(d, v, a, b, r, 3).reason == StabilityReason::ThresholdProximity);
+    CHECK(assessQuickScan(d, a, r, 8).needsRefinement() == legacyNear);
+    CHECK(assessQuickScan(d, a, r, 9).needsRefinement());
+    CHECK(stabilityModelForPipeline(8) == 2);
+    CHECK(stabilityModelForPipeline(9) == 3);
 }

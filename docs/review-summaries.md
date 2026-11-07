@@ -20,7 +20,7 @@ percentage points of change in either expected score. Verification must have mor
 measured nodes and no shallower common depth. Reusing one attempt never provides
 two confirmations. Equal custom budgets do not guarantee a stable result.
 
-New runs capture pipeline policy 8 and stability model 2. Both compared losses must
+New runs capture pipeline policy 9 and stability model 3. Both compared losses must
 also be farther than the captured `boundaryMargin` from each applicable label
 cutoff. The default margin is one percentage point; equality remains provisional.
 A zero margin still protects an exact cutoff. Best moves do not use the
@@ -34,9 +34,14 @@ work stopped. Agreement alone does not confirm a nearby label. These checks are 
 conservative rule, not a statistical confidence interval or a guarantee that deeper
 search will agree. With the default 1% Excellent cutoff and one-point margin,
 non-best Excellent labels remain provisional even after exhausting the rounds.
+Custom non-grid cutoffs and fallback losses use canonical double subtraction, so
+new-policy decisions do not depend on the platform's extended floating-point precision.
 Older saved runs retain their captured stability and scheduling rules, including
-when resumed. Start a new run to use the new policy. Retry exercises retain their
-existing grading rules; provisional original moves cannot start an exercise.
+when resumed. Start a new run to use the new policy. Historical policy-8 arithmetic
+can differ across platforms with different extended precision; start a new run to
+reconfirm its labels after moving the database between such platforms. Retry
+exercises retain their existing grading rules; provisional original moves cannot
+start an exercise.
 
 Moves with only quick-scan evidence and unresolved results remain provisional.
 Finishing the planned work does not mean every move is stable. There are no unbounded refinement retries.

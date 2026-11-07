@@ -129,7 +129,8 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
     if (!config || !sameConfiguration(**config, settings.configuration)) {
         return {};
     }
-    if (!review::supportsPipelineModel(settings.pipelineVersion)) {
+    const auto stabilityModel = review::stabilityModelForPipeline(settings.pipelineVersion);
+    if (!stabilityModel) {
         return {};
     }
     if (!settings.refinement &&
@@ -179,8 +180,7 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
     if (settings.refinement) {
         document["pipelineVersion"] = static_cast<int>(settings.pipelineVersion);
         document["reviewModelVersion"] = 1;
-        document["stabilityModelVersion"] =
-            static_cast<int>(review::stabilityModelForPipeline(settings.pipelineVersion));
+        document["stabilityModelVersion"] = static_cast<int>(*stabilityModel);
         document["accuracyModelVersion"] = 1;
         document["refinement"] = QJsonArray{c.refinement.boundaryMargin, c.refinement.maximumDrift,
                                             c.refinement.multiPv};

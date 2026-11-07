@@ -7,17 +7,33 @@
 #include <variant>
 #include <vector>
 namespace chess_review::review {
-inline constexpr std::uint32_t stabilityModelVersion = 2;
+inline constexpr std::uint32_t stabilityModelVersion = 3;
 inline constexpr std::uint32_t accuracyModelVersion = 1;
-inline constexpr std::uint32_t pipelineModelVersion = 8;
+inline constexpr std::uint32_t pipelineModelVersion = 9;
 [[nodiscard]] constexpr bool supportsPipelineModel(std::uint32_t version) {
     // Keep released policies explicit when the default advances.
     return version == 1 || version == 2 || version == 3 || version == 4 || version == 5 ||
-           version == 6 || version == 7 || version == 8;
+           version == 6 || version == 7 || version == 8 || version == 9;
 }
 // The persisted pipeline fixes stability semantics for scheduling and reproduction.
-[[nodiscard]] constexpr std::uint32_t stabilityModelForPipeline(std::uint32_t version) {
-    return version == 8 ? 2 : 1;
+[[nodiscard]] constexpr std::optional<std::uint32_t>
+stabilityModelForPipeline(std::uint32_t version) {
+    switch (version) {
+    case 1:
+    case 2:
+    case 3:
+    case 4:
+    case 5:
+    case 6:
+    case 7:
+        return 1;
+    case 8:
+        return 2;
+    case 9:
+        return 3;
+    default:
+        return std::nullopt;
+    }
 }
 enum class ScanState { AwaitingEvidence, Usable, Unusable, Invalid };
 enum class RefinementReason {

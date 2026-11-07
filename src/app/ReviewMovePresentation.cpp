@@ -518,13 +518,15 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
         text << QObject::tr("The searches agree, but a loss remains too close to a classification "
                             "cutoff to confirm the label.");
         for (const auto& threshold : move.stability.thresholds) {
-            text << QObject::tr("Observed losses: %1% and %2%; cutoff: %3%; "
-                                "required clearance: more than %4 percentage points.")
+            text << QObject::tr("Observed losses: earlier %1, newer %2; cutoff: %3; "
+                                "required clearance: > %4 (all in percentage points).")
                         .arg(threshold.losses[0] * 100, 0, 'g', 10)
                         .arg(threshold.losses[1] * 100, 0, 'g', 10)
                         .arg(threshold.cutoff * 100, 0, 'g', 10)
                         .arg(threshold.margin * 100, 0, 'g', 10);
         }
+        text << QObject::tr("Additional searches may still leave the label provisional under "
+                            "the captured margin.");
         break;
     case review::StabilityReason::Confirmed:
         break;

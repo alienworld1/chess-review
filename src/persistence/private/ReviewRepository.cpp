@@ -161,13 +161,11 @@ std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
             static_cast<int>(review::expectedScoreModelVersion)) {
         return error(ReviewErrorCode::UnsupportedVersion);
     }
+    const auto stabilityModel = review::stabilityModelForPipeline(
+        static_cast<std::uint32_t>((*doc)["pipelineVersion"].toInt(-1)));
     if (doc->contains("pipelineVersion") &&
-        (!review::supportsPipelineModel(
-             static_cast<std::uint32_t>((*doc)["pipelineVersion"].toInt(-1))) ||
-         (*doc)["accuracyModelVersion"].toInt(-1) != 1 ||
-         (*doc)["stabilityModelVersion"].toInt(-1) !=
-             static_cast<int>(review::stabilityModelForPipeline(
-                 static_cast<std::uint32_t>((*doc)["pipelineVersion"].toInt(-1)))) ||
+        (!stabilityModel || (*doc)["accuracyModelVersion"].toInt(-1) != 1 ||
+         (*doc)["stabilityModelVersion"].toInt(-1) != static_cast<int>(*stabilityModel) ||
          (*doc)["reviewModelVersion"].toInt(-1) != 1)) {
         return error(ReviewErrorCode::UnsupportedVersion);
     }
@@ -1354,6 +1352,10 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                    const StoredGame& game, chess::Position& cursor, int offset,
                                    int limit,
                                    const review::ScanAssessment* precedingScan = nullptr) {
+    const auto stabilityModel = review::stabilityModelForPipeline(run.settings.pipelineVersion);
+    if (!stabilityModel) {
+        return error(ReviewErrorCode::UnsupportedVersion);
+    }
     const auto comparisonModel = run.settings.pipelineVersion == 6
                                      ? review::ComparisonModel::Version1
                                      : review::ComparisonModel::Version2;
@@ -1418,8 +1420,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
         }
         ReviewMove row;
         row.positionIndex = ply + 1;
-        row.stability.modelVersion =
-            review::stabilityModelForPipeline(run.settings.pipelineVersion);
+        row.stability.modelVersion = *stabilityModel;
         row.moveNumber = position->fullmoveNumber();
         row.mover = position->sideToMove();
         row.san = QString::fromStdString(*text);
@@ -1504,8 +1505,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                             review::EvidenceStage newerStage) {
                     row.stability = review::assessStability(
                         older.classification, newer.classification, older.pair, newer.pair,
-                        run.settings.configuration.values.refinement,
-                        review::stabilityModelForPipeline(run.settings.pipelineVersion));
+                        run.settings.configuration.values.refinement, *stabilityModel);
                     row.alternatives = review::compareAlternatives(
                         *position, newer.pair, &older.pair, run.settings.configuration.values,
                         comparisonModel);
@@ -1561,7 +1561,12 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                 }
                 if (run.settings.pipelineVersion >= 5) {
                     const auto workStability = [&] {
-                        auto assessment = row.stability;
+                        // Planning needs status only; do not copy inspector diagnostic vectors.
+                        review::StabilityAssessment assessment;
+                        assessment.reason = row.stability.reason;
+                        assessment.stable = row.stability.stable;
+                        assessment.persistentMate = row.stability.persistentMate;
+                        assessment.modelVersion = row.stability.modelVersion;
                         if (run.settings.pipelineVersion >= 6 && assessment.stable &&
                             row.alternatives.needsEvidence()) {
                             assessment.stable = false;
@@ -1619,8 +1624,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                         } else if (touched && row.refinementTarget) {
                             row.stability = {};
                             row.stability.reason = review::StabilityReason::Pending;
-                            row.stability.modelVersion =
-                                review::stabilityModelForPipeline(run.settings.pipelineVersion);
+                            row.stability.modelVersion = *stabilityModel;
                             row.alternatives.reason = review::ComparisonReason::Pending;
                             for (auto& alternative : row.alternatives.moves) {
                                 alternative.reason = review::ComparisonReason::Pending;

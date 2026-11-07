@@ -2544,19 +2544,20 @@ class QuickReviewTest final : public QObject {
         QCOMPARE(controller.state().overview->sides[0].stable, stable ? 1 : 0);
         QTRY_VERIFY(controller.moves().state().page && !controller.moves().state().loading);
         const auto& row = controller.moves().state().page->moves.front();
-        QCOMPARE(row.stability.modelVersion, 2U);
+        QCOMPARE(row.stability.modelVersion, 3U);
         QCOMPARE(row.classification->stable, stable);
         QCOMPARE(row.escalationRound, rounds);
         const auto details = app::reviewMoveDetails(row);
         if (!stable) {
             QCOMPARE(row.stability.reason, review::StabilityReason::ThresholdProximity);
-            QVERIFY(details.contains(QStringLiteral("Observed losses:")));
+            QVERIFY(details.contains(QStringLiteral("Observed losses: earlier")));
+            QVERIFY(details.contains(QStringLiteral("Additional searches may still leave")));
             QVERIFY(details.contains(QStringLiteral("percentage points")));
             QVERIFY(details.contains(QStringLiteral("two-round limit")));
             QVERIFY(!controller.exploration().state().canRetry);
         }
         QVERIFY(heartbeats > 0);
-        qInfo("threshold policy=8 wins=%d/%d rounds=%d stable=%d elapsed=%lldms "
+        qInfo("threshold policy=9 wins=%d/%d rounds=%d stable=%d elapsed=%lldms "
               "searches=%d/%d/%d/%d/%d heartbeats=%d",
               initialWins, finalWins, rounds, stable, static_cast<long long>(elapsed.elapsed()),
               searches[0], searches[1], searches[2], searches[3], searches[4], heartbeats);
