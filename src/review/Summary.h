@@ -7,13 +7,17 @@
 #include <variant>
 #include <vector>
 namespace chess_review::review {
-inline constexpr std::uint32_t stabilityModelVersion = 1;
+inline constexpr std::uint32_t stabilityModelVersion = 2;
 inline constexpr std::uint32_t accuracyModelVersion = 1;
-inline constexpr std::uint32_t pipelineModelVersion = 7;
+inline constexpr std::uint32_t pipelineModelVersion = 8;
 [[nodiscard]] constexpr bool supportsPipelineModel(std::uint32_t version) {
     // Keep released policies explicit when the default advances.
     return version == 1 || version == 2 || version == 3 || version == 4 || version == 5 ||
-           version == 6 || version == 7;
+           version == 6 || version == 7 || version == 8;
+}
+// The persisted pipeline fixes stability semantics for scheduling and reproduction.
+[[nodiscard]] constexpr std::uint32_t stabilityModelForPipeline(std::uint32_t version) {
+    return version == 8 ? 2 : 1;
 }
 enum class ScanState { AwaitingEvidence, Usable, Unusable, Invalid };
 enum class RefinementReason {
@@ -95,13 +99,20 @@ enum class StabilityReason {
     Insufficient,
     Disagreement,
     ScoreDrift,
-    Confirmed
+    Confirmed,
+    ThresholdProximity
+};
+struct ThresholdProximity {
+    double cutoff;
+    std::array<double, 2> losses;
+    double margin;
 };
 struct StabilityAssessment {
     StabilityReason reason = StabilityReason::Unselected;
     bool stable = false;
     bool persistentMate = false;
     std::uint32_t modelVersion = stabilityModelVersion;
+    std::vector<ThresholdProximity> thresholds{};
 };
 [[nodiscard]] bool needsEscalation(bool selected, bool complete,
                                    const StabilityAssessment& stability);
@@ -111,11 +122,10 @@ struct StabilityAssessment {
                                    const RefinementConfig& config);
 // Pairs/classifications must come from validated original-board witnesses. Incompatible
 // derived values fail closed; this is not a replacement for raw evidence validation.
-[[nodiscard]] StabilityAssessment assessStability(const ClassificationResult& deep,
-                                                  const ClassificationResult& verified,
-                                                  const MoveEvidence& deepPair,
-                                                  const MoveEvidence& verifiedPair,
-                                                  const RefinementConfig& config);
+[[nodiscard]] StabilityAssessment
+assessStability(const ClassificationResult& deep, const ClassificationResult& verified,
+                const MoveEvidence& deepPair, const MoveEvidence& verifiedPair,
+                const RefinementConfig& config, std::uint32_t modelVersion = stabilityModelVersion);
 [[nodiscard]] std::optional<double> accuracyLoss(const MoveEvidence& validatedPair);
 // Independent of classification thresholds. Missing/invalid loss is excluded, never zero-filled.
 [[nodiscard]] std::optional<double> moveAccuracy(std::optional<double> loss);

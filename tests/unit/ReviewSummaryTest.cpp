@@ -57,26 +57,26 @@ TEST_CASE("Stability requires independent stronger evidence and agreement",
     b.before.strength.nodes = b.after.strength.nodes = 5000000;
     b.before.attemptIdentity = "verify-before";
     b.after.attemptIdentity = "verify-after";
-    CHECK(assessStability(deep, verified, a, b, {}).stable);
+    CHECK(assessStability(deep, verified, a, b, {}, 1).stable);
     a.before.engineIdentity = a.after.engineIdentity = "engine-a";
     b.before.engineIdentity = b.after.engineIdentity = "engine-b";
-    CHECK(!assessStability(deep, verified, a, b, {}).stable);
+    CHECK(!assessStability(deep, verified, a, b, {}, 1).stable);
     b.before.engineIdentity = b.after.engineIdentity = "engine-a";
     b.after.position.halfmoveClock = 1;
-    CHECK(!assessStability(deep, verified, a, b, {}).stable);
+    CHECK(!assessStability(deep, verified, a, b, {}, 1).stable);
     b.after.position.halfmoveClock = a.after.position.halfmoveClock;
     verified.label = Classification::Blunder;
-    CHECK(assessStability(deep, verified, a, b, {}).reason == StabilityReason::Disagreement);
+    CHECK(assessStability(deep, verified, a, b, {}, 1).reason == StabilityReason::Disagreement);
     verified = deep;
     verified.before.expected->value = .53;
-    CHECK(assessStability(deep, verified, a, b, {}).reason == StabilityReason::ScoreDrift);
-    CHECK(!assessStability(deep, deep, a, a, {}).stable);
+    CHECK(assessStability(deep, verified, a, b, {}, 1).reason == StabilityReason::ScoreDrift);
+    CHECK(!assessStability(deep, deep, a, a, {}, 1).stable);
     a.mate.before = RawScore{ScoreKind::Mate, 3};
     b.mate.before = RawScore{ScoreKind::Mate, 5};
     deep.label.reset();
     verified.label.reset();
-    CHECK(assessStability(deep, verified, a, b, {}).persistentMate);
-    CHECK(!assessStability(deep, verified, a, b, {}).stable);
+    CHECK(assessStability(deep, verified, a, b, {}, 1).persistentMate);
+    CHECK(!assessStability(deep, verified, a, b, {}, 1).stable);
 }
 TEST_CASE("Accuracy uses exact WDL deltas independently of label arithmetic",
           "[unit][review][summary]") {
@@ -122,10 +122,11 @@ TEST_CASE("Native WDL stability drift includes the exact two-point boundary",
     second.before.strength.nodes = second.after.strength.nodes = 5000000;
     second.before.evaluation.wdl = Wdl{520, 0, 480};
     second.after.evaluation.wdl = Wdl{420, 0, 580};
-    CHECK(assessStability(deep, verified, first, second, {}).stable);
+    CHECK(assessStability(deep, verified, first, second, {}, 1).stable);
     second.before.evaluation.wdl = Wdl{521, 0, 479};
     verified.before.expected->value = .521;
-    CHECK(assessStability(deep, verified, first, second, {}).reason == StabilityReason::ScoreDrift);
+    CHECK(assessStability(deep, verified, first, second, {}, 1).reason ==
+          StabilityReason::ScoreDrift);
 }
 TEST_CASE("Summary facts select chronological errors and actual mate transitions",
           "[unit][review][summary]") {
@@ -184,31 +185,31 @@ TEST_CASE("Stability rejects invalid or incompatible derived evaluations",
     second.before.strength.nodes = second.after.strength.nodes = 5000000;
     second.before.attemptIdentity = "verify-before";
     second.after.attemptIdentity = "verify-after";
-    REQUIRE(assessStability(deep, deep, first, second, {}).stable);
+    REQUIRE(assessStability(deep, deep, first, second, {}, 1).stable);
     auto verified = deep;
     verified.before.expected->value = std::numeric_limits<double>::quiet_NaN();
-    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    CHECK(!assessStability(deep, verified, first, second, {}, 1).stable);
     verified = deep;
     verified.after.expected->modelVersion = 999;
-    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    CHECK(!assessStability(deep, verified, first, second, {}, 1).stable);
     verified = deep;
     verified.after.expected->perspective = chess_review::chess::Color::Black;
-    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    CHECK(!assessStability(deep, verified, first, second, {}, 1).stable);
     verified = deep;
     verified.issue = ClassificationIssue::Evidence;
-    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    CHECK(!assessStability(deep, verified, first, second, {}, 1).stable);
     verified = deep;
     verified.before.expected.reset();
-    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    CHECK(!assessStability(deep, verified, first, second, {}, 1).stable);
     verified = deep;
     verified.after.expected->value = std::numeric_limits<double>::infinity();
-    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    CHECK(!assessStability(deep, verified, first, second, {}, 1).stable);
     verified = deep;
     verified.thresholds.excellentLoss = .02;
-    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    CHECK(!assessStability(deep, verified, first, second, {}, 1).stable);
     verified = deep;
     verified.modelVersion = 1;
-    CHECK(!assessStability(deep, verified, first, second, {}).stable);
+    CHECK(!assessStability(deep, verified, first, second, {}, 1).stable);
 }
 TEST_CASE("Escalation budgets are bounded and omit repeated ceiling rounds",
           "[unit][review][escalation]") {

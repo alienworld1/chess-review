@@ -8,6 +8,36 @@ namespace chess_review::review {
 namespace {
 std::optional<int> ticks(const PositionEvidence& evidence, chess::Color perspective);
 bool validExpected(const EvaluationResult& result, chess::Color mover);
+bool validThresholds(const ClassificationConfig& config) {
+    return std::isfinite(config.excellentLoss) && config.excellentLoss > 0 &&
+           config.excellentLoss < 1 && std::isfinite(config.inaccuracyLoss) &&
+           std::isfinite(config.mistakeLoss) && std::isfinite(config.blunderLoss) &&
+           config.inaccuracyLoss > 0 && config.inaccuracyLoss < config.mistakeLoss &&
+           config.mistakeLoss < config.blunderLoss && config.blunderLoss < 1;
+}
+// Best takes precedence below Inaccuracy. Excellent is reachable only below Inaccuracy.
+std::vector<double> applicableBoundaries(const ClassificationResult& result) {
+    const auto& c = result.thresholds;
+    if (result.playedMoveRank == 1) {
+        return {c.inaccuracyLoss};
+    }
+    std::vector<double> boundaries{c.inaccuracyLoss, c.mistakeLoss, c.blunderLoss};
+    if (c.excellentLoss < c.inaccuracyLoss) {
+        boundaries.push_back(c.excellentLoss);
+    }
+    return boundaries;
+}
+bool nearBoundary(double loss, double boundary, double margin, bool native) {
+    // Canonical half-permille cutoffs have exact integer distances. Compare the
+    // converted distance directly with the margin so adjacent margins stay distinct.
+    const double boundaryTicks = std::round(boundary * 2000);
+    if (native && boundaryTicks / 2000 == boundary) {
+        return std::abs(std::round(loss * 2000) - boundaryTicks) / 2000 <= margin;
+    }
+    // Preserve non-grid cutoffs and fallback losses without a scaling round trip.
+    return std::abs(static_cast<long double>(loss) - static_cast<long double>(boundary)) <=
+           static_cast<long double>(margin);
+}
 std::vector<RefinementReason> refinementReasons(const ClassificationResult& result,
                                                 const MoveEvidence& pair,
                                                 const RefinementConfig& config,
@@ -105,7 +135,8 @@ ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvi
     const bool inconsistentLoss =
         (result.loss && (result.loss != expectedLoss || result.signedDelta != result.loss)) ||
         (pair.loss && pair.signedDelta != pair.loss);
-    if (!supportsPipelineModel(pipelineVersion) ||
+    if ((pipelineVersion >= 8 && !validThresholds(result.thresholds)) ||
+        !supportsPipelineModel(pipelineVersion) ||
         !supportsClassificationModel(result.modelVersion) ||
         pair.before.modelVersion != evidenceModelVersion ||
         pair.after.modelVersion != evidenceModelVersion ||
@@ -173,10 +204,18 @@ ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvi
                 scan.reasons.push_back(RefinementReason::ExpectedScoreLoss);
                 scan.qualifyingLoss = pipelineVersion == 3 ? measuredTicks / 2000 : measuredLoss;
             }
-            for (const double boundary :
-                 {result.thresholds.inaccuracyLoss, result.thresholds.mistakeLoss,
-                  result.thresholds.blunderLoss}) {
-                if (std::abs(measuredTicks - boundary * 2000) <= config.boundaryMargin * 2000) {
+            const auto boundaries = pipelineVersion >= 8
+                                        ? applicableBoundaries(result)
+                                        : std::vector<double>{result.thresholds.inaccuracyLoss,
+                                                              result.thresholds.mistakeLoss,
+                                                              result.thresholds.blunderLoss};
+            for (const double boundary : boundaries) {
+                if (pipelineVersion >= 8
+                        ? nearBoundary(measuredLoss, boundary, config.boundaryMargin,
+                                       pair.beforeEvaluation.expected->source !=
+                                           ConversionSource::ApproximateCentipawns)
+                        : std::abs(measuredTicks - boundary * 2000) <=
+                              config.boundaryMargin * 2000) {
                     scan.reasons.push_back(RefinementReason::ThresholdProximity);
                     break;
                 }
@@ -458,8 +497,13 @@ EscalationStop escalationStop(bool selected, const StabilityAssessment& stabilit
 StabilityAssessment assessStability(const ClassificationResult& deep,
                                     const ClassificationResult& verified,
                                     const MoveEvidence& deepPair, const MoveEvidence& verifiedPair,
-                                    const RefinementConfig& config) {
-    StabilityAssessment out{StabilityReason::Insufficient};
+                                    const RefinementConfig& config, std::uint32_t modelVersion) {
+    StabilityAssessment out;
+    out.reason = StabilityReason::Insufficient;
+    out.modelVersion = modelVersion;
+    if (modelVersion != 1 && modelVersion != 2) {
+        return out;
+    }
     if (deepPair.mover != verifiedPair.mover || deepPair.playedMove != verifiedPair.playedMove ||
         !std::isfinite(config.maximumDrift) || config.maximumDrift < 0 || config.maximumDrift > 1) {
         return out;
@@ -501,6 +545,37 @@ StabilityAssessment assessStability(const ClassificationResult& deep,
             config.maximumDrift) {
         out.reason = StabilityReason::ScoreDrift;
         return out;
+    }
+    if (modelVersion == 2) {
+        const auto a = accuracyLoss(deepPair);
+        const auto b = accuracyLoss(verifiedPair);
+        if (!validThresholds(deep.thresholds) || !std::isfinite(config.boundaryMargin) ||
+            config.boundaryMargin < 0 || config.boundaryMargin > 1 || deep.modelVersion != 2 ||
+            !a || !b || !std::isfinite(*a) || !std::isfinite(*b) || *a < 0 || *a > 1 || *b < 0 ||
+            *b > 1 || deep.loss != a || verified.loss != b) {
+            return out;
+        }
+        // Either witness may introduce an applicable boundary (for example a rank change).
+        auto boundaries = applicableBoundaries(deep);
+        for (const auto boundary : applicableBoundaries(verified)) {
+            if (std::find(boundaries.begin(), boundaries.end(), boundary) == boundaries.end()) {
+                boundaries.push_back(boundary);
+            }
+        }
+        for (const auto boundary : boundaries) {
+            if (nearBoundary(*a, boundary, config.boundaryMargin,
+                             deep.before.expected->source !=
+                                 ConversionSource::ApproximateCentipawns) ||
+                nearBoundary(*b, boundary, config.boundaryMargin,
+                             verified.before.expected->source !=
+                                 ConversionSource::ApproximateCentipawns)) {
+                out.thresholds.push_back({boundary, {*a, *b}, config.boundaryMargin});
+            }
+        }
+        if (!out.thresholds.empty()) {
+            out.reason = StabilityReason::ThresholdProximity;
+            return out;
+        }
     }
     out.reason = StabilityReason::Confirmed;
     out.stable = true;

@@ -33,6 +33,9 @@ fallbackScaleCp = 300
 
 # Fractions of expected score: 0.01 means one percentage point.
 [refinement]
+# New runs use this for candidate selection and classification stability.
+# Both compared losses must clear applicable cutoffs by more than this margin.
+# Zero still protects the exact cutoff. Default non-best Excellent stays provisional.
 boundaryMargin = 0.01
 maximumDrift = 0.02
 multiPv = 3

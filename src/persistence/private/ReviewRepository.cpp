@@ -165,7 +165,9 @@ std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
         (!review::supportsPipelineModel(
              static_cast<std::uint32_t>((*doc)["pipelineVersion"].toInt(-1))) ||
          (*doc)["accuracyModelVersion"].toInt(-1) != 1 ||
-         (*doc)["stabilityModelVersion"].toInt(-1) != 1 ||
+         (*doc)["stabilityModelVersion"].toInt(-1) !=
+             static_cast<int>(review::stabilityModelForPipeline(
+                 static_cast<std::uint32_t>((*doc)["pipelineVersion"].toInt(-1)))) ||
          (*doc)["reviewModelVersion"].toInt(-1) != 1)) {
         return error(ReviewErrorCode::UnsupportedVersion);
     }
@@ -1416,6 +1418,8 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
         }
         ReviewMove row;
         row.positionIndex = ply + 1;
+        row.stability.modelVersion =
+            review::stabilityModelForPipeline(run.settings.pipelineVersion);
         row.moveNumber = position->fullmoveNumber();
         row.mover = position->sideToMove();
         row.san = QString::fromStdString(*text);
@@ -1500,7 +1504,8 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                             review::EvidenceStage newerStage) {
                     row.stability = review::assessStability(
                         older.classification, newer.classification, older.pair, newer.pair,
-                        run.settings.configuration.values.refinement);
+                        run.settings.configuration.values.refinement,
+                        review::stabilityModelForPipeline(run.settings.pipelineVersion));
                     row.alternatives = review::compareAlternatives(
                         *position, newer.pair, &older.pair, run.settings.configuration.values,
                         comparisonModel);
@@ -1612,7 +1617,10 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                             previous = next;
                             previousStage = stage;
                         } else if (touched && row.refinementTarget) {
-                            row.stability = {review::StabilityReason::Pending};
+                            row.stability = {};
+                            row.stability.reason = review::StabilityReason::Pending;
+                            row.stability.modelVersion =
+                                review::stabilityModelForPipeline(run.settings.pipelineVersion);
                             row.alternatives.reason = review::ComparisonReason::Pending;
                             for (auto& alternative : row.alternatives.moves) {
                                 alternative.reason = review::ComparisonReason::Pending;

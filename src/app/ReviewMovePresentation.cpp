@@ -435,6 +435,8 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
             switch (value) {
             case review::StabilityReason::Disagreement:
                 return QObject::tr("label or best-move disagreement");
+            case review::StabilityReason::ThresholdProximity:
+                return QObject::tr("loss near a classification threshold");
             case review::StabilityReason::ScoreDrift:
                 return QObject::tr("expected-score drift");
             case review::StabilityReason::Pending:
@@ -511,6 +513,18 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
         break;
     case review::StabilityReason::ScoreDrift:
         text << QObject::tr("Expected scores changed beyond the permitted drift.");
+        break;
+    case review::StabilityReason::ThresholdProximity:
+        text << QObject::tr("The searches agree, but a loss remains too close to a classification "
+                            "cutoff to confirm the label.");
+        for (const auto& threshold : move.stability.thresholds) {
+            text << QObject::tr("Observed losses: %1% and %2%; cutoff: %3%; "
+                                "required clearance: more than %4 percentage points.")
+                        .arg(threshold.losses[0] * 100, 0, 'g', 10)
+                        .arg(threshold.losses[1] * 100, 0, 'g', 10)
+                        .arg(threshold.cutoff * 100, 0, 'g', 10)
+                        .arg(threshold.margin * 100, 0, 'g', 10);
+        }
         break;
     case review::StabilityReason::Confirmed:
         break;

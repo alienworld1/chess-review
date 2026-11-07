@@ -37,6 +37,7 @@
 #include <QTabWidget>
 #include <QTableView>
 #include <QTemporaryDir>
+#include <QTemporaryFile>
 #include <QTest>
 #include <QTextCursor>
 #include <QTimer>
@@ -154,7 +155,7 @@ class Fixture {
         return app::EngineControllerTestAccess::validator(startup.engines());
     }
     void script(int first = 0, int end = -1, int delay = 0, bool weak = false, bool crash = false,
-                const QString& score = QStringLiteral("cp 25"),
+                const QString& score = QStringLiteral("cp 40"),
                 const QString& identity = QStringLiteral("Test engine"), int quitDelay = 0,
                 bool multiPv = false, const QString& refinedScore = {}, int deepFirst = 0,
                 int verifyFirst = 0, bool boundedFinal = false,
@@ -1074,7 +1075,13 @@ class QuickReviewTest final : public QObject {
         QVERIFY(!nav.move(51));
     }
     void boundedFinalIterationDoesNotEraseUsableReview() {
-        Fixture f;
+        // Keep this regression away from threshold uncertainty; dedicated tests
+        // below exercise the production one-point margin and bounded escalation.
+        QTemporaryFile config;
+        QVERIFY(config.open());
+        QVERIFY(config.write("[refinement]\nboundaryMargin=0.005\n") > 0);
+        QVERIFY(config.flush());
+        Fixture f({}, config.fileName());
         QVERIFY(f.seed("1. e4 e5 2. Nf3 Nc6 *"));
         f.script(0, -1, 0, false, false, QStringLiteral("cp 0"), QStringLiteral("Test engine"), 0,
                  false, {}, 0, 0, true);
@@ -1146,7 +1153,7 @@ class QuickReviewTest final : public QObject {
     void resumeDuringDisconnectCompletes() {
         Fixture f;
         QVERIFY(f.seed());
-        f.script(0, 1, 0, false, false, QStringLiteral("cp 25"), QStringLiteral("Test engine"),
+        f.script(0, 1, 0, false, false, QStringLiteral("cp 40"), QStringLiteral("Test engine"),
                  300);
         const auto connection =
             connect(&f.startup.reviewGame(), &app::ReviewGameController::changed,
@@ -1630,7 +1637,13 @@ class QuickReviewTest final : public QObject {
         QFETCH(bool, unresolved);
         QFETCH(bool, resume);
         QFETCH(bool, steady);
-        Fixture f;
+        // Keep this regression away from threshold uncertainty; dedicated tests
+        // below exercise the production one-point margin and bounded escalation.
+        QTemporaryFile config;
+        QVERIFY(config.open());
+        QVERIFY(config.write("[refinement]\nboundaryMargin=0.005\n") > 0);
+        QVERIFY(config.flush());
+        Fixture f({}, config.fileName());
         QVERIFY(f.seed("1. e4 e5 *", true));
         const int rounds = steady ? 0 : unresolved ? 2 : 1;
         f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
@@ -2259,10 +2272,14 @@ class QuickReviewTest final : public QObject {
         }
     }
     void rankedResumeSkipsAcknowledgedHigherPosition() {
-        Fixture f;
+        QTemporaryFile config;
+        QVERIFY(config.open());
+        QVERIFY(config.write("[refinement]\nboundaryMargin=0.005\n") > 0);
+        QVERIFY(config.flush());
+        Fixture f({}, config.fileName());
         QVERIFY(f.seed("1. e4 e5 2. Nf3 Nc6 *"));
         const std::vector<int> order{3, 4, 1, 2};
-        const std::vector<int> scores{500, 500, 560, 560, 760};
+        const std::vector<int> scores{500, 500, 575, 575, 790};
         f.script(0, -1, 0, false, false, QStringLiteral("cp 0"), QStringLiteral("Test engine"), 0,
                  false, {}, 0, 0, false, RetryScript::None, order, scores);
         QFile runtime(f.directory.filePath(QStringLiteral("runtime.json")));
@@ -2358,7 +2375,13 @@ class QuickReviewTest final : public QObject {
     void scanGapsFeedOneRefinementCycle() {
         QFETCH(bool, repair);
         QFETCH(bool, missing);
-        Fixture f;
+        // Keep this regression away from threshold uncertainty; dedicated tests
+        // below exercise the production one-point margin and bounded escalation.
+        QTemporaryFile config;
+        QVERIFY(config.open());
+        QVERIFY(config.write("[refinement]\nboundaryMargin=0.005\n") > 0);
+        QVERIFY(config.flush());
+        Fixture f({}, config.fileName());
         QVERIFY(f.seed("1. e4 e5 *"));
         f.script(0, -1, 0, !missing, false, missing ? QString{} : QStringLiteral("cp 25"),
                  QStringLiteral("Test engine"), 0, false,
@@ -2458,6 +2481,112 @@ class QuickReviewTest final : public QObject {
         QVERIFY(app::reviewMoveDetails(move).contains(QStringLiteral("best move unchanged")));
         move.comparisonBestMoveChanged = true;
         QVERIFY(app::reviewMoveDetails(move).contains(QStringLiteral("best move changed")));
+    }
+    void classificationThresholdStability_data() {
+        QTest::addColumn<int>("initialWins");
+        QTest::addColumn<int>("finalWins");
+        QTest::addColumn<int>("rounds");
+        QTest::addColumn<bool>("stable");
+        QTest::newRow("clear-at-start") << 565 << 565 << 0 << true;
+        QTest::newRow("clears-after-two-rounds") << 550 << 565 << 2 << true;
+        QTest::newRow("persistent-mistake-boundary") << 550 << 550 << 2 << false;
+        QTest::newRow("persistent-excellent-boundary") << 505 << 505 << 2 << false;
+    }
+    void classificationThresholdStability() {
+        QFETCH(int, initialWins);
+        QFETCH(int, finalWins);
+        QFETCH(int, rounds);
+        QFETCH(bool, stable);
+        Fixture f;
+        QVERIFY(f.seed("1. e4 *"));
+        std::vector<QString> scores;
+        for (int stage = 0; stage < 3 + rounds; ++stage) {
+            const int wins = stage < 3 ? initialWins : finalWins;
+            scores.push_back(QStringLiteral("cp 0 wdl %1 0 %2").arg(wins).arg(1000 - wins));
+        }
+        f.script(0, -1, 0, false, false, {}, QStringLiteral("Test engine"), 0, false, {}, 0, 0,
+                 false, RetryScript::None, {}, {}, {}, rounds, scores);
+        auto& controller = f.startup.reviewGame();
+        std::array<int, 5> searches{};
+        QElapsedTimer elapsed;
+        int heartbeats = 0;
+        QTimer heartbeat;
+        heartbeat.setInterval(5);
+        connect(&heartbeat, &QTimer::timeout, &heartbeat, [&] { ++heartbeats; });
+        const auto observed =
+            connect(&f.supervisor(), &engine::EngineSupervisor::scheduledFinished, &controller,
+                    [&](const engine::ScheduledResult& result) {
+                        if (!result.evidence) {
+                            return;
+                        }
+                        if (const auto* nodes =
+                                std::get_if<engine::NodeLimit>(&result.evidence->evidence.limit)) {
+                            const std::array<std::uint64_t, 5> budgets{100000, 1000000, 5000000,
+                                                                       10000000, 20000000};
+                            const auto found =
+                                std::find(budgets.begin(), budgets.end(), nodes->nodes);
+                            if (found != budgets.end()) {
+                                ++searches[static_cast<std::size_t>(found - budgets.begin())];
+                            }
+                        }
+                    });
+        const auto cleanup = qScopeGuard([&] { disconnect(observed); });
+        elapsed.start();
+        heartbeat.start();
+        f.run();
+        QVERIFY(f.done());
+        heartbeat.stop();
+        QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
+        QCOMPARE(controller.state().run->status, review::JobStatus::Complete);
+        QTRY_VERIFY(controller.state().overview &&
+                    controller.state().overview->revision == controller.state().run->revision);
+        QCOMPARE(searches, (std::array<int, 5>{2, 2, 2, rounds > 0 ? 2 : 0, rounds > 1 ? 2 : 0}));
+        QCOMPARE(controller.state().overview->sides[0].stable, stable ? 1 : 0);
+        QTRY_VERIFY(controller.moves().state().page && !controller.moves().state().loading);
+        const auto& row = controller.moves().state().page->moves.front();
+        QCOMPARE(row.stability.modelVersion, 2U);
+        QCOMPARE(row.classification->stable, stable);
+        QCOMPARE(row.escalationRound, rounds);
+        const auto details = app::reviewMoveDetails(row);
+        if (!stable) {
+            QCOMPARE(row.stability.reason, review::StabilityReason::ThresholdProximity);
+            QVERIFY(details.contains(QStringLiteral("Observed losses:")));
+            QVERIFY(details.contains(QStringLiteral("percentage points")));
+            QVERIFY(details.contains(QStringLiteral("two-round limit")));
+            QVERIFY(!controller.exploration().state().canRetry);
+        }
+        QVERIFY(heartbeats > 0);
+        qInfo("threshold policy=8 wins=%d/%d rounds=%d stable=%d elapsed=%lldms "
+              "searches=%d/%d/%d/%d/%d heartbeats=%d",
+              initialWins, finalWins, rounds, stable, static_cast<long long>(elapsed.elapsed()),
+              searches[0], searches[1], searches[2], searches[3], searches[4], heartbeats);
+        const auto output = qEnvironmentVariable("CHESS_REVIEW_QUICK_RENDER_DIR");
+        if (!output.isEmpty() && !stable && initialWins == 550) {
+            f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+            f.window.resize(1100, 720);
+            f.window.show();
+            f.window.findChild<QPushButton*>(QStringLiteral("reviewDetailsToggle"))->click();
+            f.window.findChild<QTabWidget*>(QStringLiteral("reviewResultsTabs"))
+                ->setCurrentIndex(1);
+            controller.selectMoment(1);
+            QTRY_VERIFY(!controller.moves().state().loading &&
+                        !controller.exploration().state().loading);
+            auto* inspector =
+                f.window.findChild<QPlainTextEdit*>(QStringLiteral("reviewMoveDetails"));
+            QVERIFY(inspector);
+            QTRY_VERIFY(inspector->toPlainText().contains(QStringLiteral("Observed losses:")));
+            auto cursor = inspector->textCursor();
+            cursor.setPosition(static_cast<int>(
+                inspector->toPlainText().indexOf(QStringLiteral("Evidence stage:"))));
+            inspector->setTextCursor(cursor);
+            inspector->ensureCursorVisible();
+            for (auto* scroll : f.window.findChildren<QScrollArea*>()) {
+                scroll->ensureWidgetVisible(inspector);
+            }
+            QCoreApplication::processEvents();
+            QVERIFY(f.window.grab().save(output + QStringLiteral("/threshold-workspace.png")));
+            QVERIFY(inspector->grab().save(output + QStringLiteral("/threshold-inspector.png")));
+        }
     }
     void adaptiveDeeperSearches_data() {
         QTest::addColumn<int>("policy");
@@ -2732,7 +2861,13 @@ class QuickReviewTest final : public QObject {
                  attempt);
     }
     void refinementComparesAlternativesAndUpdatesSummary() {
-        Fixture f;
+        // Keep this regression away from threshold uncertainty; dedicated tests
+        // below exercise the production one-point margin and bounded escalation.
+        QTemporaryFile config;
+        QVERIFY(config.open());
+        QVERIFY(config.write("[refinement]\nboundaryMargin=0.005\n") > 0);
+        QVERIFY(config.flush());
+        Fixture f({}, config.fileName());
         QVERIFY(f.seed("1. e4 e5 *", true));
         f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
                  true, QStringLiteral("cp 0"));
@@ -2808,7 +2943,7 @@ class QuickReviewTest final : public QObject {
         f.startup.engines().disconnectEngine();
         QTRY_COMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnected);
         const std::array<std::vector<int>, 2> extraOrder{{{0, 1}, {1, 2}}};
-        f.script(3, -1, 0, false, false, QStringLiteral("cp 25"), QStringLiteral("Test engine"), 0,
+        f.script(3, -1, 0, false, false, QStringLiteral("cp 40"), QStringLiteral("Test engine"), 0,
                  false, {}, 1, 0, false, RetryScript::None, {}, {}, {}, gap ? 2 : 0, {},
                  extraOrder);
         controller.resume(runId);

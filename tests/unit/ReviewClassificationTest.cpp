@@ -649,3 +649,197 @@ TEST_CASE("Opportunity reassessment clears stale and mismatched context", "[unit
                      RefinementReason::OpportunityReply) == 0);
     CHECK(current.qualifyingLoss == previous.qualifyingLoss);
 }
+
+namespace {
+MoveEvidence stabilityPair(const chess::Position& root, int loss, bool verified,
+                           bool best = false) {
+    auto p = pair(root, loss, best);
+    p.before.attemptIdentity = verified ? "verified-before" : "deep-before";
+    p.after.attemptIdentity = verified ? "verified-after" : "deep-after";
+    p.before.strength.nodes = p.after.strength.nodes = verified ? 5000000 : 1000000;
+    return pairEvidence(root, p.playedMove, p.before, p.after);
+}
+StabilityAssessment stability(const chess::Position& root, const MoveEvidence& a,
+                              const MoveEvidence& b, const ClassificationConfig& c = {},
+                              const RefinementConfig& r = {}, std::uint32_t model = 2) {
+    return assessStability(classify(root, a, c), classify(root, b, c), a, b, r, model);
+}
+} // namespace
+TEST_CASE("Threshold stability protects all applicable bands symmetrically",
+          "[unit][review][threshold]") {
+    const bool black = GENERATE(false, true);
+    auto root = chess::Position::initial();
+    if (black) {
+        REQUIRE(std::holds_alternative<std::monostate>(root.play(move(root, "e2e4"))));
+    }
+    const int cutoff = GENERATE(10, 50, 100, 200);
+    const int offset = GENERATE(-10, -9, 0, 9, 10);
+    const auto a = stabilityPair(root, cutoff + offset, false);
+    const auto b = stabilityPair(root, cutoff + offset, true);
+    const auto result = stability(root, a, b);
+    REQUIRE(result.reason == StabilityReason::ThresholdProximity);
+    REQUIRE(!result.stable);
+    REQUIRE(result.modelVersion == 2);
+    REQUIRE(!result.thresholds.empty());
+    CHECK(result.thresholds.front().losses[0] == static_cast<double>(cutoff + offset) / 1000);
+    CHECK(result.thresholds.front().margin == .01);
+    CHECK(stability(root, a, b, {}, {}, 1).stable);
+    if (cutoff != 10 || offset > 0) {
+        const int clearLoss = cutoff + (offset < 0 ? -11 : 11);
+        CHECK(stability(root, stabilityPair(root, clearLoss, false),
+                        stabilityPair(root, clearLoss, true))
+                  .stable);
+    }
+}
+TEST_CASE("Either witness can keep an agreeing label provisional", "[unit][review][threshold]") {
+    const auto root = chess::Position::initial();
+    for (const bool olderNear : {false, true}) {
+        const auto result = stability(root, stabilityPair(root, olderNear ? 101 : 115, false),
+                                      stabilityPair(root, olderNear ? 115 : 101, true));
+        CHECK(result.reason == StabilityReason::ThresholdProximity);
+        CHECK(needsEscalation(true, true, result));
+        CHECK(escalationStop(true, result, 2, 5000000) == EscalationStop::RoundLimit);
+    }
+    const auto a = stabilityPair(root, 101, false), b = stabilityPair(root, 125, true);
+    CHECK(stability(root, a, b).reason == StabilityReason::ScoreDrift);
+    CHECK(stability(root, a, stabilityPair(root, 99, true)).reason ==
+          StabilityReason::Disagreement);
+}
+TEST_CASE("Threshold clearance preserves exact and neighboring configuration values",
+          "[unit][review][threshold]") {
+    const auto root = chess::Position::initial();
+    const auto a = stabilityPair(root, 110, false), b = stabilityPair(root, 110, true);
+    RefinementConfig r;
+    CHECK(!stability(root, a, b, {}, r).stable);
+    r.boundaryMargin = std::nextafter(.01, 0.0);
+    CHECK(stability(root, a, b, {}, r).stable);
+    r.boundaryMargin = std::nextafter(.01, 1.0);
+    CHECK(!stability(root, a, b, {}, r).stable);
+    r.boundaryMargin = 0;
+    auto c = ClassificationConfig{};
+    c.mistakeLoss = .11;
+    CHECK(!stability(root, a, b, c, r).stable);
+    c.mistakeLoss = std::nextafter(.11, 0.0);
+    CHECK(stability(root, a, b, c, r).stable);
+    c.mistakeLoss = std::nextafter(.11, 1.0);
+    CHECK(stability(root, a, b, c, r).stable);
+    r.boundaryMargin = .005;
+    CHECK(stability(root, a, b, {}, r).stable);
+}
+TEST_CASE("Threshold protection follows rank and classifier precedence",
+          "[unit][review][threshold]") {
+    const auto root = chess::Position::initial();
+    CHECK(stability(root, stabilityPair(root, 10, false, true), stabilityPair(root, 10, true, true))
+              .stable);
+    CHECK(
+        !stability(root, stabilityPair(root, 40, false, true), stabilityPair(root, 40, true, true))
+             .stable);
+    auto c = ClassificationConfig{};
+    c.excellentLoss = .15;
+    CHECK(
+        stability(root, stabilityPair(root, 150, false), stabilityPair(root, 150, true), c).stable);
+    for (const int loss : {0, 5, 10}) {
+        CHECK(!stability(root, stabilityPair(root, loss, false), stabilityPair(root, loss, true))
+                   .stable);
+    }
+    // Touching/overlapping uncertainty bands may legitimately prevent confirmation.
+    c = {};
+    c.mistakeLoss = .06;
+    CHECK(
+        !stability(root, stabilityPair(root, 55, false), stabilityPair(root, 55, true), c).stable);
+}
+TEST_CASE("Threshold stability fails closed on invalid models configuration and loss",
+          "[unit][review][threshold]") {
+    const auto root = chess::Position::initial();
+    const auto a = stabilityPair(root, 150, false), b = stabilityPair(root, 150, true);
+    CHECK(stability(root, a, b).stable);
+    CHECK(!stability(root, a, b, {}, {}, 99).stable);
+    auto r = RefinementConfig{};
+    for (const double margin : {-1.0, 1.01, std::numeric_limits<double>::quiet_NaN()}) {
+        r.boundaryMargin = margin;
+        CHECK(!stability(root, a, b, {}, r).stable);
+    }
+    auto d = classify(root, a, {}), v = classify(root, b, {});
+    d.loss.reset();
+    CHECK(!assessStability(d, v, a, b, {}, 2).stable);
+    d = classify(root, a, {});
+    d.loss = .3;
+    CHECK(!assessStability(d, v, a, b, {}, 2).stable);
+    d = classify(root, a, {});
+    d.thresholds.excellentLoss = v.thresholds.excellentLoss =
+        std::numeric_limits<double>::infinity();
+    CHECK(!assessStability(d, v, a, b, {}, 2).stable);
+}
+TEST_CASE("Policy eight selects Excellent ambiguity without changing older quick plans",
+          "[unit][review][threshold]") {
+    const auto root = chess::Position::initial();
+    for (const bool best : {false, true}) {
+        const auto a = stabilityPair(root, 10, false, best);
+        const auto result = classify(root, a, {});
+        CHECK(!assessQuickScan(result, a, {}, 7).needsRefinement());
+        CHECK(assessQuickScan(result, a, {}, 8).needsRefinement() == !best);
+    }
+    const auto a = stabilityPair(root, 150, false);
+    auto result = classify(root, a, {});
+    result.thresholds.excellentLoss = std::numeric_limits<double>::quiet_NaN();
+    CHECK(assessQuickScan(result, a, {}, 8).state == ScanState::Invalid);
+}
+TEST_CASE("Fallback threshold stability uses canonical unscaled losses",
+          "[unit][review][threshold]") {
+    const auto root = chess::Position::initial();
+    const auto fallback = [&](bool verified) {
+        auto p = stabilityPair(root, 150, verified);
+        p.before.evaluation.wdl.reset();
+        p.after.evaluation.wdl.reset();
+        p.before.evaluation.score->value = 100;
+        p.after.evaluation.score->value = -50;
+        p.before.candidates.front().evaluation = p.before.evaluation;
+        p.after.candidates.front().evaluation = p.after.evaluation;
+        return pairEvidence(root, p.playedMove, p.before, p.after);
+    };
+    const auto a = fallback(false), b = fallback(true);
+    REQUIRE(a.loss);
+    auto c = ClassificationConfig{};
+    c.inaccuracyLoss = *a.loss;
+    c.mistakeLoss = *a.loss + .1;
+    c.blunderLoss = *a.loss + .2;
+    RefinementConfig r;
+    r.boundaryMargin = 0;
+    CHECK(!stability(root, a, b, c, r).stable);
+    c.inaccuracyLoss = std::nextafter(*a.loss, 0.0);
+    CHECK(stability(root, a, b, c, r).stable);
+}
+TEST_CASE("Threshold stability accepts local terminal proof and half-permille losses",
+          "[unit][review][threshold]") {
+    const auto root =
+        std::get<chess::Position>(chess::Position::fromFen("7k/5Q2/6K1/8/8/8/8/8 w - - 0 1"));
+    const auto played = move(root, "f7e6");
+    auto next = root;
+    REQUIRE(std::holds_alternative<std::monostate>(next.play(played)));
+    const auto make = [&](bool verified) {
+        auto before = evidence(root, 750, "f7g7");
+        before.attemptIdentity = verified ? "verified" : "deep";
+        before.strength.nodes = verified ? 5000000 : 1000000;
+        return pairEvidence(root, played, before, terminalEvidence(next));
+    };
+    CHECK(stability(root, make(false), make(true)).stable);
+    auto c = ClassificationConfig{};
+    c.blunderLoss = .25;
+    CHECK(stability(root, make(false), make(true), c).reason ==
+          StabilityReason::ThresholdProximity);
+
+    const auto initial = chess::Position::initial();
+    const auto makeHalf = [&](bool verified) {
+        auto p = stabilityPair(initial, 100, verified);
+        p.after.evaluation.wdl = Wdl{600, 1, 399};
+        p.after.candidates.front().evaluation = p.after.evaluation;
+        return pairEvidence(initial, p.playedMove, p.before, p.after);
+    };
+    const auto a = makeHalf(false), b = makeHalf(true);
+    REQUIRE(classify(initial, a, {}).loss == .1005);
+    RefinementConfig r;
+    r.boundaryMargin = .0005;
+    CHECK(!stability(initial, a, b, {}, r).stable);
+    r.boundaryMargin = std::nextafter(.0005, 0.0);
+    CHECK(stability(initial, a, b, {}, r).stable);
+}

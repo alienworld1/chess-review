@@ -179,7 +179,8 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
     if (settings.refinement) {
         document["pipelineVersion"] = static_cast<int>(settings.pipelineVersion);
         document["reviewModelVersion"] = 1;
-        document["stabilityModelVersion"] = 1;
+        document["stabilityModelVersion"] =
+            static_cast<int>(review::stabilityModelForPipeline(settings.pipelineVersion));
         document["accuracyModelVersion"] = 1;
         document["refinement"] = QJsonArray{c.refinement.boundaryMargin, c.refinement.maximumDrift,
                                             c.refinement.multiPv};

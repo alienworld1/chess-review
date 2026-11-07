@@ -64,7 +64,7 @@ RetryResult gradeRetry(const chess::Position& root, chess::Move attempted, const
     }
     const auto d = classify(root, deep, config.classification, config.conversion);
     const auto v = classify(root, verified, config.classification, config.conversion);
-    if (!assessStability(d, v, deep, verified, config.refinement).stable || !d.bestMove ||
+    if (!assessStability(d, v, deep, verified, config.refinement, 1).stable || !d.bestMove ||
         !v.bestMove) {
         return {};
     }
@@ -79,7 +79,7 @@ RetryResult gradeRetry(const chess::Position& root, chess::Move attempted, const
         // classify owns the exact-WDL subtraction and best-move conflict rules.
         const auto dc = classify(root, dp, config.classification, config.conversion);
         const auto vc = classify(root, vp, config.classification, config.conversion);
-        if (!assessStability(dc, vc, dp, vp, config.refinement).stable) {
+        if (!assessStability(dc, vc, dp, vp, config.refinement, 1).stable) {
             return {};
         }
         const auto measure = [](const MoveEvidence& pair, const ClassificationResult& result) {

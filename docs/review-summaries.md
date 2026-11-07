@@ -6,8 +6,9 @@ Cancel retains completed work; Resume explicitly continues the original run with
 its captured configuration and compatible engine. A new run uses current settings.
 
 New reviews refine both players' Inaccuracy-level expected-score losses (5% by
-default), replies immediately following those errors, losses near error-classification
-boundaries, mate signals, contradictory comparisons and repairable evidence gaps.
+default), replies immediately following those errors, losses near applicable
+classification boundaries (including Excellent/Good for non-best moves), mate
+signals, contradictory comparisons and repairable evidence gaps.
 Each target's adjacent positions receive the quality preset's
 deepening and verification budgets. Shared positions are analyzed once per pass.
 MultiPV defaults to three, constrained by the engine and legal move count. Width
@@ -18,6 +19,25 @@ stronger attempts, agreement on label and best move, and no more than two
 percentage points of change in either expected score. Verification must have more
 measured nodes and no shallower common depth. Reusing one attempt never provides
 two confirmations. Equal custom budgets do not guarantee a stable result.
+
+New runs capture pipeline policy 8 and stability model 2. Both compared losses must
+also be farther than the captured `boundaryMargin` from each applicable label
+cutoff. The default margin is one percentage point; equality remains provisional.
+A zero margin still protects an exact cutoff. Best moves do not use the
+Excellent/Good boundary, and an Excellent cutoff at or above Inaccuracy is inactive
+under the classifier's precedence rules. Native WDL/terminal losses retain exact
+half-permille differences; fallback losses retain their original conversion values.
+
+Threshold uncertainty can use the existing two bounded extra rounds. The evidence
+inspector shows both observed losses, affected cutoffs, required clearance and why
+work stopped. Agreement alone does not confirm a nearby label. These checks are a
+conservative rule, not a statistical confidence interval or a guarantee that deeper
+search will agree. With the default 1% Excellent cutoff and one-point margin,
+non-best Excellent labels remain provisional even after exhausting the rounds.
+Older saved runs retain their captured stability and scheduling rules, including
+when resumed. Start a new run to use the new policy. Retry exercises retain their
+existing grading rules; provisional original moves cannot start an exercise.
+
 Moves with only quick-scan evidence and unresolved results remain provisional.
 Finishing the planned work does not mean every move is stable. There are no unbounded refinement retries.
 
