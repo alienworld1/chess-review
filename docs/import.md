@@ -53,8 +53,7 @@ The results table lists each source and its per-game outcomes. Select a row for
 copyable diagnostic details, including source byte ranges, line/byte-column
 locations, warnings, and suppression counts. The latest batch's report remains
 available while navigating, until another batch is submitted or the app exits.
-Reports are not saved to the database. Progress updates preserve the selected
-diagnostic text and the results viewport. Completion, completion with errors,
+Reports are not saved to the database. Completion, completion with errors,
 cancellation, game-limit stops, and terminal failures have distinct feedback;
 unprocessed files identify why they were skipped.
 
@@ -72,8 +71,7 @@ analysis automatically.
 Games shows a newest-first table with 50 rows per page, Previous/Next, and
 Refresh. Import completion returns the table to its newest page. Damaged metadata
 rows remain identifiable, and truncated fields are marked. Search, selectable
-sorting and previews are not implemented yet. Saved games open on the board using
-**Open in Analyze**, double-click, or Enter.
+sorting and previews are not implemented yet.
 
 Imported snapshots are independent of their source files. Local-file provenance
 stores the full absolute file URI; pasted games store only the source kind.

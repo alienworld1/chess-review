@@ -57,7 +57,8 @@ isolated manual runs. Automated tests use temporary storage.
 **Developing**
 
 - [Development setup](docs/development.md) · [Testing](docs/testing.md) ·
-  [Storage](docs/storage.md)
+  [Storage](docs/storage.md) ·
+  [Storage internals](docs/storage-internals.md) · [Engine infrastructure](docs/engine-internals.md)
 - [Chess core](docs/chess-core.md) · [PGN parsing](docs/pgn.md) ·
   [Review evidence and configuration](docs/review-evidence.md) ·
   [Review methodology](docs/review-summaries.md)

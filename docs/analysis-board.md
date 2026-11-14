@@ -89,17 +89,11 @@ timestamps, SHA-256 checksums, and license notices are in
 License displays the bundled notices and provenance. The app never downloads art
 at runtime.
 
-Native screen-reader behavior and mixed-monitor rendering require platform QA;
-the automated suite verifies the accessible square interfaces and actions,
-including selected pieces, legal destinations, captures, check, and mate. Hidden
-or disabled boards cannot be activated through square actions.
-
 ## Imported games
 
 In Games, select a row and choose **Open in Analyze**, double-click the row, or
-press Enter. Loading and chess-tree preparation run off the GUI thread. The board
-shows the players and game result; the timeline and PGN tree expose every stored
-move and variation. Comments and numeric annotation glyphs (`$n`) for the selected
+press Enter. The board shows the players and game result; the timeline and PGN
+tree expose every stored move and variation. Comments and numeric annotation glyphs (`$n`) for the selected
 move appear in a read-only plain-text pane and in move descriptions. Notes above
 4,096 characters are marked and clipped for responsive display; complete imported
 text remains in the saved snapshot. Comments before the first move appear when

@@ -160,5 +160,5 @@ the existing chess adapter rather than introducing another chess engine/library.
 
 
 For asynchronous text imports, durable snapshots, and duplicate policy, see
-[game storage and import](storage.md#immutable-imported-games). The PGN module
+[game storage and import](storage-internals.md#immutable-imported-games). The PGN module
 itself remains pure C++ and performs no database or application scheduling work.
