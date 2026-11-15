@@ -1,5 +1,6 @@
 #include "EngineControllerTestAccess.h"
 #include "EngineTestSupport.h"
+#include "ReviewWorkspaceTestAccess.h"
 #include "TestEnvironment.h"
 #include "app/ReviewMovePresentation.h"
 #include "app/ReviewWorkspaceController.h"
@@ -392,6 +393,78 @@ class Fixture {
 class QuickReviewTest final : public QObject {
     Q_OBJECT
   private slots:
+    void revisionUpdatesRetainTheSelectedExplanationUntilReplacement() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 2. Nf3 Nc6 *"));
+        f.script(0, -1, 700);
+        auto& controller = f.startup.reviewGame();
+        controller.workspace().setVisible(true);
+        f.run();
+        QTRY_VERIFY(controller.state().run && controller.state().run->completedPositions == 2);
+        controller.selectMoment(1);
+        QTRY_VERIFY(controller.navigation().move(1));
+        bool observed = false;
+        bool retained = false;
+        const auto monitor =
+            connect(&controller, &app::ReviewGameController::taskChanged, &controller, [&] {
+                if (!observed && controller.taskState().run &&
+                    controller.taskState().run->completedPositions == 3) {
+                    observed = true;
+                    retained = controller.navigation().move(1) != nullptr;
+                    controller.cancel();
+                }
+            });
+        const auto disconnectMonitor = qScopeGuard([&] { disconnect(monitor); });
+        QTRY_VERIFY(observed);
+        QVERIFY(retained);
+        QVERIFY(f.done());
+    }
+    void lateLiveOverviewCannotReplaceAnExplicitPage() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script(0, 1, 700);
+        auto& controller = f.startup.reviewGame();
+        auto& workspace = controller.workspace();
+        auto& db = f.startup.gameRepository();
+        bool injected = false;
+        bool retained = false;
+        const auto observe = connect(
+            &app::ReviewWorkspaceTestAccess::liveTimer(workspace), &QTimer::timeout, &workspace,
+            [&] {
+                const auto live = app::ReviewWorkspaceTestAccess::liveRequest(workspace);
+                if (injected || live.isNull() || !controller.state().run) {
+                    return;
+                }
+                injected = true;
+                const auto run = *controller.state().run;
+                workspace.refreshOverview(50);
+                const auto explicitId = app::ReviewWorkspaceTestAccess::explicitRequest(workspace);
+                persistence::ReviewOverview selected;
+                selected.reviewId = run.id;
+                selected.revision = run.revision;
+                selected.keyOffset = 50;
+                db.reviewOverviewLoaded(explicitId, selected);
+                auto late = selected;
+                late.keyOffset = 0;
+                db.reviewOverviewLoaded(live, late);
+                retained =
+                    controller.state().overview && controller.state().overview->keyOffset == 50;
+            });
+        const auto disconnectObserve = qScopeGuard([&] { disconnect(observe); });
+        const auto cancel =
+            connect(&controller, &app::ReviewGameController::taskChanged, &controller, [&] {
+                if (controller.taskState().run &&
+                    controller.taskState().run->completedPositions == 1) {
+                    controller.cancel();
+                }
+            });
+        const auto disconnectCancel = qScopeGuard([&] { disconnect(cancel); });
+        workspace.setVisible(true);
+        f.run();
+        QTRY_VERIFY(injected);
+        QVERIFY(retained);
+        QVERIFY(f.done());
+    }
     void committedReviewsUpdateBeforeTheNextSlowSearchFinishes() {
         Fixture f;
         QVERIFY(f.seed("1. e4 e5 2. Nf3 Nc6 *"));

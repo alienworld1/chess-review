@@ -85,6 +85,11 @@ void ReviewMovesController::bind(const std::optional<persistence::ReviewSummary>
         backfillOffset_ = 0;
     }
     dirty_ = run.has_value();
+    if (same && run && state_.page) {
+        for (auto& row : state_.page->moves) {
+            row.pendingRevision = run->revision;
+        }
+    }
     if (dirty_) {
         state_.loading = true;
     }

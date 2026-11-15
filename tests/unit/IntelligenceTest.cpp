@@ -196,7 +196,7 @@ TEST_CASE("Special tactical disagreement requests bounded verification rather th
     const auto result = verifySpecial(root, latest, &a, {});
     CHECK(!(result.label));
     CHECK(result.needsEvidence());
-    CHECK(result.ruleId == "special.tactical_witness_disagreement.v1");
+    CHECK(result.ruleId == "special.tactical_witness_disagreement.v2");
 }
 
 TEST_CASE("Named motifs reject pinned threats and distinguish trades from pawn gains",
@@ -240,4 +240,154 @@ TEST_CASE("Ordinary moves outside special quality ranges request no extra verifi
     const auto result = verifySpecial(root, supplied, nullptr, {});
     CHECK(result.status == SpecialStatus::Rejected);
     CHECK(!result.needsEvidence());
+}
+
+TEST_CASE("A promotion fork names the promoted actor", "[unit][review][adversarial]") {
+    const auto root = position("8/P1k5/1r6/8/8/8/8/7K w - - 0 1");
+    const auto facts = inspectTacticalLine(root, line(root, {"a7a8n"}), FactSource::Played);
+    const auto fork = std::find_if(facts.begin(), facts.end(),
+                                   [](const auto& f) { return f.kind == TacticalKind::Fork; });
+    REQUIRE(fork != facts.end());
+    CHECK(fork->actor == chess::PieceType::Knight);
+    const auto legacy = inspectTacticalLine(root, line(root, {"a7a8n"}), FactSource::Played, 1);
+    const auto oldFork = std::find_if(legacy.begin(), legacy.end(), [](const auto& fact) {
+        return fact.kind == TacticalKind::Fork;
+    });
+    REQUIRE(oldFork != legacy.end());
+    CHECK(oldFork->actor == chess::PieceType::Pawn);
+}
+TEST_CASE("A promotion lost in the same line is not a verified missed opportunity",
+          "[unit][review][adversarial]") {
+    const auto root = position("1r5k/P7/8/8/8/8/8/7K w - - 0 1");
+    const auto best = line(root, {"a7a8q", "b8a8"});
+    const auto played = line(root, {"h1g1", "b8b7"});
+    const auto a = pair(root, best, played, played.front(), 800, 550, 550, false);
+    const auto b = pair(root, best, played, played.front(), 800, 550, 550, true);
+    REQUIRE(!a.issue);
+    CHECK(!verifySpecial(root, b, &a, {}).label);
+    CHECK(verifySpecial(root, b, &a, {}, 1).label == Classification::Miss);
+}
+TEST_CASE("A PV ending before an immediate recapture cannot verify Miss",
+          "[unit][review][adversarial]") {
+    const auto root = position("3r3k/8/8/3p4/8/8/8/K2Q4 w - - 0 1");
+    const auto best = line(root, {"d1d5"});
+    const auto played = line(root, {"a1b1", "d8d7"});
+    const auto a = pair(root, best, played, played.front(), 800, 550, 550, false);
+    const auto b = pair(root, best, played, played.front(), 800, 550, 550, true);
+    REQUIRE(!a.issue);
+    CHECK(!verifySpecial(root, b, &a, {}).label);
+    CHECK(verifySpecial(root, b, &a, {}, 1).label == Classification::Miss);
+}
+TEST_CASE("A mate conversion gap cannot authorize facts from invalid paired evidence",
+          "[unit][review][adversarial]") {
+    const auto root = position("7k/8/8/3q4/8/8/8/K2R4 w - - 0 1");
+    const auto best = line(root, {"d1d5", "h8g8"});
+    const auto played = line(root, {"a1b1", "d5e5"});
+    auto supplied = pair(root, best, played, played.front(), 800, 550, 550, false);
+    supplied.before.evaluation.score = RawScore{ScoreKind::Mate, 3};
+    supplied.before.candidates.front().evaluation = supplied.before.evaluation;
+    supplied.after.restricted = true;
+    CHECK(tacticalFacts(root, supplied, {}).empty());
+    supplied.after.restricted = false;
+    supplied.before.candidates.back().continuation = {chess::Move{}};
+    CHECK(tacticalFacts(root, supplied, {}).empty());
+}
+
+TEST_CASE("Both verification attempts must show that the played move forfeits the opportunity",
+          "[unit][review][adversarial]") {
+    const auto root = position("7k/8/8/3q4/8/8/8/K2R4 w - - 0 1");
+    const auto best = line(root, {"d1d5", "h8g8"});
+    const auto previousPlayed = line(root, {"a1b1", "d5d2", "d1d2", "h8g8"});
+    const auto latestPlayed = line(root, {"a1b1", "d5e5"});
+    const auto a = pair(root, best, previousPlayed, previousPlayed.front(), 800, 550, 550, false);
+    const auto b = pair(root, best, latestPlayed, latestPlayed.front(), 800, 550, 550, true);
+    REQUIRE(!a.issue);
+    const auto result = verifySpecial(root, b, &a, {});
+    CHECK(!result.label);
+    CHECK(result.needsEvidence());
+    CHECK(verifySpecial(root, b, &a, {}, 1).label == Classification::Miss);
+}
+TEST_CASE("An older-only tactical witness remains uncertain in the hardened model",
+          "[unit][review][adversarial]") {
+    const auto root = position("7k/8/8/3q4/8/8/8/K2R4 w - - 0 1");
+    const auto best = line(root, {"d1d2", "d5e6", "d2e2", "h8g8", "e2e6"});
+    const auto played = line(root, {"a1b1", "d5e5"});
+    const auto a = pair(root, best, played, played.front(), 800, 550, 550, false);
+    auto b = pair(root, best, played, played.front(), 800, 550, 550, true);
+    b.before.candidates.front().continuation.resize(1);
+    CHECK(verifySpecial(root, b, &a, {}).needsEvidence());
+    CHECK(verifySpecial(root, b, &a, {}, 1).status == SpecialStatus::Rejected);
+}
+TEST_CASE("Unknown intelligence models fail closed", "[unit][review][adversarial]") {
+    const auto root = chess::Position::initial();
+    const auto pv = line(root, {"e2e4", "e7e5"});
+    const auto a = pair(root, pv, pv, line(root, {"d2d4"}).front(), 600, 600, 400, false);
+    const auto result = verifySpecial(root, a, nullptr, {}, 99);
+    CHECK(!result.label);
+    CHECK(!result.needsEvidence());
+    CHECK(tacticalFacts(root, a, {}, 99).empty());
+    CHECK(inspectTacticalLine(root, pv, FactSource::Played, 99).empty());
+    CHECK(!intelligenceModelsForPipeline(99));
+}
+
+TEST_CASE("Surviving promotions remain supported after the promoted piece moves",
+          "[unit][review][adversarial]") {
+    const auto root = position("7k/P7/8/8/8/8/8/7K w - - 0 1");
+    const auto best = line(root, {"a7a8q", "h8h7", "a8b8", "h7g6"});
+    const auto played = line(root, {"h1g1", "h8g8"});
+    const auto a = pair(root, best, played, played.front(), 800, 550, 550, false);
+    const auto b = pair(root, best, played, played.front(), 800, 550, 550, true);
+    CHECK(verifySpecial(root, b, &a, {}).label == Classification::Miss);
+    const auto facts = inspectTacticalLine(root, best, FactSource::Best);
+    const auto promotion = std::find_if(facts.begin(), facts.end(), [](const auto& fact) {
+        return fact.kind == TacticalKind::Promotion;
+    });
+    REQUIRE(promotion != facts.end());
+    CHECK(promotion->retainedOpportunity);
+}
+
+TEST_CASE("Caller supplied derived metadata cannot alter special verification",
+          "[unit][review][adversarial]") {
+    const auto root = chess::Position::initial();
+    const auto pv = line(root, {"e2e4", "e7e5"});
+    const auto alternative = line(root, {"d2d4"}).front();
+    const auto older = pair(root, pv, pv, alternative, 600, 600, 400, false);
+    auto latest = pair(root, pv, pv, alternative, 600, 600, 400, true);
+    latest.mover = chess::Color::Black;
+    latest.loss = 1;
+    latest.signedDelta = -1;
+    latest.beforeEvaluation = {};
+    latest.afterEvaluation = {};
+    latest.issue = EvidenceIssue::Invalid;
+    CHECK(verifySpecial(root, latest, &older, {}).label == Classification::Great);
+}
+
+TEST_CASE("Invalid configuration or provenance is not permission for more engine work",
+          "[unit][review][adversarial]") {
+    const auto root = chess::Position::initial();
+    const auto pv = line(root, {"e2e4", "e7e5"});
+    const auto a = pair(root, pv, pv, line(root, {"d2d4"}).front(), 600, 600, 400, false);
+    for (int field = 0; field < 4; ++field) {
+        Configuration config;
+        if (field == 0) {
+            config.special.margin = std::numeric_limits<double>::quiet_NaN();
+        }
+        if (field == 1) {
+            config.refinement.maximumDrift = std::numeric_limits<double>::quiet_NaN();
+        }
+        if (field == 2) {
+            config.classification.excellentLoss = -1;
+        }
+        if (field == 3) {
+            config.conversion.fallbackScaleCp = 0;
+        }
+        const auto result = verifySpecial(root, a, nullptr, config);
+        CHECK(!result.label);
+        CHECK(!result.needsEvidence());
+    }
+    auto malformed = a;
+    malformed.before.position.halfmoveClock++;
+    CHECK(!verifySpecial(root, malformed, nullptr, {}).needsEvidence());
+    const auto latest = pair(root, pv, pv, line(root, {"d2d4"}).front(), 600, 600, 400, true);
+    CHECK(!verifySpecial(root, latest, &malformed, {}).needsEvidence());
 }

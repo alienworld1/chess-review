@@ -267,6 +267,9 @@ ReviewEvaluation reviewPositionEvaluation(const persistence::ReviewMove* row, bo
                      ? QObject::tr("locally proven terminal outcome")
                      : QObject::tr("engine WDL"))
             .arg(value.modelVersion);
+    if (row->pendingRevision) {
+        result.description += QObject::tr(" · previous checkpoint; updating");
+    }
     return result;
 }
 std::vector<BoardAnnotation> reviewTacticalAnnotations(const persistence::ReviewMove& move) {
@@ -320,6 +323,10 @@ QString reviewMoveMarker(const persistence::ReviewMove* move) {
             break;
         }
     }
+    if (move->pendingRevision) {
+        return glyph + classificationText(move->classification) +
+               QObject::tr(" · previous checkpoint; updating");
+    }
     return glyph + classificationText(move->classification) +
            (move->classification->label
                 ? (move->classification->stable ? QObject::tr(" · stable")
@@ -349,6 +356,10 @@ QString reviewMomentExplanation(const persistence::ReviewMove* move, int positio
     }
     const auto& result = *move->classification;
     QStringList lines;
+    if (move->pendingRevision) {
+        lines << QObject::tr("Showing the previous saved checkpoint while revision %1 loads.")
+                     .arg(*move->pendingRevision);
+    }
     if (move->stability.persistentMate) {
         lines << QObject::tr(
             "Independent stronger engine searches report a mating outcome. This is an engine "
@@ -396,7 +407,7 @@ QString reviewMomentExplanation(const persistence::ReviewMove* move, int positio
         const auto& fact = *teachingFact;
         const auto square = QString::fromStdString(fact.square.name());
         const auto context = fact.source == review::FactSource::Best
-                                 ? QObject::tr("In the best supported line: ")
+                                 ? QObject::tr("In the engine's saved candidate line: ")
                                  : QObject::tr("In the played move's line: ");
         const auto side =
             fact.beneficiary == chess::Color::White ? QObject::tr("White") : QObject::tr("Black");
@@ -421,9 +432,12 @@ QString reviewMomentExplanation(const persistence::ReviewMove* move, int positio
             for (const auto target : fact.targets) {
                 targets << QString::fromStdString(target.name());
             }
-            lines << context + QObject::tr("The %1 on %2 gives check and forks the pieces on %3.")
-                                   .arg(pieceText(fact.actor), square,
-                                        targets.join(QStringLiteral(", ")));
+            lines << context +
+                         QObject::tr("The %1 on %2 gives check and forks the pieces on %3.")
+                             .arg(fact.modelVersion == 1 && fact.actor == chess::PieceType::Pawn
+                                      ? QObject::tr("piece")
+                                      : pieceText(fact.actor),
+                                  square, targets.join(QStringLiteral(", ")));
             break;
         }
         case review::TacticalKind::Promotion:
@@ -442,14 +456,27 @@ QString reviewMomentExplanation(const persistence::ReviewMove* move, int positio
                                    .arg(fact.material);
             break;
         }
+        if (fact.modelVersion >= 2 && !fact.retainedOpportunity &&
+            (fact.kind == review::TacticalKind::Material ||
+             fact.kind == review::TacticalKind::Exchange ||
+             fact.kind == review::TacticalKind::Promotion)) {
+            lines.back() +=
+                QObject::tr(" This is a line consequence, not a verified winning opportunity.");
+        }
         if (lines.size() >= 3) {
             break;
         }
     }
-    if (move->special.status == review::SpecialStatus::Verified) {
+    if (move->special.status == review::SpecialStatus::Verified && result.stable &&
+        result.label == move->special.label) {
         lines << QObject::tr("Special label verified by two independent stronger attempts. See the "
                              "evidence inspector for its rule.");
-    } else if (move->special.needsEvidence()) {
+        if (move->special.modelVersion == 1) {
+            lines << QObject::tr("Historical special-label model 1: a new review uses stricter "
+                                 "consequence verification.");
+        }
+    } else if (move->special.needsEvidence() ||
+               move->special.status == review::SpecialStatus::Verified) {
         lines << QObject::tr(
             "Special-label verification is incomplete; the ordinary classification is retained.");
     }
@@ -465,7 +492,7 @@ QString reviewMomentExplanation(const persistence::ReviewMove* move, int positio
             "A reliable numeric impact is unavailable. Inspect the saved evidence for details.");
     }
     if (result.bestMove && !result.issue && !move->bestSan.isEmpty()) {
-        lines << QObject::tr("Best supported alternative: %1. Inspect its saved continuation.")
+        lines << QObject::tr("Best supported move: %1. Inspect its saved continuation.")
                      .arg(move->bestSan);
     }
     lines << (result.stable ? QObject::tr("Two stronger passes agree on this result.")
@@ -581,11 +608,15 @@ QString reviewComparisonRow(const review::MoveComparison& row, const QString& sa
 }
 QString reviewMoveDetails(const persistence::ReviewMove& move) {
     QString specialDetails;
+    if (move.pendingRevision) {
+        specialDetails = QObject::tr("Previous saved checkpoint; revision %1 is loading.\n")
+                             .arg(*move.pendingRevision);
+    }
     if (!move.special.ruleId.empty()) {
-        specialDetails = QObject::tr("Special verification model %1 · rule %2 · status %3\n")
-                             .arg(move.special.modelVersion)
-                             .arg(QString::fromStdString(move.special.ruleId))
-                             .arg(specialStatus(move.special.status));
+        specialDetails += QObject::tr("Special verification model %1 · rule %2 · status %3\n")
+                              .arg(move.special.modelVersion)
+                              .arg(QString::fromStdString(move.special.ruleId))
+                              .arg(specialStatus(move.special.status));
         const auto& c = move.special.thresholds;
         specialDetails += QObject::tr("Captured limits (percentage points): quality ≤%1; loss "
                                       "drift ≤%2; gap ≥%3; Miss loss ≥%4; viability %5; already "

@@ -100,6 +100,8 @@ struct ReviewMove {
     chess::Color mover = chess::Color::White;
     QString san;
     std::optional<review::ClassificationResult> classification;
+    // GUI cache annotation only; storage always returns an unmarked projection.
+    std::optional<std::int64_t> pendingRevision;
     std::optional<double> accuracyLoss;
     review::SpecialAssessment special;
     std::vector<review::TacticalFact> tacticalFacts;

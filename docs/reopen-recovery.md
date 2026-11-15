@@ -60,7 +60,7 @@ If a remembered run cannot load, the healthy game remains available with an
 explanation and its run history. A missing/unreadable game returns to Games with
 an error. No recovery action resets the library or discards saved evidence.
 
-Policy-10 special verification uses the same completed-search checkpoints as the
+Policy-10 and policy-11 special verification uses the same completed-search checkpoints as the
 rest of review. Cancellation, failure or process exit preserves acknowledged
 searches and useful derived results. Resume reconstructs the captured work queue
 and schedules missing work; an interrupted search starts again. Unfinished engine

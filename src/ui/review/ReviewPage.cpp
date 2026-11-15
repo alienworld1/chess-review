@@ -227,7 +227,9 @@ class ReviewMovesModel final : public QAbstractTableModel {
             sideText(row.mover), row.san,
             app::classificationText(row.classification) +
                 (row.classification && row.classification->label
-                     ? (row.classification->stable ? tr(" (stable)") : tr(" (provisional)"))
+                     ? (row.pendingRevision          ? tr(" (previous checkpoint; updating)")
+                        : row.classification->stable ? tr(" (stable)")
+                                                     : tr(" (provisional)"))
                      : QString{}) +
                 (row.contextPosition
                      ? tr(" · after opponent error at position %1").arg(*row.contextPosition)

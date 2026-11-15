@@ -155,6 +155,29 @@ class ReviewRepositoryTest final : public QObject {
         request.pipelineVersion = 9;
         QVERIFY(encodeReviewSettings(request).isEmpty());
     }
+    void intelligencePoliciesRejectMixedModelMetadata() {
+        Fixture f;
+        auto request = seed(f.session);
+        request.refinement = true;
+        for (const auto policy : {10U, 11U}) {
+            request.pipelineVersion = policy;
+            const auto bytes = encodeReviewSettings(request);
+            QVERIFY(!bytes.isEmpty());
+            const auto models = review::intelligenceModelsForPipeline(policy);
+            QVERIFY(models);
+            const auto original = *readReviewDocument(bytes, maxReviewSettingsBytes);
+            QCOMPARE(original["specialLabelModelVersion"].toInt(),
+                     static_cast<int>(models->special));
+            QCOMPARE(original["motifModelVersion"].toInt(), static_cast<int>(models->motif));
+            for (const auto key : {"specialLabelModelVersion", "motifModelVersion"}) {
+                auto altered = original;
+                altered[key] = policy == 10 ? 2 : 1;
+                QVERIFY(!decodeReviewSettings(reviewDocument(altered)));
+            }
+        }
+        request.pipelineVersion = 12;
+        QVERIFY(encodeReviewSettings(request).isEmpty());
+    }
     void specialLabelsReproduceFromSavedEvidence_data() {
         QTest::addColumn<int>("policy");
         QTest::addColumn<int>("kind");
@@ -164,6 +187,9 @@ class ReviewRepositoryTest final : public QObject {
         QTest::newRow("intelligence-miss") << 10 << 1;
         QTest::newRow("historical-brilliant") << 9 << 2;
         QTest::newRow("intelligence-brilliant") << 10 << 2;
+        QTest::newRow("hardened-great") << 11 << 0;
+        QTest::newRow("hardened-miss") << 11 << 1;
+        QTest::newRow("hardened-brilliant") << 11 << 2;
     }
     void specialLabelsReproduceFromSavedEvidence() {
         QFETCH(int, policy);
@@ -258,13 +284,13 @@ class ReviewRepositoryTest final : public QObject {
             std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 1));
         const auto& move = page.moves.front();
         QVERIFY(move.classification->stable);
-        const auto expected = policy == 10 ? (kind == 1   ? review::Classification::Miss
+        const auto expected = policy >= 10 ? (kind == 1   ? review::Classification::Miss
                                               : kind == 2 ? review::Classification::Brilliant
                                                           : review::Classification::Great)
                                            : (kind == 1 ? review::Classification::Blunder
                                                         : review::Classification::Best);
         QCOMPARE(move.classification->label, expected);
-        if (policy == 10 && kind != 0) {
+        if (policy >= 10 && kind != 0) {
             QVERIFY(!move.tacticalFacts.empty());
             QVERIFY(!move.special.witnesses.empty());
             for (const auto& fact : move.tacticalFacts) {
@@ -291,7 +317,7 @@ class ReviewRepositoryTest final : public QObject {
             std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
         QCOMPARE(again.sides[0].accuracy, first.sides[0].accuracy);
         QCOMPARE(again.sides[0].counts, first.sides[0].counts);
-        QCOMPARE(again.totalKeyMoments, policy == 10 || kind == 1 ? 1 : 0);
+        QCOMPARE(again.totalKeyMoments, policy >= 10 || kind == 1 ? 1 : 0);
     }
     void completionUsesTheSavedClassificationModel() {
         Fixture f;
@@ -806,7 +832,7 @@ class ReviewRepositoryTest final : public QObject {
         auto request = seed(f.session);
         for (const bool refinement : {false, true}) {
             request.refinement = refinement;
-            for (const std::uint32_t version : {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U}) {
+            for (const std::uint32_t version : {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U}) {
                 request.pipelineVersion = version;
                 const auto bytes = encodeReviewSettings(request);
                 QVERIFY(!bytes.isEmpty());

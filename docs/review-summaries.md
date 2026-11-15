@@ -20,7 +20,7 @@ percentage points of change in either expected score. Verification must have mor
 measured nodes and no shallower common depth. Reusing one attempt never provides
 two confirmations. Equal custom budgets do not guarantee a stable result.
 
-New runs capture pipeline policy 10 and stability model 3. Policies 1–9 retain their recorded behavior. Both compared losses must
+New runs capture pipeline policy 11 and stability model 3. Policies 1–10 retain their recorded behavior. Both compared losses must
 also be farther than the captured `boundaryMargin` from each applicable label
 cutoff. The default margin is one percentage point; equality remains provisional.
 A zero margin still protects an exact cutoff. Best moves do not use the
@@ -316,3 +316,31 @@ with perfect or zero scores. Ordinary and special labels are not accuracy inputs
 Stored evidence is sufficient to repeat this calculation without the engine or
 analysis cache. Reproducibility is numeric within floating-point library precision,
 not a promise of identical floating-point bytes across all platforms.
+
+## Stricter consequence verification (policy 11)
+
+New reviews capture special-label and motif model 2. Policy-10 runs retain model 1
+and their original classifications and work plans. Historical special labels are
+identified in the explanation; start a new review to use the stricter rules.
+Accuracy, ordinary classification thresholds, preset budgets and round caps are
+unchanged.
+
+A material or exchange opportunity must remain at a quiet legal endpoint: no check,
+immediate legal capture, en-passant capture or promotion is left unresolved, and
+the position is not stalemate. A promotion must survive the continuation; promotion
+followed by its capture is an event, not a verified winning opportunity. Locally
+replayed checkmate remains a concrete endpoint. Both independent attempts must show
+that the played move forfeits the opportunity. A witness present in only one pass,
+or disagreement about the played move's consequence, remains uncertain and may
+use remaining bounded verification rounds. These are conservative evidence rules,
+not an exhaustive proof against every defence.
+
+Unsettled line arithmetic may still explain what happens in the saved continuation,
+but is explicitly distinguished from a verified winning opportunity. Promotion forks
+name the promoted piece. Mate-score conversion gaps do not exempt either position
+or any candidate continuation from legality and metadata validation.
+
+During live updates the selected explanation, evaluation and timeline keep the
+previous validated checkpoint, visibly marked **updating**, until replacement data
+arrives. Validation errors clear retained presentation rather than hiding damage.
+Automatic summary reads cannot override an explicitly requested key-moment page.

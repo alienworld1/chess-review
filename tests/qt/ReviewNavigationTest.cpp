@@ -96,6 +96,22 @@ class ReviewNavigationTest final : public QObject {
                 app::classificationText(move.classification)));
         }
     }
+    void pendingEvidenceIsExplicitAndCannotClaimCurrentSpecialVerification() {
+        persistence::ReviewMove move;
+        review::ClassificationResult result;
+        result.label = review::Classification::Best;
+        result.stable = true;
+        move.classification = result;
+        move.pendingRevision = 7;
+        move.special.status = review::SpecialStatus::Verified;
+        move.special.label = review::Classification::Miss;
+        QVERIFY(app::reviewMoveMarker(&move).contains(QStringLiteral("previous checkpoint")));
+        QVERIFY(!app::reviewMoveMarker(&move).contains(QStringLiteral("stable")));
+        const auto explanation = app::reviewMomentExplanation(&move, 1);
+        QVERIFY(explanation.contains(QStringLiteral("revision 7")));
+        QVERIFY(!explanation.contains(QStringLiteral("Special label verified")));
+        QVERIFY(explanation.contains(QStringLiteral("verification is incomplete")));
+    }
     void newerOpenDuringClearWins() {
         Fixture f;
         f.open("1. e4 e5 *");

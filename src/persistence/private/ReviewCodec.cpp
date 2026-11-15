@@ -184,8 +184,12 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
     }
     if (settings.refinement && settings.pipelineVersion >= 10) {
         const auto& special = c.special;
-        document["specialLabelModelVersion"] = static_cast<int>(review::specialLabelModelVersion);
-        document["motifModelVersion"] = static_cast<int>(review::motifModelVersion);
+        const auto models = review::intelligenceModelsForPipeline(settings.pipelineVersion);
+        if (!models) {
+            return {};
+        }
+        document["specialLabelModelVersion"] = static_cast<int>(models->special);
+        document["motifModelVersion"] = static_cast<int>(models->motif);
         document["explanationModelVersion"] = 1;
         document["special"] =
             QJsonArray{special.maximumLoss, special.maximumLossDrift, special.alternativeGap,

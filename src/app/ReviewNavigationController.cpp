@@ -102,7 +102,15 @@ void ReviewNavigationController::bind(const std::optional<persistence::ReviewSum
     run_ = run;
     overview_ = overview && run && overview->reviewId == run->id ? overview : std::nullopt;
     if (revised) {
-        pages_.clear();
+        if (replaced) {
+            pages_.clear();
+        } else if (run) {
+            for (auto& page : pages_) {
+                for (auto& row : page.moves) {
+                    row.pendingRevision = run->revision;
+                }
+            }
+        }
         previewEvidence_.bind(std::nullopt);
     }
     if (replaced) {
@@ -235,7 +243,10 @@ void ReviewNavigationController::cachePage(const ReviewMovesState& state) {
             return page.offset == offset;
         });
         if (found != pages_.end()) {
-            return;
+            if (found->revision == state.page->revision) {
+                return;
+            }
+            pages_.erase(found);
         }
         pages_.push_front(*state.page);
         if (pages_.size() > 4) {
@@ -269,7 +280,8 @@ void ReviewNavigationController::requestEvidence(int position, bool committed) {
     const int offset = ((evidencePosition - 1) / 50) * 50;
     const auto session = session_;
     if (!committed) {
-        if (move(evidencePosition) ||
+        const auto* existing = move(evidencePosition);
+        if ((existing && !existing->pendingRevision) ||
             (moves_.state().offset == offset && (moves_.state().loading || moves_.state().page))) {
             return;
         }

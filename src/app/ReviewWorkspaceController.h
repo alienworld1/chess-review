@@ -55,6 +55,7 @@ class ReviewWorkspaceController final : public QObject {
 
   private:
     friend class ReviewGameController;
+    friend class ReviewWorkspaceTestAccess;
     void publish();
     void updateCompatibility();
     void taskChanged();
@@ -93,8 +94,15 @@ class ReviewWorkspaceController final : public QObject {
     std::uint64_t generation_ = 0;
     std::uint64_t requestedGeneration_ = 0;
     QUuid pending_;
-    QUuid liveRead_;
-    std::optional<persistence::ReviewSummary> liveRun_;
+    struct LiveOverview {
+        QUuid id;
+        review::ReviewId reviewId;
+        std::int64_t revision;
+        std::uint64_t generation;
+        std::uint64_t overviewGeneration;
+    };
+    std::optional<LiveOverview> liveRead_;
+    std::uint64_t overviewGeneration_ = 0;
     QUuid restoreRequest_;
     QUuid recoveryPending_;
     QUuid write_;

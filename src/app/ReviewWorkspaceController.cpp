@@ -22,14 +22,14 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
         if (closing_ || !visible_ || !displaysTask() || !state_.run) {
             return;
         }
-        if (!pending_.isNull() || !liveRead_.isNull() || retry_.isActive()) {
+        if (!pending_.isNull() || liveRead_.has_value() || retry_.isActive()) {
             liveTimer_.start();
             return;
         }
         if (!state_.overview || state_.overview->revision != state_.run->revision) {
-            liveRun_ = state_.run;
-            liveRead_ = QUuid::createUuid();
-            database_.loadReviewOverview(liveRead_, liveRun_->id, liveRun_->revision,
+            liveRead_ = LiveOverview{QUuid::createUuid(), state_.run->id, state_.run->revision,
+                                     generation_, overviewGeneration_};
+            database_.loadReviewOverview(liveRead_->id, liveRead_->reviewId, liveRead_->revision,
                                          state_.overview ? state_.overview->keyOffset : 0);
         }
     });
@@ -290,11 +290,12 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
             });
     connect(&database_, &Database::reviewOverviewLoaded, this,
             [this](QUuid id, const LoadReviewOverviewResult& result) {
-                if (!id.isNull() && id == liveRead_) {
-                    const bool current = liveRun_ && state_.run && liveRun_->id == state_.run->id &&
-                                         liveRun_->revision == state_.run->revision;
-                    liveRead_ = {};
-                    liveRun_.reset();
+                if (liveRead_ && id == liveRead_->id) {
+                    const bool current = state_.run && liveRead_->reviewId == state_.run->id &&
+                                         liveRead_->revision == state_.run->revision &&
+                                         liveRead_->generation == generation_ &&
+                                         liveRead_->overviewGeneration == overviewGeneration_;
+                    liveRead_.reset();
                     if (closing_) {
                         finishClose();
                         return;
@@ -573,6 +574,7 @@ void ReviewWorkspaceController::refreshOverview(int offset) {
     if (closing_ || !state_.run || offset < 0 || !pending_.isNull() || retry_.isActive()) {
         return;
     }
+    ++overviewGeneration_;
     const auto run = *state_.run;
     request([this, run, offset](QUuid id) {
         database_.loadReviewOverview(id, run.id, run.revision, offset);
@@ -659,6 +661,9 @@ void ReviewWorkspaceController::taskChanged() {
             (!state_.overview || task.overview->reviewId != state_.overview->reviewId ||
              task.overview->revision >= state_.overview->revision)) {
             state_.overview = task.overview;
+            if (state_.run && task.overview->revision == state_.run->revision) {
+                state_.overviewError.clear();
+            }
         }
         if (revised) {
             if (visible_ && !liveTimer_.isActive()) {
@@ -774,7 +779,7 @@ void ReviewWorkspaceController::close() {
 }
 void ReviewWorkspaceController::finishClose() {
     if (!closing_ || closed_ || !navigationClosed_ || !explorationClosed_ || !moves_.drained() ||
-        !pending_.isNull() || !liveRead_.isNull() || !restoreRequest_.isNull() ||
+        !pending_.isNull() || liveRead_.has_value() || !restoreRequest_.isNull() ||
         !recoveryPending_.isNull() || !write_.isNull() || !writes_.empty() ||
         saveTimer_.isActive()) {
         return;

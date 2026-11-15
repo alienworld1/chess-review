@@ -8,8 +8,23 @@
 #include <string>
 #include <vector>
 namespace chess_review::review {
-inline constexpr std::uint32_t specialLabelModelVersion = 1;
-inline constexpr std::uint32_t motifModelVersion = 1;
+inline constexpr std::uint32_t specialLabelModelVersion = 2;
+inline constexpr std::uint32_t motifModelVersion = 2;
+struct IntelligenceModels {
+    std::uint32_t special;
+    std::uint32_t motif;
+};
+[[nodiscard]] constexpr std::optional<IntelligenceModels>
+intelligenceModelsForPipeline(std::uint32_t pipeline) {
+    switch (pipeline) {
+    case 10:
+        return IntelligenceModels{1, 1};
+    case 11:
+        return IntelligenceModels{2, 2};
+    default:
+        return std::nullopt;
+    }
+}
 inline constexpr std::size_t tacticalLineLimit = 16;
 enum class TacticalKind { Material, Exchange, HangingPiece, Fork, Promotion, Checkmate, Sacrifice };
 enum class FactSource { Played, Best };
@@ -24,6 +39,10 @@ struct TacticalFact {
     int material = 0;
     std::vector<chess::Move> line;
     int linePlies = 0;
+    std::uint32_t modelVersion = motifModelVersion;
+    // A positive consequence retained at a quiet endpoint or locally proven mate.
+    // Line-only arithmetic and a promotion subsequently captured do not qualify.
+    bool retainedOpportunity = false;
 };
 enum class SpecialStatus { NotCandidate, Pending, Verified, Rejected, Insufficient };
 struct SpecialAssessment {
@@ -42,15 +61,16 @@ struct SpecialAssessment {
 };
 [[nodiscard]] bool validSpecialConfig(const SpecialLabelConfig& config);
 // Bounded legal replay; no engine, Qt or storage. Illegal lines return no facts.
-[[nodiscard]] std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
-                                                            std::span<const chess::Move> line,
-                                                            FactSource source);
+[[nodiscard]] std::vector<TacticalFact>
+inspectTacticalLine(const chess::Position& root, std::span<const chess::Move> line,
+                    FactSource source, std::uint32_t modelVersion = motifModelVersion);
 // Both functions revalidate supplied pairs from the original board before interpreting them.
 void addIntelligenceCandidates(ScanAssessment& scan, const chess::Position& root,
                                const MoveEvidence& pair, const Configuration& config);
 [[nodiscard]] std::vector<TacticalFact>
-tacticalFacts(const chess::Position& root, const MoveEvidence& pair, const Configuration& config);
-[[nodiscard]] SpecialAssessment verifySpecial(const chess::Position& root,
-                                              const MoveEvidence& latest, const MoveEvidence* older,
-                                              const Configuration& config);
+tacticalFacts(const chess::Position& root, const MoveEvidence& pair, const Configuration& config,
+              std::uint32_t modelVersion = motifModelVersion);
+[[nodiscard]] SpecialAssessment
+verifySpecial(const chess::Position& root, const MoveEvidence& latest, const MoveEvidence* older,
+              const Configuration& config, std::uint32_t modelVersion = specialLabelModelVersion);
 } // namespace chess_review::review

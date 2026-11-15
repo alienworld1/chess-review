@@ -131,7 +131,7 @@ or evidence sufficiency.
 
 ## Special-label configuration
 
-New policy-10 reviews capture `[special]` settings from the example. All score
+New policy-11 reviews capture `[special]` settings from the example. All score
 fields are finite fractions in `[0,1]`. `alternativeGap` and `missLoss` must exceed
 `margin`; `viableScore` must exceed `margin`; `alreadyWinningScore` must be below
 1 and exceed `viableScore + margin`. `sacrificeValue` is an integer in `[1,9]`.

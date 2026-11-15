@@ -169,11 +169,15 @@ std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
          (*doc)["reviewModelVersion"].toInt(-1) != 1)) {
         return error(ReviewErrorCode::UnsupportedVersion);
     }
-    if ((*doc)["pipelineVersion"].toInt(-1) >= 10 &&
-        ((*doc)["specialLabelModelVersion"].toInt(-1) != 1 ||
-         (*doc)["motifModelVersion"].toInt(-1) != 1 ||
-         (*doc)["explanationModelVersion"].toInt(-1) != 1)) {
-        return error(ReviewErrorCode::UnsupportedVersion);
+    if ((*doc)["pipelineVersion"].toInt(-1) >= 10) {
+        const auto models = review::intelligenceModelsForPipeline(
+            static_cast<std::uint32_t>((*doc)["pipelineVersion"].toInt(-1)));
+        if (!models ||
+            (*doc)["specialLabelModelVersion"].toInt(-1) != static_cast<int>(models->special) ||
+            (*doc)["motifModelVersion"].toInt(-1) != static_cast<int>(models->motif) ||
+            (*doc)["explanationModelVersion"].toInt(-1) != 1) {
+            return error(ReviewErrorCode::UnsupportedVersion);
+        }
     }
     auto settings = decodeReviewSettings(bytes);
     if (!settings || settings->gameId != s->gameId ||
@@ -1364,6 +1368,11 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
     if (!stabilityModel) {
         return error(ReviewErrorCode::UnsupportedVersion);
     }
+    const auto intelligenceModels =
+        review::intelligenceModelsForPipeline(run.settings.pipelineVersion);
+    if (run.settings.pipelineVersion >= 10 && !intelligenceModels) {
+        return error(ReviewErrorCode::UnsupportedVersion);
+    }
     const auto comparisonModel = run.settings.pipelineVersion == 6
                                      ? review::ComparisonModel::Version1
                                      : review::ComparisonModel::Version2;
@@ -1431,6 +1440,9 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
         ReviewMove row;
         row.positionIndex = ply + 1;
         row.special.thresholds = run.settings.configuration.values.special;
+        if (intelligenceModels) {
+            row.special.modelVersion = intelligenceModels->special;
+        }
         row.stability.modelVersion = *stabilityModel;
         row.moveNumber = position->fullmoveNumber();
         row.mover = position->sideToMove();
@@ -1524,7 +1536,8 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                         comparisonModel);
                     if (run.settings.pipelineVersion >= 10) {
                         row.special = review::verifySpecial(*position, newer.pair, &older.pair,
-                                                            run.settings.configuration.values);
+                                                            run.settings.configuration.values,
+                                                            intelligenceModels->special);
                     }
                     row.comparisonStages = {olderStage, newerStage};
                     row.comparisonLabels = {older.classification.label, newer.classification.label};
@@ -1698,11 +1711,14 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
             if (run.settings.pipelineVersion >= 10) {
                 const auto& presentationPair = chosen ? chosen->pair : quickPair;
                 row.tacticalFacts = review::tacticalFacts(*position, presentationPair,
-                                                          run.settings.configuration.values);
+                                                          run.settings.configuration.values,
+                                                          intelligenceModels->motif);
                 if (row.special.status == review::SpecialStatus::NotCandidate &&
                     row.refinementTarget) {
                     row.special.status = review::SpecialStatus::Pending;
-                    row.special.ruleId = "special.independent_verification_pending.v1";
+                    row.special.ruleId = intelligenceModels->special == 1
+                                             ? "special.independent_verification_pending.v1"
+                                             : "special.independent_verification_pending.v2";
                 }
                 if (row.special.status == review::SpecialStatus::Verified && row.special.label &&
                     row.stability.stable) {

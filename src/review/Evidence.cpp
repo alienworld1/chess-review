@@ -59,6 +59,7 @@ std::optional<EvidenceIssue> candidateIssue(const chess::Position& position,
     int rank = 0;
     std::optional<ExpectedScore> previous;
     std::optional<std::int64_t> previousCp;
+    bool mateClaim = false;
     for (const auto& candidate : evidence.candidates) {
         if (candidate.rank != ++rank || candidate.continuation.empty() ||
             candidate.continuation.size() > 1024 ||
@@ -70,20 +71,6 @@ std::optional<EvidenceIssue> candidateIssue(const chess::Position& position,
         if (candidate.strength.depth != evidence.strength.depth) {
             return EvidenceIssue::Incomplete;
         }
-        const auto converted =
-            convertEvaluation(candidate.evaluation, position.sideToMove(), config);
-        if (converted.issue) {
-            return converted.issue;
-        }
-        if (previous && previous->source != converted.expected->source) {
-            return EvidenceIssue::MixedConversion;
-        }
-        if ((previous && previous->value < converted.expected->value) ||
-            (previousCp && *previousCp < candidate.evaluation.score->value)) {
-            return EvidenceIssue::ContradictoryCandidates;
-        }
-        previous = converted.expected;
-        previousCp = candidate.evaluation.score->value;
         auto replay = position;
         for (const auto& move : candidate.continuation) {
             if (std::holds_alternative<chess::Error>(replay.play(move))) {
@@ -97,8 +84,30 @@ std::optional<EvidenceIssue> candidateIssue(const chess::Position& position,
             }
         }
         roots.push_back(root);
+        const auto converted =
+            convertEvaluation(candidate.evaluation, position.sideToMove(), config);
+        if (converted.issue == EvidenceIssue::MateClaim) {
+            // A numeric conversion gap is not permission to skip legal/provenance
+            // validation of this or the remaining candidate continuations.
+            mateClaim = true;
+            previous.reset();
+            previousCp.reset();
+            continue;
+        }
+        if (converted.issue) {
+            return converted.issue;
+        }
+        if (previous && previous->source != converted.expected->source) {
+            return EvidenceIssue::MixedConversion;
+        }
+        if ((previous && previous->value < converted.expected->value) ||
+            (previousCp && *previousCp < candidate.evaluation.score->value)) {
+            return EvidenceIssue::ContradictoryCandidates;
+        }
+        previous = converted.expected;
+        previousCp = candidate.evaluation.score->value;
     }
-    return std::nullopt;
+    return mateClaim ? std::optional(EvidenceIssue::MateClaim) : std::nullopt;
 }
 EvaluationResult positionEvaluation(const PositionEvidence& evidence, chess::Color perspective,
                                     const ConversionConfig& config) {

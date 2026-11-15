@@ -25,7 +25,7 @@ int balance(const chess::Position& position, chess::Color side) {
 bool sameFact(const TacticalFact& a, const TacticalFact& b) {
     return a.kind == b.kind && a.source == b.source && a.beneficiary == b.beneficiary &&
            a.actor == b.actor && a.square == b.square && a.targets == b.targets &&
-           a.material == b.material;
+           a.material == b.material && a.retainedOpportunity == b.retainedOpportunity;
 }
 std::vector<chess::Move> playedLine(const MoveEvidence& pair) {
     std::vector<chess::Move> line{pair.playedMove};
@@ -38,15 +38,41 @@ std::vector<chess::Move> playedLine(const MoveEvidence& pair) {
     return line;
 }
 bool opportunity(const TacticalFact& fact, chess::Color side) {
-    return fact.beneficiary == side &&
+    return (fact.modelVersion == 1 || fact.retainedOpportunity) && fact.beneficiary == side &&
            ((fact.kind == TacticalKind::Material && fact.material > 0) ||
             fact.kind == TacticalKind::Promotion || fact.kind == TacticalKind::Checkmate);
+}
+bool requiresInputRepair(const ClassificationResult& result) {
+    if (result.issue == ClassificationIssue::InvalidConfiguration) {
+        return true;
+    }
+    if (!result.evidenceIssue) {
+        return false;
+    }
+    switch (*result.evidenceIssue) {
+    case EvidenceIssue::Incomplete:
+    case EvidenceIssue::Bounded:
+    case EvidenceIssue::MateClaim:
+    case EvidenceIssue::MissingEvaluation:
+    case EvidenceIssue::MixedConversion:
+    case EvidenceIssue::NegativeLoss:
+    case EvidenceIssue::ContradictoryCandidates:
+        return false;
+    case EvidenceIssue::Invalid:
+    case EvidenceIssue::ContextMismatch:
+    case EvidenceIssue::IncompatibleEngine:
+    case EvidenceIssue::IncompatibleModel:
+    case EvidenceIssue::RestrictedSearch:
+        return true;
+    }
+    return true;
 }
 std::optional<double> runnerUp(const MoveEvidence& pair, const ConversionConfig& config) {
     if (pair.before.candidates.size() < 2) {
         return {};
     }
-    const auto score = convertEvaluation(pair.before.candidates[1].evaluation, pair.mover, config);
+    const auto score = convertEvaluation(pair.before.candidates[1].evaluation,
+                                         pair.before.evaluation.perspective, config);
     return score.expected ? std::optional(score.expected->value) : std::nullopt;
 }
 } // namespace
@@ -60,9 +86,11 @@ bool validSpecialConfig(const SpecialLabelConfig& c) {
            c.sacrificeValue >= 1 && c.sacrificeValue <= 9;
 }
 std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
-                                              std::span<const chess::Move> input,
-                                              FactSource source) {
-    if (input.empty() || input.size() > tacticalLineLimit) {
+                                              std::span<const chess::Move> input, FactSource source,
+                                              std::uint32_t modelVersion) {
+    if ((modelVersion != 1 && modelVersion != 2) ||
+        (source != FactSource::Played && source != FactSource::Best) || input.empty() ||
+        input.size() > tacticalLineLimit) {
         return {};
     }
     const auto line = input.first(std::min(input.size(), tacticalLineLimit));
@@ -70,6 +98,12 @@ std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
     const auto side = root.sideToMove();
     const auto initialBalance = balance(root, side);
     std::vector<TacticalFact> facts;
+    struct PromotionWitness {
+        std::size_t fact;
+        chess::Square square;
+        bool alive = true;
+    };
+    std::vector<PromotionWitness> promotions;
     int captures = 0;
     int rooks = 0;
     int minors = 0;
@@ -82,9 +116,8 @@ std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
     }
     for (std::size_t ply = 0; ply < line.size(); ++ply) {
         const auto& move = line[ply];
-        if (!board.isLegal(move)) {
-            return {};
-        }
+        // play() validates legality and preserves the board on failure; a separate
+        // isLegal() call would generate the same legal moves twice for every ply.
         const auto actor = board.pieceAt(move.from);
         const auto victim = board.pieceAt(move.to);
         const auto actorSide = board.sideToMove();
@@ -96,14 +129,28 @@ std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
                     ? 1
                     : 0;
         }
+        if (modelVersion >= 2) {
+            for (auto& promotion : promotions) {
+                if (!promotion.alive) {
+                    continue;
+                }
+                if (victim && promotion.square == move.to) {
+                    promotion.alive = false;
+                } else if (promotion.square == move.from) {
+                    promotion.square = move.to;
+                }
+            }
+        }
         promoted = promoted || move.promotion.has_value();
         const bool hanging = victim && victim->type != chess::PieceType::Pawn &&
                              !board.isAttacked(move.to, victim->color);
         if (std::holds_alternative<chess::Error>(board.play(move))) {
             return {};
         }
-        const std::vector<chess::Move> prefix(line.begin(),
-                                              line.begin() + static_cast<std::ptrdiff_t>(ply + 1));
+        const auto prefix = [&] {
+            return std::vector<chess::Move>(line.begin(),
+                                            line.begin() + static_cast<std::ptrdiff_t>(ply + 1));
+        };
         if (hanging) {
             facts.push_back({TacticalKind::HangingPiece,
                              source,
@@ -112,7 +159,7 @@ std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
                              move.to,
                              {move.to},
                              value(victim->type),
-                             prefix});
+                             prefix()});
         }
         if (move.promotion) {
             facts.push_back({TacticalKind::Promotion,
@@ -122,7 +169,10 @@ std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
                              move.to,
                              {},
                              value(*move.promotion) - 1,
-                             prefix});
+                             prefix()});
+        }
+        if (move.promotion && modelVersion >= 2) {
+            promotions.push_back({facts.size() - 1, move.to, true});
         }
         if (ply == 0) {
             std::vector<chess::Square> targets;
@@ -144,8 +194,9 @@ std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
             legalCapture = kingTarget && board.inCheck();
             if (targets.size() >= 2 && legalCapture &&
                 !board.isAttacked(move.to, opposite(actorSide))) {
-                facts.push_back({TacticalKind::Fork, source, actorSide, actor->type, move.to,
-                                 std::move(targets), 0, prefix});
+                facts.push_back({TacticalKind::Fork, source, actorSide,
+                                 modelVersion >= 2 ? board.pieceAt(move.to)->type : actor->type,
+                                 move.to, std::move(targets), 0, prefix()});
             }
         }
         const auto delta = balance(board, side) - initialBalance;
@@ -158,12 +209,29 @@ std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
             concession = 0;
         }
         if (board.inCheck() && board.legalMoves().empty()) {
-            facts.push_back(
-                {TacticalKind::Checkmate, source, actorSide, actor->type, move.to, {}, 0, prefix});
+            facts.push_back({TacticalKind::Checkmate,
+                             source,
+                             actorSide,
+                             actor->type,
+                             move.to,
+                             {},
+                             0,
+                             prefix()});
         }
     }
     const int delta = balance(board, side) - initialBalance;
-    const std::vector<chess::Move> saved(line.begin(), line.end());
+    bool quietEnd = false;
+    if (modelVersion >= 2 && !board.inCheck()) {
+        const auto replies = board.legalMoves();
+        quietEnd = !replies.empty() &&
+                   std::none_of(replies.begin(), replies.end(), [&](const auto& reply) {
+                       const auto piece = board.pieceAt(reply.from);
+                       return reply.promotion || board.pieceAt(reply.to) ||
+                              (piece->type == chess::PieceType::Pawn &&
+                               reply.from.file() != reply.to.file());
+                   });
+    }
+    const auto saved = [&] { return std::vector<chess::Move>(line.begin(), line.end()); };
     if (delta != 0) {
         facts.push_back({TacticalKind::Material,
                          source,
@@ -172,7 +240,7 @@ std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
                          line.front().to,
                          {},
                          std::abs(delta),
-                         saved});
+                         saved()});
         if (std::abs(delta) == 2 && captures == 2 && rooks == 1 && minors == 1 && !promoted) {
             facts.push_back({TacticalKind::Exchange,
                              source,
@@ -181,14 +249,18 @@ std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
                              line.front().to,
                              {},
                              2,
-                             saved});
+                             saved()});
         }
     }
-    const bool matingResolution = std::any_of(facts.begin(), facts.end(), [&](const auto& fact) {
-        return fact.kind == TacticalKind::Checkmate && fact.beneficiary == side;
-    });
+    std::optional<chess::Color> mateWinner;
+    for (const auto& fact : facts) {
+        if (fact.kind == TacticalKind::Checkmate) {
+            mateWinner = fact.beneficiary;
+        }
+    }
+    const bool matingResolution = mateWinner == side;
     if (concession > 0 && concessionPly >= 0 && line.size() >= 5 &&
-        (delta >= 0 || matingResolution)) {
+        ((delta >= 0 && (modelVersion == 1 || quietEnd)) || matingResolution)) {
         facts.push_back({TacticalKind::Sacrifice,
                          source,
                          side,
@@ -196,42 +268,62 @@ std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
                          line.front().to,
                          {},
                          concession,
-                         saved});
+                         saved()});
     }
     for (auto& fact : facts) {
         fact.linePlies = static_cast<int>(fact.line.size());
+        fact.modelVersion = modelVersion;
+        if (modelVersion >= 2) {
+            fact.retainedOpportunity = fact.kind == TacticalKind::Checkmate ||
+                                       (quietEnd && (fact.kind == TacticalKind::Material ||
+                                                     fact.kind == TacticalKind::Exchange));
+        }
+    }
+    if (modelVersion >= 2) {
+        for (const auto& promotion : promotions) {
+            auto& fact = facts[promotion.fact];
+            fact.retainedOpportunity =
+                promotion.alive && (quietEnd || mateWinner == fact.beneficiary);
+        }
     }
     return facts;
 }
 namespace {
-std::vector<TacticalFact> factsFromPair(const chess::Position& root, const MoveEvidence& pair) {
-    auto result = inspectTacticalLine(root, playedLine(pair), FactSource::Played);
+std::vector<TacticalFact> factsFromPair(const chess::Position& root, const MoveEvidence& pair,
+                                        std::uint32_t modelVersion) {
+    auto result = inspectTacticalLine(root, playedLine(pair), FactSource::Played, modelVersion);
     if (!pair.before.candidates.empty()) {
         const auto& continuation = pair.before.candidates.front().continuation;
         auto best = inspectTacticalLine(
             root, std::span(continuation).first(std::min(continuation.size(), tacticalLineLimit)),
-            FactSource::Best);
+            FactSource::Best, modelVersion);
         result.insert(result.end(), best.begin(), best.end());
     }
     return result;
 }
 } // namespace
 std::vector<TacticalFact> tacticalFacts(const chess::Position& root, const MoveEvidence& supplied,
-                                        const Configuration& config) {
-    const auto pair =
-        pairEvidence(root, supplied.playedMove, supplied.before, supplied.after, config.conversion);
-    if (pair.issue && pair.issue != EvidenceIssue::MateClaim) {
+                                        const Configuration& config, std::uint32_t modelVersion) {
+    if (modelVersion != 1 && modelVersion != 2) {
         return {};
     }
-    return factsFromPair(root, pair);
+    const auto pair =
+        pairEvidence(root, supplied.playedMove, supplied.before, supplied.after, config.conversion);
+    if ((pair.issue && pair.issue != EvidenceIssue::MateClaim) ||
+        (pair.beforeEvaluation.issue && pair.beforeEvaluation.issue != EvidenceIssue::MateClaim) ||
+        (pair.afterEvaluation.issue && pair.afterEvaluation.issue != EvidenceIssue::MateClaim)) {
+        return {};
+    }
+    return factsFromPair(root, pair, modelVersion);
 }
 void addIntelligenceCandidates(ScanAssessment& scan, const chess::Position& root,
                                const MoveEvidence& pair, const Configuration& config) {
-    if (scan.pipelineVersion != 10 || scan.state != ScanState::Usable ||
-        !validSpecialConfig(config.special)) {
+    const auto models =
+        scan.pipelineVersion ? intelligenceModelsForPipeline(*scan.pipelineVersion) : std::nullopt;
+    if (!models || scan.state != ScanState::Usable || !validSpecialConfig(config.special)) {
         return;
     }
-    const auto facts = tacticalFacts(root, pair, config);
+    const auto facts = tacticalFacts(root, pair, config, models->motif);
     const auto add = [&](RefinementReason reason) {
         if (std::find(scan.reasons.begin(), scan.reasons.end(), reason) == scan.reasons.end()) {
             scan.reasons.push_back(reason);
@@ -240,12 +332,13 @@ void addIntelligenceCandidates(ScanAssessment& scan, const chess::Position& root
     for (const auto& fact : facts) {
         // A remote material balance at a truncated PV horizon is not a cheap
         // tactical opportunity signal. Admit immediate motifs or short concrete gains.
-        const bool immediate =
-            fact.linePlies == 1 &&
-            ((fact.kind == TacticalKind::HangingPiece && fact.material >= 3) ||
-             fact.kind == TacticalKind::Fork || fact.kind == TacticalKind::Promotion);
+        const bool immediate = fact.linePlies == 1 &&
+                               ((fact.kind == TacticalKind::HangingPiece && fact.material >= 3) ||
+                                fact.kind == TacticalKind::Fork ||
+                                (fact.kind == TacticalKind::Promotion &&
+                                 (models->motif == 1 || fact.retainedOpportunity)));
         const bool shortGain =
-            fact.linePlies <= 5 &&
+            (models->motif == 1 || fact.retainedOpportunity) && fact.linePlies <= 5 &&
             (fact.kind == TacticalKind::Checkmate || fact.kind == TacticalKind::Exchange ||
              (fact.kind == TacticalKind::Material && fact.material >= 3));
         if (fact.source == FactSource::Best && fact.beneficiary == root.sideToMove() &&
@@ -265,36 +358,76 @@ void addIntelligenceCandidates(ScanAssessment& scan, const chess::Position& root
     }
 }
 SpecialAssessment verifySpecial(const chess::Position& root, const MoveEvidence& supplied,
-                                const MoveEvidence* older, const Configuration& config) {
+                                const MoveEvidence* older, const Configuration& config,
+                                std::uint32_t modelVersion) {
     SpecialAssessment out;
+    out.modelVersion = modelVersion;
+    const auto rule = [modelVersion](const char* name) {
+        return std::string(name) + (modelVersion == 1 ? ".v1" : ".v2");
+    };
     out.thresholds = config.special;
     out.status = SpecialStatus::Insufficient;
-    if (!validSpecialConfig(config.special)) {
-        out.ruleId = "special.invalid_configuration.v1";
+    if (modelVersion != 1 && modelVersion != 2) {
+        out.verificationPossible = false;
+        out.ruleId = "special.unsupported_model";
+        return out;
+    }
+    if (!validSpecialConfig(config.special) || !std::isfinite(config.refinement.maximumDrift) ||
+        config.refinement.maximumDrift < 0 || config.refinement.maximumDrift > 1 ||
+        !std::isfinite(config.refinement.boundaryMargin) || config.refinement.boundaryMargin < 0 ||
+        config.refinement.boundaryMargin > 1 || config.refinement.multiPv < 1 ||
+        config.refinement.multiPv > 256 || !std::isfinite(config.conversion.fallbackScaleCp) ||
+        config.conversion.fallbackScaleCp < 1 || config.conversion.fallbackScaleCp > 10000) {
+        out.verificationPossible = false;
+        out.ruleId = rule("special.invalid_configuration");
         return out;
     }
     const auto latestClass = classify(root, supplied, config.classification, config.conversion);
     if (latestClass.issue || !latestClass.loss) {
-        out.ruleId = "special.numeric_evidence_required.v1";
+        if (latestClass.issue == ClassificationIssue::InvalidConfiguration) {
+            out.verificationPossible = false;
+            out.ruleId = rule("special.invalid_configuration");
+            return out;
+        }
+        out.verificationPossible = !requiresInputRepair(latestClass);
+        out.ruleId = rule("special.numeric_evidence_required");
         return out;
     }
     if (*latestClass.loss > config.special.maximumLoss &&
         *latestClass.loss < config.special.missLoss) {
         out.status = SpecialStatus::Rejected;
-        out.ruleId = "special.quality_requirements_not_met.v1";
+        out.ruleId = rule("special.quality_requirements_not_met");
         return out;
     }
     if (root.legalMoves().size() <= 1 || supplied.before.candidates.size() < 2) {
         out.verificationPossible = false;
-        out.ruleId = "special.alternative_coverage_unavailable.v1";
+        out.ruleId = rule("special.alternative_coverage_unavailable");
         return out;
+    }
+    if (modelVersion >= 2) {
+        const auto second = runnerUp(supplied, config.conversion);
+        const bool possibleMiss = *latestClass.loss >= config.special.missLoss;
+        const bool possibleResource =
+            *latestClass.loss <= config.special.maximumLoss && latestClass.playedMoveRank == 1 &&
+            second && latestClass.after.expected->value >= config.special.viableScore &&
+            latestClass.before.expected->value - *second >= config.special.alternativeGap;
+        if (!possibleMiss && !possibleResource) {
+            out.status = SpecialStatus::Rejected;
+            out.ruleId = rule("special.quality_requirements_not_met");
+            return out;
+        }
     }
     if (!older) {
         out.status = SpecialStatus::Pending;
-        out.ruleId = "special.independent_verification_pending.v1";
+        out.ruleId = rule("special.independent_verification_pending");
         return out;
     }
     const auto oldClass = classify(root, *older, config.classification, config.conversion);
+    if (requiresInputRepair(oldClass)) {
+        out.verificationPossible = false;
+        out.ruleId = rule("special.evidence_invalid");
+        return out;
+    }
     const auto latest =
         pairEvidence(root, supplied.playedMove, supplied.before, supplied.after, config.conversion);
     const auto previous =
@@ -302,11 +435,11 @@ SpecialAssessment verifySpecial(const chess::Position& root, const MoveEvidence&
     const auto stable = assessStability(oldClass, latestClass, previous, latest, config.refinement);
     const auto comparison = compareAlternatives(root, latest, &previous, config);
     if (!stable.stable || comparison.reason != ComparisonReason::Confirmed || !oldClass.loss) {
-        out.ruleId = "special.independent_evidence_insufficient.v1";
+        out.ruleId = rule("special.independent_evidence_insufficient");
         return out;
     }
-    const auto facts = factsFromPair(root, latest);
-    const auto oldFacts = factsFromPair(root, previous);
+    const auto facts = factsFromPair(root, latest, modelVersion);
+    const auto oldFacts = factsFromPair(root, previous, modelVersion);
     for (const auto& fact : facts) {
         if (std::any_of(oldFacts.begin(), oldFacts.end(),
                         [&](const auto& old) { return sameFact(fact, old); })) {
@@ -330,7 +463,7 @@ SpecialAssessment verifySpecial(const chess::Position& root, const MoveEvidence&
         return a - b;
     };
     if (std::abs(difference(*latestClass.loss, *oldClass.loss)) > c.maximumLossDrift) {
-        out.ruleId = "special.loss_drift.v1";
+        out.ruleId = rule("special.loss_drift");
         return out;
     }
     const auto clears = [&](double a, double b) { return difference(a, b) > c.margin; };
@@ -354,27 +487,36 @@ SpecialAssessment verifySpecial(const chess::Position& root, const MoveEvidence&
             return f.source == FactSource::Played && f.kind == TacticalKind::Sacrifice &&
                    f.material >= c.sacrificeValue;
         });
+    bool missedDisagreement = false;
     if (quality && best && unique && viable && notTrivial && sacrifice) {
         out.label = Classification::Brilliant;
-        out.ruleId = "special.brilliant.tactical_sacrifice.v1";
+        out.ruleId = rule("special.brilliant.tactical_sacrifice");
     } else if (quality && best && unique && viable && critical && root.legalMoves().size() > 1) {
         out.label = Classification::Great;
-        out.ruleId = "special.great.unique_resource.v1";
+        out.ruleId = rule("special.great.unique_resource");
     } else if (clears(*latestClass.loss, c.missLoss) && clears(*oldClass.loss, c.missLoss)) {
         const bool missed =
             std::any_of(out.witnesses.begin(), out.witnesses.end(), [&](const auto& f) {
                 if (f.source != FactSource::Best || !opportunity(f, latest.mover)) {
                     return false;
                 }
-                return std::none_of(facts.begin(), facts.end(), [&](const auto& played) {
-                    return played.source == FactSource::Played &&
-                           opportunity(played, latest.mover) && played.kind == f.kind &&
-                           played.material >= f.material;
-                });
+                const auto forfeits = [&](const auto& witnesses) {
+                    return std::none_of(
+                        witnesses.begin(), witnesses.end(), [&](const auto& played) {
+                            return played.source == FactSource::Played &&
+                                   opportunity(played, latest.mover) && played.kind == f.kind &&
+                                   played.material >= f.material;
+                        });
+                };
+                const bool currentMiss = forfeits(facts);
+                const bool previousMiss = modelVersion == 1 || forfeits(oldFacts);
+                missedDisagreement =
+                    missedDisagreement || (modelVersion >= 2 && currentMiss != previousMiss);
+                return currentMiss && previousMiss;
             });
         if (missed) {
             out.label = Classification::Miss;
-            out.ruleId = "special.miss.verified_opportunity.v1";
+            out.ruleId = rule("special.miss.verified_opportunity");
         }
     }
     // A tactical witness appearing in only one of the otherwise stable attempts
@@ -388,14 +530,26 @@ SpecialAssessment verifySpecial(const chess::Position& root, const MoveEvidence&
         return relevant && std::none_of(oldFacts.begin(), oldFacts.end(),
                                         [&](const auto& old) { return sameFact(f, old); });
     });
-    if (!out.label && tacticalDisagreement) {
+    const bool olderOnly =
+        modelVersion >= 2 && std::any_of(oldFacts.begin(), oldFacts.end(), [&](const auto& f) {
+            const bool relevant =
+                (quality && best && unique && viable && notTrivial &&
+                 f.source == FactSource::Played && f.kind == TacticalKind::Sacrifice &&
+                 f.material >= c.sacrificeValue) ||
+                (clears(*oldClass.loss, c.missLoss) && f.source == FactSource::Best &&
+                 opportunity(f, latest.mover));
+            return relevant && std::none_of(facts.begin(), facts.end(), [&](const auto& current) {
+                       return sameFact(f, current);
+                   });
+        });
+    if (!out.label && (tacticalDisagreement || olderOnly || missedDisagreement)) {
         out.status = SpecialStatus::Insufficient;
-        out.ruleId = "special.tactical_witness_disagreement.v1";
+        out.ruleId = rule("special.tactical_witness_disagreement");
         return out;
     }
     out.status = out.label ? SpecialStatus::Verified : SpecialStatus::Rejected;
     if (!out.label) {
-        out.ruleId = "special.requirements_not_met.v1";
+        out.ruleId = rule("special.requirements_not_met");
     }
     return out;
 }

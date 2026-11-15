@@ -9,11 +9,12 @@
 namespace chess_review::review {
 inline constexpr std::uint32_t stabilityModelVersion = 3;
 inline constexpr std::uint32_t accuracyModelVersion = 1;
-inline constexpr std::uint32_t pipelineModelVersion = 10;
+inline constexpr std::uint32_t pipelineModelVersion = 11;
 [[nodiscard]] constexpr bool supportsPipelineModel(std::uint32_t version) {
     // Keep released policies explicit when the default advances.
     return version == 1 || version == 2 || version == 3 || version == 4 || version == 5 ||
-           version == 6 || version == 7 || version == 8 || version == 9 || version == 10;
+           version == 6 || version == 7 || version == 8 || version == 9 || version == 10 ||
+           version == 11;
 }
 // The persisted pipeline fixes stability semantics for scheduling and reproduction.
 [[nodiscard]] constexpr std::optional<std::uint32_t>
@@ -31,6 +32,7 @@ stabilityModelForPipeline(std::uint32_t version) {
         return 2;
     case 9:
     case 10:
+    case 11:
         return 3;
     default:
         return std::nullopt;

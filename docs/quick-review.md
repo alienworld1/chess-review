@@ -134,10 +134,10 @@ alternative rank or equivalence is inferred from the later-position score.
 Bounds, engine mate claims, insufficient strength, incompatible conversions,
 contradictory candidates, and apparent negative loss withhold normal labels.
 Locally proven terminal outcomes retain the existing conservative pairing rules.
-New policy-10 reviews can replace an ordinary label with verified **Brilliant**,
+New policy-11 reviews can replace an ordinary label with verified **Brilliant**,
 **Great** or **Miss**. Verification requires independent stronger evidence and an
 inspectable rule; incomplete verification retains the ordinary label. See
-[verified special labels and tactical teaching](review-summaries.md#verified-special-labels-and-tactical-teaching-policy-10)
+[verified special labels and tactical teaching](review-summaries.md#stricter-consequence-verification-policy-11)
 for thresholds and supported explanations. Book remains unavailable. Historical
 runs retain their original policy and labels.
 
