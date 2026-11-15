@@ -1,8 +1,8 @@
 # Review evidence and configuration
 
 Game review combines evidence conversion, durable storage, quick scanning, and
-provisional normal classifications. See [Quick review](quick-review.md) for the
-workflow and classification rules. Accuracy remains a later increment. Changing settings now does not change manual analysis limits
+progressive classifications and verified tactical explanations. See [Quick review](quick-review.md) for the
+workflow and classification rules. Accuracy uses the independent, reproducible model described in [review methodology](review-summaries.md). Changing settings now does not change manual analysis limits
 or launch an engine.
 
 ## Advanced configuration
@@ -120,7 +120,7 @@ identity. Threshold changes do not change conversion or analysis identities.
 Review storage retains the applicable identities, model versions, and source
 evidence. New settings use settings format 2; existing evidence/pair formats remain
 unchanged. A separate classification document records the effective thresholds
-and identity, including the default Excellent boundary for legacy runs. Accuracy remains a separate future methodology.
+and identity, including the default Excellent boundary for legacy runs. Accuracy remains independent of label thresholds, including special-label rules.
 
 The analysis adapter optionally accepts a borrowed `Position` replay witness.
 It reuses that board only when the complete history-aware context matches; a
@@ -128,3 +128,13 @@ mismatch falls back to reconstruction. Independent context size/version and
 analysis validation still apply, and the pointer is never retained. This avoids
 replaying a history already validated by storage without changing cache eligibility
 or evidence sufficiency.
+
+## Special-label configuration
+
+New policy-10 reviews capture `[special]` settings from the example. All score
+fields are finite fractions in `[0,1]`. `alternativeGap` and `missLoss` must exceed
+`margin`; `viableScore` must exceed `margin`; `alreadyWinningScore` must be below
+1 and exceed `viableScore + margin`. `sacrificeValue` is an integer in `[1,9]`.
+Invalid settings reject the configuration. These settings do not change raw-engine
+cache identity, expected-score conversion, or accuracy arithmetic. Historical runs
+keep their captured policy and cannot silently acquire the new rules.

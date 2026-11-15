@@ -23,6 +23,17 @@ struct RefinementConfig {
     int multiPv = 3;
     bool operator==(const RefinementConfig&) const = default;
 };
+struct SpecialLabelConfig {
+    double maximumLoss = 0.01;
+    double maximumLossDrift = 0.01;
+    double alternativeGap = 0.10;
+    double missLoss = 0.10;
+    double viableScore = 0.50;
+    double alreadyWinningScore = 0.95;
+    double margin = 0.01;
+    int sacrificeValue = 2;
+    bool operator==(const SpecialLabelConfig&) const = default;
+};
 struct Configuration {
     std::uint32_t version = 1;
     std::array<NodeBudgets, 3> budgets{
@@ -30,6 +41,7 @@ struct Configuration {
     ClassificationConfig classification;
     ConversionConfig conversion;
     RefinementConfig refinement;
+    SpecialLabelConfig special;
     Quality quality = Quality::Standard;
     bool operator==(const Configuration&) const = default;
 };

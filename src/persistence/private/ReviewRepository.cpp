@@ -169,6 +169,12 @@ std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
          (*doc)["reviewModelVersion"].toInt(-1) != 1)) {
         return error(ReviewErrorCode::UnsupportedVersion);
     }
+    if ((*doc)["pipelineVersion"].toInt(-1) >= 10 &&
+        ((*doc)["specialLabelModelVersion"].toInt(-1) != 1 ||
+         (*doc)["motifModelVersion"].toInt(-1) != 1 ||
+         (*doc)["explanationModelVersion"].toInt(-1) != 1)) {
+        return error(ReviewErrorCode::UnsupportedVersion);
+    }
     auto settings = decodeReviewSettings(bytes);
     if (!settings || settings->gameId != s->gameId ||
         settings->engineProfileId != q.value(2).toLongLong() ||
@@ -1269,6 +1275,8 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
                 auto scan = review::assessQuickScan(classified, quickPair,
                                                     run.settings.configuration.values.refinement,
                                                     run.settings.pipelineVersion);
+                review::addIntelligenceCandidates(scan, beforePosition, quickPair,
+                                                  run.settings.configuration.values);
                 if (scan.state == review::ScanState::Invalid && run.settings.pipelineVersion >= 2) {
                     return invalid();
                 }
@@ -1399,6 +1407,8 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
             previousScan = review::assessQuickScan(classified, quickPair,
                                                    run.settings.configuration.values.refinement,
                                                    run.settings.pipelineVersion);
+            review::addIntelligenceCandidates(previousScan, *precedingPosition, quickPair,
+                                              run.settings.configuration.values);
             if (previousScan.state == review::ScanState::Invalid) {
                 return invalid();
             }
@@ -1420,6 +1430,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
         }
         ReviewMove row;
         row.positionIndex = ply + 1;
+        row.special.thresholds = run.settings.configuration.values.special;
         row.stability.modelVersion = *stabilityModel;
         row.moveNumber = position->fullmoveNumber();
         row.mover = position->sideToMove();
@@ -1452,6 +1463,8 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
             row.quickScan = review::assessQuickScan(result, quickPair,
                                                     run.settings.configuration.values.refinement,
                                                     run.settings.pipelineVersion);
+            review::addIntelligenceCandidates(row.quickScan, *position, quickPair,
+                                              run.settings.configuration.values);
             if (row.quickScan.state == review::ScanState::Invalid &&
                 run.settings.pipelineVersion >= 2) {
                 return invalid();
@@ -1509,6 +1522,10 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     row.alternatives = review::compareAlternatives(
                         *position, newer.pair, &older.pair, run.settings.configuration.values,
                         comparisonModel);
+                    if (run.settings.pipelineVersion >= 10) {
+                        row.special = review::verifySpecial(*position, newer.pair, &older.pair,
+                                                            run.settings.configuration.values);
+                    }
                     row.comparisonStages = {olderStage, newerStage};
                     row.comparisonLabels = {older.classification.label, newer.classification.label};
                     row.comparisonBestMoveChanged =
@@ -1568,7 +1585,8 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                         assessment.persistentMate = row.stability.persistentMate;
                         assessment.modelVersion = row.stability.modelVersion;
                         if (run.settings.pipelineVersion >= 6 && assessment.stable &&
-                            row.alternatives.needsEvidence()) {
+                            (row.alternatives.needsEvidence() ||
+                             (run.settings.pipelineVersion >= 10 && row.special.needsEvidence()))) {
                             assessment.stable = false;
                             switch (row.alternatives.reason) {
                             case review::ComparisonReason::ScoreDrift:
@@ -1625,6 +1643,11 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                             row.stability = {};
                             row.stability.reason = review::StabilityReason::Pending;
                             row.stability.modelVersion = *stabilityModel;
+                            if (run.settings.pipelineVersion >= 10) {
+                                row.special.status = review::SpecialStatus::Pending;
+                                row.special.label.reset();
+                                row.special.witnesses.clear();
+                            }
                             row.alternatives.reason = review::ComparisonReason::Pending;
                             for (auto& alternative : row.alternatives.moves) {
                                 alternative.reason = review::ComparisonReason::Pending;
@@ -1672,6 +1695,28 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
             }
             result.stable = row.stability.stable;
             row.accuracyLoss = review::accuracyLoss(chosen ? chosen->pair : quickPair);
+            if (run.settings.pipelineVersion >= 10) {
+                const auto& presentationPair = chosen ? chosen->pair : quickPair;
+                row.tacticalFacts = review::tacticalFacts(*position, presentationPair,
+                                                          run.settings.configuration.values);
+                if (row.special.status == review::SpecialStatus::NotCandidate &&
+                    row.refinementTarget) {
+                    row.special.status = review::SpecialStatus::Pending;
+                    row.special.ruleId = "special.independent_verification_pending.v1";
+                }
+                if (row.special.status == review::SpecialStatus::Verified && row.special.label &&
+                    row.stability.stable) {
+                    result.label = row.special.label;
+                    result.ruleId = row.special.ruleId;
+                }
+            }
+            // Full PVs remain in selected exploration snapshots, not timeline pages.
+            for (auto& fact : row.tacticalFacts) {
+                fact.line.clear();
+            }
+            for (auto& fact : row.special.witnesses) {
+                fact.line.clear();
+            }
             row.classification = std::move(result);
             for (const auto& alternative : row.alternatives.moves) {
                 const auto notation = position->san(alternative.move);

@@ -243,3 +243,37 @@ TEST_CASE("Escalation stops only on supported confirmation or bounded work",
     CHECK(!needsEscalation(true, true, stability));
     CHECK(escalationStop(true, stability, 1, 5000000) == EscalationStop::PersistentMate);
 }
+
+TEST_CASE("Accuracy model one has stable published numeric examples", "[unit][review][summary]") {
+    for (const auto example :
+         {std::array{.01, 95.60440189029825}, std::array{.05, 79.81704006344074},
+          std::array{.10, 63.582619307109724}, std::array{.25, 31.57154837428388}}) {
+        REQUIRE(moveAccuracy(example[0]));
+        CHECK(*moveAccuracy(example[0]) == Catch::Approx(example[1]).epsilon(1e-12));
+    }
+    SummaryBuilder builder(chess_review::chess::Color::White);
+    SummaryMoveFacts white;
+    white.positionIndex = 1;
+    white.processed = true;
+    white.stable = true;
+    white.label = Classification::Brilliant;
+    white.loss = 0;
+    CHECK(builder.add(white).selected);
+    auto black = white;
+    black.positionIndex = 2;
+    black.mover = chess_review::chess::Color::Black;
+    black.label = Classification::Great;
+    black.loss = .05;
+    CHECK(!(builder.add(black).selected));
+    white.positionIndex = 3;
+    white.label = Classification::Miss;
+    white.loss.reset();
+    CHECK(builder.add(white).selected);
+    const auto facts = builder.finish();
+    CHECK(facts.sides[0].accuracy == 100);
+    CHECK(facts.sides[0].evaluated == 1);
+    CHECK(facts.sides[0].total == 2);
+    CHECK(facts.sides[0].counts[static_cast<std::size_t>(Classification::Brilliant)] == 1);
+    CHECK(facts.sides[0].counts[static_cast<std::size_t>(Classification::Miss)] == 1);
+    CHECK(*facts.sides[1].accuracy == Catch::Approx(79.81704006344074));
+}

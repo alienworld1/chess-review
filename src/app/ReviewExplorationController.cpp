@@ -206,11 +206,11 @@ void ReviewExplorationController::publish() {
                          evidence_->move.positionIndex == target_.position;
     const auto* c =
         evidence_ && evidence_->move.classification ? &*evidence_->move.classification : nullptr;
-    state_.canRetry = current && c && c->stable && c->label &&
-                      *c->label >= review::Classification::Inaccuracy && evidence_->deep &&
-                      evidence_->verified && evidence_->move.mover == run_->selectedSide &&
-                      !state_.loading && !workerBusy_ && !sandbox_.busy() && search_.isNull() &&
-                      cacheRead_.isNull() && !hidesSolution();
+    state_.canRetry = current && c && c->stable && c->label && review::isError(*c->label) &&
+                      evidence_->deep && evidence_->verified &&
+                      evidence_->move.mover == run_->selectedSide && !state_.loading &&
+                      !workerBusy_ && !sandbox_.busy() && search_.isNull() && cacheRead_.isNull() &&
+                      !hidesSolution();
     state_.canAnalyze =
         run_ && (state_.mode == ExplorationMode::Game
                      ? !navigation_.pending() && !navigation_.previewing() && navigation_.position()

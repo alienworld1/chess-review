@@ -39,3 +39,15 @@ fallbackScaleCp = 300
 boundaryMargin = 0.01
 maximumDrift = 0.02
 multiPv = 3
+
+# Conservative special-label rules for new adaptive reviews (pipeline 10).
+# Losses, gaps and margins are fractions of mover-perspective expected score.
+[special]
+maximumLoss = 0.01
+maximumLossDrift = 0.01
+alternativeGap = 0.10
+missLoss = 0.10
+viableScore = 0.50
+alreadyWinningScore = 0.95
+margin = 0.01
+sacrificeValue = 2

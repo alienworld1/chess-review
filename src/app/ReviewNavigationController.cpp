@@ -47,6 +47,14 @@ ReviewNavigationController::ReviewNavigationController(persistence::Database& da
 void ReviewNavigationController::publish() {
     const QScopedValueRollback notification(notifying_, true);
     if (!closing_) {
+        board_.annotations = gameAnnotations_;
+        if (!pending() && !previewing()) {
+            if (const auto* selectedMove = move(displayed_)) {
+                const auto highlights = reviewTacticalAnnotations(*selectedMove);
+                board_.annotations.insert(board_.annotations.end(), highlights.begin(),
+                                          highlights.end());
+            }
+        }
         emit changed();
     }
 }
@@ -68,6 +76,7 @@ void ReviewNavigationController::clear() {
     previewEvidence_.bind(std::nullopt);
     selected_ = displayed_ = 0;
     board_ = {};
+    gameAnnotations_.clear();
     error_.clear();
     userNavigated_ = entryChosen_ = false;
     publish();
@@ -203,6 +212,7 @@ void ReviewNavigationController::refreshBoard() {
     }
     displayed_ = requested();
     board_ = replay_.board();
+    gameAnnotations_ = board_.annotations;
     board_.interactive = false;
     board_.legalMoves.clear();
     board_.captureMoves.clear();

@@ -78,6 +78,7 @@ class ReviewNavigationController final : public QObject {
     ReviewMovesController& moves_;
     ReviewMovesController previewEvidence_;
     BoardViewState board_;
+    std::vector<BoardAnnotation> gameAnnotations_;
     std::vector<chess::NodeId> line_;
     std::map<chess::NodeId, int> positions_;
     std::deque<persistence::ReviewMovePage> pages_;

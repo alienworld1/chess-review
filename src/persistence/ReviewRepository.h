@@ -4,6 +4,7 @@
 #include "persistence/GameRepository.h"
 #include "review/Classification.h"
 #include "review/Comparison.h"
+#include "review/Intelligence.h"
 #include "review/Review.h"
 #include "review/Summary.h"
 #include <QByteArray>
@@ -100,6 +101,8 @@ struct ReviewMove {
     QString san;
     std::optional<review::ClassificationResult> classification;
     std::optional<double> accuracyLoss;
+    review::SpecialAssessment special;
+    std::vector<review::TacticalFact> tacticalFacts;
     std::array<std::int64_t, 4> stabilityEvidenceIds{};
     std::array<review::AnalysisStrength, 4> stabilityStrength;
     review::StabilityAssessment stability;

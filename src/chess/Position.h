@@ -105,6 +105,9 @@ class Position {
     [[nodiscard]] std::uint32_t halfmoveClock() const;
     [[nodiscard]] std::uint32_t fullmoveNumber() const;
     [[nodiscard]] bool inCheck() const;
+    // Geometric attacks, including pinned pieces; callers must check move legality.
+    [[nodiscard]] bool attacks(Square from, Square target) const;
+    [[nodiscard]] bool isAttacked(Square target, Color color) const;
     [[nodiscard]] std::vector<Move> legalMoves() const;
     [[nodiscard]] bool isLegal(const Move& move) const;
     [[nodiscard]] Result<Move> parseSan(std::string_view san) const;

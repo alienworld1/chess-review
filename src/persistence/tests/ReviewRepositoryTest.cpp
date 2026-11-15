@@ -131,6 +131,168 @@ class AsyncDatabase {
 class ReviewRepositoryTest final : public QObject {
     Q_OBJECT
   private slots:
+    void intelligenceSettingsAreCapturedAndVersioned() {
+        Fixture f;
+        auto request = seed(f.session, document("1. e4 *"));
+        request.refinement = true;
+        request.pipelineVersion = 10;
+        auto configuration = request.configuration.values;
+        configuration.special.alternativeGap = .15;
+        request.configuration = *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
+            config::validate(configuration));
+        const auto bytes = encodeReviewSettings(request);
+        QVERIFY(!bytes.isEmpty());
+        const auto decoded = decodeReviewSettings(bytes);
+        QVERIFY(decoded);
+        QCOMPARE(decoded->configuration.values.special, configuration.special);
+        QCOMPARE(encodeReviewSettings(*decoded), bytes);
+        for (const auto key :
+             {"specialLabelModelVersion", "motifModelVersion", "explanationModelVersion"}) {
+            auto wrong = *readReviewDocument(bytes, maxReviewSettingsBytes);
+            wrong[key] = 99;
+            QVERIFY(!decodeReviewSettings(reviewDocument(wrong)));
+        }
+        request.pipelineVersion = 9;
+        QVERIFY(encodeReviewSettings(request).isEmpty());
+    }
+    void specialLabelsReproduceFromSavedEvidence_data() {
+        QTest::addColumn<int>("policy");
+        QTest::addColumn<int>("kind");
+        QTest::newRow("historical-great") << 9 << 0;
+        QTest::newRow("intelligence-great") << 10 << 0;
+        QTest::newRow("historical-miss") << 9 << 1;
+        QTest::newRow("intelligence-miss") << 10 << 1;
+        QTest::newRow("historical-brilliant") << 9 << 2;
+        QTest::newRow("intelligence-brilliant") << 10 << 2;
+    }
+    void specialLabelsReproduceFromSavedEvidence() {
+        QFETCH(int, policy);
+        QFETCH(int, kind);
+        Fixture f;
+        const auto doc =
+            kind == 1
+                ? document("[SetUp \"1\"]\n[FEN \"7k/8/8/3q4/8/8/8/K2R4 w - - 0 1\"]\n\n1. Kb1 *")
+            : kind == 2 ? document("[SetUp \"1\"]\n[FEN \"5rk1/5ppp/8/8/8/3B1N2/5PPP/3Q2K1 w - - 0 "
+                                   "1\"]\n\n1. Bxh7+ *")
+                        : document("1. e4 *");
+        const auto root = positionAt(*doc, 0);
+        auto pvBoard = root;
+        std::vector<chess::Move> bestLine;
+        const std::vector<const char*> ucis =
+            kind == 1 ? std::vector<const char*>{"d1d5", "h8g8"}
+            : kind == 2
+                ? std::vector<const char*>{"d3h7", "g8h7", "f3g5", "h7g8", "d1h5", "g7g6", "h5h7"}
+                : std::vector<const char*>{"e2e4", "e7e5"};
+        for (const auto uci : ucis) {
+            const auto parsed = pvBoard.parseUci(uci);
+            QVERIFY(std::holds_alternative<chess::Move>(parsed));
+            bestLine.push_back(std::get<chess::Move>(parsed));
+            QVERIFY(std::holds_alternative<std::monostate>(pvBoard.play(bestLine.back())));
+        }
+        auto request = seed(f.session, doc);
+        request.refinement = true;
+        request.pipelineVersion = static_cast<std::uint32_t>(policy);
+        request.fingerprint = engine::makeFingerprint(
+            engineValue(),
+            {{QStringLiteral("multipv"), engine::OptionType::Spin, QStringLiteral("1")}});
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        for (int stage = 0; stage < 3; ++stage) {
+            for (int index = 0; index < 2; ++index) {
+                auto result = resultAt(request, *doc, index);
+                auto& snapshot = result.evidence;
+                const auto board = positionAt(*doc, index);
+                const auto nodes = *review::stageBudget(request.configuration.values.budgets[1],
+                                                        static_cast<review::EvidenceStage>(stage));
+                snapshot.limit = engine::NodeLimit{nodes};
+                snapshot.statistics.nodes = nodes;
+                snapshot.lines.front().statistics = snapshot.statistics;
+                if (index == 0) {
+                    snapshot.lines.front().pv = bestLine;
+                } else if (kind == 1) {
+                    snapshot.lines.front().pv = {std::get<chess::Move>(board.parseUci("d5e5"))};
+                } else {
+                    snapshot.lines.front().pv =
+                        std::vector<chess::Move>(bestLine.begin() + 1, bestLine.end());
+                }
+                snapshot.bestMove = snapshot.lines.front().pv.front();
+                snapshot.lines.front().wdl =
+                    index == 0 ? (kind == 1 ? engine::Wdl{800, 0, 200} : engine::Wdl{600, 0, 400})
+                               : (kind == 1 ? engine::Wdl{450, 0, 550} : engine::Wdl{400, 0, 600});
+                if (stage == 0 && index == 0) {
+                    snapshot.lines.front().score->bound = engine::ScoreBound::Lower;
+                }
+                if (stage > 0 && index == 0) {
+                    auto second = snapshot.lines.front();
+                    second.rank = 2;
+                    second.pv = {std::get<chess::Move>(board.parseUci(kind == 1   ? "a1b1"
+                                                                      : kind == 2 ? "d1e2"
+                                                                                  : "d2d4"))};
+                    second.wdl = kind == 1 ? engine::Wdl{550, 0, 450} : engine::Wdl{400, 0, 600};
+                    snapshot.lines.push_back(second);
+                    snapshot.requestedMultiPv = snapshot.effectiveMultiPv = snapshot.achievedWidth =
+                        2;
+                }
+                auto provenance =
+                    std::make_shared<engine::AnalysisProvenance>(*snapshot.provenance);
+                provenance->fingerprint =
+                    engine::reviewWidthFingerprint(request.fingerprint, snapshot.requestedMultiPv);
+                snapshot.provenance = std::move(provenance);
+                auto cp = checkpoint(run.id, run.revision, index, result);
+                cp.stage = static_cast<review::EvidenceStage>(stage);
+                cp.status = stage == 0 ? JobStatus::QuickScanning : JobStatus::Deepening;
+                auto saved = f.session.checkpointReview(cp);
+                QVERIFY(std::holds_alternative<ReviewSummary>(saved));
+                run = std::get<ReviewSummary>(saved);
+            }
+            if (stage == 1) {
+                ReviewCheckpoint cancel;
+                cancel.reviewId = run.id;
+                cancel.expectedRevision = run.revision;
+                cancel.status = JobStatus::Cancelled;
+                run = std::get<ReviewSummary>(f.session.checkpointReview(cancel));
+                run = std::get<ReviewSummary>(f.session.continueReview(
+                    {run.id, run.revision, request.fingerprint, request.configuration}));
+            }
+        }
+        auto page =
+            std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 1));
+        const auto& move = page.moves.front();
+        QVERIFY(move.classification->stable);
+        const auto expected = policy == 10 ? (kind == 1   ? review::Classification::Miss
+                                              : kind == 2 ? review::Classification::Brilliant
+                                                          : review::Classification::Great)
+                                           : (kind == 1 ? review::Classification::Blunder
+                                                        : review::Classification::Best);
+        QCOMPARE(move.classification->label, expected);
+        if (policy == 10 && kind != 0) {
+            QVERIFY(!move.tacticalFacts.empty());
+            QVERIFY(!move.special.witnesses.empty());
+            for (const auto& fact : move.tacticalFacts) {
+                QVERIFY(fact.line.empty());
+                QVERIFY(fact.linePlies > 0);
+            }
+        }
+        QVERIFY(!move.special.needsEvidence());
+        const auto first =
+            std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        QVERIFY(first.sides[0].accuracy);
+        QVERIFY(std::abs(*first.sides[0].accuracy - (kind == 1 ? 31.57154837428388 : 100.0)) <
+                1e-10);
+        QCOMPARE(first.sides[0].evaluated, 1);
+        QVERIFY(first.escalationPositions[0].empty());
+        ReviewCheckpoint finish;
+        finish.reviewId = run.id;
+        finish.expectedRevision = run.revision;
+        finish.status = JobStatus::Complete;
+        auto completed = f.session.checkpointReview(finish);
+        QVERIFY(std::holds_alternative<ReviewSummary>(completed));
+        run = std::get<ReviewSummary>(completed);
+        const auto again =
+            std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        QCOMPARE(again.sides[0].accuracy, first.sides[0].accuracy);
+        QCOMPARE(again.sides[0].counts, first.sides[0].counts);
+        QCOMPARE(again.totalKeyMoments, policy == 10 || kind == 1 ? 1 : 0);
+    }
     void completionUsesTheSavedClassificationModel() {
         Fixture f;
         const auto doc = document("1. e4 *");
@@ -477,6 +639,8 @@ class ReviewRepositoryTest final : public QObject {
                         f.session.deriveReviewMoves(run.id, run.revision, 0, 1));
                     QCOMPARE(partial.moves.front().alternatives.reason,
                              review::ComparisonReason::Pending);
+                    QCOMPARE(partial.moves.front().special.status,
+                             review::SpecialStatus::NotCandidate);
                     for (const auto& row : partial.moves.front().alternatives.moves) {
                         QCOMPARE(row.reason, review::ComparisonReason::Pending);
                     }
@@ -642,7 +806,7 @@ class ReviewRepositoryTest final : public QObject {
         auto request = seed(f.session);
         for (const bool refinement : {false, true}) {
             request.refinement = refinement;
-            for (const std::uint32_t version : {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U}) {
+            for (const std::uint32_t version : {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U}) {
                 request.pipelineVersion = version;
                 const auto bytes = encodeReviewSettings(request);
                 QVERIFY(!bytes.isEmpty());

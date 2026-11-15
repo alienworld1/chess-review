@@ -59,3 +59,12 @@ as unavailable results, with the original records retained.
 If a remembered run cannot load, the healthy game remains available with an
 explanation and its run history. A missing/unreadable game returns to Games with
 an error. No recovery action resets the library or discards saved evidence.
+
+Policy-10 special verification uses the same completed-search checkpoints as the
+rest of review. Cancellation, failure or process exit preserves acknowledged
+searches and useful derived results. Resume reconstructs the captured work queue
+and schedules missing work; an interrupted search starts again. Unfinished engine
+output does not qualify for labels or accuracy and is not saved as a review result.
+Live summaries in a visible Review workspace and move evidence coalesce committed revisions over 250 ms;
+stale responses cannot replace newer displayed results. This cadence is a refresh
+target, not an engine-search or disk-latency guarantee.

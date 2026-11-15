@@ -1,4 +1,5 @@
 #pragma once
+#include "app/BoardState.h"
 #include "persistence/ReviewRepository.h"
 #include <QString>
 #include <optional>
@@ -9,6 +10,7 @@ struct ReviewEvaluation {
     QString description;
 };
 ReviewEvaluation reviewPositionEvaluation(const persistence::ReviewMove* move, bool initial);
+std::vector<BoardAnnotation> reviewTacticalAnnotations(const persistence::ReviewMove& move);
 QString reviewMoveMarker(const persistence::ReviewMove* move);
 QString reviewMomentHeadline(const persistence::ReviewMove* move, int position);
 QString reviewMomentExplanation(const persistence::ReviewMove* move, int position);

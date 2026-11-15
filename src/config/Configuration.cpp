@@ -1,4 +1,5 @@
 #include "config/Configuration.h"
+#include "review/Intelligence.h"
 #include <QCryptographicHash>
 #include <QDataStream>
 #include <QDir>
@@ -157,7 +158,8 @@ Result parse(std::string_view contents) {
     review::Configuration config;
     Reader reader;
     reader.keys(root, "configuration",
-                {"version", "analysis", "classification", "review", "expectedScore", "refinement"});
+                {"version", "analysis", "classification", "review", "expectedScore", "refinement",
+                 "special"});
     std::uint64_t version = 1;
     reader.integer(root, "version", "version", version, 1);
     if (const auto* analysis = reader.table(root, "analysis", "analysis")) {
@@ -193,6 +195,24 @@ Result parse(std::string_view contents) {
         std::uint64_t width = 3;
         reader.integer(*table, "multiPv", "refinement.multiPv", width, 256);
         config.refinement.multiPv = static_cast<int>(width);
+    }
+    if (const auto* table = reader.table(root, "special", "special")) {
+        reader.keys(*table, "special",
+                    {"maximumLoss", "maximumLossDrift", "alternativeGap", "missLoss", "viableScore",
+                     "alreadyWinningScore", "margin", "sacrificeValue"});
+        auto& c = config.special;
+        reader.number(*table, "maximumLoss", "special.maximumLoss", c.maximumLoss, 0, 1);
+        reader.number(*table, "maximumLossDrift", "special.maximumLossDrift", c.maximumLossDrift, 0,
+                      1);
+        reader.number(*table, "alternativeGap", "special.alternativeGap", c.alternativeGap, 0, 1);
+        reader.number(*table, "missLoss", "special.missLoss", c.missLoss, 0, 1);
+        reader.number(*table, "viableScore", "special.viableScore", c.viableScore, 0, 1);
+        reader.number(*table, "alreadyWinningScore", "special.alreadyWinningScore",
+                      c.alreadyWinningScore, 0, 1);
+        reader.number(*table, "margin", "special.margin", c.margin, 0, 1);
+        std::uint64_t sacrifice = 2;
+        reader.integer(*table, "sacrificeValue", "special.sacrificeValue", sacrifice, 9);
+        c.sacrificeValue = static_cast<int>(sacrifice);
     }
     if (const auto* table = reader.table(root, "classification", "classification")) {
         reader.keys(*table, "classification",
@@ -246,6 +266,9 @@ Result validate(const review::Configuration& values, std::uint32_t classificatio
     const auto& c = values.classification;
     const auto& e = values.conversion;
     const auto& r = values.refinement;
+    if (!review::validSpecialConfig(values.special)) {
+        return failure("Invalid special-label configuration values");
+    }
     if (!std::isfinite(r.boundaryMargin) || r.boundaryMargin < 0 || r.boundaryMargin > 1 ||
         !std::isfinite(r.maximumDrift) || r.maximumDrift < 0 || r.maximumDrift > 1 ||
         r.multiPv < 1 || r.multiPv > 256) {

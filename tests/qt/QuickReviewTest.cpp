@@ -392,6 +392,39 @@ class Fixture {
 class QuickReviewTest final : public QObject {
     Q_OBJECT
   private slots:
+    void committedReviewsUpdateBeforeTheNextSlowSearchFinishes() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 2. Nf3 Nc6 *"));
+        f.script(0, -1, 700);
+        f.startup.reviewGame().workspace().setVisible(true);
+        f.run();
+        auto& controller = f.startup.reviewGame();
+        QTRY_VERIFY(controller.state().run && controller.state().run->completedPositions >= 2);
+        controller.selectMoment(1);
+        QTRY_COMPARE(controller.navigation().selected(), 1);
+        QTRY_VERIFY(controller.state().run && controller.state().overview &&
+                    controller.state().run->completedPositions == 3 &&
+                    controller.state().overview->revision == controller.state().run->revision);
+        QCOMPARE(controller.navigation().selected(), 1);
+        QVERIFY(!controller.state().inspecting);
+        QVERIFY(controller.state().active);
+        QCOMPARE(controller.state().overview->sides[0].total +
+                     controller.state().overview->sides[1].total,
+                 4);
+        const auto cancel =
+            connect(&controller, &app::ReviewGameController::taskChanged, &controller, [&] {
+                if (controller.taskState().run &&
+                    controller.taskState().run->completedPositions == 4) {
+                    controller.cancel();
+                }
+            });
+        const auto disconnectCancel = qScopeGuard([&] { disconnect(cancel); });
+        QVERIFY(f.done());
+        QCOMPARE(controller.state().run->status, review::JobStatus::Cancelled);
+        QVERIFY(controller.state().overview);
+        QCOMPARE(controller.navigation().selected(), 1);
+        QTRY_COMPARE(controller.state().overview->revision, controller.state().run->revision);
+    }
     void explicitStartupNavigationSuppressesLegacyAndReviewRestore() {
         Fixture f;
         QVERIFY(f.seed());
@@ -2127,6 +2160,8 @@ class QuickReviewTest final : public QObject {
         QTest::newRow("policy2-routine") << 2 << true;
         QTest::newRow("policy3-routine") << 3 << true;
         QTest::newRow("policy4-routine") << 4 << true;
+        QTest::newRow("policy9-routine") << 9 << true;
+        QTest::newRow("policy10-routine") << 10 << true;
     }
     void adaptiveQueueRunsRankedSeparatePasses() {
         QFETCH(int, policy);
@@ -2156,6 +2191,15 @@ class QuickReviewTest final : public QObject {
                             qvariant_cast<persistence::LoadReviewResult>(loaded.front()[1]))
                             .settings;
         settings.pipelineVersion = static_cast<std::uint32_t>(policy);
+        if (routine && policy >= 9) {
+            // Keep this work-count fixture clear of Excellent-boundary selection
+            // under the same captured configuration for policies 9 and 10.
+            auto values = settings.configuration.values;
+            values.refinement.boundaryMargin = 0;
+            settings.configuration =
+                *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
+                    config::validate(values));
+        }
         QSignalSpy created(&db, &persistence::Database::reviewCreated);
         db.createReview(QUuid::createUuid(), settings);
         QTRY_VERIFY(!created.empty());
@@ -3493,7 +3537,13 @@ class QuickReviewTest final : public QObject {
         if (executable.isEmpty()) {
             QSKIP("Set CHESS_REVIEW_STOCKFISH to select the local engine for this regression.");
         }
-        Fixture f;
+        QTemporaryFile configuration;
+        QVERIFY(configuration.open());
+        const QByteArray limits("[analysis.fast]\nquickScanNodes=50000\ndeepeningNodes="
+                                "100000\nverificationNodes=500000\n");
+        QCOMPARE(configuration.write(limits), limits.size());
+        configuration.close();
+        Fixture f({}, configuration.fileName());
         QTRY_VERIFY(f.startup.engines().state().ready && !f.startup.engines().state().listing);
         QSignalSpy validated(&f.supervisor(), &engine::EngineSupervisor::completed);
         f.supervisor().validate(QUuid::createUuid(), executable);
@@ -3520,13 +3570,27 @@ class QuickReviewTest final : public QObject {
                        .id;
         f.startup.reviewGame().selectGame(f.gameId);
         QTRY_VERIFY(!f.startup.reviewGame().state().busy);
-        f.run();
-        QVERIFY(f.done(90000));
+        // This functional probe checks useful, durable real-engine evidence.
+        // Captured fixture budgets exercise every adaptive stage without making
+        // this a machine-speed benchmark. Production preset budgets are unchanged.
+        f.run(review::Quality::Fast);
         auto& controller = f.startup.reviewGame();
+        QVERIFY2(f.done(90000),
+                 qPrintable(QStringLiteral("%1; saved %2/%3; refinement %4/%5; phase %6")
+                                .arg(controller.taskState().message)
+                                .arg(controller.taskState().run
+                                         ? controller.taskState().run->completedPositions
+                                         : 0)
+                                .arg(controller.taskState().run
+                                         ? controller.taskState().run->totalPositions
+                                         : 0)
+                                .arg(controller.taskState().refinementDone)
+                                .arg(controller.taskState().refinementTotal)
+                                .arg(static_cast<int>(controller.taskState().phase))));
         QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
         QTRY_VERIFY(controller.state().overview);
         const auto& summary = *controller.state().overview;
-        qInfo("Stockfish review: White %d/%d evaluated; Black %d/%d evaluated; key moments %d",
+        qInfo("Stockfish Fast review: White %d/%d evaluated; Black %d/%d evaluated; key moments %d",
               summary.sides[0].evaluated, summary.sides[0].total, summary.sides[1].evaluated,
               summary.sides[1].total, summary.totalKeyMoments);
         QVERIFY(summary.sides[0].evaluated > 0);

@@ -20,7 +20,7 @@ percentage points of change in either expected score. Verification must have mor
 measured nodes and no shallower common depth. Reusing one attempt never provides
 two confirmations. Equal custom budgets do not guarantee a stable result.
 
-New runs capture pipeline policy 9 and stability model 3. Both compared losses must
+New runs capture pipeline policy 10 and stability model 3. Policies 1–9 retain their recorded behavior. Both compared losses must
 also be farther than the captured `boundaryMargin` from each applicable label
 cutoff. The default margin is one percentage point; equality remains provisional.
 A zero margin still protects an exact cutoff. Best moves do not use the
@@ -65,7 +65,7 @@ failed summary read without silently repairing saved records. If a refresh fails
 the error appears above any retained numbers, which are explicitly marked as the
 last successfully loaded summary. Invalid stage mappings are rejected even for
 games with no moves. During deepening, visible move interpretations coalesce
-checkpoint updates over one second; manual paging and final results remain prompt.
+checkpoint updates over 250 milliseconds; manual paging and final results remain prompt.
 
 ## Accuracy model 1
 
@@ -252,3 +252,67 @@ after-move evaluation; it does not assign that evaluation to the pre-move board.
 Review sizing follows the active workspace's minimum size. Hidden workspaces do
 not push board navigation below the laptop viewport; the outer shell still
 scrolls when the active content or enlarged fonts require it.
+
+## Verified special labels and tactical teaching (policy 10)
+
+Special labels are deliberately rare. While verification is pending, Review keeps
+the ordinary classification visible and explains the pending work. Two compatible,
+independent stronger attempts must satisfy ordinary stability and alternative
+comparison checks. Width-one evidence cannot verify a special label and does not
+trigger futile extra rounds for that missing capability.
+
+- **Great:** the played best move preserves a viable position, while the verified
+  second-best candidate does not. Sole legal moves do not qualify.
+- **Brilliant:** a near-perfect best move makes a concrete material concession,
+  resolves it tactically along the saved line, and has a significant gap to
+  alternatives. Immediate balancing recaptures and already overwhelming positions
+  do not qualify. Long-term positional sacrifices remain unsupported.
+- **Miss:** a sufficiently costly move forfeits a concrete material-winning,
+  promotion, or mating continuation. A preceding opponent error is not required.
+
+Defaults allow at most one percentage point of loss in both attempts and one
+point of loss drift. Candidate gaps and Miss loss must exceed ten points plus a
+one-point margin. Viability is 50%; Brilliant excludes positions at or above 95%,
+with the same strict margin. Material values are pawn 1, knight/bishop 3, rook 5,
+queen 9; the sacrifice must concede at least two pawn units. The quality ceiling
+is inclusive and does not subtract the uncertainty margin. Thresholds and versions
+are saved with each run. The inspector shows the rule, status, candidate gap,
+evidence IDs and measured strength.
+
+The quick scan additionally investigates immediate checking forks, promotions and
+undefended-piece captures worth at least a minor piece; material gains worth at
+least a minor piece, exchange wins or checkmate within five plies; possible resolved
+sacrifices; and check evasions or choices with two or three legal moves. Remote
+material balances at a truncated PV horizon do not select quiet moves. These are
+selection signals, not labels. MultiPV=1 cannot establish uniqueness. New signals
+follow mate/conflict priorities, then precede existing loss/opportunity/gap and
+threshold-only priorities. All targets use the existing bounded stronger stages;
+no new automatic verification pass is added. Insufficient evidence retains the
+ordinary result, even after processing finishes.
+
+Tactical explanations use legal replay of at most 16 plies. Supported facts include
+material and exchange consequences, undefended-piece captures, immediate promotions,
+and conservative direct checking forks. An exchange requires an actual rook/minor
+trade, not merely a two-pawn change. En passant and underpromotion use the chess
+adapter. Generic material language identifies a consequence **along the saved
+continuation**, rather than claiming every defence is forced. A terminal replay
+can prove checkmate in that position; deeper engine mate predictions do not prove
+all possible defences. No exhaustive mate prover is included.
+
+The selected move updates in place from committed evidence. Direct fork actors and
+targets receive board highlights when they belong to the displayed original move.
+Active replay/retry retains its evidence snapshot; returning to the game loads the
+current interpretation. Key-moment changes do not move the selected position.
+
+### Reproducing accuracy
+
+Accuracy model 1 is unchanged. Read the captured conversion settings and the
+selected complete before/after evidence IDs shown in the inspector, normalize to
+the mover, and calculate loss as documented above. Use unrounded move values in
+chronological order for each side's arithmetic/harmonic aggregation; round only
+for display. The inspector reports inclusion and the unrounded loss/move score.
+Coverage reports included versus total moves; missing evidence is never filled
+with perfect or zero scores. Ordinary and special labels are not accuracy inputs.
+Stored evidence is sufficient to repeat this calculation without the engine or
+analysis cache. Reproducibility is numeric within floating-point library precision,
+not a promise of identical floating-point bytes across all platforms.

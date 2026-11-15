@@ -9,11 +9,11 @@
 namespace chess_review::review {
 inline constexpr std::uint32_t stabilityModelVersion = 3;
 inline constexpr std::uint32_t accuracyModelVersion = 1;
-inline constexpr std::uint32_t pipelineModelVersion = 9;
+inline constexpr std::uint32_t pipelineModelVersion = 10;
 [[nodiscard]] constexpr bool supportsPipelineModel(std::uint32_t version) {
     // Keep released policies explicit when the default advances.
     return version == 1 || version == 2 || version == 3 || version == 4 || version == 5 ||
-           version == 6 || version == 7 || version == 8 || version == 9;
+           version == 6 || version == 7 || version == 8 || version == 9 || version == 10;
 }
 // The persisted pipeline fixes stability semantics for scheduling and reproduction.
 [[nodiscard]] constexpr std::optional<std::uint32_t>
@@ -30,6 +30,7 @@ stabilityModelForPipeline(std::uint32_t version) {
     case 8:
         return 2;
     case 9:
+    case 10:
         return 3;
     default:
         return std::nullopt;
@@ -46,7 +47,10 @@ enum class RefinementReason {
     BoundedEvaluation,
     MixedConversion,
     ExpectedScoreLoss,
-    OpportunityReply
+    OpportunityReply,
+    TacticalOpportunity,
+    SacrificeSignal,
+    UniqueResource
 };
 struct ScanAssessment {
     std::optional<std::uint32_t> pipelineVersion;
@@ -152,7 +156,7 @@ struct SideSummary {
     int stable = 0;
     int withheld = 0;
     int unprocessed = 0;
-    std::array<int, 6> counts{};
+    std::array<int, classificationCount> counts{};
     std::optional<double> accuracy;
 };
 struct SummaryMoveFacts {

@@ -104,7 +104,7 @@ visible as **Awaiting evidence**. **Unclassified** means evidence was retained b
 does not support a normal label. Details explain the reason.
 
 Quick-scan labels are **provisional**. Targeted refinement can establish stability
-when two stronger passes agree; unselected or unresolved moves remain provisional. The rules use expected-score loss from the mover's perspective:
+when two stronger passes agree; unselected or unresolved moves remain provisional. Ordinary labels use expected-score loss from the mover's perspective:
 
 | Rule, evaluated in order | Result |
 | --- | --- |
@@ -134,7 +134,12 @@ alternative rank or equivalence is inferred from the later-position score.
 Bounds, engine mate claims, insufficient strength, incompatible conversions,
 contradictory candidates, and apparent negative loss withhold normal labels.
 Locally proven terminal outcomes retain the existing conservative pairing rules.
-No Brilliant, Great, Miss or Book labels are produced by this increment.
+New policy-10 reviews can replace an ordinary label with verified **Brilliant**,
+**Great** or **Miss**. Verification requires independent stronger evidence and an
+inspectable rule; incomplete verification retains the ordinary label. See
+[verified special labels and tactical teaching](review-summaries.md#verified-special-labels-and-tactical-teaching-policy-10)
+for thresholds and supported explanations. Book remains unavailable. Historical
+runs retain their original policy and labels.
 
 Opening an older run derives and saves classifications in background batches from
 its owned evidence, without an engine or the disposable cache. It retains the

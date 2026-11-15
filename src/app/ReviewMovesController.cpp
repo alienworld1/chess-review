@@ -4,8 +4,9 @@ namespace chess_review::app {
 namespace {
 int liveRefreshDelayMs(const persistence::ReviewSummary& run) {
     // Deeper pairs require more validation work; progress still publishes on each
-    // checkpoint, while visible interpretation refreshes at most once per second.
-    return run.status == review::JobStatus::Deepening ? 1000 : 200;
+    // checkpoint, while visible interpretation refreshes are coalesced.
+    (void)run;
+    return 250;
 }
 bool active(const persistence::ReviewSummary& run) {
     return run.status <= review::JobStatus::Deriving;

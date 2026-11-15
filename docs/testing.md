@@ -105,3 +105,10 @@ QT_QPA_PLATFORM=offscreen CHESS_REVIEW_STOCKFISH=/absolute/path/to/stockfish \
 
 The cache probe requires the reviewed pinned Stockfish binary. Other conformant
 engines can run reviews but cannot establish that resource policy's reuse gate.
+
+The optional `stockfishProducesUsefulReview` probe uses an explicitly captured Fast
+fixture budget (50,000 quick / 100,000 deepening / 500,000 verification nodes) to
+check useful classifications, accuracy and cache-independent reopening with the
+explicitly selected local engine. It keeps its 90-second deadline. Standard and
+Thorough budgets, bounded rounds and exact work counts are covered by deterministic
+fake-engine tests; this real-engine probe is not a hardware performance benchmark.

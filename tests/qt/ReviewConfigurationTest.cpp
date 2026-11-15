@@ -74,6 +74,23 @@ engine::AnalysisResult analysisResult() {
 class ReviewConfigurationTest final : public QObject {
     Q_OBJECT
   private slots:
+    void specialRulesAreValidatedAndDoNotAffectEngineOrAccuracyInputs() {
+        const auto defaults = valid({});
+        const auto custom =
+            valid("[special]\nmaximumLoss=0.005\nalternativeGap=0.15\nsacrificeValue=3\n");
+        QVERIFY(defaults);
+        QVERIFY(custom);
+        QCOMPARE(custom->values.special.maximumLoss, .005);
+        QCOMPARE(custom->values.special.alternativeGap, .15);
+        QCOMPARE(custom->values.special.sacrificeValue, 3);
+        QCOMPARE(custom->identities.analysis, defaults->identities.analysis);
+        QCOMPARE(custom->identities.conversion, defaults->identities.conversion);
+        for (const auto text : {"[special]\nmaximumLoss=nan", "[special]\nmargin=0.2",
+                                "[special]\nsacrificeValue=0", "[special]\nsacrificeValue=10",
+                                "[special]\nviableScore=0.96", "[special]\nunknown=1"}) {
+            QVERIFY(!valid(text));
+        }
+    }
     void init() { QTest::failOnWarning(); }
     void refinementPolicyIsValidatedAndSeparateFromLabelIdentities() {
         const auto defaults = valid({});

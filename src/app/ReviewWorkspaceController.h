@@ -93,6 +93,8 @@ class ReviewWorkspaceController final : public QObject {
     std::uint64_t generation_ = 0;
     std::uint64_t requestedGeneration_ = 0;
     QUuid pending_;
+    QUuid liveRead_;
+    std::optional<persistence::ReviewSummary> liveRun_;
     QUuid restoreRequest_;
     QUuid recoveryPending_;
     QUuid write_;
@@ -100,6 +102,7 @@ class ReviewWorkspaceController final : public QObject {
     std::function<void(QUuid)> next_;
     QTimer retry_;
     QTimer saveTimer_;
+    QTimer liveTimer_;
     QTimer recoveryRetry_;
     std::deque<persistence::ReviewContext> writes_;
     std::optional<persistence::ReviewContext> saving_;

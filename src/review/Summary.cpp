@@ -299,23 +299,27 @@ RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candi
             return std::find(scan.reasons.begin(), scan.reasons.end(), reason) !=
                    scan.reasons.end();
         };
-        int tier = 5;
+        int tier = 6;
         double loss = 0;
         if (has(RefinementReason::MateSignal)) {
             tier = 0;
         } else if (has(RefinementReason::SearchConflict)) {
             tier = 1;
-        } else if (scan.qualifyingLoss) {
+        } else if (has(RefinementReason::TacticalOpportunity) ||
+                   has(RefinementReason::SacrificeSignal) ||
+                   has(RefinementReason::UniqueResource)) {
             tier = 2;
+        } else if (scan.qualifyingLoss) {
+            tier = 3;
             loss = *scan.qualifyingLoss;
         } else if (scan.opportunityLoss) {
-            tier = 3;
+            tier = 4;
             loss = *scan.opportunityLoss;
         } else if (has(RefinementReason::InsufficientStrength) ||
                    has(RefinementReason::MissingEvaluation) ||
                    has(RefinementReason::BoundedEvaluation) ||
                    has(RefinementReason::MixedConversion)) {
-            tier = 4;
+            tier = 5;
         }
         return std::tuple{tier, -loss, candidate.positionIndex};
     };
@@ -360,6 +364,13 @@ RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candi
                 case RefinementReason::MixedConversion:
                 case RefinementReason::ExpectedScoreLoss:
                 case RefinementReason::OpportunityReply:
+                    break;
+                case RefinementReason::TacticalOpportunity:
+                case RefinementReason::SacrificeSignal:
+                case RefinementReason::UniqueResource:
+                    if (pipelineVersion < 10) {
+                        return RefinementQueueIssue::InvalidCandidate;
+                    }
                     break;
                 default:
                     return RefinementQueueIssue::InvalidCandidate;
@@ -673,7 +684,7 @@ KeyMomentSelection SummaryBuilder::add(const SummaryMoveFacts& move) {
             accuracies_[sideIndex].push_back(*value);
         }
     }
-    const bool major = move.label && *move.label >= Classification::Mistake;
+    const bool major = move.label && isKeyLabel(*move.label);
     const bool mateTransition = mateWinner(move.before) != mateWinner(move.after);
     KeyMomentSelection selection;
     if (move.mover == selectedSide_) {
@@ -690,7 +701,8 @@ KeyMomentSelection SummaryBuilder::add(const SummaryMoveFacts& move) {
             }
         }
     }
-    previousOpponentError_ = move.mover != selectedSide_ && major;
+    previousOpponentError_ = move.mover != selectedSide_ && move.label && isError(*move.label) &&
+                             *move.label != Classification::Inaccuracy;
     return selection;
 }
 SummaryFacts SummaryBuilder::finish() const {

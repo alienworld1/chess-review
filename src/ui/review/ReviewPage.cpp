@@ -40,6 +40,12 @@ QColor reviewMoveColor(const persistence::ReviewMove* move, const QPalette& pale
     }
     const bool dark = palette.color(QPalette::Window).lightness() < 128;
     switch (*move->classification->label) {
+    case review::Classification::Brilliant:
+        return QColor(dark ? "#50d2e5" : "#157c8d");
+    case review::Classification::Great:
+        return QColor(dark ? "#79b4f4" : "#286caf");
+    case review::Classification::Miss:
+        return QColor(dark ? "#f2a65e" : "#b45d18");
     case review::Classification::Best:
         return QColor(dark ? "#65c486" : "#227843");
     case review::Classification::Excellent:

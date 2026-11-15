@@ -384,6 +384,20 @@ bool Position::inCheck() const {
 
 // NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
 
+bool Position::attacks(Square from, Square target) const {
+    const auto piece = impl_->board.at(::chess::Square(from.index()));
+    if (piece == ::chess::Piece::NONE) {
+        return false;
+    }
+    return ::chess::attacks::attackers(impl_->board, piece.color(), ::chess::Square(target.index()))
+        .check(from.index());
+}
+bool Position::isAttacked(Square target, Color color) const {
+    return impl_->board.isAttacked(::chess::Square(target.index()), color == Color::White
+                                                                        ? ::chess::Color::WHITE
+                                                                        : ::chess::Color::BLACK);
+}
+
 std::vector<Move> Position::legalMoves() const {
     ::chess::Movelist moves;
     ::chess::movegen::legalmoves(moves, impl_->board);

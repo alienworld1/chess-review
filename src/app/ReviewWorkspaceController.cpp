@@ -16,6 +16,23 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
     saveTimer_.setSingleShot(true);
     saveTimer_.setInterval(250);
     recoveryRetry_.setSingleShot(true);
+    liveTimer_.setSingleShot(true);
+    liveTimer_.setInterval(250);
+    connect(&liveTimer_, &QTimer::timeout, this, [this] {
+        if (closing_ || !visible_ || !displaysTask() || !state_.run) {
+            return;
+        }
+        if (!pending_.isNull() || !liveRead_.isNull() || retry_.isActive()) {
+            liveTimer_.start();
+            return;
+        }
+        if (!state_.overview || state_.overview->revision != state_.run->revision) {
+            liveRun_ = state_.run;
+            liveRead_ = QUuid::createUuid();
+            database_.loadReviewOverview(liveRead_, liveRun_->id, liveRun_->revision,
+                                         state_.overview ? state_.overview->keyOffset : 0);
+        }
+    });
     connect(&retry_, &QTimer::timeout, this, [this] {
         if (operation_) {
             pending_ = QUuid::createUuid();
@@ -273,6 +290,40 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
             });
     connect(&database_, &Database::reviewOverviewLoaded, this,
             [this](QUuid id, const LoadReviewOverviewResult& result) {
+                if (!id.isNull() && id == liveRead_) {
+                    const bool current = liveRun_ && state_.run && liveRun_->id == state_.run->id &&
+                                         liveRun_->revision == state_.run->revision;
+                    liveRead_ = {};
+                    liveRun_.reset();
+                    if (closing_) {
+                        finishClose();
+                        return;
+                    }
+                    bool retry = !current;
+                    if (current && displaysTask()) {
+                        if (const auto* overview = std::get_if<ReviewOverview>(&result)) {
+                            if (overview->reviewId == state_.run->id &&
+                                overview->revision == state_.run->revision) {
+                                state_.overview = *overview;
+                                state_.overviewError.clear();
+                            } else {
+                                retry = true;
+                            }
+                        } else {
+                            const auto& issue = std::get<ReviewError>(result);
+                            retry = issue.code == ReviewErrorCode::Conflict ||
+                                    issue.code == ReviewErrorCode::Busy;
+                            if (!retry) {
+                                state_.overviewError = issue.message;
+                            }
+                        }
+                    }
+                    if (retry && visible_ && displaysTask()) {
+                        liveTimer_.start();
+                    }
+                    publish();
+                    return;
+                }
                 if (!accept(id)) {
                     return;
                 }
@@ -425,6 +476,7 @@ void ReviewWorkspaceController::updateCompatibility() {
             const auto& now = (**current).identities;
             if (old.analysis != now.analysis || old.classification != now.classification ||
                 old.conversion != now.conversion ||
+                stored_->settings.configuration.values.special != values.special ||
                 stored_->settings.configuration.classificationIdentityVersion !=
                     configuration_.snapshot()->classificationIdentityVersion) {
                 state_.compatibilityNotice =
@@ -609,6 +661,9 @@ void ReviewWorkspaceController::taskChanged() {
             state_.overview = task.overview;
         }
         if (revised) {
+            if (visible_ && !liveTimer_.isActive()) {
+                liveTimer_.start(task.active ? 250 : 0);
+            }
             remember();
         }
         if (!task.active && revised && pending_.isNull()) {
@@ -640,6 +695,11 @@ void ReviewWorkspaceController::returnToTask() {
 void ReviewWorkspaceController::setVisible(bool visible) {
     if (visible_ != visible) {
         visible_ = visible;
+        if (visible) {
+            liveTimer_.start(0);
+        } else {
+            liveTimer_.stop();
+        }
         remember();
     }
 }
@@ -702,6 +762,7 @@ void ReviewWorkspaceController::close() {
     closing_ = true;
     retry_.stop();
     recoveryRetry_.stop();
+    liveTimer_.stop();
     saveTimer_.stop();
     next_ = {};
     operation_ = {};
@@ -713,8 +774,9 @@ void ReviewWorkspaceController::close() {
 }
 void ReviewWorkspaceController::finishClose() {
     if (!closing_ || closed_ || !navigationClosed_ || !explorationClosed_ || !moves_.drained() ||
-        !pending_.isNull() || !restoreRequest_.isNull() || !recoveryPending_.isNull() ||
-        !write_.isNull() || !writes_.empty() || saveTimer_.isActive()) {
+        !pending_.isNull() || !liveRead_.isNull() || !restoreRequest_.isNull() ||
+        !recoveryPending_.isNull() || !write_.isNull() || !writes_.empty() ||
+        saveTimer_.isActive()) {
         return;
     }
     if (notifying_) {

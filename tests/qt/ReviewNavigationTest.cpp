@@ -70,6 +70,32 @@ class Fixture {
 class ReviewNavigationTest final : public QObject {
     Q_OBJECT
   private slots:
+    void tacticalPresentationNeverDrawsFutureLineSquaresOnTheGameBoard() {
+        persistence::ReviewMove move;
+        review::TacticalFact fact;
+        fact.kind = review::TacticalKind::Fork;
+        fact.source = review::FactSource::Played;
+        fact.square = *chess::Square::fromName("f7");
+        fact.targets = {*chess::Square::fromName("h8"), *chess::Square::fromName("d8")};
+        fact.linePlies = 1;
+        move.tacticalFacts = {fact};
+        QCOMPARE(app::reviewTacticalAnnotations(move).size(), std::size_t{3});
+        move.tacticalFacts.front().linePlies = 3;
+        QVERIFY(app::reviewTacticalAnnotations(move).empty());
+        move.tacticalFacts.front().linePlies = 1;
+        move.tacticalFacts.front().source = review::FactSource::Best;
+        QVERIFY(app::reviewTacticalAnnotations(move).empty());
+        for (const auto label : {review::Classification::Brilliant, review::Classification::Great,
+                                 review::Classification::Miss}) {
+            review::ClassificationResult classified;
+            classified.label = label;
+            classified.stable = true;
+            move.classification = classified;
+            QVERIFY(!app::classificationText(move.classification).isEmpty());
+            QVERIFY(app::reviewMoveMarker(&move).contains(
+                app::classificationText(move.classification)));
+        }
+    }
     void newerOpenDuringClearWins() {
         Fixture f;
         f.open("1. e4 e5 *");

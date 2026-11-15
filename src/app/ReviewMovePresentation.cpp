@@ -2,11 +2,44 @@
 #include "review/Retry.h"
 #include <QObject>
 #include <QStringList>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <optional>
 namespace chess_review::app {
 namespace {
+QString pieceText(chess::PieceType type) {
+    switch (type) {
+    case chess::PieceType::Pawn:
+        return QObject::tr("pawn");
+    case chess::PieceType::Knight:
+        return QObject::tr("knight");
+    case chess::PieceType::Bishop:
+        return QObject::tr("bishop");
+    case chess::PieceType::Rook:
+        return QObject::tr("rook");
+    case chess::PieceType::Queen:
+        return QObject::tr("queen");
+    case chess::PieceType::King:
+        return QObject::tr("king");
+    }
+    return {};
+}
+QString specialStatus(review::SpecialStatus status) {
+    switch (status) {
+    case review::SpecialStatus::NotCandidate:
+        return QObject::tr("not selected");
+    case review::SpecialStatus::Pending:
+        return QObject::tr("verification pending");
+    case review::SpecialStatus::Verified:
+        return QObject::tr("verified");
+    case review::SpecialStatus::Rejected:
+        return QObject::tr("requirements not met");
+    case review::SpecialStatus::Insufficient:
+        return QObject::tr("insufficient evidence");
+    }
+    return {};
+}
 QString evidenceReason(review::EvidenceIssue issue) {
     using review::EvidenceIssue;
     switch (issue) {
@@ -63,6 +96,13 @@ QString refinementReason(review::RefinementReason reason, std::optional<std::uin
     case RefinementReason::OpportunityReply:
         return QObject::tr(
             "a reply selected to investigate the preceding move's expected-score loss");
+    case RefinementReason::TacticalOpportunity:
+        return QObject::tr("a concrete tactical opportunity in the saved line");
+    case RefinementReason::SacrificeSignal:
+        return QObject::tr("a possible tactical sacrifice");
+    case RefinementReason::UniqueResource:
+        return QObject::tr(
+            "a check evasion or constrained choice needing alternative verification");
     case RefinementReason::MixedConversion:
         return QObject::tr("incompatible score conversion methods");
     }
@@ -181,6 +221,12 @@ QString classificationText(const std::optional<review::ClassificationResult>& re
     }
     using review::Classification;
     switch (*result->label) {
+    case Classification::Brilliant:
+        return QObject::tr("Brilliant");
+    case Classification::Great:
+        return QObject::tr("Great");
+    case Classification::Miss:
+        return QObject::tr("Miss");
     case Classification::Best:
         return QObject::tr("Best");
     case Classification::Excellent:
@@ -223,6 +269,21 @@ ReviewEvaluation reviewPositionEvaluation(const persistence::ReviewMove* row, bo
             .arg(value.modelVersion);
     return result;
 }
+std::vector<BoardAnnotation> reviewTacticalAnnotations(const persistence::ReviewMove& move) {
+    std::vector<BoardAnnotation> annotations;
+    for (const auto& fact : move.tacticalFacts) {
+        if (fact.source != review::FactSource::Played || fact.linePlies != 1 ||
+            fact.kind != review::TacticalKind::Fork) {
+            continue;
+        }
+        annotations.push_back({fact.square, fact.square, 3});
+        for (const auto target : fact.targets) {
+            annotations.push_back({fact.square, target, 3});
+        }
+        break;
+    }
+    return annotations;
+}
 QString reviewMoveMarker(const persistence::ReviewMove* move) {
     if (!move || !move->classification) {
         return QObject::tr("Awaiting evidence");
@@ -230,6 +291,15 @@ QString reviewMoveMarker(const persistence::ReviewMove* move) {
     QString glyph;
     if (move->classification->label) {
         switch (*move->classification->label) {
+        case review::Classification::Brilliant:
+            glyph = QStringLiteral("!! ");
+            break;
+        case review::Classification::Great:
+            glyph = QStringLiteral("! ");
+            break;
+        case review::Classification::Miss:
+            glyph = QStringLiteral("× ");
+            break;
         case review::Classification::Best:
             glyph = QStringLiteral("★ ");
             break;
@@ -279,6 +349,110 @@ QString reviewMomentExplanation(const persistence::ReviewMove* move, int positio
     }
     const auto& result = *move->classification;
     QStringList lines;
+    if (move->stability.persistentMate) {
+        lines << QObject::tr(
+            "Independent stronger engine searches report a mating outcome. This is an engine "
+            "prediction, not an exhaustive proof against every defence.");
+    }
+    std::vector<const review::TacticalFact*> teachingFacts;
+    for (const auto& fact : move->tacticalFacts) {
+        if (fact.source == review::FactSource::Best && result.playedMoveRank == 1) {
+            continue;
+        }
+        teachingFacts.push_back(&fact);
+    }
+    const auto priority = [&](const review::TacticalFact* fact) {
+        const bool missed = result.label == review::Classification::Miss;
+        const int source = (fact->source == review::FactSource::Best) == missed ? 0 : 1;
+        int kind = 6;
+        switch (fact->kind) {
+        case review::TacticalKind::Sacrifice:
+            kind = 0;
+            break;
+        case review::TacticalKind::Fork:
+            kind = 1;
+            break;
+        case review::TacticalKind::Checkmate:
+            kind = 2;
+            break;
+        case review::TacticalKind::Promotion:
+            kind = 3;
+            break;
+        case review::TacticalKind::Exchange:
+            kind = 4;
+            break;
+        case review::TacticalKind::Material:
+            kind = 5;
+            break;
+        case review::TacticalKind::HangingPiece:
+            kind = 6;
+            break;
+        }
+        return std::pair{source, kind};
+    };
+    std::stable_sort(teachingFacts.begin(), teachingFacts.end(),
+                     [&](const auto* a, const auto* b) { return priority(a) < priority(b); });
+    for (const auto* teachingFact : teachingFacts) {
+        const auto& fact = *teachingFact;
+        const auto square = QString::fromStdString(fact.square.name());
+        const auto context = fact.source == review::FactSource::Best
+                                 ? QObject::tr("In the best supported line: ")
+                                 : QObject::tr("In the played move's line: ");
+        const auto side =
+            fact.beneficiary == chess::Color::White ? QObject::tr("White") : QObject::tr("Black");
+        switch (fact.kind) {
+        case review::TacticalKind::Material:
+            lines << context +
+                         QObject::tr(
+                             "%1 gains %2 pawn units of material along the saved continuation.")
+                             .arg(side)
+                             .arg(fact.material);
+            break;
+        case review::TacticalKind::Exchange:
+            lines << context + QObject::tr("%1 gains the exchange along the saved continuation.")
+                                   .arg(side);
+            break;
+        case review::TacticalKind::HangingPiece:
+            lines << context +
+                         QObject::tr("An undefended piece on %1 can be captured.").arg(square);
+            break;
+        case review::TacticalKind::Fork: {
+            QStringList targets;
+            for (const auto target : fact.targets) {
+                targets << QString::fromStdString(target.name());
+            }
+            lines << context + QObject::tr("The %1 on %2 gives check and forks the pieces on %3.")
+                                   .arg(pieceText(fact.actor), square,
+                                        targets.join(QStringLiteral(", ")));
+            break;
+        }
+        case review::TacticalKind::Promotion:
+            lines << context + QObject::tr("%1 promotes to a %2 on %3.")
+                                   .arg(side, pieceText(fact.actor), square);
+            break;
+        case review::TacticalKind::Checkmate:
+            lines << context + QObject::tr("The replayed position ends in verified checkmate on "
+                                           "%1. Other defences are not proven by this line.")
+                                   .arg(square);
+            break;
+        case review::TacticalKind::Sacrifice:
+            lines << context + QObject::tr("%1 concedes %2 pawn units before the tactical "
+                                           "resolution in this continuation.")
+                                   .arg(side)
+                                   .arg(fact.material);
+            break;
+        }
+        if (lines.size() >= 3) {
+            break;
+        }
+    }
+    if (move->special.status == review::SpecialStatus::Verified) {
+        lines << QObject::tr("Special label verified by two independent stronger attempts. See the "
+                             "evidence inspector for its rule.");
+    } else if (move->special.needsEvidence()) {
+        lines << QObject::tr(
+            "Special-label verification is incomplete; the ordinary classification is retained.");
+    }
     if (result.loss) {
         lines << QObject::tr("This move reduced %1's expected score by %2 percentage points.")
                      .arg(move->mover == chess::Color::White ? QObject::tr("White")
@@ -406,6 +580,30 @@ QString reviewComparisonRow(const review::MoveComparison& row, const QString& sa
     return text.join(QStringLiteral(" · "));
 }
 QString reviewMoveDetails(const persistence::ReviewMove& move) {
+    QString specialDetails;
+    if (!move.special.ruleId.empty()) {
+        specialDetails = QObject::tr("Special verification model %1 · rule %2 · status %3\n")
+                             .arg(move.special.modelVersion)
+                             .arg(QString::fromStdString(move.special.ruleId))
+                             .arg(specialStatus(move.special.status));
+        const auto& c = move.special.thresholds;
+        specialDetails += QObject::tr("Captured limits (percentage points): quality ≤%1; loss "
+                                      "drift ≤%2; gap ≥%3; Miss loss ≥%4; viability %5; already "
+                                      "winning %6; strict margin %7; sacrifice ≥%8 pawn units.\n")
+                              .arg(c.maximumLoss * 100)
+                              .arg(c.maximumLossDrift * 100)
+                              .arg(c.alternativeGap * 100)
+                              .arg(c.missLoss * 100)
+                              .arg(c.viableScore * 100)
+                              .arg(c.alreadyWinningScore * 100)
+                              .arg(c.margin * 100)
+                              .arg(c.sacrificeValue);
+        if (move.special.alternativeGap) {
+            specialDetails += QObject::tr("Best/second-best gap: %1 percentage points.\n")
+                                  .arg(*move.special.alternativeGap * 100, 0, 'f', 3);
+        }
+    }
+
     QStringList text;
     text << comparisonReasonText(move.alternatives.reason);
     if (move.quickScan.pipelineVersion && *move.quickScan.pipelineVersion >= 6) {
@@ -423,7 +621,7 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
     if (!move.classification) {
         text << QObject::tr(
             "Both adjacent positions need saved evidence before this move can be classified.");
-        return text.join(QLatin1Char('\n'));
+        return specialDetails + text.join(QLatin1Char('\n'));
     }
     const auto& r = *move.classification;
     text << (r.stable ? QObject::tr("Stable — two stronger passes agree.")
@@ -612,6 +810,16 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
         text << QObject::tr(
             "Loss and candidate gaps are calculated from exact WDL counts before conversion.");
     }
+    if (const auto accuracy = review::moveAccuracy(move.accuracyLoss)) {
+        text << QObject::tr(
+                    "Accuracy model 1: included; loss %1 percentage points; move accuracy %2. "
+                    "Calculation uses unrounded saved evidence, independently of labels.")
+                    .arg(*move.accuracyLoss * 100, 0, 'g', 17)
+                    .arg(*accuracy, 0, 'g', 17);
+    } else {
+        text << QObject::tr(
+            "Accuracy model 1: excluded; no usable numeric loss in the selected evidence pair.");
+    }
     text << QObject::tr("Raw before — %1").arg(raw(move.rawBefore));
     text << QObject::tr("Raw after — %1").arg(raw(move.rawAfter));
     text << QObject::tr("Before strength: %1").arg(strength(move.beforeStrength));
@@ -624,6 +832,6 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
                 .arg(move.beforeSession, move.beforeAttempt);
     text << QObject::tr("After session / attempt: %1 / %2")
                 .arg(move.afterSession, move.afterAttempt);
-    return text.join(QLatin1Char('\n'));
+    return specialDetails + text.join(QLatin1Char('\n'));
 }
 } // namespace chess_review::app

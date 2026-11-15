@@ -1,5 +1,6 @@
 #include "persistence/private/ReviewCodec.h"
 #include "persistence/private/AnalysisCodec.h"
+#include "review/Intelligence.h"
 #include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -177,6 +178,20 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
     if (settings.configuration.classificationIdentityVersion == 2) {
         document["excellentLoss"] = c.classification.excellentLoss;
     }
+    if ((!settings.refinement || settings.pipelineVersion < 10) &&
+        c.special != review::SpecialLabelConfig{}) {
+        return {};
+    }
+    if (settings.refinement && settings.pipelineVersion >= 10) {
+        const auto& special = c.special;
+        document["specialLabelModelVersion"] = static_cast<int>(review::specialLabelModelVersion);
+        document["motifModelVersion"] = static_cast<int>(review::motifModelVersion);
+        document["explanationModelVersion"] = 1;
+        document["special"] =
+            QJsonArray{special.maximumLoss, special.maximumLossDrift, special.alternativeGap,
+                       special.missLoss,    special.viableScore,      special.alreadyWinningScore,
+                       special.margin,      special.sacrificeValue};
+    }
     if (settings.refinement) {
         document["pipelineVersion"] = static_cast<int>(settings.pipelineVersion);
         document["reviewModelVersion"] = 1;
@@ -242,6 +257,15 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
         }
         out.refinement = true;
         out.pipelineVersion = static_cast<std::uint32_t>(pipelineVersion);
+        if (out.pipelineVersion >= 10) {
+            const auto special = o["special"].toArray();
+            if (special.size() != 8) {
+                return std::nullopt;
+            }
+            c.special = {special[0].toDouble(-1), special[1].toDouble(-1), special[2].toDouble(-1),
+                         special[3].toDouble(-1), special[4].toDouble(-1), special[5].toDouble(-1),
+                         special[6].toDouble(-1), special[7].toInt(-1)};
+        }
         const auto r = o["refinement"].toArray();
         if (r.size() != 3) {
             return std::nullopt;

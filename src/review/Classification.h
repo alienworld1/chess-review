@@ -1,5 +1,6 @@
 #pragma once
 #include "review/Configuration.h"
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -16,8 +17,21 @@ enum class Classification {
     Good = 2,
     Inaccuracy = 3,
     Mistake = 4,
-    Blunder = 5
+    Blunder = 5,
+    Brilliant = 6,
+    Great = 7,
+    Miss = 8
 };
+inline constexpr std::size_t classificationCount = 9;
+[[nodiscard]] constexpr bool isError(Classification label) {
+    return label == Classification::Inaccuracy || label == Classification::Mistake ||
+           label == Classification::Blunder || label == Classification::Miss;
+}
+[[nodiscard]] constexpr bool isKeyLabel(Classification label) {
+    return label == Classification::Mistake || label == Classification::Blunder ||
+           label == Classification::Miss || label == Classification::Great ||
+           label == Classification::Brilliant;
+}
 enum class ClassificationIssue { Evidence = 0, InvalidConfiguration = 1, BestMoveConflict = 2 };
 struct AlternativeAssessment {
     chess::Move move;
