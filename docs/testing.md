@@ -84,7 +84,9 @@ Handle expected warnings narrowly rather than suppressing warnings globally.
 
 The [deterministic fake UCI engine](fake-uci.md) supports protocol and failure
 scenarios without installing a real engine. The review acceptance fixture details
-are in [tests/fixtures/review](../tests/fixtures/review/README.md).
+are in [tests/fixtures/review](../tests/fixtures/review/README.md). The
+[curated intelligence corpus](../tests/fixtures/intelligence/README.md) adds real
+game scores and exact reasoning witnesses; run it with `ctest --preset dev -L corpus`.
 
 ## CI and desktop checks
 

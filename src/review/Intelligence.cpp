@@ -88,7 +88,7 @@ bool validSpecialConfig(const SpecialLabelConfig& c) {
 std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
                                               std::span<const chess::Move> input, FactSource source,
                                               std::uint32_t modelVersion) {
-    if ((modelVersion != 1 && modelVersion != 2) ||
+    if ((modelVersion != 1 && modelVersion != 2 && modelVersion != 3) ||
         (source != FactSource::Played && source != FactSource::Best) || input.empty() ||
         input.size() > tacticalLineLimit) {
         return {};
@@ -151,7 +151,9 @@ std::vector<TacticalFact> inspectTacticalLine(const chess::Position& root,
             return std::vector<chess::Move>(line.begin(),
                                             line.begin() + static_cast<std::ptrdiff_t>(ply + 1));
         };
-        if (hanging) {
+        // Moving the capturer can uncover an x-ray defender. The pre-capture
+        // geometry alone cannot establish that the captured piece was hanging.
+        if (hanging && (modelVersion < 3 || !board.isAttacked(move.to, victim->color))) {
             facts.push_back({TacticalKind::HangingPiece,
                              source,
                              actorSide,
@@ -304,7 +306,7 @@ std::vector<TacticalFact> factsFromPair(const chess::Position& root, const MoveE
 } // namespace
 std::vector<TacticalFact> tacticalFacts(const chess::Position& root, const MoveEvidence& supplied,
                                         const Configuration& config, std::uint32_t modelVersion) {
-    if (modelVersion != 1 && modelVersion != 2) {
+    if (modelVersion != 1 && modelVersion != 2 && modelVersion != 3) {
         return {};
     }
     const auto pair =
@@ -363,11 +365,11 @@ SpecialAssessment verifySpecial(const chess::Position& root, const MoveEvidence&
     SpecialAssessment out;
     out.modelVersion = modelVersion;
     const auto rule = [modelVersion](const char* name) {
-        return std::string(name) + (modelVersion == 1 ? ".v1" : ".v2");
+        return std::string(name) + ".v" + std::to_string(modelVersion);
     };
     out.thresholds = config.special;
     out.status = SpecialStatus::Insufficient;
-    if (modelVersion != 1 && modelVersion != 2) {
+    if (modelVersion != 1 && modelVersion != 2 && modelVersion != 3) {
         out.verificationPossible = false;
         out.ruleId = "special.unsupported_model";
         return out;

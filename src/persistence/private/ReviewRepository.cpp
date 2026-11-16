@@ -1716,9 +1716,8 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                 if (row.special.status == review::SpecialStatus::NotCandidate &&
                     row.refinementTarget) {
                     row.special.status = review::SpecialStatus::Pending;
-                    row.special.ruleId = intelligenceModels->special == 1
-                                             ? "special.independent_verification_pending.v1"
-                                             : "special.independent_verification_pending.v2";
+                    row.special.ruleId = "special.independent_verification_pending.v" +
+                                         std::to_string(intelligenceModels->special);
                 }
                 if (row.special.status == review::SpecialStatus::Verified && row.special.label &&
                     row.stability.stable) {

@@ -159,7 +159,7 @@ class ReviewRepositoryTest final : public QObject {
         Fixture f;
         auto request = seed(f.session);
         request.refinement = true;
-        for (const auto policy : {10U, 11U}) {
+        for (const auto policy : {10U, 11U, 12U}) {
             request.pipelineVersion = policy;
             const auto bytes = encodeReviewSettings(request);
             QVERIFY(!bytes.isEmpty());
@@ -175,7 +175,7 @@ class ReviewRepositoryTest final : public QObject {
                 QVERIFY(!decodeReviewSettings(reviewDocument(altered)));
             }
         }
-        request.pipelineVersion = 12;
+        request.pipelineVersion = 13;
         QVERIFY(encodeReviewSettings(request).isEmpty());
     }
     void specialLabelsReproduceFromSavedEvidence_data() {
@@ -190,6 +190,9 @@ class ReviewRepositoryTest final : public QObject {
         QTest::newRow("hardened-great") << 11 << 0;
         QTest::newRow("hardened-miss") << 11 << 1;
         QTest::newRow("hardened-brilliant") << 11 << 2;
+        QTest::newRow("current-great") << 12 << 0;
+        QTest::newRow("current-miss") << 12 << 1;
+        QTest::newRow("current-brilliant") << 12 << 2;
     }
     void specialLabelsReproduceFromSavedEvidence() {
         QFETCH(int, policy);
@@ -832,7 +835,8 @@ class ReviewRepositoryTest final : public QObject {
         auto request = seed(f.session);
         for (const bool refinement : {false, true}) {
             request.refinement = refinement;
-            for (const std::uint32_t version : {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U}) {
+            for (const std::uint32_t version :
+                 {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U}) {
                 request.pipelineVersion = version;
                 const auto bytes = encodeReviewSettings(request);
                 QVERIFY(!bytes.isEmpty());

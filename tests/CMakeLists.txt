@@ -182,6 +182,14 @@ target_link_libraries(review_classification_tests PRIVATE chess_review_review Ca
 chess_review_apply_options(review_classification_tests)
 catch_discover_tests(review_classification_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)
 
+add_executable(review_corpus_tests unit/ReviewCorpusTest.cpp)
+set_target_properties(review_corpus_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+target_link_libraries(review_corpus_tests PRIVATE chess_review_review chess_review_pgn Catch2::Catch2WithMain)
+target_compile_definitions(review_corpus_tests PRIVATE
+    REVIEW_INTELLIGENCE_CORPUS="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/intelligence/historical.pgn")
+chess_review_apply_options(review_corpus_tests)
+catch_discover_tests(review_corpus_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)
+
 chess_review_add_qt_test(review_navigation_tests review_navigation INTEGRATION WIDGETS
     SOURCES qt/ReviewNavigationTest.cpp LIBRARIES chess_review_ui)
 

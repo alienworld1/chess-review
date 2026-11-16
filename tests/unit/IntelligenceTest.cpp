@@ -196,7 +196,7 @@ TEST_CASE("Special tactical disagreement requests bounded verification rather th
     const auto result = verifySpecial(root, latest, &a, {});
     CHECK(!(result.label));
     CHECK(result.needsEvidence());
-    CHECK(result.ruleId == "special.tactical_witness_disagreement.v2");
+    CHECK(result.ruleId == "special.tactical_witness_disagreement.v3");
 }
 
 TEST_CASE("Named motifs reject pinned threats and distinguish trades from pawn gains",
@@ -390,4 +390,13 @@ TEST_CASE("Invalid configuration or provenance is not permission for more engine
     CHECK(!verifySpecial(root, malformed, nullptr, {}).needsEvidence());
     const auto latest = pair(root, pv, pv, line(root, {"d2d4"}).front(), 600, 600, 400, true);
     CHECK(!verifySpecial(root, latest, &malformed, {}).needsEvidence());
+}
+
+TEST_CASE("A capture revealing a defender is not a hanging-piece witness",
+          "[unit][review][adversarial]") {
+    const auto root = position("7k/8/8/3q4/8/3R4/K7/3r4 w - - 0 1");
+    const auto pv = line(root, {"d3d5"});
+    const auto facts = inspectTacticalLine(root, pv, FactSource::Played);
+    CHECK(!has(facts, TacticalKind::HangingPiece));
+    CHECK(has(inspectTacticalLine(root, pv, FactSource::Played, 2), TacticalKind::HangingPiece));
 }

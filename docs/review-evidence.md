@@ -131,10 +131,14 @@ or evidence sufficiency.
 
 ## Special-label configuration
 
-New policy-11 reviews capture `[special]` settings from the example. All score
+New policy-12 reviews capture `[special]` settings from the example. All score
 fields are finite fractions in `[0,1]`. `alternativeGap` and `missLoss` must exceed
 `margin`; `viableScore` must exceed `margin`; `alreadyWinningScore` must be below
 1 and exceed `viableScore + margin`. `sacrificeValue` is an integer in `[1,9]`.
 Invalid settings reject the configuration. These settings do not change raw-engine
 cache identity, expected-score conversion, or accuracy arithmetic. Historical runs
 keep their captured policy and cannot silently acquire the new rules.
+
+Policy 12 uses special/motif models 3. A named hanging-piece capture also checks
+for defenders exposed by the capture itself. Earlier policies retain their
+recorded interpretation models when reopened.
