@@ -1,6 +1,7 @@
 #pragma once
 #include "persistence/Database.h"
 #include <QObject>
+#include <QString>
 #include <QThreadPool>
 #include <memory>
 #include <stop_token>
@@ -16,6 +17,7 @@ struct ImportItem {
     pgn::SourceRange range{};
     std::vector<pgn::Diagnostic> warnings{};
     std::size_t suppressedWarnings{};
+    QString title{}; // Bounded player names for the post-import chooser; always plain text.
 };
 struct ImportBudget {
     std::size_t games = 10'000;
@@ -66,6 +68,7 @@ class GameImportService final : public QObject {
     std::size_t ordinal_ = 0;
     pgn::SourceRange range_{};
     std::vector<pgn::Diagnostic> warnings_;
+    QString title_;
     std::size_t suppressedWarnings_ = 0;
     std::size_t retainedWarnings_ = 0;
     bool active_ = false;

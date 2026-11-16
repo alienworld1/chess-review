@@ -75,6 +75,9 @@ int main(int argc, char* argv[]) {
     QObject::connect(
         &startup.reviewConfiguration(), &chess_review::app::ReviewConfiguration::changed, &window,
         [&window, &startup] {
+            if (const auto config = startup.reviewConfiguration().snapshot()) {
+                window.setVerbose(config->ui.verbose);
+            }
             if (startup.reviewConfiguration().state() ==
                 chess_review::app::ConfigurationState::Invalid) {
                 window.showConfigurationFailure(startup.reviewConfiguration().safeReport());

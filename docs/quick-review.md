@@ -1,252 +1,79 @@
-# Quick review
+# Review a game
 
-Select a saved game in **Games** and choose **Review…**. Choose **White** or
-**Black**, a registered engine, and **Fast**, **Standard**, or **Thorough**, then
-choose **Run Review**. Scrolling over the setup controls leaves their selections
-unchanged; open a selector or use the keyboard to change a choice. The quality defaults to the review configuration; changing
-it here affects only this run. Each new run keeps its own evidence and history.
+On Home, choose **Review a game** to open a PGN file, or **Paste PGN** to paste
+one. A single game opens its review setup. If you import several games, choose
+one from the list. Your saved games remain available in **Games**.
 
-Run Review connects the chosen local engine when necessary. If another engine is
-connected, disconnect it in Settings first. The scan includes both players' moves,
-the initial position and the final position. Your player choice is retained as the
-review perspective. Checkmate and stalemate positions use local board proof.
+Choose the side you played, then **Analyze game**. The app uses your default
+engine and configured review quality. Open **Engine and review quality** to
+change them. If no engine is available, use **Set up engine…** to add one installed
+on your computer, such as Stockfish. Engines are never downloaded automatically.
 
-The progress count includes only positions whose evidence has been saved. Valid
-completed engine results can still contain weak or otherwise insufficient evidence.
-New runs automatically refine selected moments after the quick scan. Processing
-completion does not certify every classification. The compact summary shows
-accuracy with coverage; expand **Summary and evidence details** for counts,
-provenance and the full inspector. See [refinement and summaries](review-summaries.md).
+## Your game at a glance
 
-## Board-first navigation
+The summary shows your accuracy, analyzed-move coverage, move classifications,
+and number of key moments. Choose **Start review** to walk through those moments.
+You can begin while analysis continues. Unavailable accuracy is shown as a dash;
+partial coverage and preliminary assessments are indicated explicitly.
 
-Review places the original game board beside the selected move's explanation.
-The board shows the position **after** the selected move, with the reviewed player
-at the bottom. **Flip Board** changes the current Review session's orientation.
-The first available summary opens the first chronological key moment, or the
-initial position if there are none. Navigating yourself prevents a late summary
-from moving you elsewhere.
+The app only shows explanations and results supported by its analysis. A result
+found in an analyzed continuation does not establish that every defence leads to
+that outcome. See [Review methodology](review-summaries.md) for details.
 
-Use **Start**, **Previous**, **Next**, **End**, or the numbered White/Black timeline
-to explore every original mainline move, including moves without analysis. Left/Right
-and Home/End work in the timeline and move-navigation controls. Hovering a move
-temporarily previews its board and evaluation; the selected explanation stays in
-place. Leaving the timeline restores the selected position. Clicking commits the
-preview. The preview indicator distinguishes temporary and pending positions.
+## Guided review
 
-**Previous key moment** and **Next key moment** follow the reviewed player's
-important moments chronologically, across evidence-page boundaries. Expand
-**Chronological key moments** for the list and opponent-error context.
-Classifications have textual markers and provisional/stable labels as well as
-color. Missing evidence is explicitly unavailable.
+The board shows the position after the selected move, with your side at the
+bottom. Each lesson separates the move, classification, short explanation, and
+stronger alternative when available.
 
-The slim bar displays **White's expected score**, including draws; it is neither
-win probability nor a pawn evaluation. Approximate conversion is labeled. Missing,
-bounded, or unsupported numeric evidence leaves the bar unavailable.
+- **Continue** advances through important moments in chronological order.
+  **Finish review** returns to the summary.
+- **Try Again** hides the solution and lets you play a move. Ask for a hint,
+  show the solution, or cancel practice at any time.
+- **Show Line** replays an analyzed continuation. Use the board navigation
+  controls to step through it, then **Return to Game**.
+- **Analyze Position** opens free analysis. **Back to Review** returns to the
+  same move or continuation without losing your place.
+- **More about this move** reveals expected-score impact and alternative moves.
 
-Drag the divider to resize the workspace; its Review-specific share survives an
-orderly exit. Explanations scroll independently. **Review setup** and **Saved
-review runs** expand on demand. Returning within the session retains the selected
-moment. See [Better moves and practice](#better-moves-and-practice) for
-exploration and Analyze/Back transitions.
+Use the numbered White/Black timeline or **Start**, **Previous**, **Next**, and
+**End** to explore every move, including moves that have not been analyzed.
+Left/Right and Home/End also navigate. Hovering previews a move's board;
+clicking selects it. Leaving restores the selected position.
 
-## Background work and cancellation
+Timeline symbols mark move classifications; a diamond marks a key moment.
+Select or hover a move for its full description. Color is additional guidance,
+not the only way to identify a classification.
 
-Leaving an active Review workspace offers **Continue in background**, **Stay** or
-**Cancel task**. Once background continuation is chosen, navigation does not ask
-again for that run. A persistent task button shows saved coverage and returns to
-Review. Only one review runs at a time; games and manual analysis remain usable.
-Manual engine analysis can delay a quick scan on the shared engine worker.
+The slim chess evaluation bar shows **White's expected score**, including draws.
+It is not a win probability or pawn evaluation. Hover for its value and whether
+it is approximate. Missing or unsupported evaluations leave the bar unavailable.
 
-**Cancel review** stops further work and retains completed, committed position
-evidence. It waits for engine cancellation and outstanding saves before reporting
-Cancelled. Orderly app shutdown also cancels unfinished scans and drains their
-accepted writes. A forced exit leaves startup recovery to mark unfinished jobs
-Interrupted. Work never resumes automatically.
+## Settings, history, and unfinished reviews
 
-## Saved runs and resume
+**Review options** contains review settings, the chronological key-moment list,
+and saved review runs. Select a saved run to inspect it without starting an engine.
+**Resume selected run** continues an unfinished review using its original settings
+and compatible engine. Work never resumes automatically after restarting.
 
-The Review workspace’s **Saved review runs** section lists runs for the selected
-game, with pagination. The **Evidence** tab under **Summary and evidence details**
-shows the inspected run’s paged evidence and full rationale.
-Select a run to inspect its status and coverage without starting an engine.
-Incomplete runs offer **Resume selected run**. Resume keeps the original player,
-quality, complete configuration and supported evidence-model versions, even if the
-current valid configuration uses a different quality.
+Leaving an active review offers background continuation, staying, or cancelling.
+**Cancel review** keeps completed, saved analysis. Home offers recent games,
+resume, and unfinished reviews when available. See [Reopen and recovery](reopen-recovery.md).
 
-Resume freshly reconnects the original engine and compares its full effective
-configuration fingerprint. If the original engine is already disconnecting, resume
-waits for that disconnect before reconnecting. A changed executable or configuration blocks continuation;
-use the original engine or start a new independent run. If the original profile is
-on another engine page, load that page in Settings first. Invalid current TOML
-configuration blocks starting and resuming until corrected and the app restarted.
+## Technical inspection
 
-Resume validates retained evidence and processes only missing positions. Damaged
-saved records produce an error rather than being silently replaced. Revision
-conflicts reload the newer saved state without overwriting it; another active owner
-must finish or stop before continuation. Saved complete runs remain inspectable
-without an engine.
+Optional verbose mode reveals the technical inspector and engine protocol details:
 
-Completed attempts also populate the disposable analysis cache. Reuse follows the
-existing strict history, search-strength, configuration and verified-resource rules;
-currently only the reviewed pinned Stockfish configuration qualifies. Other engines
-can collect durable review evidence but safely miss cache reuse. Clearing or failing
-to update that cache does not erase the review's own saved evidence.
+```toml
+[ui]
+verbose = true
+```
 
-## Move classifications and evidence
+Add this to `config.toml` in the application's configuration directory, then
+restart. It defaults to `false` and changes presentation only: analysis settings,
+results, saved review identities, and cache reuse are unaffected.
 
-The timeline includes both players and all mainline moves. Evidence is loaded in
-bounded pages of 50 plies as needed; the expanded inspector also offers explicit
-page controls. Select a move with the mouse or keyboard to inspect its rationale. Labels appear
-only after both adjacent positions and the classification have been committed.
-Cancelled and partial runs retain useful classifications; unprocessed moves remain
-visible as **Awaiting evidence**. **Unclassified** means evidence was retained but
-does not support a normal label. Details explain the reason.
-
-Quick-scan labels are **provisional**. Targeted refinement can establish stability
-when two stronger passes agree; unselected or unresolved moves remain provisional. Ordinary labels use expected-score loss from the mover's perspective:
-
-| Rule, evaluated in order | Result |
-| --- | --- |
-| Verified rank 1, but loss reaches Inaccuracy | Withhold: searches disagree |
-| Loss ≥ Blunder threshold (default 20 percentage points) | Blunder |
-| Loss ≥ Mistake threshold (default 10 points) | Mistake |
-| Loss ≥ Inaccuracy threshold (default 5 points) | Inaccuracy |
-| Verified rank 1 below Inaccuracy | Best |
-| Loss ≤ Excellent maximum (default 1 point) | Excellent |
-| Remaining valid loss below Inaccuracy | Good |
-
-Error bands take priority even if the configured Excellent maximum exceeds
-Inaccuracy. Best means the played move matches the earlier search's verified
-first candidate, with paired loss below Inaccuracy; quick-scan evidence remains provisional.
-A missing played-move rank remains unknown. Approximate centipawn conversion is
-identified explicitly. Display values are rounded; rules compare the unrounded
-stored values.
-
-The inspector shows before/after expected scores, loss in percentage points,
-thresholds, rule/model version, verified best move and played rank, measured
-candidate gaps, raw scores/WDL with their original perspective and bounds,
-measured analysis strength, engine identity, and evidence/session/attempt IDs.
-Nearly equivalent alternatives require comparable candidates from the same search
-within the configured Excellent maximum. MultiPV=1 says **not assessed**; no
-alternative rank or equivalence is inferred from the later-position score.
-
-Bounds, engine mate claims, insufficient strength, incompatible conversions,
-contradictory candidates, and apparent negative loss withhold normal labels.
-Locally proven terminal outcomes retain the existing conservative pairing rules.
-New policy-11 reviews can replace an ordinary label with verified **Brilliant**,
-**Great** or **Miss**. Verification requires independent stronger evidence and an
-inspectable rule; incomplete verification retains the ordinary label. See
-[verified special labels and tactical teaching](review-summaries.md#stricter-consequence-verification-policy-11)
-for thresholds and supported explanations. Book remains unavailable. Historical
-runs retain their original policy and labels.
-
-Opening an older run derives and saves classifications in background batches from
-its owned evidence, without an engine or the disposable cache. It retains the
-original thresholds and conversion settings and records a 1% Excellent maximum.
-Backfill can continue when the run is opened again after interruption; it does
-not alter scan coverage or job status. Changed current TOML settings apply to new
-runs, not existing runs. Unsupported or damaged saved records produce explicit
-errors instead of silent replacement.
-
-### Classification model versions and retry
-
-New classifications use model 2. Native WDL values are exact multiples of 1/2000:
-model 2 subtracts the integer win/draw counts before converting loss or candidate
-gaps to a number. An exact 5-percentage-point loss therefore reaches the 5-point
-Inaccuracy threshold; an exact 1-point loss stays within Excellent. This avoids
-floating-point cancellation at those boundaries. Approximate centipawn conversion
-and conservative evidence validation are unchanged; negative loss is not clamped.
-
-Saved model-1 classifications retain their original numeric rules, rule IDs and
-rationale, with an explanatory note in the inspector. Opening them does not
-silently rewrite historical labels. Missing classifications and genuinely replaced
-evidence use model 2. The underlying evidence/conversion models, saved thresholds,
-and configuration identities are unchanged.
-
-A failed move-evidence load offers **Retry move evidence**. Retry rechecks the
-visible page and restarts pending backfill without starting an engine; damaged or
-unsupported records remain explicit errors. Late replies from a deselected run or
-superseded page cannot replace the current view or its error state. While scanning,
-move-list refreshes coalesce over 200 ms; new classifications still commit with
-each evidence checkpoint. Background backfill continues after the scan stops.
-
-Retrying preserves the selected move within its evidence page. Scrolling the
-timeline keeps that move's explanation available within the bounded page cache.
-While a hover preview is loading, its status identifies the requested position
-and the position still displayed on the board.
-At the initial position the evidence inspector has no selected move row. Long
-game and player labels stay within the workspace; hover over clipped labels for
-their displayed-name text, which also remains available to accessibility tools.
-
-
-## A finished run has no useful evaluations
-
-**Processing complete** means the scheduled searches and saves finished. It does
-not guarantee that every result supports a move classification. The summary now
-explicitly identifies a run with no usable move evaluations; evidence details
-explain bounds, mate claims, inconsistent estimates, and other withheld results.
-
-Node-limited Stockfish searches can stop during an unfinished iteration and finish
-with an upper/lower bound. New runs retain the last coherent exact iteration as
-separate evidence, rather than losing it when that partial output arrives. The
-original latest output and final bestmove remain stored. No score bound is
-relabelled as an exact score, and missing/inconsistent evidence stays unclassified.
-
-Older runs that saved only the final bounded output cannot reconstruct earlier
-iterations. After updating and restarting the app, expand **Review setup** and
-choose **Run Review** to collect a new run. Existing runs and the imported game
-remain intact; reopening an old run does not silently rewrite its evidence.
-
-## Better moves and practice
-
-The explanation names the best supported alternative when usable evidence is
-available. The candidate selector shows saved continuations, their **root**
-expected scores from the mover's perspective, and stable/provisional
-status. Approximate centipawn conversions are identified. These scores do not
-represent separate evaluations of every position in a line.
-
-Choose **Show Line** to start before the reviewed move, then use Start, Previous,
-Next and End, or Left/Right and Home/End, to inspect the continuation. The original
-game stays intact. **Return to Game** restores the selected post-move position;
-selecting another timeline moment also leaves exploration. If background review
-advances, the active line keeps its original analysis and identifies that in the
-panel; Return to Game loads the current results. Hover previews pause while exploring. Saved line inspection works without a connected engine.
-
-**Try Again** is available for the selected player's stable Inaccuracy, Mistake
-and Blunder moments with sufficient evidence. It restores the pre-move board and
-hides solution content, including the timeline, evaluations and evidence panels.
-Play one legal move using the normal board inputs; promotion remains supported.
-Hints progress from a neutral prompt to the candidate's piece and destination.
-**Show Solution** and **Cancel practice** restore the original explanation.
-
-Best and Strong complete an attempt; Okay and Try Again invite another move.
-Demonstrated equivalent moves receive credit. The versioned retry policy uses
-that saved review's thresholds: Strong is within its Excellent threshold, Okay
-is below Inaccuracy, and larger gaps receive Try Again. At the defaults these
-cutoffs are 1 and 5 percentage points of expected score. Conflicting or
-insufficient evidence produces **Unable to grade**.
-
-Known candidate evidence is checked first. An unknown move triggers bounded
-analysis with the original review engine/configuration and its deepening and
-verification budgets. A compatible cache result can supply the first pass;
-verification uses a separate search. Connect the original engine in Settings if
-needed; a different engine is never silently substituted. Practice can be
-cancelled while evaluation is pending. Leaving Review cancels practice. Attempts
-are temporary and do not change saved labels, accuracy or review progress.
-
-**Analyze Position** opens the currently displayed game or candidate position in
-a separate temporary Analysis workspace, retaining its complete move history.
-Your ordinary Analysis workspace is preserved. Live engine work starts only
-through **Start**. **Back to Review** restores the originating moment, candidate
-step and orientation. Reopening the same origin retains temporary analysis edits;
-replacing edited linked analysis asks before discarding them. Both workspaces'
-temporary edits participate in the normal quit confirmation. Linked workspaces
-and practice attempts are not restored after application restart.
-
-New reviews may run up to two additional deeper-search rounds for selected moves
-that remain uncertain after verification. The inspector explains why, which evidence
-changed, and whether the result was confirmed or reached the review's work limit.
-Shared-position updates may make a neighboring result provisional again. Completed
-reviews can retain unresolved moves; cancellation and explicit resume preserve work.
-See [bounded deeper searches](review-summaries.md#bounded-deeper-searches-pipeline-policy-5).
+In verbose mode, **Review options → Technical inspector** provides labeled review
+and move fields, saved evidence, and search provenance. Useful chess details and
+Analysis remain available in normal mode. **Help → Diagnostics** remains available
+for troubleshooting in either mode. See [Configuration](review-evidence.md).

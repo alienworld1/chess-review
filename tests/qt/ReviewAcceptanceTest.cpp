@@ -84,7 +84,11 @@ Result launch(const QTemporaryDir& root, const QString& mode, const QString& pgn
                 process.waitForFinished(5000) && process.exitStatus() == QProcess::CrashExit;
         }
     } else {
-        result.normal = process.waitForFinished(engine.isEmpty() ? 120000 : 360000) &&
+        const int timeout = !engine.isEmpty() ? 360000
+                            : qEnvironmentVariableIsEmpty("CHESS_REVIEW_ACCEPTANCE_RENDER_DIR")
+                                ? 120000
+                                : 240000;
+        result.normal = process.waitForFinished(timeout) &&
                         process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
     }
     result.output += process.readAllStandardOutput();

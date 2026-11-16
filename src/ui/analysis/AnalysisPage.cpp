@@ -1,4 +1,5 @@
 #include "ui/analysis/AnalysisPage.h"
+#include "ui/Theme.h"
 #include "ui/analysis/EngineAnalysisPanel.h"
 #include "ui/analysis/MoveNavigation.h"
 #include "ui/chess/ChessBoardWidget.h"
@@ -25,6 +26,7 @@
 #include <QTextBrowser>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QWidgetAction>
 #include <algorithm>
 
 namespace chess_review::ui {
@@ -36,6 +38,7 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     notice_->setObjectName(QStringLiteral("analysisGameInfo"));
     notice_->setTextFormat(Qt::PlainText);
     notice_->setWordWrap(true);
+    setTextRole(*notice_, "secondary");
     layout->addWidget(notice_);
     auto* commands = new QHBoxLayout;
     commands->setObjectName(QStringLiteral("analysisCommands"));
@@ -90,6 +93,7 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
         dialog->open();
     });
     auto* help = menu->addAction(tr("Board Gestures and Keyboard Help"));
+    help->setObjectName(QStringLiteral("boardControlsHelp"));
     connect(help, &QAction::triggered, this, [this] {
         auto* dialog = new QDialog(this);
         dialog->setObjectName(QStringLiteral("boardControlsDialog"));
@@ -150,7 +154,8 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     commands->addWidget(options);
     commands->addStretch();
     layout->addLayout(commands);
-    auto* preferences = new QHBoxLayout;
+    auto* preferenceControls = new QWidget(this);
+    auto* preferences = new QHBoxLayout(preferenceControls);
     auto* inputLabel = new QLabel(tr("Move input:"), this);
     input_ = new QComboBox(this);
     input_->setObjectName(QStringLiteral("boardInputMode"));
@@ -166,7 +171,10 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     preferences->addWidget(colorLabel);
     preferences->addWidget(color_);
     preferences->addStretch();
-    layout->addLayout(preferences);
+    menu->addSeparator();
+    auto* preferenceAction = new QWidgetAction(menu);
+    preferenceAction->setDefaultWidget(preferenceControls);
+    menu->addAction(preferenceAction);
     splitter_ = new QSplitter(Qt::Horizontal, this);
     splitter_->setObjectName(QStringLiteral("analysisSplitter"));
     splitter_->setChildrenCollapsible(false);
@@ -230,7 +238,7 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     notes_->setObjectName(QStringLiteral("positionNotes"));
     notes_->setAccessibleName(tr("PGN comments and numeric annotation glyphs"));
     notes_->setReadOnly(true);
-    notes_->setMaximumHeight(100);
+    notes_->setMaximumHeight(80);
     layout->addWidget(notes_);
     splitter_->setStretchFactor(0, 1);
     splitter_->setStretchFactor(1, 1);
@@ -361,9 +369,8 @@ void AnalysisPage::refresh() {
     bottomPlayer_->setText(controller_.board().blackAtBottom ? black : white);
     notice_->setText(
         controller_.gameId()
-            ? tr("%1\nSaved game. Exploration and new annotations are session-only.")
-                  .arg(controller_.gameDescription())
-            : tr("Analysis — session only. Moves and annotations are discarded on exit."));
+            ? tr("%1\nExploration changes are not saved.").arg(controller_.gameDescription())
+            : tr("Analysis — exploration changes are not saved."));
     if (notes_->toPlainText() != controller_.positionNotes()) {
         notes_->setPlainText(controller_.positionNotes());
     }

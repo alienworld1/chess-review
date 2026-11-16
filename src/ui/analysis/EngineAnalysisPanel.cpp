@@ -1,5 +1,6 @@
 #include "ui/analysis/EngineAnalysisPanel.h"
 #include "ui/EngineText.h"
+#include "ui/Theme.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include <QEvent>
 #include <QHBoxLayout>
@@ -46,6 +47,15 @@ void EvaluationBarWidget::setEvaluation(const app::EngineLinePresentation& line)
     setAccessibleDescription(tr("White perspective: %1").arg(value));
     update();
 }
+void EvaluationBarWidget::setExpectedScore(std::optional<double> whiteShare,
+                                           const QString& description) {
+    alignWithBoard();
+    whiteShare_ = whiteShare;
+    setToolTip(description);
+    setAccessibleName(tr("Evaluation bar — White expected score"));
+    setAccessibleDescription(description);
+    update();
+}
 void EvaluationBarWidget::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     const QRectF bar = QRectF(rect()).adjusted(0, 0, -1, -1);
@@ -81,6 +91,7 @@ EngineAnalysisPanel::EngineAnalysisPanel(app::EngineAnalysisController& controll
         return result;
     };
     engine_ = label(QStringLiteral("analysisEngineName"));
+    setTextRole(*engine_, "heading");
     engine_->setWordWrap(false);
     status_ = label(QStringLiteral("engineAnalysisStatus"));
     auto* buttons = new QHBoxLayout;
@@ -91,19 +102,33 @@ EngineAnalysisPanel::EngineAnalysisPanel(app::EngineAnalysisController& controll
     stop_->setObjectName(QStringLiteral("stopEngineAnalysis"));
     auto* manage = new QPushButton(tr("Manage Engines…"), this);
     manage->setObjectName(QStringLiteral("manageAnalysisEngines"));
+    setPrimaryAction(*start_);
     buttons->addWidget(start_);
     buttons->addWidget(stop_);
     buttons->addWidget(manage);
     layout->addLayout(buttons);
     evaluation_ = label(QStringLiteral("engineEvaluation"));
     depth_ = label(QStringLiteral("engineDepth"));
+    setTextRole(*depth_, "secondary");
+    auto* details = new QPushButton(tr("Engine details"), this);
+    details->setObjectName(QStringLiteral("engineMetricsToggle"));
+    details->setCheckable(true);
+    layout->addWidget(details, 0, Qt::AlignLeft);
+    depth_->hide();
+    connect(details, &QPushButton::toggled, depth_, &QWidget::setVisible);
     pv_ = new QPlainTextEdit(this);
     pv_->setObjectName(QStringLiteral("enginePv"));
     pv_->setAccessibleName(tr("Principal variation — read only"));
     pv_->setReadOnly(true);
     pv_->setMaximumHeight(110);
     pv_->setPlaceholderText(tr("No principal variation available"));
-    layout->addWidget(pv_);
+    layout->removeWidget(evaluation_);
+    evaluation_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    evaluation_->setAccessibleName(tr("Evaluation from White's perspective"));
+    auto* candidate = new QHBoxLayout;
+    candidate->addWidget(evaluation_, 0, Qt::AlignTop);
+    candidate->addWidget(pv_, 1);
+    layout->insertLayout(layout->indexOf(depth_), candidate);
     error_ = label(QStringLiteral("engineAnalysisError"));
     connect(start_, &QPushButton::clicked, &controller_, &app::EngineAnalysisController::start);
     connect(stop_, &QPushButton::clicked, &controller_, &app::EngineAnalysisController::stop);
@@ -120,9 +145,11 @@ void EngineAnalysisPanel::refresh() {
     engine_->setToolTip(
         Qt::convertFromPlainText(presentedEngineText(clippedEngineText(state.engineName))));
     status_->setText(state.status);
+    status_->setVisible(!state.status.isEmpty());
     evaluation_->setText(
-        tr("White perspective: %1")
+        tr("White\n%1")
             .arg(state.line.evaluation.isEmpty() ? tr("Unavailable") : state.line.evaluation));
+    evaluation_->setToolTip(tr("Evaluation from White's perspective"));
     depth_->setText(state.line.depth ? tr("Depth: %1").arg(*state.line.depth)
                                      : tr("Depth: unavailable"));
     if (pv_->toPlainText() != state.line.pv) {

@@ -41,6 +41,7 @@ class MainWindow final : public QMainWindow {
     void installEngineAnalysis(app::EngineAnalysisController& engine);
     void installEngines(app::EngineSettingsController& engines);
     void installImports(app::ImportController& imports, app::GameLibraryController& library);
+    void setVerbose(bool verbose);
     void showProgress(const QString& message);
     void showReady();
     void showFailure(const app::Diagnostic& diagnostic);
@@ -79,6 +80,7 @@ class MainWindow final : public QMainWindow {
     AnalysisPage* analysis_ = nullptr;
     AnalysisPage* linkedAnalysis_ = nullptr;
     bool linkedAnalysisPending_ = false;
+    bool verbose_ = false;
     QAction* importFile_ = nullptr;
     QAction* pastePgn_ = nullptr;
     app::GameLibraryController* library_ = nullptr;

@@ -30,21 +30,21 @@ QString reviewStatusText(JobStatus status) {
     case JobStatus::Queued:
         return QObject::tr("Queued");
     case JobStatus::QuickScanning:
-        return QObject::tr("Quick scanning");
+        return QObject::tr("Analyzing");
     case JobStatus::Reviewable:
-        return QObject::tr("Reviewable");
+        return QObject::tr("Ready to review");
     case JobStatus::Deepening:
-        return QObject::tr("Deepening");
+        return QObject::tr("Checking key moments");
     case JobStatus::Deriving:
-        return QObject::tr("Deriving");
+        return QObject::tr("Updating summary");
     case JobStatus::Complete:
-        return QObject::tr("Processing complete");
+        return QObject::tr("Analysis finished");
     case JobStatus::Partial:
-        return QObject::tr("Partial");
+        return QObject::tr("Incomplete");
     case JobStatus::Cancelled:
         return QObject::tr("Cancelled");
     case JobStatus::Interrupted:
-        return QObject::tr("Interrupted");
+        return QObject::tr("Paused after closing");
     case JobStatus::Failed:
         return QObject::tr("Failed");
     }

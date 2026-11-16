@@ -1,6 +1,9 @@
 #include "ui/games/GamesPage.h"
+#include "ui/Theme.h"
 #include <QAbstractTableModel>
 #include <QAction>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QHeaderView>
@@ -62,10 +65,12 @@ QString completionText(app::ImportBatchStatus status, bool hasErrors) {
 }
 QString outcomeText(const app::ImportItem& item) {
     if (const auto* inserted = std::get_if<persistence::Inserted>(&item.outcome)) {
-        return QObject::tr("Imported (ID %1)").arg(inserted->id);
+        Q_UNUSED(inserted);
+        return QObject::tr("Imported");
     }
     if (const auto* duplicate = std::get_if<persistence::Duplicate>(&item.outcome)) {
-        return QObject::tr("Duplicate (existing ID %1)").arg(duplicate->id);
+        Q_UNUSED(duplicate);
+        return QObject::tr("Already in your library");
     }
     if (const auto* failure = std::get_if<pgn::PgnFailure>(&item.outcome)) {
         return QString::fromStdString(failure->error.message);
@@ -116,10 +121,9 @@ class LibraryTableModel final : public QAbstractTableModel {
             section >= 8) {
             return {};
         }
-        const QStringList labels{tr("White"),         tr("Black"),
-                                 tr("Result"),        tr("Played date"),
-                                 tr("Time control"),  tr("Imported (UTC)"),
-                                 tr("Review status"), tr("Chosen-player accuracy")};
+        const QStringList labels{tr("White"),         tr("Black"),        tr("Result"),
+                                 tr("Played date"),   tr("Time control"), tr("Imported (UTC)"),
+                                 tr("Review status"), tr("Accuracy")};
         return labels.at(section);
     }
     QVariant data(const QModelIndex& index, int role) const override {
@@ -155,7 +159,10 @@ class LibraryTableModel final : public QAbstractTableModel {
             return controller_.reviewStatus(row.id);
         }
         if (index.column() == 7) {
-            return controller_.reviewAccuracy(row.id);
+            const auto side = controller_.reviewedSide(row.id);
+            return controller_.reviewAccuracy(row.id) +
+                   (side ? (*side == chess::Color::White ? tr("\nWhite") : tr("\nBlack"))
+                         : QString{});
         }
         const QStringList values{row.white,    row.black,       row.result,
                                  row.playedAt, row.timeControl, row.importedAt};
@@ -229,7 +236,7 @@ class ImportTableModel final : public QAbstractTableModel {
             return {};
         }
     }
-    QString details(int row) const {
+    QString details(int row, bool verbose) const {
         if (row < 0 || row >= rowCount()) {
             return {};
         }
@@ -240,17 +247,21 @@ class ImportTableModel final : public QAbstractTableModel {
                    file.message;
         }
         const auto& item = file.items[*gameIndex];
-        auto text = tr("%1 — game %2\n%3\nSource byte range [%4, %5)")
-                        .arg(file.name)
-                        .arg(item.ordinal)
-                        .arg(outcomeText(item))
-                        .arg(item.range.begin)
-                        .arg(item.range.end);
+        auto text = tr("%1 — game %2\n%3").arg(file.name).arg(item.ordinal).arg(outcomeText(item));
+        if (verbose) {
+            text += tr("\nSource byte range [%1, %2)").arg(item.range.begin).arg(item.range.end);
+        }
+        const auto diagnostic = [verbose](const pgn::Diagnostic& value) {
+            return verbose ? diagnosticText(value)
+                           : tr("Line %1: %2")
+                                 .arg(value.location.line)
+                                 .arg(QString::fromStdString(value.message));
+        };
         if (const auto* failure = std::get_if<pgn::PgnFailure>(&item.outcome)) {
-            text += QLatin1Char('\n') + diagnosticText(failure->error);
+            text += QLatin1Char('\n') + diagnostic(failure->error);
         }
         for (const auto& warning : item.warnings) {
-            text += QLatin1Char('\n') + diagnosticText(warning);
+            text += QLatin1Char('\n') + diagnostic(warning);
         }
         if (item.suppressedWarnings > 0) {
             text += tr("\n%1 additional warnings suppressed.").arg(item.suppressedWarnings);
@@ -295,6 +306,7 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     setAcceptDrops(true);
     auto* layout = new QVBoxLayout(this);
     auto* heading = new QLabel(tr("Games"), this);
+    setTextRole(*heading, "title");
     layout->addWidget(heading);
     auto* toolbar = new QHBoxLayout;
     for (auto* action : {&fileAction, &pasteAction}) {
@@ -312,6 +324,7 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     toolbar->addWidget(open_);
     review_ = new QPushButton(tr("Review…"), this);
     review_->setObjectName(QStringLiteral("reviewGameButton"));
+    setPrimaryAction(*review_);
     toolbar->addWidget(review_);
     connect(review_, &QPushButton::clicked, this, [this] {
         if (const auto id = libraryModel_->gameId(games_->currentIndex().row());
@@ -341,8 +354,11 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     games_->setColumnWidth(0, 130);
     games_->setColumnWidth(1, 130);
     games_->setColumnWidth(2, 60);
-    games_->setColumnWidth(6, 300);
-    games_->setColumnWidth(7, 270);
+    games_->setColumnWidth(6, 180);
+    games_->setColumnHidden(5, true);
+    games_->setShowGrid(false);
+    games_->verticalHeader()->setDefaultSectionSize(44);
+    games_->setColumnWidth(7, 120);
     // Keep review results visible before secondary metadata on laptop displays.
     games_->horizontalHeader()->moveSection(games_->horizontalHeader()->visualIndex(6), 3);
     games_->horizontalHeader()->moveSection(games_->horizontalHeader()->visualIndex(7), 4);
@@ -370,6 +386,15 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     cancel_->setObjectName(QStringLiteral("cancelImport"));
     progress->addWidget(cancel_);
     layout->addLayout(progress);
+    report_ = new QPushButton(tr("Import report"), this);
+    report_->setObjectName(QStringLiteral("importReportButton"));
+    progress->addWidget(report_);
+    auto* report = new QDialog(this);
+    report->setObjectName(QStringLiteral("importReportDialog"));
+    report->setWindowTitle(tr("Import report"));
+    report->resize(760, 500);
+    auto* reportLayout = new QVBoxLayout(report);
+    connect(report_, &QPushButton::clicked, report, &QDialog::show);
     results_ = new QTableView(this);
     results_->setObjectName(QStringLiteral("importResults"));
     results_->setAccessibleName(tr("Latest import results"));
@@ -379,13 +404,16 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     results_->setColumnWidth(0, 180);
     results_->setColumnWidth(1, 60);
     results_->setColumnWidth(2, 350);
-    layout->addWidget(results_, 2);
+    reportLayout->addWidget(results_, 2);
     details_ = new QPlainTextEdit(this);
     details_->setObjectName(QStringLiteral("importDetails"));
     details_->setAccessibleName(tr("Selected import result details"));
     details_->setReadOnly(true);
     details_->setMaximumHeight(140);
-    layout->addWidget(details_, 1);
+    reportLayout->addWidget(details_, 1);
+    auto* close = new QDialogButtonBox(QDialogButtonBox::Close, report);
+    reportLayout->addWidget(close);
+    connect(close, &QDialogButtonBox::rejected, report, &QDialog::reject);
     updateTimer_ = new QTimer(this);
     updateTimer_->setSingleShot(true);
     updateTimer_->setInterval(100);
@@ -470,11 +498,12 @@ void GamesPage::updateImport() {
     const bool hasResults = !imports_.files().empty();
     results_->setVisible(hasResults);
     details_->setVisible(hasResults);
+    report_->setVisible(hasResults);
     cancel_->setVisible(imports_.busy());
     cancel_->setEnabled(imports_.busy() && !imports_.cancelling());
     auto status = completionText(imports_.status(), imports_.failures() > 0);
     if (imports_.busy()) {
-        status = imports_.cancelling() ? tr("Cancelling; any submitted save will finish…")
+        status = imports_.cancelling() ? tr("Stopping import…")
                                        : tr("Importing file %1 of %2, game %3…")
                                              .arg(imports_.currentFile() + 1)
                                              .arg(imports_.files().size())
@@ -484,23 +513,37 @@ void GamesPage::updateImport() {
         status += QLatin1Char(' ') + imports_.files()[imports_.currentFile()].name.left(256);
     }
     if (hasResults) {
-        status += tr(" %1 imported, %2 duplicates, %3 failures, %4 warnings.")
-                      .arg(imports_.inserted())
-                      .arg(imports_.duplicates())
-                      .arg(imports_.failures())
-                      .arg(imports_.warnings());
+        status = tr("%1 games added").arg(imports_.inserted());
+        if (imports_.duplicates()) {
+            status += tr(", %1 already saved").arg(imports_.duplicates());
+        }
+        if (imports_.failures()) {
+            status += tr(", %1 failed").arg(imports_.failures());
+        }
+        if (imports_.warnings()) {
+            status += tr(". Import warnings available.");
+        }
+        if (imports_.busy()) {
+            status.prepend(tr("Importing… "));
+        } else if (imports_.status() != app::ImportBatchStatus::Completed) {
+            status.prepend(completionText(imports_.status(), imports_.failures() > 0) +
+                           QLatin1Char(' '));
+        }
     } else {
-        status = tr("Drop local .pgn files here to import. UTF-8 only; up to 32 files and 64 MiB "
-                    "per batch.");
+        status = tr("Drop PGN files here to add games.");
     }
     importStatus_->setText(status);
 }
 void GamesPage::showResultDetails() {
-    const auto text = importModel_->details(results_->currentIndex().row());
+    const auto text = importModel_->details(results_->currentIndex().row(), verbose_);
     if (text != detailText_) {
         detailText_ = text;
         details_->setPlainText(text);
     }
+}
+void GamesPage::setVerbose(bool verbose) {
+    verbose_ = verbose;
+    showResultDetails();
 }
 void GamesPage::dragEnterEvent(QDragEnterEvent* event) {
     if (imports_.available() && event->possibleActions().testFlag(Qt::CopyAction) &&

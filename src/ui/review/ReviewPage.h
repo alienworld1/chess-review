@@ -11,12 +11,15 @@ class QTableView;
 class QPlainTextEdit;
 class QSplitter;
 class QFrame;
+class QAction;
+class QTableWidget;
 namespace chess_review::ui {
 class ChessBoardWidget;
 class MoveTimeline;
 class ReviewRunsModel;
 class ReviewMovesModel;
 class ReviewComparisonModel;
+class EvaluationBarWidget;
 class ReviewPage final : public QWidget {
     Q_OBJECT
   public:
@@ -27,6 +30,7 @@ class ReviewPage final : public QWidget {
     app::ReviewGameController& controller() { return controller_; }
     int splitShare() const;
     void setSplitShare(int share);
+    void setVerbose(bool verbose);
   signals:
     void backRequested();
     void settingsRequested();
@@ -42,6 +46,28 @@ class ReviewPage final : public QWidget {
     void update();
     void updateNavigation();
     void updateExploration();
+    void updateSummary();
+    bool verbose_ = false;
+    bool guiding_ = false;
+    int lastPosition_ = 0;
+    QWidget* lesson_;
+    QWidget* summaryPanel_;
+    QWidget* chessDetails_;
+    QPushButton* chessDetailsToggle_;
+    QPushButton* startGuided_;
+    QLabel* accuracyValue_;
+    QLabel* momentsValue_;
+    QLabel* coverageValue_;
+    QLabel* summaryState_;
+    QLabel* resultValue_;
+    QLabel* classification_;
+    QLabel* availability_;
+    QLabel* alternative_;
+    QLabel* impact_;
+    QTableWidget* classificationCounts_;
+    QTableWidget* inspectorFields_;
+    QTableWidget* overviewFields_;
+    QAction* inspectorAction_ = nullptr;
     QComboBox* candidates_;
     QWidget* comparison_;
     QLabel* comparisonStatus_;
@@ -55,21 +81,19 @@ class ReviewPage final : public QWidget {
     QPushButton* reveal_;
     QPushButton* analyze_;
     QPushButton* reloadExploration_;
-    std::vector<std::pair<QPushButton*, QWidget*>> sections_;
+    std::vector<std::pair<QAction*, QWidget*>> sections_;
     ChessBoardWidget* board_;
     MoveTimeline* timeline_;
     QSplitter* splitter_;
-    QProgressBar* evaluation_;
-    QLabel* evaluationText_;
+    EvaluationBarWidget* evaluation_;
     QLabel* previewLabel_;
     QLabel* headline_;
     QLabel* explanation_;
-    QLabel* compactSummary_;
     QLabel* topPlayer_;
     QLabel* bottomPlayer_;
     QFrame* rail_;
     QWidget* setup_;
-    QPushButton* setupToggle_;
+    QAction* setupToggle_;
     QPushButton* previousMoment_;
     QPushButton* nextMoment_;
     QPushButton* firstMove_;

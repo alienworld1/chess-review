@@ -9,7 +9,7 @@ see [Imported games](#imported-games).
 
 ## Moves and history
 
-Drag a piece to move, or choose **Click-click** in Move input. Illegal moves return
+Drag a piece to move, or choose **Click-click** in **Board Options → Move input**. Illegal moves return
 the piece without changing history. A dragged piece stays at the drop square during
 validation and settles immediately when accepted; click/keyboard moves use the
 optional animation. Promotion offers queen, rook, bishop, and

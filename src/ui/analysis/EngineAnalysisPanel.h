@@ -11,6 +11,7 @@ class EvaluationBarWidget final : public QWidget {
   public:
     explicit EvaluationBarWidget(ChessBoardWidget& board, QWidget* parent = nullptr);
     void setEvaluation(const app::EngineLinePresentation& line);
+    void setExpectedScore(std::optional<double> whiteShare, const QString& description);
     QSize sizeHint() const override;
 
   protected:

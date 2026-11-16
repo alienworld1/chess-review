@@ -70,7 +70,7 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                     return;
                 }
                 reviewsPending_ = {};
-                if (!ready_ || !active_ || reviewsRevision_ != revision_) {
+                if (!ready_ || !active_ || !reviewDetails_ || reviewsRevision_ != revision_) {
                     requestReviews();
                     return;
                 }
@@ -109,7 +109,8 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                 return;
             }
             accuracyPending_ = {};
-            if (ready_ && active_ && accuracyRevision_ == revision_ && accuracyRun_) {
+            if (ready_ && active_ && reviewDetails_ && accuracyRevision_ == revision_ &&
+                accuracyRun_) {
                 auto found = reviews_.find(accuracyRun_->gameId);
                 if (found != reviews_.end() && found->second.metadata.run &&
                     found->second.metadata.run->id == accuracyRun_->id &&
@@ -162,7 +163,12 @@ void GameLibraryController::open(persistence::GameId id) {
     database_.loadGame(pendingOpen_, id);
     emit changed();
 }
-void GameLibraryController::activate() {
+void GameLibraryController::activate(bool reviewDetails) {
+    if (reviewDetails_ != reviewDetails) {
+        reviewDetails_ = reviewDetails;
+        ++revision_;
+        accuracyQueue_.clear();
+    }
     if (!active_) {
         active_ = true;
         if (pageStale_) {
@@ -170,6 +176,8 @@ void GameLibraryController::activate() {
         } else {
             requestReviews();
         }
+    } else if (reviewDetails_) {
+        requestReviews();
     }
 }
 void GameLibraryController::deactivate() {
@@ -225,7 +233,7 @@ void GameLibraryController::requestPage() {
     emit changed();
 }
 void GameLibraryController::requestReviews() {
-    if (!ready_ || !active_ || !reviewsPending_.isNull() || !pending_.isNull()) {
+    if (!ready_ || !active_ || !reviewDetails_ || !reviewsPending_.isNull() || !pending_.isNull()) {
         return;
     }
     std::vector<persistence::GameId> ids;
@@ -237,7 +245,8 @@ void GameLibraryController::requestReviews() {
     database_.listLibraryReviews(reviewsPending_, std::move(ids));
 }
 void GameLibraryController::requestAccuracy() {
-    if (!ready_ || !active_ || !accuracyPending_.isNull() || accuracyQueue_.empty()) {
+    if (!ready_ || !active_ || !reviewDetails_ || !accuracyPending_.isNull() ||
+        accuracyQueue_.empty()) {
         return;
     }
     accuracyRun_ = accuracyQueue_.back();
@@ -259,14 +268,16 @@ QString GameLibraryController::reviewStatus(persistence::GameId id) const {
         return tr("Not reviewed");
     }
     const auto& run = *row.metadata.run;
-    const auto text = tr("%1 · %2 · saved %3/%4")
-                          .arg(reviewStatusText(run.status),
-                               run.selectedSide == chess::Color::White ? tr("White") : tr("Black"))
-                          .arg(run.completedPositions)
-                          .arg(run.totalPositions);
-    return text + (row.metadata.hasInterrupted && run.status != review::JobStatus::Interrupted
-                       ? tr(" · interrupted review available")
-                       : QString{});
+    return reviewStatusText(run.status) +
+           (row.metadata.hasInterrupted && run.status != review::JobStatus::Interrupted
+                ? tr(" (unfinished review available)")
+                : QString{});
+}
+std::optional<chess::Color> GameLibraryController::reviewedSide(persistence::GameId id) const {
+    const auto found = reviews_.find(id);
+    return found != reviews_.end() && found->second.metadata.run
+               ? std::optional{found->second.metadata.run->selectedSide}
+               : std::nullopt;
 }
 QString GameLibraryController::reviewAccuracy(persistence::GameId id) const {
     const auto found = reviews_.find(id);
@@ -282,13 +293,11 @@ QString GameLibraryController::reviewAccuracy(persistence::GameId id) const {
     }
     const auto& side = *row.side;
     if (!side.accuracy) {
-        return tr("Unavailable · %1/%2 evaluated").arg(side.evaluated).arg(side.total);
+        return tr("Unavailable (%1/%2 analyzed)").arg(side.evaluated).arg(side.total);
     }
-    const auto text = tr("%1% · %2/%3 evaluated")
-                          .arg(*side.accuracy, 0, 'f', 1)
-                          .arg(side.evaluated)
-                          .arg(side.total);
-    return text + (side.evaluated < side.total ? tr(" · partial") : QString{}) +
-           (side.stable < side.evaluated ? tr(" · provisional") : QString{});
+    const auto text = tr("%1%").arg(*side.accuracy, 0, 'f', 1);
+    return text + (side.evaluated < side.total    ? tr(" (partial)")
+                   : side.stable < side.evaluated ? tr(" (preliminary)")
+                                                  : QString{});
 }
 } // namespace chess_review::app

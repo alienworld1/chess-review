@@ -2,7 +2,6 @@
 #include "review/Retry.h"
 #include <QObject>
 #include <QStringList>
-#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -212,6 +211,121 @@ QString raw(const review::RawEvaluation& value) {
                               : fields.join(QStringLiteral("; ")));
 }
 } // namespace
+QString classificationSymbol(std::optional<review::Classification> classification) {
+    if (!classification) {
+        return {};
+    }
+    switch (*classification) {
+    case review::Classification::Brilliant:
+        return QStringLiteral("!!");
+    case review::Classification::Great:
+        return QStringLiteral("!");
+    case review::Classification::Miss:
+        return QStringLiteral("×");
+    case review::Classification::Best:
+        return QStringLiteral("★");
+    case review::Classification::Excellent:
+        return QStringLiteral("+");
+    case review::Classification::Good:
+        return QStringLiteral("✓");
+    case review::Classification::Inaccuracy:
+        return QStringLiteral("?!");
+    case review::Classification::Mistake:
+        return QStringLiteral("?");
+    case review::Classification::Blunder:
+        return QStringLiteral("??");
+    }
+    return {};
+}
+ReviewMomentPresentation presentReviewMoment(const persistence::ReviewMove* move, int position,
+                                             bool analyzing) {
+    ReviewMomentPresentation view;
+    view.move = reviewMomentHeadline(move, position);
+    if (position == 0) {
+        view.explanation =
+            QObject::tr("Follow the key moments, or select any move below the board.");
+        return view;
+    }
+    if (!move || !move->classification) {
+        view.availability = QObject::tr("Not analyzed yet");
+        view.explanation = QObject::tr("This move hasn’t been analyzed yet.");
+        return view;
+    }
+    const auto& result = *move->classification;
+    view.classification = result.label ? classificationText(move->classification) : QString{};
+    view.symbol = classificationSymbol(result.label);
+    view.availability = move->pendingRevision ? QObject::tr("Updating analysis")
+                        : !result.label       ? QObject::tr("Assessment unavailable")
+                        : !result.stable      ? (analyzing ? QObject::tr("Still checking")
+                                                           : QObject::tr("Preliminary result"))
+                                              : QString{};
+    if (result.bestMove && !result.issue && !move->bestSan.isEmpty() &&
+        result.playedMoveRank != 1) {
+        view.alternative = move->bestSan;
+    }
+    if (result.loss) {
+        view.impact = QObject::tr("Expected-score loss: %1 percentage points")
+                          .arg(*result.loss * 100, 0, 'f', 1);
+    }
+    // Explain one verified fact. A fact in an engine line is not a claim about every defence.
+    for (const auto& fact : move->tacticalFacts) {
+        if (fact.source == review::FactSource::Best && result.playedMoveRank == 1) {
+            continue;
+        }
+        const auto square = QString::fromStdString(fact.square.name());
+        const auto side =
+            fact.beneficiary == chess::Color::White ? QObject::tr("White") : QObject::tr("Black");
+        const auto context = fact.source == review::FactSource::Best
+                                 ? QObject::tr("In the stronger continuation, ")
+                                 : QObject::tr("In this move’s analyzed continuation, ");
+        switch (fact.kind) {
+        case review::TacticalKind::HangingPiece:
+            view.explanation =
+                context + QObject::tr("an undefended piece on %1 can be captured.").arg(square);
+            break;
+        case review::TacticalKind::Fork:
+            view.explanation =
+                context + QObject::tr("the %1 on %2 gives check and attacks two pieces.")
+                              .arg(fact.modelVersion == 1 && fact.actor == chess::PieceType::Pawn
+                                       ? QObject::tr("piece")
+                                       : pieceText(fact.actor),
+                                   square);
+            break;
+        case review::TacticalKind::Material:
+            view.explanation =
+                context +
+                QObject::tr("%1 gains %2 pawns of material.").arg(side).arg(fact.material);
+            break;
+        case review::TacticalKind::Exchange:
+            view.explanation = context + QObject::tr("%1 wins a rook for a minor piece.").arg(side);
+            break;
+        case review::TacticalKind::Checkmate:
+            view.explanation =
+                context + QObject::tr("the line ends in checkmate. Other defences may differ.");
+            break;
+        case review::TacticalKind::Promotion:
+            view.explanation =
+                context + QObject::tr("%1 promotes to a %2.").arg(side, pieceText(fact.actor));
+            break;
+        case review::TacticalKind::Sacrifice:
+            view.explanation =
+                context +
+                QObject::tr("%1 gives up material before the tactical resolution.").arg(side);
+            break;
+        }
+        if (!view.explanation.isEmpty()) {
+            break;
+        }
+    }
+    if (view.explanation.isEmpty()) {
+        view.explanation =
+            !result.label ? QObject::tr("There isn’t enough reliable analysis to assess this move.")
+            : result.playedMoveRank == 1
+                ? QObject::tr("This matches the engine’s best move.")
+                : QObject::tr("Compare this move with the engine’s continuation.");
+    }
+    return view;
+}
 QString classificationText(const std::optional<review::ClassificationResult>& result) {
     if (!result) {
         return QObject::tr("Awaiting evidence");
@@ -260,7 +374,7 @@ ReviewEvaluation reviewPositionEvaluation(const persistence::ReviewMove* row, bo
     result.whiteExpected = value.perspective == chess::Color::White ? value.value : 1 - value.value;
     result.approximate = value.source == review::ConversionSource::ApproximateCentipawns;
     result.description =
-        QObject::tr("White expected score: %1% · %2 · model %3")
+        QObject::tr("White expected score: %1%\n%2\nmodel %3")
             .arg(*result.whiteExpected * 100, 0, 'f', 1)
             .arg(result.approximate ? QObject::tr("approximate centipawn conversion")
                  : value.source == review::ConversionSource::Terminal
@@ -268,7 +382,7 @@ ReviewEvaluation reviewPositionEvaluation(const persistence::ReviewMove* row, bo
                      : QObject::tr("engine WDL"))
             .arg(value.modelVersion);
     if (row->pendingRevision) {
-        result.description += QObject::tr(" · previous checkpoint; updating");
+        result.description += QObject::tr("\nprevious checkpoint; updating");
     }
     return result;
 }
@@ -325,12 +439,12 @@ QString reviewMoveMarker(const persistence::ReviewMove* move) {
     }
     if (move->pendingRevision) {
         return glyph + classificationText(move->classification) +
-               QObject::tr(" · previous checkpoint; updating");
+               QObject::tr("\nprevious checkpoint; updating");
     }
     return glyph + classificationText(move->classification) +
            (move->classification->label
-                ? (move->classification->stable ? QObject::tr(" · stable")
-                                                : QObject::tr(" · provisional"))
+                ? (move->classification->stable ? QObject::tr("\nstable")
+                                                : QObject::tr("\nprovisional"))
                 : QString{});
 }
 QString reviewMomentHeadline(const persistence::ReviewMove* move, int position) {
@@ -338,174 +452,16 @@ QString reviewMomentHeadline(const persistence::ReviewMove* move, int position) 
         return QObject::tr("Initial position");
     }
     if (!move) {
-        return QObject::tr("Position %1 — awaiting evidence").arg(position);
+        return QObject::tr("Move %1").arg(position);
     }
-    return QObject::tr("%1%2 %3 — %4")
+    return QObject::tr("%1%2 %3")
         .arg(move->moveNumber)
         .arg(move->mover == chess::Color::White ? QStringLiteral(".") : QStringLiteral("..."),
-             move->san, reviewMoveMarker(move));
-}
-QString reviewMomentExplanation(const persistence::ReviewMove* move, int position) {
-    if (position == 0) {
-        return QObject::tr("Explore the full game or continue to a key moment. The board shows "
-                           "each position after the played move.");
-    }
-    if (!move || !move->classification) {
-        return QObject::tr("Saved evidence is not available for this move yet. You can continue "
-                           "navigating the full game.");
-    }
-    const auto& result = *move->classification;
-    QStringList lines;
-    if (move->pendingRevision) {
-        lines << QObject::tr("Showing the previous saved checkpoint while revision %1 loads.")
-                     .arg(*move->pendingRevision);
-    }
-    if (move->stability.persistentMate) {
-        lines << QObject::tr(
-            "Independent stronger engine searches report a mating outcome. This is an engine "
-            "prediction, not an exhaustive proof against every defence.");
-    }
-    std::vector<const review::TacticalFact*> teachingFacts;
-    for (const auto& fact : move->tacticalFacts) {
-        if (fact.source == review::FactSource::Best && result.playedMoveRank == 1) {
-            continue;
-        }
-        teachingFacts.push_back(&fact);
-    }
-    const auto priority = [&](const review::TacticalFact* fact) {
-        const bool missed = result.label == review::Classification::Miss;
-        const int source = (fact->source == review::FactSource::Best) == missed ? 0 : 1;
-        int kind = 6;
-        switch (fact->kind) {
-        case review::TacticalKind::Sacrifice:
-            kind = 0;
-            break;
-        case review::TacticalKind::Fork:
-            kind = 1;
-            break;
-        case review::TacticalKind::Checkmate:
-            kind = 2;
-            break;
-        case review::TacticalKind::Promotion:
-            kind = 3;
-            break;
-        case review::TacticalKind::Exchange:
-            kind = 4;
-            break;
-        case review::TacticalKind::Material:
-            kind = 5;
-            break;
-        case review::TacticalKind::HangingPiece:
-            kind = 6;
-            break;
-        }
-        return std::pair{source, kind};
-    };
-    std::stable_sort(teachingFacts.begin(), teachingFacts.end(),
-                     [&](const auto* a, const auto* b) { return priority(a) < priority(b); });
-    for (const auto* teachingFact : teachingFacts) {
-        const auto& fact = *teachingFact;
-        const auto square = QString::fromStdString(fact.square.name());
-        const auto context = fact.source == review::FactSource::Best
-                                 ? QObject::tr("In the engine's saved candidate line: ")
-                                 : QObject::tr("In the played move's line: ");
-        const auto side =
-            fact.beneficiary == chess::Color::White ? QObject::tr("White") : QObject::tr("Black");
-        switch (fact.kind) {
-        case review::TacticalKind::Material:
-            lines << context +
-                         QObject::tr(
-                             "%1 gains %2 pawn units of material along the saved continuation.")
-                             .arg(side)
-                             .arg(fact.material);
-            break;
-        case review::TacticalKind::Exchange:
-            lines << context + QObject::tr("%1 gains the exchange along the saved continuation.")
-                                   .arg(side);
-            break;
-        case review::TacticalKind::HangingPiece:
-            lines << context +
-                         QObject::tr("An undefended piece on %1 can be captured.").arg(square);
-            break;
-        case review::TacticalKind::Fork: {
-            QStringList targets;
-            for (const auto target : fact.targets) {
-                targets << QString::fromStdString(target.name());
-            }
-            lines << context +
-                         QObject::tr("The %1 on %2 gives check and forks the pieces on %3.")
-                             .arg(fact.modelVersion == 1 && fact.actor == chess::PieceType::Pawn
-                                      ? QObject::tr("piece")
-                                      : pieceText(fact.actor),
-                                  square, targets.join(QStringLiteral(", ")));
-            break;
-        }
-        case review::TacticalKind::Promotion:
-            lines << context + QObject::tr("%1 promotes to a %2 on %3.")
-                                   .arg(side, pieceText(fact.actor), square);
-            break;
-        case review::TacticalKind::Checkmate:
-            lines << context + QObject::tr("The replayed position ends in verified checkmate on "
-                                           "%1. Other defences are not proven by this line.")
-                                   .arg(square);
-            break;
-        case review::TacticalKind::Sacrifice:
-            lines << context + QObject::tr("%1 concedes %2 pawn units before the tactical "
-                                           "resolution in this continuation.")
-                                   .arg(side)
-                                   .arg(fact.material);
-            break;
-        }
-        if (fact.modelVersion >= 2 && !fact.retainedOpportunity &&
-            (fact.kind == review::TacticalKind::Material ||
-             fact.kind == review::TacticalKind::Exchange ||
-             fact.kind == review::TacticalKind::Promotion)) {
-            lines.back() +=
-                QObject::tr(" This is a line consequence, not a verified winning opportunity.");
-        }
-        if (lines.size() >= 3) {
-            break;
-        }
-    }
-    if (move->special.status == review::SpecialStatus::Verified && result.stable &&
-        result.label == move->special.label) {
-        lines << QObject::tr("Special label verified by two independent stronger attempts. See the "
-                             "evidence inspector for its rule.");
-        if (move->special.modelVersion == 1) {
-            lines << QObject::tr("Historical special-label model 1: a new review uses stricter "
-                                 "consequence verification.");
-        }
-    } else if (move->special.needsEvidence() ||
-               move->special.status == review::SpecialStatus::Verified) {
-        lines << QObject::tr(
-            "Special-label verification is incomplete; the ordinary classification is retained.");
-    }
-    if (result.loss) {
-        lines << QObject::tr("This move reduced %1's expected score by %2 percentage points.")
-                     .arg(move->mover == chess::Color::White ? QObject::tr("White")
-                                                             : QObject::tr("Black"))
-                     .arg(*result.loss * 100, 0, 'f', 1);
-    } else if (result.evidenceIssue) {
-        lines << evidenceReason(*result.evidenceIssue);
-    } else {
-        lines << QObject::tr(
-            "A reliable numeric impact is unavailable. Inspect the saved evidence for details.");
-    }
-    if (result.bestMove && !result.issue && !move->bestSan.isEmpty()) {
-        lines << QObject::tr("Best supported move: %1. Inspect its saved continuation.")
-                     .arg(move->bestSan);
-    }
-    lines << (result.stable ? QObject::tr("Two stronger passes agree on this result.")
-                            : QObject::tr("Provisional: stability has not been established."));
-    if (move->contextPosition) {
-        lines << QObject::tr("Context: the opponent's preceding error at position %1.")
-                     .arg(*move->contextPosition);
-    }
-    return lines.join(QLatin1Char('\n'));
+             move->san);
 }
 QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::Color selectedSide) {
     QStringList text;
-    text << QObject::tr("Game summary · accuracy model %1 · expected-score evidence")
+    text << QObject::tr("Game summary\naccuracy model %1\nexpected-score evidence")
                 .arg(review::accuracyModelVersion);
     text << QObject::tr("Recorded result: %1").arg(overview.result);
     if (overview.sides[0].total + overview.sides[1].total > 0 &&
@@ -518,15 +474,15 @@ QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::C
         const auto& side = overview.sides[index];
         const auto& scan = overview.quickScan[index];
         text << QObject::tr(
-                    "%1 original quick-scan coverage: usable %2/%3 moves · retained gaps %4 · "
-                    "awaiting %5 · invalid %6")
+                    "%1 original quick-scan coverage: usable %2/%3 moves\nretained gaps %4\n"
+                    "awaiting %5\ninvalid %6")
                     .arg(index == 0 ? QObject::tr("White") : QObject::tr("Black"))
                     .arg(scan.usable)
                     .arg(side.total)
                     .arg(scan.unusable)
                     .arg(scan.awaiting)
                     .arg(scan.invalid);
-        text << QObject::tr("%1%2: accuracy %3 · evaluated %4/%5 · stable %6/%5")
+        text << QObject::tr("%1%2: accuracy %3\nevaluated %4/%5\nstable %6/%5")
                     .arg(index == 0 ? QObject::tr("White") : QObject::tr("Black"))
                     .arg(index == static_cast<std::size_t>(selectedSide)
                              ? QObject::tr(" (selected player)")
@@ -544,11 +500,11 @@ QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::C
                           .arg(classificationText(classification))
                           .arg(side.counts[label]);
         }
-        text << counts.join(QStringLiteral(" · "));
-        text << QObject::tr("Withheld: %1 · unprocessed: %2%3")
+        text << counts.join(QStringLiteral("\n"));
+        text << QObject::tr("Withheld: %1\nunprocessed: %2%3")
                     .arg(side.withheld)
                     .arg(side.unprocessed)
-                    .arg(side.stable < side.total ? QObject::tr(" · provisional summary")
+                    .arg(side.stable < side.total ? QObject::tr("\nprovisional summary")
                                                   : QString{});
     }
     text << QObject::tr("%1 chronological key moments for the selected player.")
@@ -583,6 +539,28 @@ QString comparisonReasonText(review::ComparisonReason reason) {
     }
     return {};
 }
+ReviewComparisonPresentation presentReviewComparison(const review::MoveComparison& row,
+                                                     const QString& san) {
+    ReviewComparisonPresentation view;
+    view.move = row.played ? QObject::tr("%1 (played)").arg(san) : san;
+    view.score =
+        row.expected
+            ? QObject::tr("%1%%2")
+                  .arg(row.expected->value * 100, 0, 'f', 1)
+                  .arg(row.expected->source == review::ConversionSource::ApproximateCentipawns
+                           ? QStringLiteral(" ≈")
+                           : QString{})
+            : QStringLiteral("—");
+    view.detail = comparisonReasonText(row.reason);
+    if (row.gap) {
+        view.detail += QObject::tr("\n%1 expected-score percentage points below best.")
+                           .arg(*row.gap * 100, 0, 'f', 1);
+    }
+    if (row.source == review::ComparisonSource::PlayedChild) {
+        view.detail += QObject::tr("\nEvaluation after the played move.");
+    }
+    return view;
+}
 QString reviewComparisonRow(const review::MoveComparison& row, const QString& san) {
     QStringList text;
     text << (row.played ? QObject::tr("Played: %1").arg(san) : san);
@@ -604,7 +582,7 @@ QString reviewComparisonRow(const review::MoveComparison& row, const QString& sa
     if (row.source == review::ComparisonSource::PlayedChild) {
         text << QObject::tr("Saved after-move evaluation");
     }
-    return text.join(QStringLiteral(" · "));
+    return text.join(QStringLiteral("\n"));
 }
 QString reviewMoveDetails(const persistence::ReviewMove& move) {
     QString specialDetails;
@@ -613,7 +591,7 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
                              .arg(*move.pendingRevision);
     }
     if (!move.special.ruleId.empty()) {
-        specialDetails += QObject::tr("Special verification model %1 · rule %2 · status %3\n")
+        specialDetails += QObject::tr("Special verification model %1\nrule %2\nstatus %3\n")
                               .arg(move.special.modelVersion)
                               .arg(QString::fromStdString(move.special.ruleId))
                               .arg(specialStatus(move.special.status));
@@ -766,7 +744,7 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
     for (std::size_t i = 0; i < move.stabilityEvidenceIds.size(); ++i) {
         if (move.stabilityEvidenceIds[i] > 0) {
             const auto& strength = move.stabilityStrength[i];
-            text << QObject::tr("Stability proof %1: evidence %2 · nodes %3 · depth %4")
+            text << QObject::tr("Stability proof %1: evidence %2\nnodes %3\ndepth %4")
                         .arg(static_cast<qulonglong>(i + 1))
                         .arg(move.stabilityEvidenceIds[i])
                         .arg(strength.nodes ? QString::number(*strength.nodes)

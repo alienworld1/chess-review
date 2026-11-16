@@ -108,6 +108,16 @@ QT_QPA_PLATFORM=offscreen CHESS_REVIEW_STOCKFISH=/absolute/path/to/stockfish \
 The cache probe requires the reviewed pinned Stockfish binary. Other conformant
 engines can run reviews but cannot establish that resource policy's reuse gate.
 
+For review screenshots, create an output directory and set
+`CHESS_REVIEW_ACCEPTANCE_RENDER_DIR` when running `review_acceptance_tests renderJourney`.
+The default matrix covers both themes, normal/enlarged fonts and three window sizes.
+`CHESS_REVIEW_ACCEPTANCE_RENDER_STATES=summary,review,practice` limits captured screens;
+`CHESS_REVIEW_ACCEPTANCE_RENDER_COMPACT=1` captures only normal fonts at 1100×720.
+Use `QT_SCALE_FACTOR=1.25`, `1.5`, or `2` for additional DPI checks. The probe checks
+square boards, usable primary actions, physical output dimensions, and that normal
+Review layouts fit without scrolling the workspace. Keep expensive screenshot
+generation separate from the full timing-sensitive engine test suite.
+
 The optional `stockfishProducesUsefulReview` probe uses an explicitly captured Fast
 fixture budget (50,000 quick / 100,000 deepening / 500,000 verification nodes) to
 check useful classifications, accuracy and cache-independent reopening with the

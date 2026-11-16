@@ -70,6 +70,45 @@ class Fixture {
 class ReviewNavigationTest final : public QObject {
     Q_OBJECT
   private slots:
+    void momentPresentationSeparatesLessonFromDiagnostics() {
+        const auto absent = app::presentReviewMoment(nullptr, 1, false);
+        QVERIFY(absent.classification.isEmpty());
+        QVERIFY(absent.explanation.contains(QStringLiteral("hasn’t been analyzed")));
+        persistence::ReviewMove move;
+        move.moveNumber = 12;
+        move.san = QStringLiteral("Nf6");
+        review::ClassificationResult result;
+        result.label = review::Classification::Mistake;
+        result.loss = 0.12;
+        move.classification = result;
+        const auto provisional = app::presentReviewMoment(&move, 24, true);
+        QCOMPARE(provisional.move, QStringLiteral("12. Nf6"));
+        QCOMPARE(provisional.classification, QStringLiteral("Mistake"));
+        QCOMPARE(provisional.symbol, QStringLiteral("?"));
+        QCOMPARE(provisional.availability, QStringLiteral("Still checking"));
+        QVERIFY(!provisional.explanation.contains(QStringLiteral("12.0")));
+        QVERIFY(provisional.impact.contains(QStringLiteral("12.0")));
+        QCOMPARE(app::presentReviewMoment(&move, 24, false).availability,
+                 QStringLiteral("Preliminary result"));
+        move.classification->stable = true;
+        QVERIFY(app::presentReviewMoment(&move, 24, false).availability.isEmpty());
+        move.pendingRevision = 7;
+        QCOMPARE(app::presentReviewMoment(&move, 24, false).availability,
+                 QStringLiteral("Updating analysis"));
+    }
+    void conciseLessonKeepsContinuationQualifications() {
+        persistence::ReviewMove move;
+        move.classification = review::ClassificationResult{};
+        move.classification->label = review::Classification::Mistake;
+        review::TacticalFact fact;
+        fact.kind = review::TacticalKind::Material;
+        fact.source = review::FactSource::Best;
+        fact.material = 3;
+        move.tacticalFacts = {fact};
+        const auto view = app::presentReviewMoment(&move, 1, false);
+        QVERIFY(view.explanation.contains(QStringLiteral("In the stronger continuation")));
+        QVERIFY(!view.explanation.contains(QStringLiteral("forced")));
+    }
     void tacticalPresentationNeverDrawsFutureLineSquaresOnTheGameBoard() {
         persistence::ReviewMove move;
         review::TacticalFact fact;
@@ -107,10 +146,11 @@ class ReviewNavigationTest final : public QObject {
         move.special.label = review::Classification::Miss;
         QVERIFY(app::reviewMoveMarker(&move).contains(QStringLiteral("previous checkpoint")));
         QVERIFY(!app::reviewMoveMarker(&move).contains(QStringLiteral("stable")));
-        const auto explanation = app::reviewMomentExplanation(&move, 1);
-        QVERIFY(explanation.contains(QStringLiteral("revision 7")));
-        QVERIFY(!explanation.contains(QStringLiteral("Special label verified")));
-        QVERIFY(explanation.contains(QStringLiteral("verification is incomplete")));
+        const auto presentation = app::presentReviewMoment(&move, 1, false);
+        QCOMPARE(presentation.availability, QStringLiteral("Updating analysis"));
+        QCOMPARE(presentation.classification, QStringLiteral("Best"));
+        QVERIFY(!presentation.explanation.contains(QStringLiteral("verified")));
+        QVERIFY(app::reviewMoveDetails(move).contains(QStringLiteral("revision 7")));
     }
     void newerOpenDuringClearWins() {
         Fixture f;

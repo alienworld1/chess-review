@@ -33,6 +33,7 @@ struct ExplorationState {
     QString message;
     QString notice;
     QStringList candidates;
+    QStringList candidateNames;
     QString comparisonStatus;
     QStringList comparisonRows;
     std::vector<int> comparisonLines;

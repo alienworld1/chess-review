@@ -3,7 +3,7 @@
 ## Add an engine
 
 Open **Settings → Engines**, or **Engine Settings…** from Analyze. Choose a local
-executable, check its resolved path, and select **Validate and Add**. The app runs
+executable, check its resolved path, and select **Add engine**. The app runs
 it with your normal user permissions, so choose software you trust. It does not
 download or sandbox engines.
 
@@ -13,6 +13,9 @@ of its analysis. Failed or cancelled validation does not create a profile.
 The first engine becomes the default. Adding the same binary again returns its
 existing profile; changing a registered file is rejected. Profile replacement,
 removal, and option editing are not yet available.
+
+Protocol options and full saved paths are available through **Technical inspector**
+when `[ui] verbose = true` is set in `config.toml`. Restart after changing it.
 
 ## Connect an engine
 

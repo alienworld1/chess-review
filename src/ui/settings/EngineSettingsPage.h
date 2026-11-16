@@ -17,6 +17,7 @@ class EngineSettingsPage final : public QWidget {
   public:
     explicit EngineSettingsPage(app::EngineSettingsController& controller,
                                 QWidget* parent = nullptr);
+    void setVerbose(bool verbose);
 
   private:
     friend class EnginePageTestAccess;
@@ -46,6 +47,8 @@ class EngineSettingsPage final : public QWidget {
     QComboBox* options_;
     QPlainTextEdit* optionDetails_;
     QTabWidget* detailsTabs_;
+    QPushButton* inspector_;
+    bool verbose_ = false;
     std::optional<engine::ValidatedEngine> discovery_;
 };
 } // namespace chess_review::ui

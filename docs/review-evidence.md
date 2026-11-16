@@ -5,6 +5,14 @@ progressive classifications and verified tactical explanations. See [Quick revie
 workflow and classification rules. Accuracy uses the independent, reproducible model described in [review methodology](review-summaries.md). Changing settings now does not change manual analysis limits
 or launch an engine.
 
+## Presentation and technical details
+
+The default interface uses concise chess explanations. Set `[ui] verbose = true`
+in `config.toml` and restart to reveal the Review technical inspector and engine
+protocol inspector. This preference is separate from analysis settings and does
+not change review, conversion, classification, or cache identities. Normal mode
+retains optional chess details and explicit Help diagnostics.
+
 ## Advanced configuration
 
 The app reads optional `config.toml` in Qt's application configuration directory

@@ -96,6 +96,7 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
             } else {
                 evidence_ = std::get<std::shared_ptr<const persistence::ReviewExploration>>(result);
                 state_.candidates.clear();
+                state_.candidateNames.clear();
                 state_.comparisonRows.clear();
                 state_.comparisonLines.clear();
                 state_.comparisonStatus.clear();
@@ -115,27 +116,29 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
                                            ? tr(" (approximate)")
                                            : QString{})
                             : tr("evaluation unavailable");
-                    state_.candidates << tr("%1 · %2 · root: %3 · %4")
+                    state_.candidateNames << evidence_->candidateSans[i];
+                    state_.candidates << tr("%1: %2\nRoot: %3\n%4")
                                              .arg(candidate.rank)
                                              .arg(evidence_->candidateSans[i], evaluation,
                                                   tr("saved root evaluation"));
                 }
                 if (!evidence_->playedContinuation.empty()) {
-                    state_.candidates << tr("Played: %1 · saved after-move continuation")
-                                             .arg(evidence_->move.san);
+                    state_.candidateNames << tr("%1 (played)").arg(evidence_->move.san);
+                    state_.candidates
+                        << tr("Played: %1\nSaved after-move continuation").arg(evidence_->move.san);
                 }
                 state_.comparisonStatus = comparisonReasonText(evidence_->move.alternatives.reason);
                 if (evidence_->move.alternatives.needsEvidence()) {
                     if (evidence_->move.escalationStop == review::EscalationStop::RoundLimit) {
-                        state_.comparisonStatus += tr(" · Stopped at the two-round limit.");
+                        state_.comparisonStatus += tr("\nStopped at the two-round limit.");
                     } else if (evidence_->move.escalationStop ==
                                review::EscalationStop::BudgetCeiling) {
-                        state_.comparisonStatus += tr(" · Stopped at the node-budget ceiling.");
+                        state_.comparisonStatus += tr("\nStopped at the node-budget ceiling.");
                     } else if (evidence_->run.settings.pipelineVersion == 6 &&
                                evidence_->move.escalationStop ==
                                    review::EscalationStop::Confirmed) {
                         state_.comparisonStatus +=
-                            tr(" · The saved policy schedules no further work for this comparison. "
+                            tr("\nThe saved policy schedules no further work for this comparison. "
                                "Start a new review to investigate it.");
                     }
                 }
@@ -256,6 +259,7 @@ void ReviewExplorationController::synchronize() {
             returnToGame();
             evidence_.reset();
             state_.candidates.clear();
+            state_.candidateNames.clear();
             state_.comparisonRows.clear();
             state_.comparisonLines.clear();
             state_.comparisonStatus.clear();
@@ -275,6 +279,7 @@ void ReviewExplorationController::synchronize() {
         target_ = target;
         evidence_.reset();
         state_.candidates.clear();
+        state_.candidateNames.clear();
         state_.comparisonRows.clear();
         state_.comparisonLines.clear();
         state_.comparisonStatus.clear();
@@ -302,6 +307,7 @@ void ReviewExplorationController::reload() {
     ++generation_;
     evidence_.reset();
     state_.candidates.clear();
+    state_.candidateNames.clear();
     state_.comparisonRows.clear();
     state_.comparisonLines.clear();
     state_.comparisonStatus.clear();
@@ -340,8 +346,8 @@ void ReviewExplorationController::showLine(int candidate) {
     }
     state_.message =
         candidate < static_cast<int>(evidence->evidence.candidates.size())
-            ? tr("Candidate continuation · evaluation belongs to its root, not each position.")
-            : tr("Played-move continuation · the saved evaluation belongs to the position after "
+            ? tr("Candidate continuation\nevaluation belongs to its root, not each position.")
+            : tr("Played-move continuation\nthe saved evaluation belongs to the position after "
                  "the played move, not each replayed position.");
     publish();
 }
@@ -395,6 +401,7 @@ void ReviewExplorationController::returnToGame() {
     if (evidence_ && run_ && evidence_->run.summary.revision != run_->revision) {
         evidence_.reset();
         state_.candidates.clear();
+        state_.candidateNames.clear();
         state_.comparisonRows.clear();
         state_.comparisonLines.clear();
         state_.comparisonStatus.clear();

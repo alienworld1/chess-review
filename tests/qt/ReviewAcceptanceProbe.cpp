@@ -20,6 +20,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QTableView>
 #include <QTest>
@@ -95,6 +96,11 @@ void render(ui::MainWindow& window, const QString& state, const char* primary) {
     if (directory.isEmpty()) {
         return;
     }
+    const auto selectedStates = qEnvironmentVariable("CHESS_REVIEW_ACCEPTANCE_RENDER_STATES");
+    if (!selectedStates.isEmpty() && !selectedStates.split(u',').contains(state)) {
+        return;
+    }
+    const bool compact = qEnvironmentVariableIsSet("CHESS_REVIEW_ACCEPTANCE_RENDER_COMPACT");
     const auto originalPalette = qApp->palette();
     const auto originalFont = window.font();
     const auto originalSize = window.size();
@@ -111,13 +117,22 @@ void render(ui::MainWindow& window, const QString& state, const char* primary) {
         }
         qApp->setPalette(palette);
         for (const bool enlarged : {false, true}) {
+            if (compact && enlarged) {
+                continue;
+            }
             auto font = originalFont;
             if (enlarged) {
                 font.setPointSize(font.pointSize() + 5);
             }
             window.setFont(font);
             for (const auto size : {QSize(1100, 720), QSize(1360, 850), QSize(1800, 1000)}) {
+                if (compact && size != QSize(1100, 720)) {
+                    continue;
+                }
                 window.resize(size);
+                // Resizing can move the timeline under a stationary pointer.
+                // Capture the selected position, leaving hover previews to their own test.
+                QTest::mouseMove(&window, QPoint(1, 1));
                 QCoreApplication::processEvents();
                 require(window.size() == size, "render logical size");
                 auto* button = child<QAbstractButton>(window, primary);
@@ -129,11 +144,34 @@ void render(ui::MainWindow& window, const QString& state, const char* primary) {
                 require(shell->viewport()->rect().contains(
                             button->mapTo(shell->viewport(), button->rect().center())),
                         "primary control reachable");
+                if (!enlarged &&
+                    (state == QStringLiteral("review") || state == QStringLiteral("summary") ||
+                     state == QStringLiteral("practice"))) {
+                    require(shell->verticalScrollBar()->maximum() == 0,
+                            "review fits without scrolling the workspace");
+                    require(shell->horizontalScrollBar()->maximum() == 0,
+                            "review fits the workspace width");
+                }
                 if (auto* board =
                         window.findChild<ui::ChessBoardWidget*>(QStringLiteral("reviewBoard"));
                     board && board->isVisible()) {
                     require(board->boardRect().width() == board->boardRect().height(),
                             "square rendered board");
+                    auto& review = child<ui::ReviewPage>(window, "reviewPage")->controller();
+                    until(
+                        [&] {
+                            return !review.navigation().pending() &&
+                                   !review.navigation().previewing() &&
+                                   !review.exploration().state().pendingBoard;
+                        },
+                        "stable position for screenshot");
+                    require(board->state().pieces == review.exploration().board().pieces,
+                            "rendered board follows the displayed position");
+                    if (!review.navigation().pending() && !review.navigation().previewing() &&
+                        !review.exploration().active()) {
+                        require(review.navigation().selected() == review.navigation().displayed(),
+                                "settled board matches the selected move");
+                    }
                 }
                 const auto name =
                     QStringLiteral("%1-%2-%3-%4x%5.png")
@@ -202,11 +240,7 @@ void run(ui::MainWindow& window) {
         const auto saved = *review.state().run;
         require(saved.status == review::JobStatus::Interrupted, "explicit resume only");
         script(saved.completedPositions, -1, 0, false);
-        for (auto* button : window.findChildren<QPushButton*>()) {
-            if (button->text() == QStringLiteral("Saved review runs") && !button->isChecked()) {
-                button->click();
-            }
-        }
+        child<QAction>(window, "reviewHistoryAction")->trigger();
         auto* runs = child<QTableView>(window, "reviewRuns");
         until([&] { return runs->model()->rowCount() == 1 && runs->isEnabled(); },
               "saved run list");
@@ -255,6 +289,13 @@ void run(ui::MainWindow& window) {
     require(pgn.open(QIODevice::ReadOnly), "read PGN");
     editor->setPlainText(QString::fromUtf8(pgn.readAll()));
     activate(window, "confirmPasteImport");
+    until(
+        [&] {
+            return navigation.ready() && !review.state().busy &&
+                   child<ui::ReviewPage>(window, "reviewPage")->isVisible();
+        },
+        "single import continues to review setup");
+    child<QAction>(window, "gamesAction")->trigger();
     auto* games = child<QTableView>(window, "gamesTable");
     until([&] { return games->isVisible() && games->model()->rowCount() == 1; }, "game imported");
     render(window, QStringLiteral("games"), "reviewGameButton");
@@ -266,6 +307,7 @@ void run(ui::MainWindow& window) {
     activate(window, "reviewGameButton");
     until([&] { return navigation.ready() && !review.state().busy; }, "game selected");
     choose(*child<QComboBox>(window, "reviewSide"), 2);
+    activate(window, "reviewEngineOptions");
     choose(*child<QComboBox>(window, "reviewQuality"), 1);
     if (real.isEmpty()) {
         script(0,
@@ -402,7 +444,8 @@ void run(ui::MainWindow& window) {
             {"elapsed_ms", elapsed.elapsed()}});
 
     if (mode == QStringLiteral("journey") || mode == QStringLiteral("real")) {
-        activate(window, "reviewNextMoment");
+        render(window, QStringLiteral("summary"), "startGuidedReview");
+        activate(window, "startGuidedReview");
         until([&] { return !navigation.pending() && exploration.state().canRetry; }, "key moment");
         const int moment = navigation.selected();
         render(window, QStringLiteral("review"), "reviewNextMoment");

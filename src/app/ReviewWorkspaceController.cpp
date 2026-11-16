@@ -106,8 +106,7 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
                     text = text.simplified();
                     return text.isEmpty() ? fallback : text;
                 };
-                state_.game = tr("Game %1: %2 — %3")
-                                  .arg(game_->summary.id)
+                state_.game = tr("%1 vs %2")
                                   .arg(player(game_->summary.white, tr("White")),
                                        player(game_->summary.black, tr("Black")));
                 navigation_.open(*game_);

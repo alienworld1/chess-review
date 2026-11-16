@@ -159,7 +159,18 @@ Result parse(std::string_view contents) {
     Reader reader;
     reader.keys(root, "configuration",
                 {"version", "analysis", "classification", "review", "expectedScore", "refinement",
-                 "special"});
+                 "special", "ui"});
+    UiConfiguration ui;
+    if (const auto* table = reader.table(root, "ui", "ui")) {
+        reader.keys(*table, "ui", {"verbose"});
+        if (const auto* node = table->get("verbose")) {
+            if (const auto* value = node->as_boolean()) {
+                ui.verbose = value->get();
+            } else {
+                reader.error("ui.verbose", "Expected a boolean", node);
+            }
+        }
+    }
     std::uint64_t version = 1;
     reader.integer(root, "version", "version", version, 1);
     if (const auto* analysis = reader.table(root, "analysis", "analysis")) {
@@ -260,7 +271,13 @@ Result parse(std::string_view contents) {
     if (!reader.errors.empty()) {
         return reader.errors;
     }
-    return validate(config);
+    auto result = validate(config);
+    if (const auto* valid = std::get_if<std::shared_ptr<const ValidatedConfiguration>>(&result)) {
+        auto withUi = **valid;
+        withUi.ui = ui;
+        return std::make_shared<const ValidatedConfiguration>(std::move(withUi));
+    }
+    return result;
 }
 Result validate(const review::Configuration& values, std::uint32_t classificationIdentityVersion) {
     const auto& c = values.classification;
@@ -292,8 +309,11 @@ Result validate(const review::Configuration& values, std::uint32_t classificatio
             return failure("Invalid analysis budgets");
         }
     }
-    return std::make_shared<const ValidatedConfiguration>(ValidatedConfiguration{
-        values, identities(values, classificationIdentityVersion), classificationIdentityVersion});
+    return std::make_shared<const ValidatedConfiguration>(
+        ValidatedConfiguration{values,
+                               identities(values, classificationIdentityVersion),
+                               classificationIdentityVersion,
+                               {}});
 }
 Result load(const QString& filename) {
     if (!QDir::isAbsolutePath(filename) || filename.contains(QChar::Null) ||

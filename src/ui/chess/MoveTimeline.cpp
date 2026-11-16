@@ -16,6 +16,7 @@ namespace {
 constexpr int currentPositionRole = Qt::UserRole;
 constexpr int pendingPositionRole = Qt::UserRole + 1;
 constexpr int accentRole = Qt::UserRole + 2;
+constexpr int markerRole = Qt::UserRole + 3;
 } // namespace
 class TimelineModel final : public QAbstractTableModel {
   public:
@@ -53,14 +54,16 @@ class TimelineModel final : public QAbstractTableModel {
             return {};
         }
         const auto& entry = tree_->nodes.at(*id);
-        const QString extra = description_ ? description_(*id) : QString{};
         if (role == Qt::DisplayRole) {
-            return (entry.parent ? entry.san : entry.label) +
-                   (extra.isEmpty() ? QString{} : QStringLiteral(" · ") + extra);
+            return entry.parent ? entry.san : entry.label;
+        }
+        if (role == markerRole) {
+            return marker_ ? marker_(*id) : QString{};
         }
         if (role == Qt::ToolTipRole || role == Qt::AccessibleTextRole) {
+            const QString extra = description_ ? description_(*id) : QString{};
             const auto text = entry.label +
-                              (extra.isEmpty() ? QString{} : QStringLiteral(" · ") + extra) +
+                              (extra.isEmpty() ? QString{} : QLatin1Char('\n') + extra) +
                               (entry.notes.isEmpty() ? QString{} : QLatin1Char('\n') + entry.notes);
             return role == Qt::ToolTipRole ? text.toHtmlEscaped() : text;
         }
@@ -129,6 +132,7 @@ class TimelineModel final : public QAbstractTableModel {
 
   public:
     std::function<QString(chess::NodeId)> description_;
+    std::function<QString(chess::NodeId)> marker_;
     std::function<QColor(chess::NodeId)> accent_;
 
   private:
@@ -145,13 +149,31 @@ class TimelineDelegate final : public QStyledItemDelegate {
     explicit TimelineDelegate(QObject* parent) : QStyledItemDelegate(parent) {}
     void paint(QPainter* painter, const QStyleOptionViewItem& option,
                const QModelIndex& index) const override {
-        QStyledItemDelegate::paint(painter, option, index);
+        const auto marker = index.data(markerRole).toString();
+        auto content = option;
+        const int markerWidth =
+            marker.isEmpty() ? 0 : option.fontMetrics.horizontalAdvance(marker) + 20;
+        content.rect.adjust(0, 0, -markerWidth, 0);
+        QStyledItemDelegate::paint(painter, content, index);
         const auto color = index.data(accentRole).value<QColor>();
+        painter->save();
+        painter->setFont(option.font);
+        if (!marker.isEmpty()) {
+            const QRect badge(option.rect.right() - markerWidth, option.rect.top(), markerWidth,
+                              option.rect.height());
+            painter->fillRect(badge, index.data(currentPositionRole).toBool()
+                                         ? option.palette.highlight()
+                                         : option.palette.base());
+            painter->setPen(color.isValid() ? color : option.palette.text().color());
+            painter->drawText(badge.adjusted(2, 0, -8, 0), Qt::AlignRight | Qt::AlignVCenter,
+                              marker);
+        }
         if (color.isValid()) {
             painter->fillRect(QRect(option.rect.right() - 3, option.rect.top() + 3, 3,
                                     std::max(1, option.rect.height() - 6)),
                               color);
         }
+        painter->restore();
     }
     void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
         QStyledItemDelegate::initStyleOption(option, index);
@@ -175,6 +197,8 @@ MoveTimeline::MoveTimeline(QWidget* parent) : QTableView(parent), moves_(new Tim
     setItemDelegate(new TimelineDelegate(this));
     setSelectionBehavior(SelectItems);
     verticalHeader()->hide();
+    verticalHeader()->setDefaultSectionSize(34);
+    setShowGrid(false);
     horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
@@ -237,6 +261,9 @@ void MoveTimeline::setSnapshot(std::shared_ptr<const app::NavigationTree> tree,
 }
 void MoveTimeline::setMoveDescription(std::function<QString(chess::NodeId)> description) {
     moves_->description_ = std::move(description);
+}
+void MoveTimeline::setMoveMarker(std::function<QString(chess::NodeId)> marker) {
+    moves_->marker_ = std::move(marker);
 }
 void MoveTimeline::setMoveAccent(std::function<QColor(chess::NodeId)> accent) {
     moves_->accent_ = std::move(accent);

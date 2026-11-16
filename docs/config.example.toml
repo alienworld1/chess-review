@@ -3,6 +3,11 @@
 # Budgets and thresholds are provisional tuning values, not calibrated guarantees.
 version = 1
 
+# Show the technical inspector and engine protocol details. Restart to apply.
+# This only changes presentation; review results and cache reuse are unchanged.
+[ui]
+verbose = false
+
 [analysis.fast]
 quickScanNodes = 50000
 deepeningNodes = 500000

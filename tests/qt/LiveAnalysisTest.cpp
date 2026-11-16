@@ -661,6 +661,11 @@ class LiveAnalysisTest final : public QObject {
         QCOMPARE(bar->height(), static_cast<int>(board->boardRect().height()));
         QCOMPARE(board->boardRect().width(), board->boardRect().height());
         QVERIFY(board->boardRect().width() >= 240);
+        const auto* evaluation = a.window.findChild<QWidget*>(QStringLiteral("engineEvaluation"));
+        const auto* continuation = a.window.findChild<QWidget*>(QStringLiteral("enginePv"));
+        QVERIFY(evaluation && continuation);
+        QVERIFY(evaluation->mapTo(&a.window, evaluation->rect().topRight()).x() <
+                continuation->mapTo(&a.window, continuation->rect().topLeft()).x());
         for (const auto* name :
              {"startEngineAnalysis", "stopEngineAnalysis", "engineEvaluation", "enginePv"}) {
             const auto* control = a.window.findChild<QWidget*>(QString::fromLatin1(name));

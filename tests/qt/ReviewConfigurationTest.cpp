@@ -239,6 +239,23 @@ class ReviewConfigurationTest final : public QObject {
         QVERIFY(!changed->values.conversion.preferWdl);
         QCOMPARE(changed->values.conversion.fallbackScaleCp, 200);
     }
+    void verboseIsPresentationOnly() {
+        const auto defaults = valid("");
+        const auto quiet = valid("[ui]\nverbose=false\n");
+        const auto verbose = valid("[ui]\nverbose=true\n");
+        QVERIFY(defaults && quiet && verbose);
+        QVERIFY(!defaults->ui.verbose);
+        QVERIFY(!quiet->ui.verbose);
+        QVERIFY(verbose->ui.verbose);
+        QCOMPARE(verbose->values, defaults->values);
+        QCOMPARE(verbose->identities.analysis, defaults->identities.analysis);
+        QCOMPARE(verbose->identities.classification, defaults->identities.classification);
+        QCOMPARE(verbose->identities.conversion, defaults->identities.conversion);
+        for (const auto* invalid :
+             {"[ui]\nverbose='true'", "[ui]\nverbose=1", "[ui]\nunknown=true", "ui=true"}) {
+            QVERIFY(std::holds_alternative<config::Diagnostics>(config::parse(invalid)));
+        }
+    }
     void invalidConfiguration_data() {
         QTest::addColumn<QByteArray>("contents");
         for (const auto* input : {"version=2",

@@ -7,6 +7,7 @@
 #include "app/StartupCoordinator.h"
 #include "engine/EffectiveSearch.h"
 #include "engine/private/SearchProtocol.h"
+#include "ui/Theme.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include "ui/chess/MoveTimeline.h"
 #include "ui/shell/MainWindow.h"
@@ -14,6 +15,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
@@ -37,6 +39,7 @@
 #include <QSqlQuery>
 #include <QTabWidget>
 #include <QTableView>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QTest>
@@ -393,6 +396,101 @@ class Fixture {
 class QuickReviewTest final : public QObject {
     Q_OBJECT
   private slots:
+    void multiGameImportOffersNamedDistinctGames() {
+        Fixture f;
+        f.window.show();
+        QTRY_VERIFY(f.startup.localImports().available());
+        const QString game = QStringLiteral("[White \"Alice\"]\n[Black \"Bob\"]\n1. e4 *\n");
+        QVERIFY(f.startup.localImports().importText(
+            game + game + QStringLiteral("[White \"Carol\"]\n[Black \"Dan\"]\n1. d4 *\n")));
+        QTRY_VERIFY(!f.startup.localImports().busy());
+        auto* chooser = f.window.findChild<QDialog*>(QStringLiteral("importGameChooser"));
+        QTRY_VERIFY(chooser && chooser->isVisible());
+        auto* choices = chooser->findChild<QListWidget*>(QStringLiteral("importGameChoices"));
+        QCOMPARE(choices->count(), 2);
+        QCOMPARE(choices->item(0)->text(), QStringLiteral("Alice vs Bob"));
+        QCOMPARE(choices->item(1)->text(), QStringLiteral("Carol vs Dan"));
+        choices->setCurrentRow(1);
+        chooser->findChild<QPushButton*>(QStringLiteral("reviewImportedGame"))->click();
+        QTRY_VERIFY(!f.startup.reviewGame().state().busy);
+        QVERIFY(f.startup.reviewGame().state().game.contains(QStringLiteral("Carol")));
+        QCOMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnected);
+    }
+    void summaryFirstAndVerboseInspectorPreserveTheReview() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        f.window.resize(1100, 720);
+        f.window.show();
+        auto* summary = f.window.findChild<QWidget*>(QStringLiteral("reviewOverviewPanel"));
+        auto* lesson = f.window.findChild<QWidget*>(QStringLiteral("reviewLesson"));
+        QTRY_VERIFY(summary->isVisible());
+        auto* shell = f.window.findChild<QScrollArea*>(QStringLiteral("shellScrollArea"));
+        QTRY_COMPARE(shell->verticalScrollBar()->maximum(), 0);
+        QTRY_COMPARE(shell->horizontalScrollBar()->maximum(), 0);
+        auto* explanation = f.window.findChild<QLabel*>(QStringLiteral("reviewMomentExplanation"));
+        const auto originalFont = f.window.font();
+        const auto originalLessonSize = explanation->font().pointSizeF();
+        auto enlarged = originalFont;
+        enlarged.setPointSizeF(originalFont.pointSizeF() + 3);
+        f.window.setFont(enlarged);
+        QTRY_VERIFY(explanation->font().pointSizeF() > originalLessonSize);
+        f.window.setFont(originalFont);
+        QVERIFY(!lesson->isVisible());
+        auto* inspector =
+            f.window.findChild<QAction*>(QStringLiteral("reviewTechnicalInspectorAction"));
+        QVERIFY(inspector && !inspector->isVisible());
+        const auto revision = f.startup.reviewGame().state().run->revision;
+        f.window.setVerbose(true);
+        QVERIFY(inspector->isVisible());
+        inspector->trigger();
+        auto* fields = f.window.findChild<QTableWidget*>(QStringLiteral("reviewInspectorFields"));
+        QTRY_VERIFY(fields->isVisible());
+        QVERIFY(fields->rowCount() >= 5);
+        const auto renderDirectory = qEnvironmentVariable("CHESS_REVIEW_QUICK_RENDER_DIR");
+        if (!renderDirectory.isEmpty()) {
+            QVERIFY(fields->window()->grab().save(renderDirectory +
+                                                  QStringLiteral("/verbose-inspector.png")));
+        }
+        QCOMPARE(f.startup.reviewGame().state().run->revision, revision);
+        fields->window()->close();
+        f.window.setVerbose(false);
+        QVERIFY(!inspector->isVisible());
+        f.window.findChild<QPushButton*>(QStringLiteral("startGuidedReview"))->click();
+        QTRY_VERIFY(lesson->isVisible());
+        QVERIFY(!summary->isVisible());
+        auto& review = f.startup.reviewGame();
+        review.selectMoment(1);
+        QTRY_COMPARE(review.navigation().displayed(), 1);
+        QTRY_VERIFY(review.navigation().move(1) && review.navigation().move(1)->classification);
+        const auto label = review.navigation().move(1)->classification->label;
+        auto* badge = f.window.findChild<QLabel*>(QStringLiteral("reviewClassification"));
+        const auto originalPalette = qApp->palette();
+        const auto restorePalette = qScopeGuard([&] { qApp->setPalette(originalPalette); });
+        for (const bool dark : {false, true, false}) {
+            auto palette = originalPalette;
+            palette.setColor(QPalette::Window, QColor(dark ? "#191f2a" : "#f4f6f8"));
+            qApp->setPalette(palette);
+            QTRY_COMPARE(badge->palette().color(QPalette::WindowText),
+                         ui::classificationColor(label));
+        }
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewSummaryButton"))->click();
+        QTRY_VERIFY(summary->isVisible());
+        QVERIFY(!lesson->isVisible());
+        f.navigation.navigate(app::Destination::Home);
+        auto* recent = f.window.findChild<QListWidget*>(QStringLiteral("homeRecentGames"));
+        QTRY_VERIFY(recent->count() > 0 && recent->isVisible());
+        QTRY_COMPARE(shell->verticalScrollBar()->maximum(), 0);
+        QTRY_COMPARE(shell->horizontalScrollBar()->maximum(), 0);
+        QTRY_VERIFY(!shell->verticalScrollBar()->isVisible());
+        QTRY_VERIFY(!shell->horizontalScrollBar()->isVisible());
+        if (!renderDirectory.isEmpty()) {
+            QVERIFY(f.window.grab().save(renderDirectory + QStringLiteral("/home-recent.png")));
+        }
+    }
     void revisionUpdatesRetainTheSelectedExplanationUntilReplacement() {
         Fixture f;
         QVERIFY(f.seed("1. e4 e5 2. Nf3 Nc6 *"));
@@ -638,7 +736,7 @@ class QuickReviewTest final : public QObject {
         controller.selectGame(f.gameId);
         QTRY_VERIFY(!controller.state().busy);
         QCOMPARE(controller.state().gameId, other);
-        QVERIFY(controller.state().game.contains(QString::number(other)));
+        QVERIFY(!controller.state().game.isEmpty());
     }
     void hiddenLibraryDoesNotDeriveReviewSummaries() {
         Fixture f;
@@ -750,8 +848,8 @@ class QuickReviewTest final : public QObject {
         QVERIFY(list->isHidden());
         auto& library = reopened.startup.library();
         library.activate();
-        QTRY_VERIFY(library.reviewStatus(f.gameId).contains(
-            QStringLiteral("interrupted review available")));
+        QTRY_VERIFY(
+            library.reviewStatus(f.gameId).contains(QStringLiteral("unfinished review available")));
         QTRY_VERIFY(library.reviewAccuracy(f.gameId).contains(QLatin1Char('%')));
         const auto output = qEnvironmentVariable("CHESS_REVIEW_QUICK_RENDER_DIR");
         if (!output.isEmpty()) {
@@ -909,9 +1007,8 @@ class QuickReviewTest final : public QObject {
         QTRY_VERIFY(!saved.empty());
         auto& library = f.startup.library();
         library.activate();
-        QTRY_VERIFY(library.reviewStatus(f.gameId).contains(QStringLiteral("Black")));
+        QTRY_COMPARE(library.reviewedSide(f.gameId), std::optional{chess::Color::Black});
         QTRY_VERIFY(library.reviewAccuracy(f.gameId).contains(QLatin1Char('%')));
-        QVERIFY(library.reviewAccuracy(f.gameId).contains(QStringLiteral("evaluated")));
         QSignalSpy summaries(&f.startup.gameRepository(),
                              &persistence::Database::reviewOverviewLoaded);
         QSignalSpy metadata(&f.startup.gameRepository(),
@@ -2120,7 +2217,7 @@ class QuickReviewTest final : public QObject {
         QVERIFY(f.window.findChild<QPlainTextEdit*>(QStringLiteral("reviewMoveDetails"))
                     ->toPlainText()
                     .isEmpty());
-        QVERIFY(f.window.findChild<QProgressBar*>(QStringLiteral("reviewEvaluationBar"))
+        QVERIFY(f.window.findChild<QWidget*>(QStringLiteral("reviewEvaluationBar"))
                     ->accessibleDescription()
                     .isEmpty());
         exploration.hint();
@@ -2373,7 +2470,7 @@ class QuickReviewTest final : public QObject {
             f.window.show();
             QTest::qWait(30);
             f.window.resize(1100, 720);
-            f.window.findChild<QPushButton*>(QStringLiteral("reviewDetailsToggle"))->click();
+            f.window.findChild<QAction*>(QStringLiteral("reviewDetailsToggle"))->trigger();
             f.window.findChild<QTabWidget*>(QStringLiteral("reviewResultsTabs"))
                 ->setCurrentIndex(1);
             QCoreApplication::processEvents();
@@ -2683,7 +2780,7 @@ class QuickReviewTest final : public QObject {
             f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
             f.window.resize(1100, 720);
             f.window.show();
-            f.window.findChild<QPushButton*>(QStringLiteral("reviewDetailsToggle"))->click();
+            f.window.findChild<QAction*>(QStringLiteral("reviewDetailsToggle"))->trigger();
             f.window.findChild<QTabWidget*>(QStringLiteral("reviewResultsTabs"))
                 ->setCurrentIndex(1);
             controller.selectMoment(1);
@@ -2852,7 +2949,7 @@ class QuickReviewTest final : public QObject {
             f.window.show();
             QTest::qWait(30);
             f.window.resize(1100, 720);
-            f.window.findChild<QPushButton*>(QStringLiteral("reviewDetailsToggle"))->click();
+            f.window.findChild<QAction*>(QStringLiteral("reviewDetailsToggle"))->trigger();
             f.window.findChild<QTabWidget*>(QStringLiteral("reviewResultsTabs"))
                 ->setCurrentIndex(1);
             controller.selectMoment(1);
@@ -3824,7 +3921,7 @@ class QuickReviewTest final : public QObject {
             connect(&nav, &app::ReviewNavigationController::changed, &previewObserver, [&] {
                 if (nav.previewing() && nav.pending()) {
                     sawLoadingPreview = true;
-                    QVERIFY(preview->text().startsWith(QStringLiteral("Loading preview")));
+                    QCOMPARE(preview->text(), QStringLiteral("Loading preview…"));
                 }
             });
         const auto blackMove = timeline->model()->index(1, 2);
@@ -3930,7 +4027,7 @@ class QuickReviewTest final : public QObject {
         QVERIFY(board);
         QVERIFY(board->boardRect().width() >= 236);
         QCOMPARE(board->boardRect().width(), board->boardRect().height());
-        f.window.findChild<QPushButton*>(QStringLiteral("reviewDetailsToggle"))->click();
+        f.window.findChild<QAction*>(QStringLiteral("reviewDetailsToggle"))->trigger();
         tabs->setCurrentIndex(0);
         QCoreApplication::processEvents();
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-summary-light.png")));

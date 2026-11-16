@@ -36,7 +36,8 @@ characters. See [parser compatibility](pgn.md) for notation rules.
 
 ## Progress and results
 
-Submitting an import opens Games. You can navigate elsewhere and return while
+Submitting an import opens Games to show progress. A completed single-game import
+continues to review setup; multiple imported games offer a game chooser. You can navigate elsewhere and return while
 it runs. Only one batch runs at a time; new import controls are disabled until it
 finishes. The batch is limited to **32 files, 64 MiB read in total, 10,000 attempted
 games, and 1,000 retained warnings**. Each game's existing parser/tree limits
@@ -49,7 +50,7 @@ errors skip that game; an unrecoverable tail stops that file. A storage failure
 stops the entire batch. Reaching the game limit leaves subsequent files visibly
 unprocessed. Empty input reports **No games found**.
 
-The results table lists each source and its per-game outcomes. Select a row for
+Choose **Import report** to open the results table. It lists each source and its per-game outcomes. Select a row for
 copyable diagnostic details, including source byte ranges, line/byte-column
 locations, warnings, and suppression counts. The latest batch's report remains
 available while navigating, until another batch is submitted or the app exits.

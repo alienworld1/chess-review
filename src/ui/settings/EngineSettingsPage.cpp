@@ -1,6 +1,9 @@
 #include "ui/settings/EngineSettingsPage.h"
 #include "ui/EngineText.h"
+#include "ui/Theme.h"
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -34,11 +37,11 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     : QWidget(parent), controller_(controller) {
     setObjectName(QStringLiteral("settingsPage"));
     auto* layout = new QVBoxLayout(this);
-    layout->addWidget(plainLabel(this, tr("Settings — Engines")));
+    auto* heading = plainLabel(this, tr("Chess engines"));
+    setTextRole(*heading, "title");
+    layout->addWidget(heading);
     layout->addWidget(
-        plainLabel(this, tr("Add a UCI engine installed on your computer. Executables stay in "
-                            "their current location. Saved validation times describe past checks; "
-                            "engines do not run when this page opens.")));
+        plainLabel(this, tr("Choose an engine installed on your computer, such as Stockfish.")));
     profiles_ = new QTableWidget(0, 4, this);
     profiles_->setObjectName(QStringLiteral("engineProfiles"));
     profiles_->setAccessibleName(tr("Registered engines"));
@@ -63,7 +66,19 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     detailsTabs_ = new QTabWidget(this);
     detailsTabs_->setMaximumHeight(170);
     detailsTabs_->addTab(details_, tr("Saved profile"));
-    layout->addWidget(detailsTabs_);
+    auto* technical = new QDialog(this);
+    technical->setObjectName(QStringLiteral("engineTechnicalInspector"));
+    technical->setWindowTitle(tr("Engine details"));
+    technical->resize(640, 480);
+    auto* technicalLayout = new QVBoxLayout(technical);
+    technicalLayout->addWidget(detailsTabs_);
+    inspector_ = new QPushButton(tr("Technical inspector"), this);
+    inspector_->setObjectName(QStringLiteral("engineInspectorButton"));
+    layout->addWidget(inspector_, 0, Qt::AlignLeft);
+    connect(inspector_, &QPushButton::clicked, technical, &QDialog::show);
+    auto* close = new QDialogButtonBox(QDialogButtonBox::Close, technical);
+    technicalLayout->addWidget(close);
+    connect(close, &QDialogButtonBox::rejected, technical, &QDialog::reject);
     auto* connectionActions = new QHBoxLayout;
     connect_ = new QPushButton(tr("&Connect"), this);
     connect_->setObjectName(QStringLiteral("connectEngine"));
@@ -111,7 +126,7 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     layout->addLayout(pagination);
     listError_ = plainLabel(this);
     layout->addWidget(listError_);
-    browse_ = new QPushButton(tr("Choose &Executable…"), this);
+    browse_ = new QPushButton(tr("Choose &engine…"), this);
     browse_->setObjectName(QStringLiteral("chooseEngine"));
     layout->addWidget(browse_, 0, Qt::AlignLeft);
     path_ = new QPlainTextEdit(this);
@@ -124,10 +139,11 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     message_->setObjectName(QStringLiteral("engineRegistrationMessage"));
     layout->addWidget(message_);
     auto* actions = new QHBoxLayout;
-    add_ = new QPushButton(tr("&Validate and Add"), this);
+    add_ = new QPushButton(tr("&Add engine"), this);
     add_->setObjectName(QStringLiteral("registerEngine"));
     cancel_ = new QPushButton(tr("Cancel"), this);
     cancel_->setObjectName(QStringLiteral("cancelEngineRegistration"));
+    setPrimaryAction(*add_);
     actions->addWidget(add_);
     actions->addWidget(cancel_);
     actions->addStretch();
@@ -164,7 +180,15 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
             [this] { controller_.refresh(controller_.state().offset); });
     connect(&controller_, &app::EngineSettingsController::changed, this,
             &EngineSettingsPage::updateState);
+    setVerbose(false);
     updateState();
+}
+void EngineSettingsPage::setVerbose(bool verbose) {
+    verbose_ = verbose;
+    inspector_->setVisible(verbose);
+    profiles_->setColumnHidden(1, !verbose);
+    profiles_->setColumnHidden(3, !verbose);
+    updateRuntime();
 }
 void EngineSettingsPage::updateState() {
     const auto& state = controller_.state();
@@ -277,10 +301,10 @@ void EngineSettingsPage::updateRuntime() {
         status = tr("Starting…");
         break;
     case RuntimePhase::Handshaking:
-        status = tr("Handshaking…");
+        status = tr("Connecting…");
         break;
     case RuntimePhase::Ready:
-        status = tr("Ready — handshake completed; no analysis requested.");
+        status = tr("Ready");
         break;
     case RuntimePhase::Disconnecting:
         status = tr("Disconnecting…");
@@ -296,7 +320,7 @@ void EngineSettingsPage::updateRuntime() {
     if (state.runtime.error) {
         status += QStringLiteral("\n") + state.runtime.error->message;
     }
-    if (state.runtime.discovery) {
+    if (verbose_ && state.runtime.discovery) {
         const auto& value = *state.runtime.discovery;
         const auto yesNo = [](bool supported) { return supported ? tr("Yes") : tr("No"); };
         status += tr("\nAdvertised support — MultiPV: %1; WDL: %2; Threads: %3; Hash: %4")

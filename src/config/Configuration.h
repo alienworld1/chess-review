@@ -21,11 +21,16 @@ struct Identities {
     QByteArray conversion;
     QByteArray analysis;
 };
+// Presentation preferences do not participate in persisted review/cache identities.
+struct UiConfiguration {
+    bool verbose = false;
+};
 struct ValidatedConfiguration {
     review::Configuration values;
     Identities identities;
     // Version 1 is retained only for decoding/resuming released settings.
     std::uint32_t classificationIdentityVersion = 2;
+    UiConfiguration ui;
 };
 using Result = std::variant<std::shared_ptr<const ValidatedConfiguration>, Diagnostics>;
 [[nodiscard]] Result validate(const review::Configuration& values,

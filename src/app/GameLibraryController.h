@@ -15,7 +15,8 @@ class GameLibraryController final : public QObject {
   public:
     explicit GameLibraryController(persistence::Database& database, QObject* parent = nullptr);
     void setReady(bool ready);
-    void activate();
+    // Home only needs recent games, without deriving review summaries.
+    void activate(bool reviewDetails = true);
     void deactivate();
     void open(persistence::GameId id);
     bool opening() const { return !pendingOpen_.isNull(); }
@@ -23,6 +24,7 @@ class GameLibraryController final : public QObject {
     void importedGame();
     QString reviewStatus(persistence::GameId id) const;
     QString reviewAccuracy(persistence::GameId id) const;
+    std::optional<chess::Color> reviewedSide(persistence::GameId id) const;
     void previous();
     void next();
     const std::vector<persistence::GameSummary>& rows() const { return rows_; }
@@ -67,6 +69,7 @@ class GameLibraryController final : public QObject {
     std::uint64_t requestedRevision_ = 0;
     bool ready_ = false;
     bool active_ = false;
+    bool reviewDetails_ = true;
     bool pageStale_ = true;
     bool hasNext_ = false;
 };

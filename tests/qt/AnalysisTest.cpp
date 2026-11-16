@@ -279,7 +279,7 @@ void AnalysisTest::controlsReference() {
     page.show();
     auto* options = page.findChild<QToolButton*>(QStringLiteral("boardOptionsButton"));
     QVERIFY(options);
-    options->menu()->actions().back()->trigger();
+    page.findChild<QAction*>(QStringLiteral("boardControlsHelp"))->trigger();
     auto* dialog = page.findChild<QDialog*>(QStringLiteral("boardControlsDialog"));
     QVERIFY(dialog && dialog->isVisible());
     auto* reference = dialog->findChild<QTextBrowser*>();

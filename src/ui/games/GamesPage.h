@@ -19,6 +19,7 @@ class GamesPage final : public QWidget {
   public:
     GamesPage(app::ImportController& imports, app::GameLibraryController& library,
               QAction& fileAction, QAction& pasteAction, QWidget* parent = nullptr);
+    void setVerbose(bool verbose);
 
   signals:
     void reviewRequested(chess_review::persistence::GameId id);
@@ -49,7 +50,9 @@ class GamesPage final : public QWidget {
     QPushButton* review_;
     QPushButton* cancel_;
     QPlainTextEdit* details_;
+    QPushButton* report_;
     QString detailText_;
+    bool verbose_ = false;
     QTimer* updateTimer_;
 };
 } // namespace chess_review::ui

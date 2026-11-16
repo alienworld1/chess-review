@@ -314,6 +314,8 @@ void ImportTest::progressPreservesReading() {
     auto* results = page.findChild<QTableView*>(QStringLiteral("importResults"));
     auto* details = page.findChild<QPlainTextEdit*>(QStringLiteral("importDetails"));
     QTRY_COMPARE(results->model()->rowCount(), 41);
+    page.findChild<QPushButton*>(QStringLiteral("importReportButton"))->click();
+    QTRY_VERIFY(results->isVisible());
     results->setCurrentIndex(results->model()->index(1, 0));
     auto cursor = details->textCursor();
     cursor.select(QTextCursor::Document);
@@ -331,7 +333,7 @@ void ImportTest::progressPreservesReading() {
     QCOMPARE(results->verticalScrollBar()->value(), scroll);
     QVERIFY(page.findChild<QLabel*>(QStringLiteral("importStatus"))
                 ->text()
-                .startsWith(QStringLiteral("Import completed with errors")));
+                .contains(QStringLiteral("40 failed")));
     QCOMPARE(results->model()->data(results->model()->index(0, 2)).toString(),
              QStringLiteral("Completed with errors"));
     QVERIFY(fixture.startup.localImports().importText(QStringLiteral("1.d4 *")));
@@ -677,6 +679,8 @@ void ImportTest::desktopPasteAndDrop() {
                                          QAbstractItemModelTester::FailureReportingMode::QtTest);
     results->setCurrentIndex(results->model()->index(1, 0));
     auto* details = window.findChild<QPlainTextEdit*>(QStringLiteral("importDetails"));
+    QVERIFY(!details->toPlainText().contains(QStringLiteral("Source byte range")));
+    window.setVerbose(true);
     QVERIFY(details->toPlainText().contains(QStringLiteral("Source byte range")));
     navigation.navigate(app::Destination::Analyze);
     navigation.navigate(app::Destination::Games);
@@ -805,9 +809,13 @@ void ImportTest::layouts() {
     QCOMPARE(page.size(), size);
     QVERIFY(table->width() > 200);
     QVERIFY(table->height() > 50);
-    QVERIFY(results->height() > 30);
     QVERIFY(page.rect().contains(QRect(table->mapTo(&page, QPoint{}), table->size())));
-    QVERIFY(page.rect().contains(QRect(results->mapTo(&page, QPoint{}), results->size())));
+    QVERIFY(!results->isVisible());
+    page.findChild<QPushButton*>(QStringLiteral("importReportButton"))->click();
+    QTRY_VERIFY(results->isVisible());
+    QVERIFY(results->height() > 30);
+    QVERIFY(results->window()->rect().contains(
+        QRect(results->mapTo(results->window(), QPoint{}), results->size())));
     const auto directory = qEnvironmentVariable("CHESS_REVIEW_SCREENSHOT_DIR");
     if (!directory.isEmpty()) {
         QVERIFY(page.grab().save(directory + QStringLiteral("/import-%1x%2-%3.png")

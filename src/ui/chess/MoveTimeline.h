@@ -17,6 +17,7 @@ class MoveTimeline : public QTableView {
                      const std::vector<chess::NodeId>& line, std::uint64_t session,
                      chess::NodeId current, std::optional<chess::NodeId> pending, bool enabled);
     void setMoveDescription(std::function<QString(chess::NodeId)> description);
+    void setMoveMarker(std::function<QString(chess::NodeId)> marker);
     void setMoveAccent(std::function<QColor(chess::NodeId)> accent);
     void setHoverPreview(bool enabled);
     std::optional<app::NavigationTarget> targetAt(const QPoint& point) const;

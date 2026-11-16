@@ -29,7 +29,7 @@ GameImportService::GameImportService(Database& database, QObject* parent)
                 ImportOutcome outcome =
                     std::visit([](const auto& value) -> ImportOutcome { return value; }, result);
                 report_.items.push_back({ordinal_, std::move(outcome), range_, std::move(warnings_),
-                                         suppressedWarnings_});
+                                         suppressedWarnings_, std::move(title_)});
                 emit progress(report_.request, report_.items.back());
                 if (std::holds_alternative<GameError>(result)) {
                     finish(ImportStatus::Failed);
@@ -100,6 +100,26 @@ void GameImportService::next() {
 }
 void GameImportService::parsed(pgn::PgnOutcome outcome) {
     if (auto* document = std::get_if<pgn::PgnDocument>(&outcome)) {
+        QString white = tr("White");
+        QString black = tr("Black");
+        const auto playerName = [](const std::string& value) {
+            auto text =
+                QString::fromUtf8(value.data(),
+                                  static_cast<qsizetype>(std::min<std::size_t>(value.size(), 640)))
+                    .left(160);
+            if (!text.isEmpty() && text.back().isHighSurrogate()) {
+                text.chop(1);
+            }
+            return text.simplified();
+        };
+        for (const auto& tag : document->tags) {
+            if (tag.name == "White") {
+                white = playerName(tag.value);
+            } else if (tag.name == "Black") {
+                black = playerName(tag.value);
+            }
+        }
+        title_ = tr("%1 vs %2").arg(white, black);
         ordinal_ = document->ordinal;
         report_.attemptedGames = ordinal_;
         range_ = document->range;
