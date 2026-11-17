@@ -5,6 +5,7 @@
 #include "review/Classification.h"
 #include "review/Comparison.h"
 #include "review/Intelligence.h"
+#include "review/Retry.h"
 #include "review/Review.h"
 #include "review/Summary.h"
 #include <QByteArray>
@@ -171,6 +172,7 @@ struct ReviewExploration {
     review::PositionEvidence evidence;
     std::optional<review::MoveEvidence> deep;
     std::optional<review::MoveEvidence> verified;
+    std::optional<review::RetryHint> retryHint;
     std::vector<QString> candidateSans;
     // Root PVs stay in evidence; only the played-plus-reply line needs separate storage.
     std::vector<chess::Move> playedContinuation;

@@ -2213,6 +2213,8 @@ StorageSession::loadReviewExploration(ReviewId id, std::int64_t revision, int in
             (stage == out->move.comparisonStages[0] ? out->deep : out->verified) =
                 std::move(pair->pair);
         }
+        out->retryHint =
+            review::retryHint(*root, *out->deep, *out->verified, run.settings.configuration.values);
     }
     if (!tx.commit()) {
         return storage();

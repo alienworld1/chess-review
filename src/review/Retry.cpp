@@ -1,4 +1,5 @@
 #include "review/Retry.h"
+#include "review/Intelligence.h"
 #include <algorithm>
 #include <cmath>
 namespace chess_review::review {
@@ -114,5 +115,72 @@ RetryResult gradeRetry(const chess::Position& root, chess::Move attempted, const
         return {};
     }
     return {b, vg->value};
+}
+std::optional<RetryHint> retryHint(const chess::Position& root, const MoveEvidence& deep,
+                                   const MoveEvidence& verified, const Configuration& config) {
+    if (verified.before.candidates.empty() ||
+        verified.before.candidates.front().continuation.empty()) {
+        return {};
+    }
+    const auto best = verified.before.candidates.front().continuation.front();
+    if (gradeRetry(root, best, deep, verified, config).grade != RetryGrade::Best) {
+        return {};
+    }
+    const auto piece = root.pieceAt(best.from);
+    if (!piece) {
+        return {};
+    }
+    RetryHint hint{RetryIdea::General, best, piece->type};
+    const auto older = tacticalFacts(root, deep, config);
+    const auto newer = tacticalFacts(root, verified, config);
+    // Explicit priority makes the idea independent of detector output order. Matching
+    // concrete witnesses does not establish that every defence has this consequence.
+    for (const auto kind :
+         {TacticalKind::Checkmate, TacticalKind::Fork, TacticalKind::HangingPiece,
+          TacticalKind::Promotion, TacticalKind::Exchange, TacticalKind::Material}) {
+        for (const auto& fact : newer) {
+            if (fact.kind != kind || fact.source != FactSource::Best ||
+                fact.beneficiary != root.sideToMove() ||
+                ((kind == TacticalKind::Promotion || kind == TacticalKind::Exchange ||
+                  kind == TacticalKind::Material) &&
+                 !fact.retainedOpportunity)) {
+                continue;
+            }
+            const bool matches = std::any_of(older.begin(), older.end(), [&](const auto& old) {
+                return old.kind == fact.kind && old.source == fact.source &&
+                       old.beneficiary == fact.beneficiary && old.actor == fact.actor &&
+                       old.square == fact.square && old.targets == fact.targets &&
+                       old.material == fact.material &&
+                       old.retainedOpportunity == fact.retainedOpportunity;
+            });
+            if (!matches) {
+                continue;
+            }
+            switch (kind) {
+            case TacticalKind::Checkmate:
+                hint.idea = RetryIdea::Checkmate;
+                break;
+            case TacticalKind::Fork:
+                hint.idea = RetryIdea::Fork;
+                break;
+            case TacticalKind::HangingPiece:
+                hint.idea = RetryIdea::HangingPiece;
+                break;
+            case TacticalKind::Promotion:
+                hint.idea = RetryIdea::Promotion;
+                break;
+            case TacticalKind::Exchange:
+                hint.idea = RetryIdea::Exchange;
+                break;
+            case TacticalKind::Material:
+                hint.idea = RetryIdea::Material;
+                break;
+            case TacticalKind::Sacrifice:
+                break;
+            }
+            return hint;
+        }
+    }
+    return hint;
 }
 } // namespace chess_review::review

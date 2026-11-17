@@ -28,8 +28,21 @@ stronger alternative when available.
 
 - **Continue** advances through important moments in chronological order.
   **Finish review** returns to the summary.
-- **Try Again** hides the solution and lets you play a move. Ask for a hint,
-  show the solution, or cancel practice at any time.
+- **Try Again** restores the position before your decision and hides the solution.
+  It is available for your stable errors, including verified missed opportunities.
+  Play any legal candidate: **Best** and objectively equivalent **Strong** moves
+  receive credit, followed by a brief success state and a return to the lesson.
+  **Okay** or **Try Again** gives feedback and resets the decision position.
+  Uncertain analysis stays ungraded rather than marking your move wrong.
+- **Hint** reveals a chess idea when supported, then the piece, then the destination
+  and promotion choice. Hints remain visible across attempts. When no reliable
+  tactical idea is available, the first hint offers a general thinking prompt.
+- **Show Solution** ends practice and opens the supported best continuation at the
+  decision position. Step through it with **Next**/**Previous**; it does not autoplay.
+  **Return to Game** restores the lesson. Cancelling practice or completing it also
+  restores your expanded details, reading position, and keyboard focus.
+  **Escape** dismisses an active chooser or board gesture first, then cancels practice
+  or returns from a line preview.
 - **Show Line** replays an analyzed continuation. Use the board navigation
   controls to step through it, then **Return to Game**.
 - **Analyze Position** opens free analysis. **Back to Review** returns to the
@@ -48,6 +61,13 @@ not the only way to identify a classification.
 The slim chess evaluation bar shows **White's expected score**, including draws.
 It is not a win probability or pawn evaluation. Hover for its value and whether
 it is approximate. Missing or unsupported evaluations leave the bar unavailable.
+
+Retries use saved, comparable analysis first. An unknown candidate may need bounded
+analysis and independent verification with the original review engine and settings.
+If that engine is unavailable or the evidence remains inconclusive, you can try a
+different move, reveal the solution, or cancel. Practice does not change your saved
+game, classifications, accuracy, or review progress. Hints and attempts are not saved
+between sessions.
 
 ## Settings, history, and unfinished reviews
 

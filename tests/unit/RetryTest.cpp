@@ -1,6 +1,7 @@
 #include "review/Retry.h"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <initializer_list>
 #include <limits>
 using namespace chess_review;
 using namespace chess_review::review;
@@ -33,6 +34,24 @@ MoveEvidence original(const chess::Position& root, bool verified, int gap) {
     before.candidates.push_back({2, alt, {parsed(root, white ? "d2d4" : "d7d5")}, before.strength});
     return pairEvidence(root, played, before,
                         proof(after, 550, white ? "g8f6" : "b1c3", verified ? "va" : "da", nodes));
+}
+MoveEvidence hintEvidence(const chess::Position& root, std::initializer_list<const char*> line,
+                          const char* playedUci, bool verified) {
+    const auto nodes = verified ? 5000000U : 1000000U;
+    auto before = proof(root, 600, *line.begin(), verified ? "vb" : "db", nodes);
+    before.candidates.front().continuation.clear();
+    auto replay = root;
+    for (const auto uci : line) {
+        const auto move = parsed(replay, uci);
+        before.candidates.front().continuation.push_back(move);
+        REQUIRE(std::holds_alternative<std::monostate>(replay.play(move)));
+    }
+    const auto played = parsed(root, playedUci);
+    auto after = root;
+    REQUIRE(std::holds_alternative<std::monostate>(after.play(played)));
+    const auto reply = std::get<std::string>(after.uci(after.legalMoves().front()));
+    return pairEvidence(root, played, before,
+                        proof(after, 550, reply.c_str(), verified ? "va" : "da", nodes));
 }
 } // namespace
 TEST_CASE("Retry accepts demonstrated alternatives at exact WDL boundaries",
@@ -124,4 +143,80 @@ TEST_CASE("Retry drift includes the exact native WDL boundary", "[unit][review][
     const auto deep = original(root, false, 13);
     const auto verified = original(root, true, 33);
     CHECK(gradeRetry(root, parsed(root, "d2d4"), deep, verified, {}).grade == RetryGrade::Okay);
+}
+TEST_CASE("Retry hints fall back honestly and reject unsupported best moves",
+          "[unit][review][retry]") {
+    const auto root = chess::Position::initial();
+    const auto deep = original(root, false, 10);
+    auto verified = original(root, true, 10);
+    const auto hint = retryHint(root, deep, verified, {});
+    REQUIRE(hint);
+    CHECK(hint->idea == RetryIdea::General);
+    CHECK(hint->bestMove == parsed(root, "g1f3"));
+    CHECK(hint->piece == chess::PieceType::Knight);
+    CHECK(!retryHint(root, deep, deep, {}));
+    verified.before.candidates.front().continuation.clear();
+    CHECK(!retryHint(root, deep, verified, {}));
+    verified = original(root, true, 10);
+    verified.before.engineIdentity = "other";
+    CHECK(!retryHint(root, deep, verified, {}));
+}
+TEST_CASE("Retry idea hints require matching concrete witnesses in both passes",
+          "[unit][review][retry]") {
+    const auto root =
+        std::get<chess::Position>(chess::Position::fromFen("7k/8/8/3q4/8/8/8/K2R4 w - - 0 1"));
+    const auto deep = hintEvidence(root, {"d1d5", "h8g8"}, "a1b1", false);
+    const auto verified = hintEvidence(root, {"d1d5", "h8g8"}, "a1b1", true);
+    const auto hint = retryHint(root, deep, verified, {});
+    REQUIRE(hint);
+    CHECK(hint->idea == RetryIdea::HangingPiece);
+    // Identical best first moves and scores alone do not verify the later idea.
+    const auto shortPass = hintEvidence(root, {"d1d2"}, "a1b1", false);
+    const auto longPass =
+        hintEvidence(root, {"d1d2", "d5e6", "d2e2", "h8g8", "e2e6"}, "a1b1", true);
+    const auto fallback = retryHint(root, shortPass, longPass, {});
+    REQUIRE(fallback);
+    CHECK(fallback->idea == RetryIdea::General);
+}
+TEST_CASE("Retry hints use corrected tactical rules without rewriting historical evidence",
+          "[unit][review][retry]") {
+    const auto root =
+        std::get<chess::Position>(chess::Position::fromFen("7k/8/8/3q4/8/3R4/K7/3r4 w - - 0 1"));
+    const auto deep = hintEvidence(root, {"d3d5"}, "a2b2", false);
+    const auto verified = hintEvidence(root, {"d3d5"}, "a2b2", true);
+    const auto before = verified.before.position;
+    const auto hint = retryHint(root, deep, verified, {});
+    REQUIRE(hint);
+    CHECK(hint->idea == RetryIdea::General);
+    CHECK(verified.before.position == before);
+}
+TEST_CASE("Retry hints prefer mate over intermediate tactical consequences",
+          "[unit][review][retry]") {
+    const auto root = std::get<chess::Position>(
+        chess::Position::fromFen("5rk1/5ppp/8/8/8/3B1N2/5PPP/3Q2K1 w - - 0 1"));
+    const auto deep =
+        hintEvidence(root, {"d3h7", "g8h7", "f3g5", "h7g8", "d1h5", "g7g6", "h5h7"}, "d1e2", false);
+    const auto verified =
+        hintEvidence(root, {"d3h7", "g8h7", "f3g5", "h7g8", "d1h5", "g7g6", "h5h7"}, "d1e2", true);
+    const auto hint = retryHint(root, deep, verified, {});
+    REQUIRE(hint);
+    CHECK(hint->idea == RetryIdea::Checkmate);
+}
+TEST_CASE("Retry hints distinguish a checking fork from a lost promotion",
+          "[unit][review][retry]") {
+    const auto fork =
+        std::get<chess::Position>(chess::Position::fromFen("3q3k/8/8/4N3/8/8/8/K7 w - - 0 1"));
+    const auto deep = hintEvidence(fork, {"e5f7"}, "a1b1", false);
+    const auto verified = hintEvidence(fork, {"e5f7"}, "a1b1", true);
+    const auto idea = retryHint(fork, deep, verified, {});
+    REQUIRE(idea);
+    CHECK(idea->idea == RetryIdea::Fork);
+    const auto promotion =
+        std::get<chess::Position>(chess::Position::fromFen("1r5k/P7/8/8/8/8/8/7K w - - 0 1"));
+    const auto first = hintEvidence(promotion, {"a7a8q", "b8a8"}, "h1g1", false);
+    const auto second = hintEvidence(promotion, {"a7a8q", "b8a8"}, "h1g1", true);
+    const auto fallback = retryHint(promotion, first, second, {});
+    REQUIRE(fallback);
+    CHECK(fallback->idea == RetryIdea::General);
+    CHECK(fallback->bestMove.promotion == chess::PieceType::Queen);
 }

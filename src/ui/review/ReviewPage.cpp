@@ -5,9 +5,11 @@
 #include "ui/analysis/EngineAnalysisPanel.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include "ui/chess/MoveTimeline.h"
+#include <QAbstractScrollArea>
 #include <QAbstractTableModel>
 #include <QAccessible>
 #include <QAction>
+#include <QApplication>
 #include <QColor>
 #include <QComboBox>
 #include <QDialog>
@@ -29,6 +31,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStringList>
@@ -41,6 +44,7 @@
 #include <QVBoxLayout>
 #include <QVariant>
 #include <algorithm>
+#include <array>
 
 namespace chess_review::ui {
 namespace {
@@ -348,7 +352,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     previousMove_ = button(tr("Previous"), QStringLiteral("reviewPreviousMove"));
     nextMove_ = button(tr("Next"), QStringLiteral("reviewNextMove"));
     lastMove_ = button(tr("End"), QStringLiteral("reviewLastMove"));
-    const auto navigationIcon = [this](QPushButton* control, QStyle::StandardPixmap icon) {
+    const auto navigationIcon = [](QPushButton* control, QStyle::StandardPixmap icon) {
         const auto label = control->text();
         control->setAccessibleName(label);
         control->setToolTip(label);
@@ -458,14 +462,15 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
         }
         return marker;
     });
-    timeline_->setMoveAccent([this, &navigation](chess::NodeId node) {
+    timeline_->setMoveAccent([&navigation](chess::NodeId node) {
         const auto position = navigation.positionFor(node);
         return position && *position > 0 ? reviewMoveColor(navigation.move(*position)) : QColor{};
     });
     for (auto* control : {firstMove_, previousMove_, nextMove_, lastMove_, flip}) {
         control->installEventFilter(this);
     }
-    auto* scroll = new QScrollArea(splitter_);
+    explanationScroll_ = new QScrollArea(splitter_);
+    auto* scroll = explanationScroll_;
     scroll->setObjectName(QStringLiteral("reviewExplanationScroll"));
     scroll->setWidgetResizable(true);
     scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
@@ -643,6 +648,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     explorationStatus_->setObjectName(QStringLiteral("reviewExplorationStatus"));
     explorationStatus_->setTextFormat(Qt::PlainText);
     explorationStatus_->setWordWrap(true);
+    explorationStatus_->installEventFilter(this);
     rightLayout->addWidget(explorationStatus_);
     auto* explorationActions = new QGridLayout;
     const auto action = [right, explorationActions](const QString& text, const QString& name,
@@ -674,7 +680,12 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     connect(returnGame_, &QPushButton::clicked, &exploration,
             &app::ReviewExplorationController::returnToGame);
     connect(reveal_, &QPushButton::clicked, &exploration,
-            &app::ReviewExplorationController::returnToGame);
+            &app::ReviewExplorationController::revealSolution);
+    connect(board_, &ChessBoardWidget::escapeRequested, this, [&exploration] {
+        if (exploration.active()) {
+            exploration.returnToGame();
+        }
+    });
     connect(hint_, &QPushButton::clicked, &exploration, &app::ReviewExplorationController::hint);
     connect(reloadExploration_, &QPushButton::clicked, &exploration,
             &app::ReviewExplorationController::reload);
@@ -1111,6 +1122,9 @@ void ReviewPage::hideEvent(QHideEvent* event) {
     QWidget::hideEvent(event);
 }
 bool ReviewPage::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == explorationStatus_ && event->type() == QEvent::Resize) {
+        fitRetryFeedback();
+    }
     if (event->type() == QEvent::KeyPress && watched != side_ && watched != engine_ &&
         watched != quality_) {
         auto* key = static_cast<QKeyEvent*>(event);
@@ -1141,11 +1155,21 @@ bool ReviewPage::eventFilter(QObject* watched, QEvent* event) {
     }
     return QWidget::eventFilter(watched, event);
 }
+void ReviewPage::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Escape && !QApplication::activePopupWidget() &&
+        controller_.exploration().active()) {
+        controller_.exploration().returnToGame();
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
+}
 void ReviewPage::update() {
     const auto& state = controller_.state();
     const std::optional<review::ReviewId> run =
         state.run ? std::optional{state.run->id} : std::nullopt;
     if (run != shownRun_ || gameId_ != state.gameId) {
+        ++readingRestoreGeneration_;
         shownRun_ = run;
         guiding_ = false;
         lastPosition_ = controller_.navigation().selected();
@@ -1348,6 +1372,7 @@ void ReviewPage::updateNavigation() {
                                                                : QString{});
     previewLabel_->setVisible(!previewLabel_->text().isEmpty());
     if (nav.selected() != lastPosition_) {
+        ++readingRestoreGeneration_;
         lastPosition_ = nav.selected();
         if (nav.selected() > 0) {
             guiding_ = true;
@@ -1440,6 +1465,9 @@ void ReviewPage::updateExploration() {
     const auto& state = exploration.state();
     const bool hidden = exploration.hidesSolution();
     const bool line = state.mode == app::ExplorationMode::Line;
+    if (hidden && !retryReadingState_) {
+        captureRetryReadingState();
+    }
     // Clear solution text as well as hiding its widgets, including accessibility values.
     if (hidden) {
         explanation_->clear();
@@ -1541,21 +1569,34 @@ void ReviewPage::updateExploration() {
     returnGame_->setVisible(exploration.active());
     returnGame_->setText(hidden ? tr("Cancel practice") : tr("Return to Game"));
     hint_->setVisible(hidden);
-    hint_->setEnabled(state.mode == app::ExplorationMode::Retry);
+    hint_->setEnabled(state.mode == app::ExplorationMode::Retry && !state.pendingBoard &&
+                      state.hintLevel != review::RetryHintLevel::Destination);
     reveal_->setVisible(hidden);
     auto status = state.loading ? tr("Loading continuation…")
                                 : (exploration.active() || verbose_ ? state.message : QString{});
+    if (hidden && !state.hints.isEmpty()) {
+        status += QStringLiteral("\n\n") + state.hints.join(QLatin1Char('\n'));
+    }
     if (!state.notice.isEmpty()) {
         status += QLatin1Char('\n') + state.notice;
     }
     if (explorationStatus_->text() != status) {
         explorationStatus_->setText(status);
+        fitRetryFeedback();
         if (hidden && !status.isEmpty()) {
             QAccessibleAnnouncementEvent announcement(explorationStatus_, status);
             QAccessible::updateAccessibility(&announcement);
         }
     }
     explorationStatus_->setVisible(!status.isEmpty());
+    if (hidden && !retryBoardFocused_ && board_->state().interactive && isVisible()) {
+        retryBoardFocused_ = true;
+        board_->setFocus(Qt::OtherFocusReason);
+    }
+    if (!exploration.active() && retryReadingState_) {
+        restoreRetryReadingState();
+    }
+    restoreRetryFocus();
     if (line) {
         firstMove_->setEnabled(state.step > 0);
         previousMove_->setEnabled(state.step > 0);
@@ -1566,6 +1607,90 @@ void ReviewPage::updateExploration() {
         previousMove_->setEnabled(false);
         nextMove_->setEnabled(false);
         lastMove_->setEnabled(false);
+    }
+}
+void ReviewPage::fitRetryFeedback() {
+    // QLabel's one-line minimum can otherwise clip cumulative wrapped hints.
+    // Let Qt measure the text at the pane's actual width; the pane owns overflow.
+    const int height = std::max(0, explorationStatus_->heightForWidth(explorationStatus_->width()));
+    if (explorationStatus_->minimumHeight() != height) {
+        explorationStatus_->setMinimumHeight(height);
+    }
+}
+void ReviewPage::captureRetryReadingState() {
+    const auto& state = controller_.state();
+    if (!state.run) {
+        return;
+    }
+    RetryReadingState saved{state.gameId,
+                            state.run->id,
+                            controller_.navigation().selected(),
+                            chessDetailsToggle_->isChecked(),
+                            {},
+                            {}};
+    for (const auto& [toggle, content] : sections_) {
+        saved.sections.push_back(toggle->isChecked());
+    }
+    const auto capture = [&saved](QAbstractScrollArea* area) {
+        saved.scrollBars.emplace_back(area->horizontalScrollBar(),
+                                      area->horizontalScrollBar()->value());
+        saved.scrollBars.emplace_back(area->verticalScrollBar(),
+                                      area->verticalScrollBar()->value());
+    };
+    capture(explanationScroll_);
+    for (auto* area : std::array<QAbstractScrollArea*, 9>{comparisonRows_, moves_, moments_, runs_,
+                                                          details_, summary_, inspectorFields_,
+                                                          overviewFields_, classificationCounts_}) {
+        capture(area);
+    }
+    for (auto* ancestor = parentWidget(); ancestor; ancestor = ancestor->parentWidget()) {
+        if (auto* area = qobject_cast<QAbstractScrollArea*>(ancestor)) {
+            capture(area);
+        }
+    }
+    ++readingRestoreGeneration_;
+    retryFocusPending_ = true;
+    retryFocusGeneration_ = readingRestoreGeneration_;
+    retryBoardFocused_ = false;
+    retryReadingState_.emplace(std::move(saved));
+}
+void ReviewPage::restoreRetryReadingState() {
+    auto saved = std::move(*retryReadingState_);
+    retryReadingState_.reset();
+    const auto& state = controller_.state();
+    if (!state.run || state.gameId != saved.game || state.run->id != saved.run ||
+        controller_.navigation().selected() != saved.position) {
+        ++readingRestoreGeneration_;
+        return;
+    }
+    chessDetailsToggle_->setChecked(saved.details);
+    for (std::size_t i = 0; i < saved.sections.size(); ++i) {
+        sections_[i].first->setChecked(saved.sections[i]);
+    }
+    // Wait for the restored content's layout before applying its scroll positions.
+    const auto generation = readingRestoreGeneration_;
+    QTimer::singleShot(0, this, [this, saved = std::move(saved), generation] {
+        const auto& current = controller_.state();
+        if (generation != readingRestoreGeneration_ || controller_.exploration().active() ||
+            !current.run || current.gameId != saved.game || current.run->id != saved.run ||
+            controller_.navigation().selected() != saved.position) {
+            return;
+        }
+        for (const auto& [bar, value] : saved.scrollBars) {
+            if (bar) {
+                bar->setValue(value);
+            }
+        }
+    });
+}
+void ReviewPage::restoreRetryFocus() {
+    if (retryFocusGeneration_ != readingRestoreGeneration_) {
+        retryFocusPending_ = false;
+    }
+    if (!controller_.exploration().active() && retryFocusPending_ && isVisible() &&
+        window()->isActiveWindow() && tryAgain_->isVisible() && tryAgain_->isEnabled()) {
+        retryFocusPending_ = false;
+        tryAgain_->setFocus(Qt::OtherFocusReason);
     }
 }
 } // namespace chess_review::ui

@@ -31,6 +31,8 @@ struct ExplorationState {
     int step = 0;
     int length = 0;
     QString message;
+    review::RetryHintLevel hintLevel = review::RetryHintLevel::None;
+    QStringList hints;
     QString notice;
     QStringList candidates;
     QStringList candidateNames;
@@ -63,6 +65,7 @@ class ReviewExplorationController final : public QObject {
     void returnToGame();
     void tryAgain();
     void hint();
+    void revealSolution();
     void selectSquare(chess::Square square);
     void clearSelection();
     void attemptMove(chess::Move move, std::uint64_t revision);
@@ -84,6 +87,7 @@ class ReviewExplorationController final : public QObject {
     void publish();
     void synchronize();
     void request();
+    void openLine(int candidate);
     void grade(chess::Move move);
     void scheduleChild();
     void evaluateChild(engine::AnalysisResult result, bool cached = false);
@@ -118,7 +122,6 @@ class ReviewExplorationController final : public QObject {
     ReviewTarget target_;
     std::uint64_t generation_ = 0;
     std::uint64_t pendingGeneration_ = 0;
-    int hint_ = 0;
     bool verifying_ = false;
     bool workerBusy_ = false;
     bool evidenceReadFailed_ = false;

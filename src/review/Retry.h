@@ -4,6 +4,13 @@ namespace chess_review::review {
 inline constexpr std::uint32_t retryModelVersion = 1;
 inline constexpr std::uint32_t explanationModelVersion = 1;
 enum class RetryGrade { Best, Strong, Okay, TryAgain };
+enum class RetryIdea { General, Checkmate, Fork, HangingPiece, Promotion, Exchange, Material };
+enum class RetryHintLevel { None, Idea, Piece, Destination };
+struct RetryHint {
+    RetryIdea idea = RetryIdea::General;
+    chess::Move bestMove;
+    chess::PieceType piece = chess::PieceType::Pawn;
+};
 struct RetryResult {
     std::optional<RetryGrade> grade;
     std::optional<double> gap;
@@ -16,4 +23,10 @@ struct RetryResult {
                                      const Configuration& configuration,
                                      const PositionEvidence* deepChild = nullptr,
                                      const PositionEvidence* verifiedChild = nullptr);
+// Session-only teaching projection. Revalidates both passes using current tactical rules;
+// it never changes the captured review interpretation or grading policy.
+[[nodiscard]] std::optional<RetryHint> retryHint(const chess::Position& root,
+                                                 const MoveEvidence& deep,
+                                                 const MoveEvidence& verified,
+                                                 const Configuration& configuration);
 } // namespace chess_review::review

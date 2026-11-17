@@ -13,6 +13,9 @@ class QSplitter;
 class QFrame;
 class QAction;
 class QTableWidget;
+class QScrollBar;
+class QScrollArea;
+class QKeyEvent;
 namespace chess_review::ui {
 class ChessBoardWidget;
 class MoveTimeline;
@@ -41,12 +44,32 @@ class ReviewPage final : public QWidget {
     void showEvent(QShowEvent* event) override;
     void changeEvent(QEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
   private:
     void update();
     void updateNavigation();
     void updateExploration();
+    void fitRetryFeedback();
     void updateSummary();
+    void captureRetryReadingState();
+    void restoreRetryReadingState();
+    void restoreRetryFocus();
+    struct RetryReadingState {
+        persistence::GameId game;
+        review::ReviewId run;
+        int position;
+        bool details;
+        std::vector<bool> sections;
+        // These fixed widgets are owned by this page or its containing scroll area.
+        std::vector<std::pair<QScrollBar*, int>> scrollBars;
+    };
+    std::optional<RetryReadingState> retryReadingState_;
+    std::uint64_t readingRestoreGeneration_ = 0;
+    bool retryBoardFocused_ = false;
+    bool retryFocusPending_ = false;
+    QScrollArea* explanationScroll_;
+    std::uint64_t retryFocusGeneration_ = 0;
     bool verbose_ = false;
     bool guiding_ = false;
     int lastPosition_ = 0;
@@ -73,7 +96,7 @@ class ReviewPage final : public QWidget {
     QLabel* comparisonStatus_;
     QTableView* comparisonRows_;
     ReviewComparisonModel* comparisonModel_;
-    QLabel* explorationStatus_;
+    QLabel* explorationStatus_ = nullptr;
     QPushButton* showLine_;
     QPushButton* tryAgain_;
     QPushButton* returnGame_;

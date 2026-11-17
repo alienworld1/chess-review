@@ -39,6 +39,7 @@ class ChessBoardWidget final : public QWidget {
     void nextRequested();
     void beginningRequested();
     void endRequested();
+    void escapeRequested();
 
   protected:
     void paintEvent(QPaintEvent* event) override;

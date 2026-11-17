@@ -541,6 +541,7 @@ void ChessBoardWidget::keyPressEvent(QKeyEvent* event) {
         } else {
             entryMode_ = false;
             update();
+            emit escapeRequested();
         }
         event->accept();
         return;

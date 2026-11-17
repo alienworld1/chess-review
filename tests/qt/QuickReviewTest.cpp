@@ -21,6 +21,7 @@
 #include <QFile>
 #include <QLabel>
 #include <QListWidget>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPalette>
 #include <QPlainTextEdit>
@@ -60,7 +61,7 @@ QJsonObject quit() {
     return engine_test::step(QStringLiteral("quit"),
                              {QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")}}});
 }
-enum class RetryScript { None, Unknown, Played, Crash };
+enum class RetryScript { None, Unknown, Played, Crash, Reveal };
 class Fixture {
   public:
     explicit Fixture(const QString& path = {},
@@ -167,7 +168,8 @@ class Fixture {
                 const std::vector<int>& whiteScores = {},
                 const std::vector<int>& verificationOrder = {}, int extraRounds = -1,
                 const std::vector<QString>& stageScores = {},
-                const std::array<std::vector<int>, 2>& escalationOrders = {}) {
+                const std::array<std::vector<int>, 2>& escalationOrders = {},
+                bool weakThirdCandidate = false, bool promotionFirst = false) {
         const bool retrySearches = retry != RetryScript::None;
         QJsonArray steps{
             engine_test::step(
@@ -230,8 +232,13 @@ class Fixture {
                     request.multiPv = multiPv && stage > 0 ? 3 : 1;
                     const auto prepared = std::get<engine::PreparedSearch>(
                         engine::prepareSearch(request, capabilities));
-                    const auto best =
-                        std::get<std::string>(position.uci(position.legalMoves().front()));
+                    auto legal = position.legalMoves();
+                    if (promotionFirst) {
+                        std::stable_partition(legal.begin(), legal.end(), [](const auto& move) {
+                            return move.promotion.has_value();
+                        });
+                    }
+                    const auto best = std::get<std::string>(position.uci(legal.front()));
                     for (const auto& command : prepared.options.split('\n')) {
                         if (!command.isEmpty()) {
                             steps.append(engine_test::step(QString::fromUtf8(command), {}));
@@ -260,13 +267,12 @@ class Fixture {
                             evaluation =
                                 QStringLiteral("cp 0 wdl %1 0 %2").arg(wins).arg(1000 - wins);
                         }
-                        const auto legal = position.legalMoves();
                         if (!evaluation.isEmpty()) {
                             for (int rank = 1; rank <= prepared.effectiveMultiPv; ++rank) {
                                 const auto root = std::get<std::string>(
                                     position.uci(legal[static_cast<std::size_t>(rank - 1)]));
                                 auto pv = QString::fromStdString(root);
-                                if (retrySearches) {
+                                if (retrySearches || weakThirdCandidate) {
                                     auto continuation = position;
                                     (void)continuation.play(
                                         legal[static_cast<std::size_t>(rank - 1)]);
@@ -286,7 +292,9 @@ class Fixture {
                                              : boundedFinal ? budget / 2
                                                             : budget)
                                         .arg(rank)
-                                        .arg(evaluation)
+                                        .arg(weakThirdCandidate && rank == 3
+                                                 ? QStringLiteral("cp -200")
+                                                 : evaluation)
                                         .arg(weakStage ? QStringLiteral(" lowerbound") : QString{})
                                         .arg(pv);
                             }
@@ -334,7 +342,18 @@ class Fixture {
                 steps.append(engine_test::step(QStringLiteral("ucinewgame"), {}));
                 steps.append(ready());
                 steps.append(engine_test::step(QString::fromUtf8(prepared.position).trimmed(), {}));
-                if (retry == RetryScript::Crash) {
+                if (retry == RetryScript::Reveal) {
+                    const auto best = std::get<std::string>(root.uci(root.legalMoves().front()));
+                    steps.append(engine_test::step(
+                        QStringLiteral("go nodes %1").arg(budget),
+                        {engine_test::write(
+                            QStringLiteral("info depth 7 nodes 10 score cp -200 pv %1\n")
+                                .arg(QString::fromStdString(best)))}));
+                    steps.append(engine_test::step(
+                        QStringLiteral("stop"),
+                        {engine_test::write(
+                            QStringLiteral("bestmove %1\n").arg(QString::fromStdString(best)))}));
+                } else if (retry == RetryScript::Crash) {
                     steps.append(engine_test::step(
                         QStringLiteral("go nodes %1").arg(budget),
                         {QJsonObject{{QStringLiteral("type"), QStringLiteral("crash")}}}));
@@ -349,6 +368,9 @@ class Fixture {
                                 .arg(QString::fromStdString(best)))}));
                 }
                 steps.append(ready());
+                if (retry == RetryScript::Reveal) {
+                    break;
+                }
             }
         }
         steps.append(engine_test::step(
@@ -2221,11 +2243,14 @@ class QuickReviewTest final : public QObject {
                     ->accessibleDescription()
                     .isEmpty());
         exploration.hint();
-        QVERIFY(exploration.state().message.contains(QStringLiteral("expected score")));
+        QCOMPARE(exploration.state().hints.size(), 1);
+        QVERIFY(exploration.state().hints.front().contains(QStringLiteral("threats")));
         exploration.hint();
-        QVERIFY(exploration.state().message.contains(QStringLiteral("piece on")));
+        QCOMPARE(exploration.state().hints.size(), 2);
+        QVERIFY(exploration.state().hints.back().contains(QStringLiteral(" on ")));
         exploration.hint();
-        QVERIFY(exploration.state().message.contains(QStringLiteral("moving it")));
+        QCOMPARE(exploration.state().hints.size(), 3);
+        QVERIFY(exploration.state().hints.back().contains(QStringLiteral("moving it")));
         auto root = *nav.position();
         QVERIFY(root.undo());
         // A demonstrated equivalent move succeeds without scheduling an engine request.
@@ -2296,6 +2321,264 @@ class QuickReviewTest final : public QObject {
         f.window.findChild<QPushButton*>(QStringLiteral("backToReview"))->click();
         QTRY_COMPARE(nav.displayed(), 1);
         QCOMPARE(ordinary.board().pieces, ordinaryBoard);
+    }
+    void retryHintsRevealAndReadingStateArePreserved() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true, {}, 0, 0, false, RetryScript::None, {}, {}, {}, -1, {}, {}, true);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(exploration.state().canRetry);
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        f.window.resize(1100, 720);
+        auto font = f.window.font();
+        font.setPointSize(20);
+        f.window.setFont(font);
+        f.window.show();
+        f.window.activateWindow();
+        auto* board = f.window.findChild<ui::ChessBoardWidget*>(QStringLiteral("reviewBoard"));
+        auto* details =
+            f.window.findChild<QPushButton*>(QStringLiteral("reviewChessDetailsToggle"));
+        auto* retry = f.window.findChild<QPushButton*>(QStringLiteral("reviewTryAgain"));
+        auto* hint = f.window.findChild<QPushButton*>(QStringLiteral("reviewHint"));
+        auto* scroll = f.window.findChild<QScrollArea*>(QStringLiteral("reviewExplanationScroll"));
+        auto* status = f.window.findChild<QLabel*>(QStringLiteral("reviewExplorationStatus"));
+        QVERIFY(board && details && retry && hint && scroll && status);
+        details->setChecked(true);
+        QTRY_VERIFY(scroll->verticalScrollBar()->maximum() > 0);
+        scroll->ensureWidgetVisible(retry);
+        retry->setFocus();
+        QTRY_VERIFY(retry->hasFocus());
+        const auto readingPosition = scroll->verticalScrollBar()->value();
+        const auto original = board->state().pieces;
+        const auto orientation = board->state().blackAtBottom;
+        const auto revision = review.state().run->revision;
+        const auto nodes = review.navigation().tree()->nodes.size();
+        QSignalSpy searches(&f.supervisor(), &engine::EngineSupervisor::scheduledChanged);
+        retry->click();
+        QTRY_VERIFY(board->state().interactive);
+        QCOMPARE(board->state().blackAtBottom, orientation);
+        QVERIFY(!details->isChecked());
+        QVERIFY(board->hasFocus());
+        hint->click();
+        const auto idea = exploration.state().hints.front();
+        hint->click();
+        hint->click();
+        QCOMPARE(exploration.state().hintLevel, review::RetryHintLevel::Destination);
+        QCOMPARE(exploration.state().hints.size(), 3);
+        QVERIFY(!hint->isEnabled());
+        QVERIFY(status->text().contains(idea));
+        QTRY_VERIFY2(status->height() >= status->heightForWidth(status->width()),
+                     qPrintable(QStringLiteral("Hint label %1x%2 requires height %3")
+                                    .arg(status->width())
+                                    .arg(status->height())
+                                    .arg(status->heightForWidth(status->width()))));
+        const auto hints = exploration.state().hints;
+        auto root = *review.navigation().position();
+        QVERIFY(root.undo());
+        const auto best = root.legalMoves().front();
+        // A demonstrated weak alternative is graded without starting another search.
+        exploration.attemptMove(root.legalMoves()[2], board->state().revision);
+        QTRY_VERIFY(
+            exploration.state().mode == app::ExplorationMode::Retry &&
+            exploration.state().message.contains(QStringLiteral("too much expected score")));
+        QTRY_VERIFY(board->state().interactive);
+        QCOMPARE(exploration.state().hints, hints);
+        QVERIFY(status->text().contains(idea));
+        // An unknown move without the original engine is ungraded, without losing hints.
+        f.startup.engines().disconnectEngine();
+        QTRY_COMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnected);
+        QSignalSpy feedback(&exploration, &app::ReviewExplorationController::moveFeedback);
+        exploration.attemptMove(root.legalMoves()[4], board->state().revision);
+        QTRY_VERIFY(exploration.state().message.contains(QStringLiteral("Unable to grade")));
+        QTRY_VERIFY(board->state().interactive);
+        QCOMPARE(feedback.size(), 0);
+        QCOMPARE(exploration.state().hints, hints);
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewShowSolution"))->click();
+        QTRY_VERIFY(exploration.state().canAnalyze);
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Line);
+        QCOMPARE(exploration.state().step, 0);
+        QCOMPARE(exploration.board().pieces, root.boardIdentity().pieces);
+        QCOMPARE(exploration.state().candidate, 0);
+        QCOMPARE(exploration.state().length, 3);
+        QVERIFY(exploration.state().hints.isEmpty());
+        auto expected = root;
+        QVERIFY(std::holds_alternative<std::monostate>(expected.play(best)));
+        exploration.next();
+        QTRY_VERIFY(exploration.state().step == 1 && exploration.state().canAnalyze);
+        QCOMPARE(exploration.board().pieces, expected.boardIdentity().pieces);
+        exploration.end();
+        QTRY_COMPARE(exploration.state().step, 3);
+        exploration.previous();
+        QTRY_COMPARE(exploration.state().step, 2);
+        exploration.flip();
+        // Escape leaves a revealed line and restores the original reading context.
+        QTest::keyClick(board, Qt::Key_Escape);
+        QTRY_COMPARE(exploration.state().mode, app::ExplorationMode::Game);
+        QCOMPARE(board->state().pieces, original);
+        QCOMPARE(board->state().blackAtBottom, orientation);
+        QVERIFY(details->isChecked());
+        QTRY_COMPARE(scroll->verticalScrollBar()->value(), readingPosition);
+        QTRY_VERIFY(retry->hasFocus());
+        QCOMPARE(review.state().run->revision, revision);
+        QCOMPARE(review.navigation().tree()->nodes.size(), nodes);
+        QCOMPARE(review.navigation().selected(), 2);
+        QCOMPARE(searches.size(), 0);
+        // Escape first clears a board selection; the next Escape cancels practice.
+        retry->click();
+        QTRY_VERIFY(board->state().interactive);
+        exploration.selectSquare(best.from);
+        QTRY_VERIFY(board->state().selection);
+        QTest::keyClick(board, Qt::Key_Escape);
+        QVERIFY(!board->state().selection);
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Retry);
+        QTest::keyClick(board, Qt::Key_Escape);
+        QTRY_COMPARE(exploration.state().mode, app::ExplorationMode::Game);
+        QVERIFY(details->isChecked());
+        QTRY_VERIFY(retry->hasFocus());
+    }
+    void revealingDuringPreparationAndSuccessCannotPublishAStaleGrade_data() {
+        QTest::addColumn<bool>("success");
+        QTest::newRow("preparing") << false;
+        QTest::newRow("success-timer") << true;
+    }
+    void revealingDuringPreparationAndSuccessCannotPublishAStaleGrade() {
+        QFETCH(bool, success);
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true, {}, 0, 0, false, RetryScript::None);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(exploration.state().canRetry);
+        exploration.tryAgain();
+        QTRY_VERIFY(exploration.board().interactive);
+        auto root = *review.navigation().position();
+        QVERIFY(root.undo());
+        QSignalSpy feedback(&exploration, &app::ReviewExplorationController::moveFeedback);
+        bool revealed = false;
+        const auto connection =
+            connect(&exploration, &app::ReviewExplorationController::changed, &exploration, [&] {
+                const auto mode =
+                    success ? app::ExplorationMode::Success : app::ExplorationMode::Grading;
+                if (!revealed && exploration.state().mode == mode) {
+                    revealed = true;
+                    exploration.revealSolution();
+                }
+            });
+        exploration.attemptMove(root.legalMoves()[success ? 1 : 3], exploration.board().revision);
+        QTRY_VERIFY(revealed && exploration.state().canAnalyze);
+        disconnect(connection);
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Line);
+        QCOMPARE(exploration.state().step, 0);
+        exploration.next();
+        QTRY_VERIFY(exploration.state().step == 1 && exploration.state().canAnalyze);
+        // Exercise the old success timer's full interval, including worker retirement.
+        QTest::qWait(1300);
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Line);
+        QCOMPARE(exploration.state().step, 1);
+        QCOMPARE(feedback.size(), success ? 1 : 0);
+        exploration.returnToGame();
+        QTRY_VERIFY(exploration.state().canRetry);
+    }
+    void revealingDuringEngineSearchCancelsAndDrainsTheAttempt() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true, {}, 0, 0, false, RetryScript::Reveal);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(exploration.state().canRetry);
+        exploration.tryAgain();
+        QTRY_VERIFY(exploration.board().interactive);
+        auto root = *review.navigation().position();
+        QVERIFY(root.undo());
+        QSignalSpy states(&f.supervisor(), &engine::EngineSupervisor::scheduledChanged);
+        QSignalSpy finished(&f.supervisor(), &engine::EngineSupervisor::scheduledFinished);
+        QSignalSpy feedback(&exploration, &app::ReviewExplorationController::moveFeedback);
+        exploration.attemptMove(root.legalMoves()[3], exploration.board().revision);
+        QTRY_VERIFY(!states.empty() &&
+                    qvariant_cast<engine::ScheduledState>(states.back()[0]).phase ==
+                        engine::ScheduledPhase::Analyzing);
+        exploration.revealSolution();
+        QTRY_VERIFY(exploration.state().canAnalyze && !finished.empty());
+        QCOMPARE(qvariant_cast<engine::ScheduledResult>(finished.back()[0]).outcome,
+                 engine::ScheduledOutcome::Cancelled);
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Line);
+        QCOMPARE(exploration.state().step, 0);
+        QCOMPARE(exploration.board().pieces, root.boardIdentity().pieces);
+        QCOMPARE(feedback.size(), 0);
+        QCOMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Ready);
+        exploration.returnToGame();
+        QTRY_VERIFY(exploration.state().canRetry);
+        f.shutdown();
+        QCOMPARE(f.startup.state(), app::Lifecycle::Stopped);
+    }
+    void retryPromotionPopupPreservesPracticeAndAcceptsTheChosenPiece() {
+        Fixture f;
+        QVERIFY(
+            f.seed("[SetUp \"1\"]\n[FEN \"4k3/8/8/8/8/8/p7/4K3 b - - 0 1\"]\n1... Kf8 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true, {}, 0, 0, false, RetryScript::None, {}, {}, {}, -1, {}, {}, false, true);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(1);
+        QTRY_VERIFY(exploration.state().canRetry);
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        f.window.show();
+        auto* board = f.window.findChild<ui::ChessBoardWidget*>(QStringLiteral("reviewBoard"));
+        const auto original = review.navigation().board().pieces;
+        const auto revision = review.state().run->revision;
+        exploration.tryAgain();
+        QTRY_VERIFY(board->state().interactive);
+        const auto from = *chess::Square::fromName("a2");
+        const auto to = *chess::Square::fromName("a1");
+        board->activateSquare(from);
+        if (QApplication::platformName() == QStringLiteral("offscreen")) {
+            QTest::ignoreMessage(QtWarningMsg, "This plugin does not support raise()");
+            QTest::ignoreMessage(QtWarningMsg,
+                                 "This plugin does not support grabbing the keyboard");
+        }
+        board->activateSquare(to);
+        auto* popup = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        QVERIFY(popup);
+        QTest::keyPress(popup, Qt::Key_Escape);
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Retry);
+        QCOMPARE(board->state().pieces[static_cast<std::size_t>(from.index())],
+                 (std::optional{chess::Piece{chess::Color::Black, chess::PieceType::Pawn}}));
+        // The destination hint must distinguish the promotion piece.
+        exploration.hint();
+        exploration.hint();
+        exploration.hint();
+        QVERIFY(exploration.state().hints.back().contains(QStringLiteral("promoting to a queen")));
+        if (QApplication::platformName() == QStringLiteral("offscreen")) {
+            QTest::ignoreMessage(QtWarningMsg, "This plugin does not support raise()");
+            QTest::ignoreMessage(QtWarningMsg,
+                                 "This plugin does not support grabbing the keyboard");
+        }
+        board->activateSquare(to);
+        popup = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        QVERIFY(popup);
+        popup->actions().front()->trigger();
+        popup->close();
+        QTRY_COMPARE(exploration.state().mode, app::ExplorationMode::Success);
+        QCOMPARE(board->state().pieces[static_cast<std::size_t>(to.index())],
+                 (std::optional{chess::Piece{chess::Color::Black, chess::PieceType::Queen}}));
+        QTRY_COMPARE(exploration.state().mode, app::ExplorationMode::Game);
+        QCOMPARE(board->state().pieces, original);
+        QCOMPARE(review.state().run->revision, revision);
     }
     void explorationRejectsCorruptionAndLateReads() {
         Fixture f;
@@ -3966,12 +4249,15 @@ class QuickReviewTest final : public QObject {
         if (directory.isEmpty()) {
             QSKIP("Set CHESS_REVIEW_QUICK_RENDER_DIR to inspect workspace renders.");
         }
+        const auto originalPalette = qApp->palette();
+        const auto restorePalette = qScopeGuard([&] { qApp->setPalette(originalPalette); });
         Fixture f;
         QVERIFY(f.seed("1. e4 e5 *", true));
         f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
                  true);
         f.run();
         QVERIFY(f.done());
+        f.window.setVerbose(true);
         f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
         f.window.findChild<QComboBox*>(QStringLiteral("reviewSide"))->setCurrentIndex(2);
         f.window.resize(1100, 720);
@@ -4019,6 +4305,9 @@ class QuickReviewTest final : public QObject {
         QTRY_VERIFY(exploration.board().interactive);
         exploration.hint();
         exploration.hint();
+        auto* hintStatus = f.window.findChild<QLabel*>(QStringLiteral("reviewExplorationStatus"));
+        QVERIFY(hintStatus);
+        QTRY_VERIFY(hintStatus->height() >= hintStatus->heightForWidth(hintStatus->width()));
         QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-practice-light.png")));
         exploration.returnToGame();
         auto* tabs = f.window.findChild<QTabWidget*>(QStringLiteral("reviewResultsTabs"));
@@ -4027,10 +4316,15 @@ class QuickReviewTest final : public QObject {
         QVERIFY(board);
         QVERIFY(board->boardRect().width() >= 236);
         QCOMPARE(board->boardRect().width(), board->boardRect().height());
-        f.window.findChild<QAction*>(QStringLiteral("reviewDetailsToggle"))->trigger();
+        auto* inspectorAction =
+            f.window.findChild<QAction*>(QStringLiteral("reviewTechnicalInspectorAction"));
+        QVERIFY(inspectorAction);
+        inspectorAction->trigger();
+        auto* inspector = qobject_cast<QDialog*>(tabs->window());
+        QVERIFY(inspector && inspector->isVisible());
         tabs->setCurrentIndex(0);
         QCoreApplication::processEvents();
-        QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-summary-light.png")));
+        QVERIFY(inspector->grab().save(directory + QStringLiteral("/review-summary-light.png")));
         tabs->setCurrentIndex(1);
         auto palette = qApp->palette();
         palette.setColor(QPalette::Window, QColor(QStringLiteral("#202732")));
@@ -4039,7 +4333,7 @@ class QuickReviewTest final : public QObject {
         palette.setColor(QPalette::Text, QColor(QStringLiteral("#e5eaf0")));
         palette.setColor(QPalette::Button, QColor(QStringLiteral("#303b49")));
         palette.setColor(QPalette::ButtonText, QColor(QStringLiteral("#e5eaf0")));
-        f.window.setPalette(palette);
+        qApp->setPalette(palette);
         f.window.resize(1360, 850);
         QTest::qWait(30);
         auto* reviewNext = f.window.findChild<QPushButton*>(QStringLiteral("reviewNextMove"));
@@ -4053,7 +4347,7 @@ class QuickReviewTest final : public QObject {
         exploration.returnToGame();
         tabs->setCurrentIndex(0);
         QCoreApplication::processEvents();
-        QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-summary-dark.png")));
+        QVERIFY(inspector->grab().save(directory + QStringLiteral("/review-summary-dark.png")));
         tabs->setCurrentIndex(1);
         f.window.resize(1800, 1000);
         QTest::qWait(30);
@@ -4071,24 +4365,18 @@ class QuickReviewTest final : public QObject {
         auto* explanationScroll =
             f.window.findChild<QScrollArea*>(QStringLiteral("reviewExplanationScroll"));
         QVERIFY(explanationScroll);
-        explanationScroll->ensureWidgetVisible(next);
-        shell->ensureWidgetVisible(next);
         QCoreApplication::processEvents();
-        QVERIFY(shell->viewport()->rect().contains(
-            next->mapTo(shell->viewport(), next->rect().center())));
-        QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-enlarged-details.png")));
+        QVERIFY(inspector->rect().contains(next->mapTo(inspector, next->rect().center())));
+        QVERIFY(inspector->grab().save(directory + QStringLiteral("/review-enlarged-details.png")));
         QVERIFY(f.sql(QStringLiteral("UPDATE review_classifications SET document=zeroblob(128)")));
         f.startup.reviewGame().moves().retry();
         QTRY_VERIFY(!f.startup.reviewGame().moves().state().error.isEmpty());
         auto* retry = f.window.findChild<QPushButton*>(QStringLiteral("retryReviewMoves"));
         QVERIFY(retry);
         QVERIFY(!retry->isHidden());
-        explanationScroll->ensureWidgetVisible(retry);
-        shell->ensureWidgetVisible(retry);
         QCoreApplication::processEvents();
-        QVERIFY(shell->viewport()->rect().contains(
-            retry->mapTo(shell->viewport(), retry->rect().center())));
-        QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-error-retry.png")));
+        QVERIFY(inspector->rect().contains(retry->mapTo(inspector, retry->rect().center())));
+        QVERIFY(inspector->grab().save(directory + QStringLiteral("/review-error-retry.png")));
         f.startup.reviewGame().refreshOverview();
         QTRY_VERIFY(!f.startup.reviewGame().state().busy);
         QVERIFY(!f.startup.reviewGame().state().overviewError.isEmpty());
@@ -4096,12 +4384,10 @@ class QuickReviewTest final : public QObject {
         auto* refreshSummary =
             f.window.findChild<QPushButton*>(QStringLiteral("refreshReviewSummary"));
         QVERIFY(refreshSummary);
-        explanationScroll->ensureWidgetVisible(refreshSummary);
-        shell->ensureWidgetVisible(refreshSummary);
         QCoreApplication::processEvents();
-        QVERIFY(shell->viewport()->rect().contains(
-            refreshSummary->mapTo(shell->viewport(), refreshSummary->rect().center())));
-        QVERIFY(f.window.grab().save(directory + QStringLiteral("/review-summary-error.png")));
+        QVERIFY(inspector->rect().contains(
+            refreshSummary->mapTo(inspector, refreshSummary->rect().center())));
+        QVERIFY(inspector->grab().save(directory + QStringLiteral("/review-summary-error.png")));
     }
     void uiRequiresSideAndBackgroundChoice() {
         Fixture f;

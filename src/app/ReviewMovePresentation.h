@@ -38,4 +38,5 @@ QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::C
 QString comparisonReasonText(review::ComparisonReason reason);
 QString reviewComparisonRow(const review::MoveComparison& row, const QString& san);
 QString reviewMoveDetails(const persistence::ReviewMove& move);
+QString reviewRetryHint(const review::RetryHint& hint, review::RetryHintLevel level);
 } // namespace chess_review::app

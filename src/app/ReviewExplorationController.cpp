@@ -210,7 +210,7 @@ void ReviewExplorationController::publish() {
     const auto* c =
         evidence_ && evidence_->move.classification ? &*evidence_->move.classification : nullptr;
     state_.canRetry = current && c && c->stable && c->label && review::isError(*c->label) &&
-                      evidence_->deep && evidence_->verified &&
+                      evidence_->deep && evidence_->verified && evidence_->retryHint &&
                       evidence_->move.mover == run_->selectedSide && !state_.loading &&
                       !workerBusy_ && !sandbox_.busy() && search_.isNull() && cacheRead_.isNull() &&
                       !hidesSolution();
@@ -323,6 +323,9 @@ void ReviewExplorationController::showLine(int candidate) {
          state_.pendingBoard && state_.step == 0)) {
         return;
     }
+    openLine(candidate);
+}
+void ReviewExplorationController::openLine(int candidate) {
     const auto generation = ++generation_;
     const auto evidence = evidence_;
     navigation_.clearPreview();
@@ -396,6 +399,8 @@ void ReviewExplorationController::returnToGame() {
     }
     state_.mode = ExplorationMode::Game;
     state_.message.clear();
+    state_.hints.clear();
+    state_.hintLevel = review::RetryHintLevel::None;
     state_.pendingBoard = false;
     displayedBoard_.interactive = false;
     if (evidence_ && run_ && evidence_->run.summary.revision != run_->revision) {
@@ -426,7 +431,8 @@ void ReviewExplorationController::tryAgain() {
     if (closing_ || generation != generation_) {
         return;
     }
-    hint_ = 0;
+    state_.hintLevel = review::RetryHintLevel::None;
+    state_.hints.clear();
     state_.mode = ExplorationMode::Retry;
     state_.pendingBoard = true;
     displayedBoard_.interactive = false;
@@ -438,20 +444,55 @@ void ReviewExplorationController::tryAgain() {
     publish();
 }
 void ReviewExplorationController::hint() {
-    if (state_.mode != ExplorationMode::Retry || !evidence_) {
+    if (closing_ || state_.mode != ExplorationMode::Retry || state_.pendingBoard || !evidence_ ||
+        !evidence_->retryHint) {
         return;
     }
-    const auto best = evidence_->move.classification->bestMove;
-    if (!best) {
+    switch (state_.hintLevel) {
+    case review::RetryHintLevel::None:
+        state_.hintLevel = review::RetryHintLevel::Idea;
+        break;
+    case review::RetryHintLevel::Idea:
+        state_.hintLevel = review::RetryHintLevel::Piece;
+        break;
+    case review::RetryHintLevel::Piece:
+        state_.hintLevel = review::RetryHintLevel::Destination;
+        break;
+    case review::RetryHintLevel::Destination:
         return;
     }
-    ++hint_;
-    state_.message =
-        hint_ == 1 ? tr("Look for a move that preserves more of your expected score.")
-        : hint_ == 2
-            ? tr("Consider the piece on %1.").arg(QString::fromStdString(best->from.name()))
-            : tr("Consider moving it to %1.").arg(QString::fromStdString(best->to.name()));
+    state_.hints << reviewRetryHint(*evidence_->retryHint, state_.hintLevel);
     publish();
+}
+void ReviewExplorationController::revealSolution() {
+    const QScopedValueRollback notification(notifying_, true);
+    if (closing_ || !hidesSolution() || !evidence_ || !evidence_->retryHint) {
+        return;
+    }
+    const auto& candidates = evidence_->evidence.candidates;
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [this](const auto& c) {
+        return !c.continuation.empty() && c.continuation.front() == evidence_->retryHint->bestMove;
+    });
+    if (found == candidates.end()) {
+        state_.message = tr("The supported solution continuation is unavailable. "
+                            "You can cancel practice to return to review.");
+        publish();
+        return;
+    }
+    const int candidate = static_cast<int>(found - candidates.begin());
+    const auto generation = ++generation_;
+    success_.stop();
+    state_.mode = ExplorationMode::Line;
+    state_.pendingBoard = true;
+    displayedBoard_.interactive = false;
+    state_.hints.clear();
+    state_.hintLevel = review::RetryHintLevel::None;
+    if (!search_.isNull()) {
+        supervisor_.cancelScheduledAnalysis(session_, search_);
+    }
+    if (!closing_ && generation == generation_) {
+        openLine(candidate);
+    }
 }
 void ReviewExplorationController::selectSquare(chess::Square square) {
     if (state_.mode == ExplorationMode::Retry) {
@@ -658,7 +699,8 @@ void ReviewExplorationController::showGrade(review::RetryResult result) {
             state_.message = tr("Okay — look for a stronger move. Try again.");
             break;
         case review::RetryGrade::TryAgain:
-            state_.message = tr("Try again.");
+            state_.message = tr("Try again — this move gives up too much expected score "
+                                "compared with the supported best move.");
             break;
         }
     }

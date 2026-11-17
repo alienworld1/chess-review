@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <optional>
 namespace chess_review::app {
+
 namespace {
 QString pieceText(chess::PieceType type) {
     switch (type) {
@@ -211,6 +212,43 @@ QString raw(const review::RawEvaluation& value) {
                               : fields.join(QStringLiteral("; ")));
 }
 } // namespace
+QString reviewRetryHint(const review::RetryHint& hint, review::RetryHintLevel level) {
+    switch (level) {
+    case review::RetryHintLevel::None:
+        return {};
+    case review::RetryHintLevel::Piece:
+        return QObject::tr("Consider the %1 on %2.")
+            .arg(pieceText(hint.piece), QString::fromStdString(hint.bestMove.from.name()));
+    case review::RetryHintLevel::Destination:
+        return hint.bestMove.promotion
+                   ? QObject::tr("Consider moving it to %1 and promoting to a %2.")
+                         .arg(QString::fromStdString(hint.bestMove.to.name()),
+                              pieceText(*hint.bestMove.promotion))
+                   : QObject::tr("Consider moving it to %1.")
+                         .arg(QString::fromStdString(hint.bestMove.to.name()));
+    case review::RetryHintLevel::Idea:
+        break;
+    }
+    switch (hint.idea) {
+    case review::RetryIdea::General:
+        return QObject::tr("Check your opponent’s threats, then look at checks, captures, and "
+                           "the safety of your pieces.");
+    case review::RetryIdea::Checkmate:
+        return QObject::tr("Look for mating threats. An analyzed continuation ends in checkmate; "
+                           "other defences may differ.");
+    case review::RetryIdea::Fork:
+        return QObject::tr("Look for a check that also attacks other pieces in the analyzed line.");
+    case review::RetryIdea::HangingPiece:
+        return QObject::tr("Look for an undefended piece to capture in the analyzed line.");
+    case review::RetryIdea::Promotion:
+        return QObject::tr("Look for a promotion opportunity supported by the analyzed line.");
+    case review::RetryIdea::Exchange:
+        return QObject::tr("Look for a way to win a rook for a minor piece in the analyzed line.");
+    case review::RetryIdea::Material:
+        return QObject::tr("Look for a material gain supported by the analyzed line.");
+    }
+    return {};
+}
 QString classificationSymbol(std::optional<review::Classification> classification) {
     if (!classification) {
         return {};
