@@ -74,7 +74,7 @@ class ReviewNavigationTest final : public QObject {
         const auto absent = app::presentReviewMoment(nullptr, 1, false);
         QVERIFY(absent.classification.isEmpty());
         QVERIFY(absent.explanation.contains(QStringLiteral("hasn’t been analyzed")));
-        persistence::ReviewMove move;
+        persistence::ReviewMove move{};
         move.moveNumber = 12;
         move.san = QStringLiteral("Nf6");
         review::ClassificationResult result;
@@ -97,7 +97,7 @@ class ReviewNavigationTest final : public QObject {
                  QStringLiteral("Updating analysis"));
     }
     void conciseLessonKeepsContinuationQualifications() {
-        persistence::ReviewMove move;
+        persistence::ReviewMove move{};
         move.classification = review::ClassificationResult{};
         move.classification->label = review::Classification::Mistake;
         review::TacticalFact fact;
@@ -110,7 +110,7 @@ class ReviewNavigationTest final : public QObject {
         QVERIFY(!view.explanation.contains(QStringLiteral("forced")));
     }
     void tacticalPresentationNeverDrawsFutureLineSquaresOnTheGameBoard() {
-        persistence::ReviewMove move;
+        persistence::ReviewMove move{};
         review::TacticalFact fact;
         fact.kind = review::TacticalKind::Fork;
         fact.source = review::FactSource::Played;
@@ -136,7 +136,7 @@ class ReviewNavigationTest final : public QObject {
         }
     }
     void pendingEvidenceIsExplicitAndCannotClaimCurrentSpecialVerification() {
-        persistence::ReviewMove move;
+        persistence::ReviewMove move{};
         review::ClassificationResult result;
         result.label = review::Classification::Best;
         result.stable = true;
@@ -219,7 +219,7 @@ class ReviewNavigationTest final : public QObject {
         }
     }
     void expectedScorePresentationFailsClosed() {
-        persistence::ReviewMove move;
+        persistence::ReviewMove move{};
         QVERIFY(!app::reviewPositionEvaluation(&move, false).whiteExpected);
         move.classification.emplace();
         auto& result = *move.classification;
