@@ -220,3 +220,38 @@ TEST_CASE("Retry hints distinguish a checking fork from a lost promotion",
     CHECK(fallback->idea == RetryIdea::General);
     CHECK(fallback->bestMove.promotion == chess::PieceType::Queen);
 }
+
+TEST_CASE("Retry hints reject corrupted raw evidence instead of trusting derived claims",
+          "[unit][review][retry]") {
+    const auto root = chess::Position::initial();
+    const auto deep = original(root, false, 10);
+    const auto verified = original(root, true, 10);
+    for (int corruption = 0; corruption < 7; ++corruption) {
+        auto bad = verified;
+        switch (corruption) {
+        case 0:
+            bad.before.candidates.front().continuation.push_back(parsed(root, "g1f3"));
+            break;
+        case 1:
+            bad.before.evaluation.wdl = Wdl{1001, 0, -1};
+            break;
+        case 2:
+            bad.before.evaluation.score->bound = Bound::Lower;
+            break;
+        case 3:
+            bad.before.strength.nodes = 0;
+            break;
+        case 4:
+            bad.before.position.moves.push_back(parsed(root, "e2e4"));
+            break;
+        case 5:
+            bad.before.candidates.front().rank = 2;
+            break;
+        case 6:
+            bad.before.engineIdentity.clear();
+            break;
+        }
+        INFO(corruption);
+        CHECK(!retryHint(root, deep, bad, {}));
+    }
+}

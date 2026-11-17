@@ -770,6 +770,19 @@ class QuickReviewTest final : public QObject {
         auto& library = f.startup.library();
         QTRY_VERIFY(library.reviewAccuracy(f.gameId).contains(QLatin1Char('%')));
         f.navigation.navigate(app::Destination::Home);
+        // Retire reads admitted while Games was visible before observing hidden work.
+        // A late reply is not evidence of a new request after deactivation.
+        QSignalSpy drained(&f.startup.gameRepository(), &persistence::Database::gamesListed);
+        const auto barrier = QUuid::createUuid();
+        f.startup.gameRepository().listGames(barrier, 0, 1);
+        QTRY_VERIFY(std::any_of(drained.begin(), drained.end(),
+                                [&](const auto& reply) { return reply[0].toUuid() == barrier; }));
+        for (const auto& reply : drained) {
+            if (reply[0].toUuid() == barrier) {
+                QVERIFY(std::holds_alternative<std::vector<persistence::GameSummary>>(
+                    qvariant_cast<persistence::ListGamesResult>(reply[1])));
+            }
+        }
         QSignalSpy metadata(&f.startup.gameRepository(),
                             &persistence::Database::libraryReviewsListed);
         QSignalSpy summaries(&f.startup.gameRepository(),
@@ -2377,6 +2390,16 @@ class QuickReviewTest final : public QObject {
                                     .arg(status->width())
                                     .arg(status->height())
                                     .arg(status->heightForWidth(status->width()))));
+        auto largerFont = f.window.font();
+        largerFont.setPointSize(24);
+        f.window.setFont(largerFont);
+        QTRY_VERIFY2(status->height() >= status->heightForWidth(status->width()),
+                     qPrintable(QStringLiteral("Changed-font hint label %1x%2 requires %3")
+                                    .arg(status->width())
+                                    .arg(status->height())
+                                    .arg(status->heightForWidth(status->width()))));
+        f.window.setFont(font);
+        QTRY_VERIFY(status->height() >= status->heightForWidth(status->width()));
         const auto hints = exploration.state().hints;
         auto root = *review.navigation().position();
         QVERIFY(root.undo());
@@ -2440,6 +2463,52 @@ class QuickReviewTest final : public QObject {
         QTRY_COMPARE(exploration.state().mode, app::ExplorationMode::Game);
         QVERIFY(details->isChecked());
         QTRY_VERIFY(retry->hasFocus());
+    }
+    void retryRestoresInspectorWithoutStealingFocus() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(exploration.state().canRetry);
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        f.window.setVerbose(true);
+        f.window.show();
+        auto* inspector =
+            f.window.findChild<QAction*>(QStringLiteral("reviewTechnicalInspectorAction"));
+        auto* retry = f.window.findChild<QPushButton*>(QStringLiteral("reviewTryAgain"));
+        inspector->setChecked(true);
+        f.window.activateWindow();
+        retry->setFocus();
+        QTRY_VERIFY(retry->hasFocus());
+        retry->click();
+        QTRY_VERIFY(exploration.board().interactive);
+        QVERIFY(!inspector->isChecked());
+        exploration.returnToGame();
+        QTRY_VERIFY(exploration.state().canRetry);
+        QVERIFY(inspector->isChecked());
+        QTRY_VERIFY(retry->hasFocus());
+        auto* board = f.window.findChild<ui::ChessBoardWidget*>(QStringLiteral("reviewBoard"));
+        retry->click();
+        QTRY_VERIFY(board->state().interactive);
+        QTest::keyClick(board, Qt::Key_Return);
+        QVERIFY(board->entryMode());
+        QTest::keyClick(board, Qt::Key_Escape);
+        QVERIFY(!board->entryMode());
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Retry);
+        exploration.returnToGame();
+        QTRY_VERIFY(exploration.state().canRetry);
+        retry->click();
+        QTRY_VERIFY(board->state().interactive);
+        f.navigation.navigate(app::Destination::Home);
+        auto* fields = f.window.findChild<QTableWidget*>(QStringLiteral("reviewInspectorFields"));
+        QVERIFY(!fields->window()->isVisible());
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        QTRY_VERIFY(inspector->isChecked() && fields->window()->isVisible());
     }
     void revealingDuringPreparationAndSuccessCannotPublishAStaleGrade_data() {
         QTest::addColumn<bool>("success");

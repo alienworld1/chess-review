@@ -538,9 +538,10 @@ void ChessBoardWidget::keyPressEvent(QKeyEvent* event) {
             cancelTransient();
         } else if (state_.selection) {
             emit selectionCleared();
-        } else {
+        } else if (entryMode_) {
             entryMode_ = false;
             update();
+        } else {
             emit escapeRequested();
         }
         event->accept();

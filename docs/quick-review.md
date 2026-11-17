@@ -41,8 +41,8 @@ stronger alternative when available.
   decision position. Step through it with **Next**/**Previous**; it does not autoplay.
   **Return to Game** restores the lesson. Cancelling practice or completing it also
   restores your expanded details, reading position, and keyboard focus.
-  **Escape** dismisses an active chooser or board gesture first, then cancels practice
-  or returns from a line preview.
+  **Escape** dismisses an active chooser, gesture, selection, or keyboard entry mode
+  first. Press it again to cancel practice or return from a line preview.
 - **Show Line** replays an analyzed continuation. Use the board navigation
   controls to step through it, then **Return to Game**.
 - **Analyze Position** opens free analysis. **Back to Review** returns to the

@@ -1097,6 +1097,7 @@ void ReviewPage::updateSummary() {
 }
 void ReviewPage::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
+    updateExploration();
     QTimer::singleShot(0, this, [this] { setSplitShare(splitShare_); });
 }
 void ReviewPage::changeEvent(QEvent* event) {
@@ -1593,7 +1594,7 @@ void ReviewPage::updateExploration() {
         retryBoardFocused_ = true;
         board_->setFocus(Qt::OtherFocusReason);
     }
-    if (!exploration.active() && retryReadingState_) {
+    if (!exploration.active() && retryReadingState_ && isVisible()) {
         restoreRetryReadingState();
     }
     restoreRetryFocus();
