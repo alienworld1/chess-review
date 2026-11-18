@@ -111,6 +111,9 @@ target_link_libraries(chess_review_app_paths PUBLIC Qt6::Core)
 chess_review_apply_options(chess_review_app_paths)
 
 add_library(chess_review_startup STATIC
+    src/app/PuzzleAlternative.cpp
+    src/app/PuzzleController.cpp
+    src/app/PuzzleGenerationController.cpp
     src/app/ReviewExplorationController.cpp
     src/app/ReviewWorkspaceController.cpp
     src/app/ReviewGameController.cpp

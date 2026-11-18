@@ -948,6 +948,7 @@ void ReviewGameController::fail(const QString& message, review::JobFailure failu
     }
 }
 void ReviewGameController::finish() {
+    const bool completed = state_.active && state_.run && state_.run->status == JobStatus::Complete;
     planning_ = false;
     statusWrite_ = false;
     state_.active = false;
@@ -962,6 +963,9 @@ void ReviewGameController::finish() {
                             "identified separately.");
     }
     publish();
+    if (completed && !closing_) {
+        emit reviewCompleted(state_.run->id);
+    }
     finishClose();
 }
 void ReviewGameController::cancel() {

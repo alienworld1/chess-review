@@ -50,6 +50,7 @@ class ReviewGameController final : public QObject {
     void cancel();
     void close();
   signals:
+    void reviewCompleted(chess_review::review::ReviewId id);
     void changed();
     void taskChanged();
     void closed();

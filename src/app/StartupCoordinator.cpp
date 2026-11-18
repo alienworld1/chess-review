@@ -16,6 +16,28 @@ StartupCoordinator::StartupCoordinator(diagnostics::Logger& logger, QObject* par
     });
 }
 void StartupCoordinator::connectServices() {
+    connect(&puzzleGeneration_, &PuzzleGenerationController::closed, this, [this] {
+        puzzleGenerationClosed_ = true;
+        closeSupervisorWhenProducersFinish();
+        closeStorageWhenProducersFinish();
+    });
+    connect(&puzzles_, &PuzzleController::closed, this, [this] {
+        puzzlesClosed_ = true;
+        closeSupervisorWhenProducersFinish();
+        closeStorageWhenProducersFinish();
+    });
+    connect(&puzzleGeneration_, &PuzzleGenerationController::libraryChanged, &puzzles_, [this] {
+        if (state_ == Lifecycle::Ready) {
+            puzzles_.refreshCurrent();
+        }
+    });
+    connect(&reviewGame_, &ReviewGameController::reviewCompleted, this,
+            [this](review::ReviewId id) {
+                const auto config = configuration_.snapshot();
+                if (state_ == Lifecycle::Ready && config && config->puzzles.automatic) {
+                    puzzleGeneration_.enqueue(id);
+                }
+            });
     connect(&configuration_, &ReviewConfiguration::changed, this, [this] {
         if (state_ == Lifecycle::Ready) {
             engines_.setReady(true);
@@ -90,6 +112,8 @@ void StartupCoordinator::connectServices() {
         engines_.setReady(configuration_.state() != ConfigurationState::Loading);
         library_.setReady(true);
         reviewGame_.setReady(true);
+        puzzles_.setReady(true);
+        puzzleGeneration_.setReady(true);
         // A user may start exploring while storage is still initializing. Do not
         // replace that work when a delayed automatic recovery becomes available.
         if (analysis_.hasContent() || (analysis_.busy() && !analysis_.history().empty())) {
@@ -128,12 +152,13 @@ void StartupCoordinator::connectServices() {
     });
 }
 void StartupCoordinator::closeSupervisorWhenProducersFinish() {
-    if (liveClosed_ && reviewClosed_) {
+    if (liveClosed_ && reviewClosed_ && puzzlesClosed_ && puzzleGenerationClosed_) {
         engineSupervisor_.close();
     }
 }
 void StartupCoordinator::closeStorageWhenProducersFinish() {
-    if (importsClosed_ && enginesClosed_ && reviewClosed_) {
+    if (importsClosed_ && enginesClosed_ && reviewClosed_ && puzzlesClosed_ &&
+        puzzleGenerationClosed_) {
         database_.close();
     }
 }
@@ -208,6 +233,8 @@ void StartupCoordinator::shutdown() {
     engines_.close();
     engineAnalysis_.close();
     reviewGame_.close();
+    puzzleGeneration_.close();
+    puzzles_.close();
     localImports_.close();
     uiState_.saveAndClose(finalUiState_);
 }

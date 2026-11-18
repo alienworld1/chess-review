@@ -6,6 +6,8 @@
 #include "app/GameImportService.h"
 #include "app/GameLibraryController.h"
 #include "app/ImportController.h"
+#include "app/PuzzleController.h"
+#include "app/PuzzleGenerationController.h"
 #include "app/ReviewConfiguration.h"
 #include "app/ReviewGameController.h"
 #include "app/UiStateStore.h"
@@ -33,6 +35,8 @@ class StartupCoordinator final : public QObject {
     void setFinalUiState(const UiState& state);
     Lifecycle state() const;
     ReviewGameController& reviewGame() { return reviewGame_; }
+    PuzzleGenerationController& puzzleGeneration() { return puzzleGeneration_; }
+    PuzzleController& puzzles() { return puzzles_; }
     ReviewConfiguration& reviewConfiguration() { return configuration_; }
     EngineSettingsController& engines() { return engines_; }
     AnalysisController& analysis() { return analysis_; }
@@ -72,6 +76,11 @@ class StartupCoordinator final : public QObject {
     UiStateStore uiState_;
     ReviewConfiguration configuration_;
     ReviewGameController reviewGame_{database_, engines_, engineSupervisor_, configuration_};
+    PuzzleGenerationController puzzleGeneration_{database_, engines_, engineSupervisor_,
+                                                 configuration_};
+    PuzzleController puzzles_{database_, engines_, engineSupervisor_};
+    bool puzzleGenerationClosed_ = false;
+    bool puzzlesClosed_ = false;
     bool reviewClosed_ = false;
     bool liveClosed_ = false;
     void closeSupervisorWhenProducersFinish();
