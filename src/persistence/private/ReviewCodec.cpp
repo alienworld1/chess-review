@@ -4,6 +4,7 @@
 #include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <algorithm>
 namespace chess_review::persistence::detail {
 namespace {
 // These numeric tags are part of durable document format 1.
@@ -175,6 +176,32 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
         {"motifModelVersion", QJsonValue()},
         {"explanationModelVersion", QJsonValue()},
         {"openingDatasetVersion", QJsonValue()}};
+    if (settings.opening) {
+        const auto& version = settings.opening->datasetVersion;
+        const auto& match = settings.opening->match;
+        if (version.size() > 64 || std::ranges::any_of(version, [](QChar character) {
+                return !((character >= u'a' && character <= u'z') ||
+                         (character >= u'A' && character <= u'Z') ||
+                         (character >= u'0' && character <= u'9') || character == u'.' ||
+                         character == u'-' || character == u'_');
+            })) {
+            return {};
+        }
+        if (!version.isEmpty()) {
+            document["openingDatasetVersion"] = version;
+        }
+        if (match) {
+            if (version.isEmpty() || !openings::validOpening(match->eco, match->name) ||
+                !QByteArrayView(match->name.data(), static_cast<qsizetype>(match->name.size()))
+                     .isValidUtf8()) {
+                return {};
+            }
+            document["opening"] =
+                QJsonArray{QString::fromLatin1(match->eco), QString::fromUtf8(match->name)};
+        } else {
+            document["opening"] = QJsonValue();
+        }
+    }
     if (settings.configuration.classificationIdentityVersion == 2) {
         document["excellentLoss"] = c.classification.excellentLoss;
     }
@@ -280,6 +307,18 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
         QByteArray::fromHex(o["classificationIdentity"].toString().toLatin1()),
         QByteArray::fromHex(o["conversionIdentity"].toString().toLatin1()),
         QByteArray::fromHex(o["analysisIdentity"].toString().toLatin1())};
+    if (o.contains("opening")) {
+        out.opening = OpeningResolution{o["openingDatasetVersion"].toString(), std::nullopt};
+        const auto opening = o["opening"];
+        if (!opening.isNull()) {
+            const auto fields = opening.toArray();
+            if (fields.size() != 2 || !fields[0].isString() || !fields[1].isString()) {
+                return std::nullopt;
+            }
+            out.opening->match = openings::Opening{fields[0].toString().toStdString(),
+                                                   fields[1].toString().toStdString()};
+        }
+    }
     // Canonical agreement validates all wire types, versions, keys, identities and null metadata.
     const auto encoded = encodeReviewSettings(out);
     if (encoded.isEmpty() || encoded != bytes) {

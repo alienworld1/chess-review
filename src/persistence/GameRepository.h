@@ -1,5 +1,6 @@
 #pragma once
 
+#include "openings/OpeningIndex.h"
 #include "pgn/Pgn.h"
 #include <QMetaType>
 #include <QString>
@@ -30,6 +31,11 @@ struct GameSource {
     QString type;
     QString uri;
 };
+struct OpeningResolution {
+    // Empty only for a review explicitly saved while recognition was unavailable.
+    QString datasetVersion;
+    std::optional<openings::Opening> match;
+};
 struct GameSummary {
     GameId id{};
     QString white;
@@ -42,6 +48,8 @@ struct GameSummary {
     bool metadataTruncated = false;
     // A damaged metadata row remains identifiable without hiding healthy rows on the page.
     std::optional<GameError> metadataError = std::nullopt;
+    // An engaged value with no match is a completed lookup.
+    std::optional<OpeningResolution> opening = std::nullopt;
 };
 struct StoredGame {
     GameSummary summary;
@@ -57,7 +65,9 @@ struct Duplicate {
 using InsertGameResult = std::variant<Inserted, Duplicate, GameError>;
 using LoadGameResult = std::variant<StoredGame, GameError>;
 using ListGamesResult = std::variant<std::vector<GameSummary>, GameError>;
+using ResolveGameOpeningResult = std::variant<std::optional<OpeningResolution>, GameError>;
 } // namespace chess_review::persistence
 Q_DECLARE_METATYPE(chess_review::persistence::InsertGameResult)
 Q_DECLARE_METATYPE(chess_review::persistence::LoadGameResult)
 Q_DECLARE_METATYPE(chess_review::persistence::ListGamesResult)
+Q_DECLARE_METATYPE(chess_review::persistence::ResolveGameOpeningResult)

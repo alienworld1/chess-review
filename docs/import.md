@@ -74,6 +74,12 @@ Refresh. Import completion returns the table to its newest page. Damaged metadat
 rows remain identifiable, and truncated fields are marked. Search, selectable
 sorting and previews are not implemented yet.
 
+The **Opening** column shows the local opening name, variation, and ECO code
+when the played mainline matches the bundled Lichess dataset. Common move-order
+transpositions are supported. A blank cell means a lookup is pending or there
+is no reliable match. Older games are looked up as you browse their pages.
+Original PGN opening tags are preserved.
+
 Imported snapshots are independent of their source files. Local-file provenance
 stores the full absolute file URI; pasted games store only the source kind.
 These paths, player names, comments, and PGN content are not written to logs.

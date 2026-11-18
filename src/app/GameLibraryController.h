@@ -35,6 +35,7 @@ class GameLibraryController final : public QObject {
     const QString& error() const { return openError_.isEmpty() ? error_ : openError_; }
   signals:
     void changed();
+    void openingChanged(persistence::GameId id, const persistence::OpeningResolution& opening);
     void openFailed(const QString& message);
     void opened(const chess_review::persistence::StoredGame& game);
 
@@ -43,6 +44,14 @@ class GameLibraryController final : public QObject {
     void requestPage();
     void requestReviews();
     void requestAccuracy();
+    void requestOpening();
+    struct OpeningRequest {
+        persistence::RequestId id;
+        persistence::GameId game;
+        std::uint64_t revision;
+    };
+    std::optional<OpeningRequest> openingRequest_;
+    std::size_t nextOpeningRow_ = 0;
     struct ReviewRow {
         persistence::LibraryReview metadata;
         std::optional<review::SideSummary> side;

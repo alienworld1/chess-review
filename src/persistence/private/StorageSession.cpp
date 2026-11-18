@@ -38,7 +38,7 @@ bool safeFile(const QString& path) {
 
 } // namespace
 
-StorageSession::StorageSession() = default;
+StorageSession::StorageSession(diagnostics::Logger* logger) : logger_(logger) {}
 
 StorageSession::~StorageSession() {
     if (!connectionName_.isEmpty()) {
@@ -176,6 +176,7 @@ std::optional<DatabaseError> StorageSession::initialize(const QString& path,
         return error;
     }
     // Custom historical registries are used only by persistence migration fixtures.
+    openingCacheUsable_ = registry.back().version >= 12;
     if (registry.back().version >= 6) {
         progress(QStringLiteral("Recovering unfinished reviews…"));
         if (auto error = interruptReviewJobs(canonicalPath)) {

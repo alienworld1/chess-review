@@ -711,10 +711,6 @@ CreateReviewResult StorageSession::createReview(const CreateReview& request) {
     if (!usable_) {
         return storage();
     }
-    const auto settings = encodeReviewSettings(request);
-    if (settings.isEmpty() || settings.size() > maxReviewSettingsBytes) {
-        return error(ReviewErrorCode::InvalidInput);
-    }
     ReviewTransaction tx(database_, usable_);
     if (!tx.begin()) {
         return storage();
@@ -722,6 +718,12 @@ CreateReviewResult StorageSession::createReview(const CreateReview& request) {
     const auto loaded = loadGame(request.gameId);
     const auto* game = std::get_if<StoredGame>(&loaded);
     if (!game) {
+        return error(ReviewErrorCode::InvalidInput);
+    }
+    auto snapshot = request;
+    snapshot.opening = recognizeOpening(*game->document).value_or(OpeningResolution{});
+    const auto settings = encodeReviewSettings(snapshot);
+    if (settings.isEmpty() || settings.size() > maxReviewSettingsBytes) {
         return error(ReviewErrorCode::InvalidInput);
     }
     const auto count = static_cast<int>(game->document->originalMainline().size()) + 1;
@@ -784,7 +786,8 @@ CreateReviewResult StorageSession::createReview(const CreateReview& request) {
                          count,
                          timestamp(time),
                          timestamp(time),
-                         {}};
+                         {},
+                         std::move(snapshot.opening)};
 }
 LoadReviewResult StorageSession::loadReview(ReviewId id) { return loadReviewRecord(id, nullptr); }
 LoadReviewResult StorageSession::loadReviewRecord(ReviewId id, StoredGame* owningGame) {

@@ -73,6 +73,8 @@ const char* eventName(Event event) {
         return "engine.validation_failed";
     case Event::CacheRecordsDiscarded:
         return "cache_records_discarded";
+    case Event::OpeningDatasetUnavailable:
+        return "openings.dataset_unavailable";
     case Event::EngineRegistrationFinished:
         return "engine.registration_finished";
     case Event::EngineRuntimeChanged:

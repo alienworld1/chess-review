@@ -97,6 +97,7 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                     return;
                 }
                 state_.run = stored_->summary;
+                state_.opening = stored_->settings.opening;
                 state_.engine = displayName(stored_->settings.fingerprint.reportedName);
                 if (!state_.active) {
                     state_.phase = ReviewPhase::Finished;
@@ -190,6 +191,7 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                 }
                 operation_ = {};
                 state_.run = std::get<persistence::ReviewSummary>(result);
+                state_.opening = state_.run->opening;
                 advance();
             });
     connect(&database_, &persistence::Database::reviewContinued, this,

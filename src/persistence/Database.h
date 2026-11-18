@@ -64,6 +64,7 @@ class Database final : public QObject {
     void insertGame(RequestId request, std::shared_ptr<const pgn::PgnDocument> document,
                     GameSource source = {});
     void loadGame(RequestId request, GameId id);
+    void resolveGameOpening(RequestId request, GameId id);
     void listGames(RequestId request, std::int64_t offset = 0, int limit = 50);
     void listPuzzles(RequestId request, std::int64_t offset = 0, int limit = 50,
                      std::optional<ReviewId> reviewId = std::nullopt);
@@ -149,6 +150,7 @@ class Database final : public QObject {
                       const chess_review::persistence::InsertGameResult& result);
     void gameLoaded(chess_review::persistence::RequestId request,
                     const chess_review::persistence::LoadGameResult& result);
+    void gameOpeningResolved(RequestId request, const ResolveGameOpeningResult& result);
     void gamesListed(chess_review::persistence::RequestId request,
                      const chess_review::persistence::ListGamesResult& result);
 

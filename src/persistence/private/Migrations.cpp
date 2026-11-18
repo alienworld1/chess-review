@@ -51,7 +51,7 @@ const std::vector<Migration>& migrations() {
         initialMigration(),         gamesMigration(),      gameTextMigration(),
         enginesMigration(),         analysisMigration(),   reviewsMigration(),
         classificationsMigration(), refinementMigration(), reviewWorkspaceMigration(),
-        escalationMigration(),      puzzlesMigration()};
+        escalationMigration(),      puzzlesMigration(),    openingsMigration()};
     return registry;
 }
 

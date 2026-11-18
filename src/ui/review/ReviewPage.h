@@ -83,6 +83,7 @@ class ReviewPage final : public QWidget {
     QLabel* coverageValue_;
     QLabel* summaryState_;
     QLabel* resultValue_;
+    QLabel* summaryOpening_;
     QLabel* classification_;
     QLabel* availability_;
     QLabel* alternative_;
@@ -131,6 +132,7 @@ class ReviewPage final : public QWidget {
     QComboBox* engine_;
     QComboBox* quality_;
     QLabel* game_;
+    QLabel* headerOpening_;
     QLabel* status_;
     QLabel* error_;
     QLabel* reason_;

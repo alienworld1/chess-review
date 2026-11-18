@@ -450,6 +450,9 @@ class QuickReviewTest final : public QObject {
         auto* summary = f.window.findChild<QWidget*>(QStringLiteral("reviewOverviewPanel"));
         auto* lesson = f.window.findChild<QWidget*>(QStringLiteral("reviewLesson"));
         QTRY_VERIFY(summary->isVisible());
+        auto* opening = summary->findChild<QLabel*>(QStringLiteral("reviewSummaryOpening"));
+        QVERIFY(opening && opening->isVisible());
+        QCOMPARE(opening->text(), QStringLiteral("King's Pawn Game (C20)"));
         auto* shell = f.window.findChild<QScrollArea*>(QStringLiteral("shellScrollArea"));
         QTRY_COMPARE(shell->verticalScrollBar()->maximum(), 0);
         QTRY_COMPARE(shell->horizontalScrollBar()->maximum(), 0);

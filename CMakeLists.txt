@@ -23,6 +23,46 @@ target_include_directories(chess_review_pgn PUBLIC src)
 target_link_libraries(chess_review_pgn PUBLIC chess_review_chess)
 chess_review_apply_options(chess_review_pgn)
 
+add_library(chess_review_opening_index STATIC src/openings/OpeningIndex.cpp)
+set_target_properties(chess_review_opening_index PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+target_link_libraries(chess_review_opening_index PUBLIC chess_review_chess PRIVATE chess_review_pgn)
+chess_review_apply_options(chess_review_opening_index)
+
+add_executable(compile_opening_references src/openings/CompileOpeningReferences.cpp)
+set_target_properties(compile_opening_references PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+target_link_libraries(compile_opening_references PRIVATE chess_review_opening_index Qt6::Core)
+chess_review_apply_options(compile_opening_references)
+
+set(opening_volumes
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/chess-openings/a.tsv"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/chess-openings/b.tsv"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/chess-openings/c.tsv"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/chess-openings/d.tsv"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/chess-openings/e.tsv"
+)
+set(opening_references "${CMAKE_CURRENT_BINARY_DIR}/opening-references.tsv")
+add_custom_command(OUTPUT "${opening_references}"
+    COMMAND compile_opening_references "${opening_references}" ${opening_volumes}
+    DEPENDS compile_opening_references ${opening_volumes}
+    VERBATIM)
+
+add_library(chess_review_openings STATIC src/openings/PackagedOpenings.cpp)
+set_target_properties(chess_review_openings PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+target_link_libraries(chess_review_openings PUBLIC chess_review_opening_index PRIVATE Qt6::Core)
+qt_add_resources(chess_review_openings "openings_data"
+    PREFIX "/openings"
+    BASE "third_party/chess-openings"
+    FILES
+        ${opening_volumes}
+        third_party/chess-openings/COPYING.txt
+)
+qt_add_resources(chess_review_openings "openings_lookup"
+    PREFIX "/openings"
+    BASE "${CMAKE_CURRENT_BINARY_DIR}"
+    FILES "${opening_references}"
+)
+chess_review_apply_options(chess_review_openings)
+
 # TOML remains private to the configuration boundary; no parser types escape.
 include(FetchContent)
 FetchContent_Declare(tomlplusplus
@@ -73,6 +113,7 @@ target_link_libraries(chess_review_analysis PUBLIC chess_review_engine chess_rev
 chess_review_apply_options(chess_review_analysis)
 
 add_library(chess_review_persistence STATIC
+    src/persistence/migrations/012_openings.cpp
     src/persistence/private/PuzzleCodec.cpp
     src/persistence/private/PuzzleRepository.cpp
     src/persistence/migrations/011_puzzles.cpp
@@ -102,7 +143,7 @@ add_library(chess_review_persistence STATIC
     src/persistence/migrations/001_initial.cpp
 )
 target_include_directories(chess_review_persistence PUBLIC src)
-target_link_libraries(chess_review_persistence PUBLIC Qt6::Core chess_review_pgn chess_review_engine chess_review_config chess_review_analysis chess_review_puzzles PRIVATE Qt6::Sql chess_review_diagnostics)
+target_link_libraries(chess_review_persistence PUBLIC Qt6::Core chess_review_pgn chess_review_engine chess_review_config chess_review_analysis chess_review_puzzles chess_review_openings PRIVATE Qt6::Sql chess_review_diagnostics)
 chess_review_apply_options(chess_review_persistence)
 
 add_library(chess_review_app_paths STATIC src/app/AppPaths.cpp)

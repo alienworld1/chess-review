@@ -46,6 +46,12 @@ target_link_libraries(pgn_tests PRIVATE chess_review_pgn Catch2::Catch2WithMain)
 chess_review_apply_options(pgn_tests)
 catch_discover_tests(pgn_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)
 
+add_executable(opening_tests unit/OpeningTest.cpp)
+set_target_properties(opening_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+target_link_libraries(opening_tests PRIVATE chess_review_openings chess_review_pgn Catch2::Catch2WithMain)
+chess_review_apply_options(opening_tests)
+catch_discover_tests(opening_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)
+
 chess_review_add_qt_test(analysis_tests analysis INTEGRATION WIDGETS
     SOURCES qt/AnalysisTest.cpp
     LIBRARIES chess_review_ui)
@@ -70,7 +76,7 @@ chess_review_add_qt_test(import_tests import INTEGRATION WIDGETS
 
 chess_review_add_qt_test(game_opening_tests game_opening INTEGRATION WIDGETS
     SOURCES qt/GameOpeningTest.cpp
-    LIBRARIES chess_review_ui)
+    LIBRARIES chess_review_ui Qt6::Sql)
 add_dependencies(game_opening_tests shell_exit_probe)
 target_compile_definitions(game_opening_tests PRIVATE
     CHESS_REVIEW_EXIT_PROBE="$<TARGET_FILE:shell_exit_probe>")

@@ -1,4 +1,5 @@
 #include "ui/games/GamesPage.h"
+#include "ui/OpeningText.h"
 #include "ui/Theme.h"
 #include <QAbstractTableModel>
 #include <QAction>
@@ -108,30 +109,41 @@ void configureTable(QTableView& table) {
 
 class LibraryTableModel final : public QAbstractTableModel {
   public:
+    static constexpr int openingColumn = 8;
     LibraryTableModel(app::GameLibraryController& controller, QObject* parent)
         : QAbstractTableModel(parent), controller_(controller) {}
     int rowCount(const QModelIndex& parent = {}) const override {
         return parent.isValid() ? 0 : static_cast<int>(rows_.size());
     }
     int columnCount(const QModelIndex& parent = {}) const override {
-        return parent.isValid() ? 0 : 8;
+        return parent.isValid() ? 0 : openingColumn + 1;
     }
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override {
         if (orientation != Qt::Horizontal || role != Qt::DisplayRole || section < 0 ||
-            section >= 8) {
+            section > openingColumn) {
             return {};
         }
         const QStringList labels{tr("White"),         tr("Black"),        tr("Result"),
                                  tr("Played date"),   tr("Time control"), tr("Imported (UTC)"),
-                                 tr("Review status"), tr("Accuracy")};
+                                 tr("Review status"), tr("Accuracy"),     tr("Opening")};
         return labels.at(section);
     }
     QVariant data(const QModelIndex& index, int role) const override {
         if (!index.isValid() || index.row() < 0 || index.row() >= rowCount() ||
-            index.column() < 0 || index.column() >= 8) {
+            index.column() < 0 || index.column() > openingColumn) {
             return {};
         }
         const auto& row = rows_[static_cast<std::size_t>(index.row())];
+        if (index.column() == openingColumn) {
+            const auto text = openingText(row.opening);
+            if (role == Qt::ToolTipRole && !text.isEmpty()) {
+                return QStringLiteral("<qt>%1</qt>").arg(text.toHtmlEscaped());
+            }
+            if (role == Qt::DisplayRole || role == Qt::AccessibleTextRole) {
+                return text;
+            }
+            return {};
+        }
         if (role == Qt::ToolTipRole) {
             if (index.column() == 6) {
                 return controller_.reviewStatus(row.id).toHtmlEscaped();
@@ -185,6 +197,15 @@ class LibraryTableModel final : public QAbstractTableModel {
         beginResetModel();
         rows_ = controller_.rows();
         endResetModel();
+    }
+    void updateOpening(persistence::GameId id, const persistence::OpeningResolution& opening) {
+        const auto row = std::ranges::find(rows_, id, &persistence::GameSummary::id);
+        if (row == rows_.end()) {
+            return;
+        }
+        row->opening = opening;
+        const auto cell = index(static_cast<int>(row - rows_.begin()), openingColumn);
+        emit dataChanged(cell, cell, {Qt::DisplayRole, Qt::AccessibleTextRole, Qt::ToolTipRole});
     }
 
   private:
@@ -362,6 +383,9 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     // Keep review results visible before secondary metadata on laptop displays.
     games_->horizontalHeader()->moveSection(games_->horizontalHeader()->visualIndex(6), 3);
     games_->horizontalHeader()->moveSection(games_->horizontalHeader()->visualIndex(7), 4);
+    games_->horizontalHeader()->moveSection(
+        games_->horizontalHeader()->visualIndex(LibraryTableModel::openingColumn), 3);
+    games_->setColumnWidth(LibraryTableModel::openingColumn, 250);
     games_->setColumnWidth(5, 200);
     layout->addWidget(games_, 3);
     auto* paging = new QHBoxLayout;
@@ -435,6 +459,8 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     connect(results_->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
             &GamesPage::showResultDetails);
     connect(&library_, &app::GameLibraryController::changed, this, &GamesPage::updateLibrary);
+    connect(&library_, &app::GameLibraryController::openingChanged, libraryModel_,
+            &LibraryTableModel::updateOpening);
     connect(refresh_, &QPushButton::clicked, this, [this] { library_.refresh(); });
     connect(previous_, &QPushButton::clicked, &library_, &app::GameLibraryController::previous);
     connect(next_, &QPushButton::clicked, &library_, &app::GameLibraryController::next);

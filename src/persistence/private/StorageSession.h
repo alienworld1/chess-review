@@ -19,7 +19,7 @@ namespace chess_review::persistence::detail {
 // Construct, initialize, and destroy on one storage thread. Owns the write connection.
 class StorageSession final {
   public:
-    StorageSession();
+    explicit StorageSession(diagnostics::Logger* logger = nullptr);
     ~StorageSession();
     StorageSession(const StorageSession&) = delete;
     StorageSession& operator=(const StorageSession&) = delete;
@@ -60,8 +60,9 @@ class StorageSession final {
     ListEnginesResult listEngines(std::int64_t offset, int limit);
 
     InsertGameResult insertGame(const pgn::PgnDocument& document, const GameSource& source);
-    LoadGameResult loadGame(GameId id);
+    LoadGameResult loadGame(GameId id, bool includeOpening = false);
     ListGamesResult listGames(std::int64_t offset, int limit);
+    ResolveGameOpeningResult resolveGameOpening(GameId id);
     ListPuzzlesResult listPuzzles(std::int64_t offset, int limit, std::optional<ReviewId> reviewId);
     LoadPuzzleResult loadPuzzle(PuzzleId id);
     DeletePuzzleResult deletePuzzle(PuzzleId id);
@@ -74,6 +75,13 @@ class StorageSession final {
   private:
     LoadReviewResult loadReviewRecord(ReviewId id, StoredGame* owningGame);
     bool refreshGameValidationCache();
+    std::optional<OpeningResolution> recognizeOpening(const pgn::PgnDocument& document);
+    void readOpeningCache(std::span<GameSummary> games);
+    void writeOpeningCache(GameId id, const OpeningResolution& opening);
+    diagnostics::Logger* logger_;
+    bool openingIndexLoaded_ = false;
+    bool openingCacheUsable_ = true;
+    const openings::OpeningIndex* openingIndex_ = nullptr;
     bool usable_ = true;
     std::optional<std::pair<std::int64_t, std::int64_t>> validationStamp_;
     std::set<GameId> validatedGames_; // At most 256 IDs, never snapshots or source payloads.

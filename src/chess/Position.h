@@ -98,6 +98,8 @@ class Position {
     Position& operator=(Position&&) noexcept;
 
     [[nodiscard]] std::string fen() const;
+    // Four position fields for opening lookup, with only legally capturable en passant.
+    [[nodiscard]] std::string epd() const;
     [[nodiscard]] std::optional<Piece> pieceAt(Square square) const;
     [[nodiscard]] Color sideToMove() const;
     [[nodiscard]] CastlingRights castlingRights() const;

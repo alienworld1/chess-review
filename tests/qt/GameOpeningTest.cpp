@@ -2,6 +2,7 @@
 #include "app/StartupCoordinator.h"
 #include "ui/analysis/AnalysisPage.h"
 #include "ui/shell/MainWindow.h"
+#include <QAccessible>
 #include <QAction>
 #include <QApplication>
 #include <QElapsedTimer>
@@ -15,6 +16,8 @@
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QSignalSpy>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTableView>
 #include <QTemporaryDir>
 #include <QTest>
@@ -81,10 +84,19 @@ struct Fixture {
         }
     }
 };
+
+bool clearOpeningCache(const QString& path) {
+    const auto connection = QUuid::createUuid().toString();
+    const QScopeGuard cleanup([&] { QSqlDatabase::removeDatabase(connection); });
+    auto database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+    database.setDatabaseName(path);
+    return database.open() && QSqlQuery(database).exec(QStringLiteral("DELETE FROM game_openings"));
+}
 } // namespace
 class GameOpeningTest final : public QObject {
     Q_OBJECT
   private slots:
+    void openingNamesFillAcrossPagesAndOpenWithoutAnEngine();
     void importNavigateAndReopen();
     void productionRestart();
     void resumeFallbacks_data();
@@ -93,6 +105,109 @@ class GameOpeningTest final : public QObject {
     void failedAndStaleLoads();
     void replacementAndDiscard();
 };
+void GameOpeningTest::openingNamesFillAcrossPagesAndOpenWithoutAnEngine() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto database = directory.filePath(QStringLiteral("games.sqlite3"));
+    const auto preferences = directory.filePath(QStringLiteral("ui.ini"));
+    {
+        Fixture seed(database, preferences);
+        auto& imports = seed.startup.localImports();
+        QTRY_VERIFY(imports.available());
+        QString list;
+        for (int i = 0; i < 52; ++i) {
+            list += QStringLiteral("[White \"Player %1\"]\n\n%2\n\n")
+                        .arg(i)
+                        .arg(i == 0   ? QStringLiteral("*")
+                             : i == 1 ? QStringLiteral("1. d4 d5 2. Bf4 c5 3. e4 dxe4 *")
+                                      : QStringLiteral("1. d4 d5 2. c4 *"));
+        }
+        QVERIFY(imports.importText(list));
+        QTRY_VERIFY_WITH_TIMEOUT(!imports.busy(), 15000);
+        QCOMPARE(imports.inserted(), std::size_t{52});
+    }
+    QVERIFY(clearOpeningCache(database));
+
+    Fixture fixture(database, preferences);
+    fixture.window.installReview(fixture.startup.reviewGame());
+    fixture.window.resize(1024, 768);
+    auto& library = fixture.startup.library();
+    QTRY_VERIFY(library.ready());
+    auto* table = fixture.window.findChild<QTableView*>(QStringLiteral("gamesTable"));
+    QVERIFY(table);
+    auto* model = table->model();
+    int openingColumn = 0;
+    while (openingColumn < model->columnCount() &&
+           model->headerData(openingColumn, Qt::Horizontal).toString() !=
+               QStringLiteral("Opening")) {
+        ++openingColumn;
+    }
+    QVERIFY(openingColumn < model->columnCount());
+    bool changedPage = false;
+    bool updatedInPlace = false;
+    const auto pagination =
+        connect(&fixture.startup.gameRepository(), &persistence::Database::gamesListed, this,
+                [&](persistence::RequestId, const persistence::ListGamesResult&) {
+                    if (fixture.navigation.current() != app::Destination::Games || library.busy()) {
+                        return;
+                    }
+                    if (!changedPage && library.page() == 0 && library.hasNext()) {
+                        // The first page already queued a lookup. Its result belongs to that page.
+                        changedPage = true;
+                        library.next();
+                    } else if (library.page() == 1 && model->rowCount() == 2) {
+                        table->setCurrentIndex(model->index(1, 0));
+                    }
+                });
+    const auto watchUpdate = connect(
+        model, &QAbstractItemModel::dataChanged, this,
+        [&](const QModelIndex& first, const QModelIndex& last) {
+            if (library.page() == 1 && first.row() == 0 && first.column() == openingColumn) {
+                updatedInPlace = first == last && table->currentIndex().row() == 1;
+            }
+        });
+    fixture.navigation.navigate(app::Destination::Games);
+    library.refresh();
+    QTRY_COMPARE(library.page(), std::int64_t{1});
+    QTRY_COMPARE(model->rowCount(), 2);
+    const auto longLabel =
+        QStringLiteral("Queen's Pawn Game: Accelerated London System, Steinitz Countergambit, "
+                       "Morris Countergambit Accepted (D00)");
+    const auto named = model->index(0, openingColumn);
+    QTRY_COMPARE(named.data().toString(), longLabel);
+    QCOMPARE(named.data(Qt::AccessibleTextRole).toString(), longLabel);
+    QVERIFY(named.data(Qt::ToolTipRole).toString().contains(longLabel));
+    QVERIFY(model->index(1, openingColumn).data().toString().isEmpty());
+    QVERIFY(updatedInPlace);
+    disconnect(pagination);
+    disconnect(watchUpdate);
+
+    table->setCurrentIndex(model->index(0, 0));
+    auto* review = fixture.window.findChild<QPushButton*>(QStringLiteral("reviewGameButton"));
+    QVERIFY(review && review->isEnabled());
+    review->click();
+    auto* header = fixture.window.findChild<QLabel*>(QStringLiteral("reviewHeaderOpening"));
+    QVERIFY(header);
+    QTRY_COMPARE(header->text(), longLabel);
+    QVERIFY(header->isVisible());
+    QCOMPARE(header->textFormat(), Qt::PlainText);
+    QVERIFY(header->wordWrap());
+    const auto* accessible = QAccessible::queryAccessibleInterface(header);
+    QVERIFY(accessible);
+    QCOMPARE(accessible->text(QAccessible::Name), longLabel);
+    QVERIFY(!fixture.startup.reviewGame().state().run);
+
+    auto* back = fixture.window.findChild<QPushButton*>(QStringLiteral("reviewBack"));
+    QVERIFY(back);
+    back->click();
+    QTRY_COMPARE(fixture.navigation.current(), app::Destination::Games);
+    QTRY_VERIFY(!library.busy());
+    library.previous();
+    QTRY_COMPARE(model->rowCount(), 50);
+    QTRY_COMPARE(model->index(0, openingColumn).data().toString(),
+                 QStringLiteral("Queen's Gambit (D06)"));
+}
+
 void GameOpeningTest::importNavigateAndReopen() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());

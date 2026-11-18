@@ -26,7 +26,7 @@ class StorageWorker final : public QObject {
         if (logger_) {
             logger_->record(diagnostics::Event::StorageStarted);
         }
-        session_ = std::make_unique<StorageSession>();
+        session_ = std::make_unique<StorageSession>(logger_);
         const auto& registry = migrations();
         const auto error = session_->initialize(
             path, registry, [this](const QString& message) { emit progress(message); },
@@ -280,12 +280,33 @@ void Database::loadGame(RequestId request, GameId id) {
         impl_->worker,
         [this, request, id] {
             const auto result = impl_->worker->execute<LoadGameResult>(
-                [&](detail::StorageSession& session) { return session.loadGame(id); });
+                [&](detail::StorageSession& session) { return session.loadGame(id, true); });
             QMetaObject::invokeMethod(
                 this,
                 [this, request, result] {
                     --impl_->pending;
                     emit gameLoaded(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::resolveGameOpening(RequestId request, GameId id) {
+    if (auto error = acceptRequest()) {
+        QTimer::singleShot(
+            0, this, [this, request, error = *error] { emit gameOpeningResolved(request, error); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, id] {
+            const auto result = impl_->worker->execute<ResolveGameOpeningResult>(
+                [&](detail::StorageSession& session) { return session.resolveGameOpening(id); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit gameOpeningResolved(request, result);
                 },
                 Qt::QueuedConnection);
         },

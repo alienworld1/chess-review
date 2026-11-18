@@ -455,6 +455,13 @@ void ReviewWorkspaceController::publish() {
     const QScopedValueRollback notification(notifying_, true);
     const auto& task = task_.taskState();
     state_.active = displaysTask() && task.active;
+    state_.opening = game_ ? game_->summary.opening : std::nullopt;
+    if (state_.run && stored_ && stored_->summary.id == state_.run->id &&
+        stored_->settings.opening) {
+        state_.opening = stored_->settings.opening;
+    } else if (state_.run && task.run && state_.run->id == task.run->id && task.opening) {
+        state_.opening = task.opening;
+    }
     state_.cancelling = state_.active && task.cancelling;
     state_.inspecting = !pending_.isNull() || retry_.isActive();
     state_.busy = state_.active || state_.inspecting;

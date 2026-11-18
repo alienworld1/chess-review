@@ -35,6 +35,7 @@ using Progress = std::function<void(const QString&)>;
 
 Migration escalationMigration();
 Migration puzzlesMigration();
+Migration openingsMigration();
 Migration reviewWorkspaceMigration();
 Migration refinementMigration();
 Migration classificationsMigration();

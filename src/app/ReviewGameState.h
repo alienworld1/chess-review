@@ -24,6 +24,7 @@ struct ReviewGameState {
     std::optional<persistence::ReviewSummary> run;
     std::vector<persistence::ReviewSummary> runs;
     std::optional<persistence::ReviewOverview> overview;
+    std::optional<persistence::OpeningResolution> opening;
     QString overviewError;
     int escalationRound = 0;
     int refinementDone = 0;

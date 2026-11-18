@@ -590,3 +590,25 @@ are 16 MiB, generation-job documents 32 MiB, and candidate lists six entries.
 Serialized data remains versioned and bounded; unsupported or damaged records fail
 closed. Checksums detect corruption, not deliberate rewriting by the database
 owner. No learner history is stored.
+
+## Opening recognition (schema 012)
+
+The build replays the pinned Lichess reference PGNs through the PGN and chess
+adapters. The app bundles the resulting lookup and original ECO volumes as Qt
+resources. The storage worker loads one immutable index on demand. The key is the
+four-field EPD with legal en passant. Recognition
+walks the original mainline from the exact standard start through the longest
+reference line. It uses the last clear named position on first occurrence,
+preferring a unique exact move order when names conflict at that position.
+
+`game_openings` holds one replaceable result per game. A cache hit requires the
+current dataset and policy versions. A row with null name and ECO records a
+completed lookup without a match. Imports commit the game before writing the
+derived cache. Migration adds the table without replaying games. Older results
+fill one game at a time as the library pages are viewed or games are opened.
+
+New reviews capture the opening result and dataset version in their immutable
+settings. An explicit null opening records no match or unavailable recognition,
+with the dataset version present when a lookup completed. Legacy settings keep
+their existing encoding and the UI uses the game-level opening when opening
+those reviews.

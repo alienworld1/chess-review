@@ -11,6 +11,11 @@ on your computer, such as Stockfish. Engines are never downloaded automatically.
 
 ## Your game at a glance
 
+When the played mainline matches the bundled opening dataset, the game header
+and summary show the opening name, variation, and ECO code. The header is
+available before engine analysis. A saved review keeps the opening recorded
+when it was created.
+
 The summary shows your accuracy, analyzed-move coverage, move classifications,
 and number of key moments. Choose **Start review** to walk through those moments.
 You can begin while analysis continues. Unavailable accuracy is shown as a dash;

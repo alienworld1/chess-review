@@ -131,6 +131,48 @@ class AsyncDatabase {
 class ReviewRepositoryTest final : public QObject {
     Q_OBJECT
   private slots:
+    void openingSnapshotIsFrozenAcrossDatasetChanges() {
+        Fixture f;
+        auto request = seed(f.session, document("1. d4 d5 2. c4 *"));
+        request.opening = OpeningResolution{QStringLiteral("forged"),
+                                            openings::Opening{"B20", "Sicilian Defense"}};
+        const auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        QVERIFY(run.opening && run.opening->match);
+        QCOMPARE(run.opening->match->name, "Queen's Gambit");
+        const auto originalVersion = run.opening->datasetVersion;
+        QVERIFY(!originalVersion.isEmpty());
+
+        // Simulate a later bundle and cache using a revised name. The saved settings
+        // still decode exactly, even when they carry a different dataset version.
+        auto previous = std::get<StoredReview>(f.session.loadReview(run.id)).settings;
+        QVERIFY(previous.opening && previous.opening->match);
+        previous.opening->datasetVersion = QStringLiteral("2025.12.01");
+        const auto olderSettings = encodeReviewSettings(previous);
+        QVERIFY(!olderSettings.isEmpty());
+        QSqlQuery query(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+        QVERIFY(query.prepare(QStringLiteral("UPDATE reviews SET settings=? WHERE id=?")));
+        query.addBindValue(olderSettings);
+        query.addBindValue(static_cast<qlonglong>(run.id));
+        QVERIFY(query.exec());
+        QVERIFY(f.exec(QStringLiteral("UPDATE game_openings SET name='New Name'")));
+        const auto current = std::get<StoredGame>(f.session.loadGame(request.gameId, true));
+        QVERIFY(current.summary.opening && current.summary.opening->match);
+        QCOMPARE(current.summary.opening->match->name, "New Name");
+        QCOMPARE(current.summary.opening->datasetVersion, originalVersion);
+        const auto frozen = std::get<StoredReview>(f.session.loadReview(run.id));
+        QVERIFY(frozen.settings.opening && frozen.settings.opening->match);
+        QCOMPARE(frozen.settings.opening->match->name, "Queen's Gambit");
+        QCOMPARE(frozen.settings.opening->datasetVersion, QStringLiteral("2025.12.01"));
+        QCOMPARE(encodeReviewSettings(frozen.settings), olderSettings);
+
+        request.gameId = std::get<Inserted>(f.session.insertGame(*document("*"), {})).id;
+        const auto unmatched = std::get<ReviewSummary>(f.session.createReview(request));
+        const auto stored = std::get<StoredReview>(f.session.loadReview(unmatched.id));
+        QVERIFY(stored.settings.opening);
+        QVERIFY(!stored.settings.opening->match);
+        QCOMPARE(stored.settings.opening->datasetVersion, originalVersion);
+    }
+
     void intelligenceSettingsAreCapturedAndVersioned() {
         Fixture f;
         auto request = seed(f.session, document("1. e4 *"));
@@ -1871,6 +1913,11 @@ class ReviewRepositoryTest final : public QObject {
             complete.status = JobStatus::Complete;
             QVERIFY(std::holds_alternative<ReviewSummary>(session.checkpointReview(complete)));
             QSqlQuery q(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+            QVERIFY(q.prepare(QStringLiteral("UPDATE reviews SET settings=? WHERE id=?")));
+            q.addBindValue(settings);
+            q.addBindValue(static_cast<qlonglong>(id));
+            QVERIFY(q.exec());
+            QVERIFY(q.exec(QStringLiteral("DROP TABLE game_openings")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE puzzles")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE puzzle_jobs")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE puzzle_suppressions")));
@@ -2582,7 +2629,7 @@ class ReviewRepositoryTest final : public QObject {
                  ReviewErrorCode::Unavailable);
         db.value.initialize(path);
         QTRY_COMPARE(ready.size(), 1);
-        QCOMPARE(ready[0][0].toInt(), 11);
+        QCOMPARE(ready[0][0].toInt(), 12);
         std::vector<QUuid> ids;
         for (int i = 0; i < 17; ++i) {
             ids.push_back(QUuid::createUuid());

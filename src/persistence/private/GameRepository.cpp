@@ -1,11 +1,16 @@
+#include "diagnostics/Logger.h"
+#include "openings/PackagedOpenings.h"
 #include "persistence/private/GameCodec.h"
 #include "persistence/private/GameRecords.h"
 #include "persistence/private/StorageSession.h"
 #include <QDateTime>
+#include <QDebug>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStringDecoder>
 #include <QVariant>
+#include <algorithm>
+#include <exception>
 
 namespace chess_review::persistence::detail {
 namespace {
@@ -90,6 +95,130 @@ class Transaction {
 
 QByteArray utf8TextBytes(const QString& value) {
     return value.isEmpty() ? QByteArray("") : value.toUtf8();
+}
+
+std::optional<OpeningResolution>
+StorageSession::recognizeOpening(const pgn::PgnDocument& document) {
+    try {
+        if (!openingIndexLoaded_) {
+            openingIndexLoaded_ = true;
+            openingIndex_ = openings::loadPackagedOpenings();
+            if (!openingIndex_) {
+                if (logger_) {
+                    logger_->record(diagnostics::Event::OpeningDatasetUnavailable, {},
+                                    diagnostics::Severity::Warning);
+                } else {
+                    qWarning("The bundled opening dataset is unavailable or invalid.");
+                }
+            }
+        }
+        if (!openingIndex_) {
+            return std::nullopt;
+        }
+        auto root = document.tree.position(document.tree.rootId());
+        if (auto* position = std::get_if<chess::Position>(&root)) {
+            return OpeningResolution{
+                QString::fromLatin1(openings::datasetVersion),
+                openingIndex_->recognize(std::move(*position), document.originalMainline())};
+        }
+    } catch (const std::exception&) {
+        qWarning("Opening recognition could not complete.");
+    }
+    return std::nullopt;
+}
+
+void StorageSession::readOpeningCache(std::span<GameSummary> games) {
+    if (!openingCacheUsable_ || games.empty()) {
+        return;
+    }
+    QStringList placeholders;
+    for (const auto& game : games) {
+        if (!game.metadataError) {
+            placeholders.push_back(QStringLiteral("?"));
+        }
+    }
+    if (placeholders.isEmpty()) {
+        return;
+    }
+    const auto version = QString::fromLatin1(openings::datasetVersion);
+    QSqlQuery query(database_);
+    query.setForwardOnly(true);
+    const auto read = [&] {
+        static_assert(openings::maxOpeningNameBytes == 256);
+        if (!query.prepare(
+                QStringLiteral("SELECT game_id, substr(CAST(eco AS BLOB),1,4), "
+                               "substr(CAST(name AS BLOB),1,257), typeof(eco), typeof(name) "
+                               "FROM game_openings WHERE dataset_version=? AND policy_version=? "
+                               "AND game_id IN (%1)")
+                    .arg(placeholders.join(u',')))) {
+            return false;
+        }
+        query.addBindValue(version);
+        query.addBindValue(openings::recognitionPolicyVersion);
+        for (const auto& game : games) {
+            if (!game.metadataError) {
+                query.addBindValue(static_cast<qlonglong>(game.id));
+            }
+        }
+        if (!query.exec()) {
+            return false;
+        }
+        while (query.next()) {
+            const auto id = query.value(0).toLongLong();
+            const auto game = std::ranges::find(games, id, &GameSummary::id);
+            if (game == games.end()) {
+                continue;
+            }
+            const auto ecoType = query.value(3).toString();
+            const auto nameType = query.value(4).toString();
+            if (ecoType == QStringLiteral("null") && nameType == QStringLiteral("null")) {
+                game->opening = OpeningResolution{version, std::nullopt};
+            } else if (ecoType == QStringLiteral("text") && nameType == QStringLiteral("text")) {
+                const auto eco = query.value(1).toByteArray().toStdString();
+                const auto bytes = query.value(2).toByteArray();
+                const auto name = bytes.toStdString();
+                if (bytes.isValidUtf8() && openings::validOpening(eco, name)) {
+                    game->opening = OpeningResolution{version, openings::Opening{eco, name}};
+                }
+            }
+        }
+        return !query.lastError().isValid();
+    };
+    if (!read()) {
+        for (auto& game : games) {
+            game.opening.reset();
+        }
+        openingCacheUsable_ = false;
+        qWarning("The game opening cache could not be read.");
+    }
+}
+
+void StorageSession::writeOpeningCache(GameId id, const OpeningResolution& opening) {
+    if (!openingCacheUsable_) {
+        return;
+    }
+    QSqlQuery query(database_);
+    const auto write = [&] {
+        if (!query.prepare(QStringLiteral(
+                "INSERT INTO game_openings(game_id,dataset_version,policy_version,eco,name) "
+                "VALUES(?,?,?,CAST(? AS TEXT),CAST(? AS TEXT)) "
+                "ON CONFLICT(game_id) DO UPDATE SET dataset_version=excluded.dataset_version,"
+                "policy_version=excluded.policy_version,eco=excluded.eco,name=excluded.name"))) {
+            return false;
+        }
+        query.addBindValue(static_cast<qlonglong>(id));
+        query.addBindValue(opening.datasetVersion);
+        query.addBindValue(openings::recognitionPolicyVersion);
+        query.addBindValue(opening.match ? QByteArray::fromStdString(opening.match->eco)
+                                         : QByteArray{});
+        query.addBindValue(opening.match ? QByteArray::fromStdString(opening.match->name)
+                                         : QByteArray{});
+        return query.exec();
+    };
+    if (!write()) {
+        openingCacheUsable_ = false;
+        qWarning("The game opening cache could not be written.");
+    }
 }
 
 bool StorageSession::refreshGameValidationCache() {
@@ -206,14 +335,39 @@ InsertGameResult StorageSession::insertGame(const pgn::PgnDocument& document,
     if (id <= 0 || !transaction.commit()) {
         return storageError();
     }
+    if (const auto opening = recognizeOpening(document)) {
+        // This is derived data. A missed cache write must not roll back the saved game.
+        writeOpeningCache(id, *opening);
+    }
     return Inserted{id};
 }
 
-LoadGameResult StorageSession::loadGame(GameId id) {
+LoadGameResult StorageSession::loadGame(GameId id, bool includeOpening) {
     if (!usable_) {
         return storageError();
     }
-    return readGame(database_, id);
+    auto result = readGame(database_, id);
+    if (auto* game = std::get_if<StoredGame>(&result); game && includeOpening) {
+        readOpeningCache(std::span(&game->summary, 1));
+        if (!game->summary.opening) {
+            game->summary.opening = recognizeOpening(*game->document);
+            if (game->summary.opening) {
+                writeOpeningCache(id, *game->summary.opening);
+            }
+        }
+    }
+    return result;
+}
+
+ResolveGameOpeningResult StorageSession::resolveGameOpening(GameId id) {
+    if (openingIndexLoaded_ && !openingIndex_) {
+        return std::optional<OpeningResolution>{};
+    }
+    auto game = loadGame(id, true);
+    if (const auto* error = std::get_if<GameError>(&game)) {
+        return *error;
+    }
+    return std::move(std::get<StoredGame>(game).summary.opening);
 }
 LoadGameResult readGame(QSqlDatabase& database, GameId id) {
     QSqlQuery query(database);
@@ -329,6 +483,8 @@ ListGamesResult StorageSession::listGames(std::int64_t offset, int limit) {
     if (query.lastError().isValid()) {
         return storageError();
     }
+    query.finish();
+    readOpeningCache(games);
     return games;
 }
 } // namespace chess_review::persistence::detail

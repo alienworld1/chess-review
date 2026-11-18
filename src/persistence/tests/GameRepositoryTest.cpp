@@ -143,7 +143,78 @@ class GameRepositoryTest final : public QObject {
     void reportWarningBudget();
     void leadingBomInsideTagIsContent();
     void legacyTextUpgradePreservesGames();
+    void openingCacheUpgradesAndBackfills();
+    void openingCacheFailureKeepsGamesAvailable();
 };
+void GameRepositoryTest::openingCacheUpgradesAndBackfills() {
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("openings.sqlite3"));
+    GameId named = 0;
+    GameId unmatched = 0;
+    {
+        StorageSession old;
+        QVERIFY(!old.initialize(path, std::span(migrations()).first(11), ignoreProgress));
+        const auto tagged = document("[Opening \"Sicilian Defense\"]\n[ECO \"B20\"]\n\n"
+                                     "1. d4 d5 2. c4 *");
+        named = std::get<Inserted>(old.insertGame(*tagged, {})).id;
+        unmatched = std::get<Inserted>(old.insertGame(*document("*"), {})).id;
+    }
+    {
+        StorageSession upgraded;
+        QVERIFY(!upgraded.initialize(path, migrations(), ignoreProgress));
+        const auto page = std::get<std::vector<GameSummary>>(upgraded.listGames(1, 1));
+        QCOMPARE(page.size(), std::size_t{1});
+        QCOMPARE(page.front().id, named);
+        QVERIFY(!page.front().opening);
+        const auto outcome =
+            std::get<std::optional<OpeningResolution>>(upgraded.resolveGameOpening(named));
+        QVERIFY(outcome && outcome->match);
+        QCOMPARE(outcome->match->name, "Queen's Gambit");
+        auto game = std::get<StoredGame>(upgraded.loadGame(unmatched, true));
+        QVERIFY(game.summary.opening);
+        QVERIFY(!game.summary.opening->match);
+    }
+    {
+        StorageSession reopened;
+        QVERIFY(!reopened.initialize(path, migrations(), ignoreProgress));
+        const auto matches = std::get<std::vector<GameSummary>>(reopened.listGames(1, 1));
+        const auto misses = std::get<std::vector<GameSummary>>(reopened.listGames(0, 1));
+        QVERIFY(matches.front().opening && matches.front().opening->match);
+        QCOMPARE(matches.front().opening->match->eco, "D06");
+        QVERIFY(misses.front().opening);
+        QVERIFY(!misses.front().opening->match);
+        QCOMPARE(misses.front().opening->datasetVersion, matches.front().opening->datasetVersion);
+
+        Fixture edit(path);
+        QVERIFY(edit.exec(QStringLiteral(
+            "UPDATE game_openings SET dataset_version='outdated', name='Retired Name' "
+            "WHERE eco='D06'")));
+        QVERIFY(!std::get<std::vector<GameSummary>>(reopened.listGames(1, 1)).front().opening);
+        const auto reloaded = std::get<StoredGame>(reopened.loadGame(named, true));
+        QVERIFY(reloaded.summary.opening && reloaded.summary.opening->match);
+        QCOMPARE(reloaded.summary.opening->match->name, "Queen's Gambit");
+        QCOMPARE(reloaded.document->tags.front().value, "Sicilian Defense");
+    }
+}
+
+void GameRepositoryTest::openingCacheFailureKeepsGamesAvailable() {
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("openings.sqlite3"));
+    StorageSession session;
+    QVERIFY(!session.initialize(path, migrations(), ignoreProgress));
+    Fixture edit(path);
+    QVERIFY(edit.exec(QStringLiteral("DROP TABLE game_openings")));
+    QTest::ignoreMessage(QtWarningMsg, "The game opening cache could not be written.");
+    const auto game = session.insertGame(*document("1. d4 d5 2. c4 *"), {});
+    QVERIFY(std::holds_alternative<Inserted>(game));
+    const auto rows = std::get<std::vector<GameSummary>>(session.listGames(0, 1));
+    QCOMPARE(rows.size(), std::size_t{1});
+    QVERIFY(!rows.front().opening);
+    const auto loaded = std::get<StoredGame>(session.loadGame(std::get<Inserted>(game).id, true));
+    QVERIFY(loaded.summary.opening && loaded.summary.opening->match);
+    QCOMPARE(loaded.summary.opening->match->name, "Queen's Gambit");
+}
+
 void GameRepositoryTest::roundTripAndReopen() {
     QTemporaryDir directory;
     const auto path = directory.filePath(QStringLiteral("library.sqlite3"));

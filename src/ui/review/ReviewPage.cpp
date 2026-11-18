@@ -1,6 +1,7 @@
 #include "ui/review/ReviewPage.h"
 #include "app/ReviewMovePresentation.h"
 #include "ui/EngineText.h"
+#include "ui/OpeningText.h"
 #include "ui/Theme.h"
 #include "ui/analysis/EngineAnalysisPanel.h"
 #include "ui/chess/ChessBoardWidget.h"
@@ -48,6 +49,13 @@
 
 namespace chess_review::ui {
 namespace {
+void updateOpeningLabel(QLabel& label, const QString& text) {
+    label.setText(text);
+    label.setToolTip(text.isEmpty() ? QString{}
+                                    : QStringLiteral("<qt>%1</qt>").arg(text.toHtmlEscaped()));
+    label.setVisible(!text.isEmpty());
+}
+
 QColor reviewMoveColor(const persistence::ReviewMove* move) {
     return classificationColor(move && move->classification ? move->classification->label
                                                             : std::nullopt);
@@ -286,7 +294,18 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     game_ = new QLabel(this);
     game_->setTextFormat(Qt::PlainText);
     game_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    header->addWidget(game_, 1);
+    auto* gameHeading = new QVBoxLayout;
+    gameHeading->setSpacing(2);
+    gameHeading->addWidget(game_);
+    headerOpening_ = new QLabel(this);
+    headerOpening_->setObjectName(QStringLiteral("reviewHeaderOpening"));
+    headerOpening_->setTextFormat(Qt::PlainText);
+    headerOpening_->setWordWrap(true);
+    headerOpening_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    setTextRole(*headerOpening_, "secondary");
+    headerOpening_->hide();
+    gameHeading->addWidget(headerOpening_);
+    header->addLayout(gameHeading, 1);
     setTextRole(*game_, "heading");
     auto* overviewButton = new QPushButton(tr("Summary"), this);
     overviewButton->setObjectName(QStringLiteral("reviewSummaryButton"));
@@ -492,6 +511,13 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     resultValue_ = new QLabel(summaryPanel_);
     resultValue_->setTextFormat(Qt::PlainText);
     overviewLayout->addWidget(resultValue_);
+    summaryOpening_ = new QLabel(summaryPanel_);
+    summaryOpening_->setObjectName(QStringLiteral("reviewSummaryOpening"));
+    summaryOpening_->setTextFormat(Qt::PlainText);
+    summaryOpening_->setWordWrap(true);
+    summaryOpening_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    summaryOpening_->hide();
+    overviewLayout->addWidget(summaryOpening_);
     auto* metrics = new QGridLayout;
     const auto metric = [this, metrics](const QString& title, const char* name, int column) {
         auto* value = new QLabel(QStringLiteral("—"), summaryPanel_);
@@ -1024,6 +1050,7 @@ void ReviewPage::updateSummary() {
     summaryPanel_->setVisible(hasRun && !guiding_);
     lesson_->setVisible(hasRun && guiding_);
     startGuided_->setEnabled(hasRun && controller_.navigation().ready());
+    updateOpeningLabel(*summaryOpening_, openingText(state.opening));
     classificationCounts_->setRowCount(0);
     if (!state.run || !state.overview) {
         accuracyValue_->setText(QStringLiteral("—"));
@@ -1207,6 +1234,7 @@ void ReviewPage::update() {
     }
     game_->setText(state.game);
     game_->setToolTip(QStringLiteral("<qt>%1</qt>").arg(game_->text().toHtmlEscaped()));
+    updateOpeningLabel(*headerOpening_, openingText(state.opening));
     const auto blocker = controller_.startBlocker(engine_->currentData().toLongLong());
     reason_->setText(
         blocker.isEmpty() && side_->currentIndex() == 0 ? tr("Which side did you play?") : blocker);

@@ -44,6 +44,8 @@ struct CreateReview {
     config::ValidatedConfiguration configuration;
     bool refinement = false;
     std::uint32_t pipelineVersion = review::pipelineModelVersion;
+    // Written by storage from the saved game, independently of caller input.
+    std::optional<OpeningResolution> opening = std::nullopt;
 };
 struct ReviewSummary {
     ReviewId id = 0;
@@ -58,6 +60,8 @@ struct ReviewSummary {
     QDateTime createdAt;
     QDateTime updatedAt;
     std::optional<ReviewErrorCode> metadataError = std::nullopt;
+    // Supplied when creating a review. Paged summaries omit the snapshot.
+    std::optional<OpeningResolution> opening = std::nullopt;
 };
 struct StoredReview {
     ReviewSummary summary;

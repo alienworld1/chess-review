@@ -356,6 +356,8 @@ std::string Position::fen() const {
     return result;
 }
 
+std::string Position::epd() const { return impl_->board.getFen(false); }
+
 std::optional<Piece> Position::pieceAt(Square square) const {
     const auto piece = impl_->board.at(::chess::Square(square.index()));
     if (piece == ::chess::Piece::NONE) {

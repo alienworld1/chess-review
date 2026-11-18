@@ -25,6 +25,7 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                     emit openFailed(openError_);
                 }
                 emit changed();
+                requestOpening();
             });
     refreshTimer_.setSingleShot(true);
     refreshTimer_.setInterval(250);
@@ -43,6 +44,7 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                     return;
                 }
                 rows_.clear();
+                nextOpeningRow_ = 0;
                 hasNext_ = false;
                 if (const auto* rows =
                         std::get_if<std::vector<persistence::GameSummary>>(&result)) {
@@ -63,6 +65,35 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                 }
                 requestReviews();
                 emit changed();
+                requestOpening();
+            });
+    connect(&database_, &persistence::Database::gameOpeningResolved, this,
+            [this](QUuid id, const persistence::ResolveGameOpeningResult& result) {
+                if (!openingRequest_ || openingRequest_->id != id) {
+                    return;
+                }
+                const auto request = *std::exchange(openingRequest_, std::nullopt);
+                if (ready_ && active_ && reviewDetails_ && request.revision == revision_) {
+                    if (const auto* opening =
+                            std::get_if<std::optional<persistence::OpeningResolution>>(&result)) {
+                        if (!*opening) {
+                            nextOpeningRow_ = rows_.size();
+                            return;
+                        }
+                        const auto row =
+                            std::ranges::find(rows_, request.game, &persistence::GameSummary::id);
+                        if (row != rows_.end()) {
+                            row->opening = **opening;
+                            emit openingChanged(request.game, **opening);
+                        }
+                    } else if (std::get<persistence::GameError>(result).code ==
+                               persistence::GameErrorCode::Busy) {
+                        --nextOpeningRow_;
+                        QTimer::singleShot(100, this, &GameLibraryController::requestOpening);
+                        return;
+                    }
+                }
+                requestOpening();
             });
     connect(&database_, &persistence::Database::libraryReviewsListed, this,
             [this](QUuid id, const persistence::ListLibraryReviewsResult& result) {
@@ -168,6 +199,7 @@ void GameLibraryController::activate(bool reviewDetails) {
         reviewDetails_ = reviewDetails;
         ++revision_;
         accuracyQueue_.clear();
+        nextOpeningRow_ = 0;
     }
     if (!active_) {
         active_ = true;
@@ -179,6 +211,7 @@ void GameLibraryController::activate(bool reviewDetails) {
     } else if (reviewDetails_) {
         requestReviews();
     }
+    requestOpening();
 }
 void GameLibraryController::deactivate() {
     if (!active_) {
@@ -186,6 +219,7 @@ void GameLibraryController::deactivate() {
     }
     active_ = false;
     ++revision_;
+    nextOpeningRow_ = 0;
     refreshTimer_.stop();
     accuracyQueue_.clear();
 }
@@ -254,6 +288,20 @@ void GameLibraryController::requestAccuracy() {
     accuracyRevision_ = revision_;
     accuracyPending_ = QUuid::createUuid();
     database_.loadReviewOverview(accuracyPending_, accuracyRun_->id, accuracyRun_->revision);
+}
+void GameLibraryController::requestOpening() {
+    if (!ready_ || !active_ || !reviewDetails_ || busy() || opening() || pageStale_ ||
+        openingRequest_) {
+        return;
+    }
+    while (nextOpeningRow_ < rows_.size()) {
+        const auto& row = rows_[nextOpeningRow_++];
+        if (!row.opening && !row.metadataError) {
+            openingRequest_ = OpeningRequest{QUuid::createUuid(), row.id, revision_};
+            database_.resolveGameOpening(openingRequest_->id, row.id);
+            return;
+        }
+    }
 }
 QString GameLibraryController::reviewStatus(persistence::GameId id) const {
     const auto found = reviews_.find(id);
