@@ -134,6 +134,9 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
                     } else if (evidence_->move.escalationStop ==
                                review::EscalationStop::BudgetCeiling) {
                         state_.comparisonStatus += tr("\nStopped at the node-budget ceiling.");
+                    } else if (evidence_->move.escalationStop ==
+                               review::EscalationStop::PresetLimit) {
+                        state_.comparisonStatus += tr("\nAutomatic checks are complete.");
                     } else if (evidence_->run.settings.pipelineVersion == 6 &&
                                evidence_->move.escalationStop ==
                                    review::EscalationStop::Confirmed) {

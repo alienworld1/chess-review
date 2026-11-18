@@ -771,6 +771,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     };
     const auto setupSection = section(tr("Review settings"), true);
     setupToggle_ = setupSection.first;
+    setupToggle_->setObjectName(QStringLiteral("reviewSetupAction"));
     setup_ = setupSection.second;
     auto* setupLayout = new QVBoxLayout(setup_);
     setupLayout->setContentsMargins(0, 0, 0, 0);
@@ -1286,10 +1287,18 @@ void ReviewPage::update() {
     status_->setToolTip(verbose_ ? status : QString{});
     const auto simpleStatus =
         state.cancelling ? tr("Stopping review…")
-        : state.active ? (state.phase == app::ReviewPhase::Refining ? tr("Checking key moments…")
-                                                                    : tr("Analyzing your game…"))
-        : state.run && state.run->status != review::JobStatus::Complete ? tr("Review incomplete")
-                                                                        : QString{};
+        : state.active && state.run && state.run->status == review::JobStatus::Deriving
+            ? tr("Updating summary…")
+        : state.active && state.refinementTotal > 0 ? tr("Checking key moments · %1/%2 positions")
+                                                          .arg(state.refinementDone)
+                                                          .arg(state.refinementTotal)
+        : state.active && state.run ? tr("Scanning game · %1/%2 positions")
+                                          .arg(state.run->completedPositions)
+                                          .arg(state.run->totalPositions)
+        : state.active ? tr("Preparing game review…")
+        : state.run    ? (state.run->status == review::JobStatus::Complete ? tr("Review complete")
+                                                                           : tr("Review incomplete"))
+                       : QString{};
     status_->setAccessibleDescription(simpleStatus);
     status_->setText(simpleStatus);
     status_->setVisible(!simpleStatus.isEmpty());

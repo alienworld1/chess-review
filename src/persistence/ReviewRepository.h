@@ -116,6 +116,7 @@ struct ReviewMove {
     review::AlternativeComparison alternatives;
     std::vector<QString> comparisonSans;
     bool refinementTarget = false;
+    bool boundedRefinement = false;
     review::ScanAssessment quickScan;
     std::array<bool, 2> escalationEligible{};
     std::array<review::StabilityReason, 2> escalationReasons{};

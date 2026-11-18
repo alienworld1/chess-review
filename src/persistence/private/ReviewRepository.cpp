@@ -321,11 +321,16 @@ const review::NodeBudgets& runBudgets(const StoredReview& run) {
     const auto& c = run.settings.configuration.values;
     return c.budgets[static_cast<std::size_t>(c.quality)];
 }
+bool boundedRefinement(const StoredReview& run) {
+    return review::refinementMoveLimit(run.settings.pipelineVersion,
+                                       run.settings.configuration.values.quality)
+        .has_value();
+}
 bool stageAllowed(const StoredReview& run, review::EvidenceStage stage) {
     return stage >= review::EvidenceStage::Quick && stage <= review::EvidenceStage::EscalationTwo &&
            (stage < review::EvidenceStage::EscalationOne ||
             (run.settings.refinement && run.settings.pipelineVersion >= 5 &&
-             review::stageBudget(runBudgets(run), stage).has_value()));
+             !boundedRefinement(run) && review::stageBudget(runBudgets(run), stage).has_value()));
 }
 bool stageAnalysisValid(const StoredReview& run, const chess::Position& position,
                         const engine::AnalysisResult& result, review::EvidenceStage stage) {
@@ -517,7 +522,7 @@ refinedPair(QSqlDatabase& db, const StoredReview& run, const chess::Position& po
                          run.settings.configuration.values.conversion);
     return std::optional<RefinedPair>{std::move(out)};
 }
-std::optional<ReviewError> validateEscalation(QSqlDatabase& db, const StoredReview& run,
+std::optional<ReviewError> validateRefinement(QSqlDatabase& db, const StoredReview& run,
                                               const StoredGame& game,
                                               std::optional<review::EvidenceStage> stage = {},
                                               std::optional<int> index = {});
@@ -1073,8 +1078,9 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
     }
     if (run.settings.pipelineVersion >= 5 &&
         (request.stage >= review::EvidenceStage::EscalationOne ||
+         (boundedRefinement(run) && request.stage != review::EvidenceStage::Quick) ||
          request.status == JobStatus::Complete || request.status == JobStatus::Deriving)) {
-        if (const auto failure = validateEscalation(
+        if (const auto failure = validateRefinement(
                 database_, run, owningGame,
                 request.positionIndex ? std::optional(request.stage) : std::nullopt,
                 request.positionIndex)) {
@@ -1316,7 +1322,7 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
                     review::addOpportunityContext(scan, previousScan, index - 1);
                 }
                 previousScan = scan;
-                if (scan.needsRefinement()) {
+                if (!boundedRefinement(run) && scan.needsRefinement()) {
                     for (const auto stage :
                          {review::EvidenceStage::Deepening, review::EvidenceStage::Verification}) {
                         const auto refined =
@@ -1390,8 +1396,8 @@ ContinueReviewResult StorageSession::continueReview(const ContinueReview& reques
 namespace {
 LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                    const StoredGame& game, chess::Position& cursor, int offset,
-                                   int limit,
-                                   const review::ScanAssessment* precedingScan = nullptr) {
+                                   int limit, const review::ScanAssessment* precedingScan = nullptr,
+                                   bool scanOnly = false) {
     const auto stabilityModel = review::stabilityModelForPipeline(run.settings.pipelineVersion);
     if (!stabilityModel) {
         return error(ReviewErrorCode::UnsupportedVersion);
@@ -1405,6 +1411,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                      ? review::ComparisonModel::Version1
                                      : review::ComparisonModel::Version2;
     const int total = run.summary.totalPositions - 1;
+    const bool bounded = boundedRefinement(run);
     std::optional<bool> escalationPresent;
     review::ScanAssessment previousScan = precedingScan ? *precedingScan : review::ScanAssessment{};
     if (!precedingScan && offset > 0 && run.settings.pipelineVersion >= 3) {
@@ -1468,6 +1475,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
         }
         ReviewMove row;
         row.positionIndex = ply + 1;
+        row.boundedRefinement = bounded;
         row.bookDeparture = bookDeparture(run, row.positionIndex);
         row.special.thresholds = run.settings.configuration.values.special;
         if (intelligenceModels) {
@@ -1516,6 +1524,13 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                 review::addOpportunityContext(row.quickScan, previousScan, ply);
             }
             row.refinementTarget = row.quickScan.needsRefinement();
+            if (scanOnly) {
+                previousScan = row.quickScan;
+                page.moves.push_back(std::move(row));
+                *position = std::move(afterPosition);
+                before = std::move(after);
+                continue;
+            }
             std::array<std::optional<RefinedPair>, 4> pairs;
             const RefinedPair* chosen = nullptr;
             if (run.settings.refinement) {
@@ -1536,7 +1551,8 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     row.stability.reason = review::StabilityReason::Pending;
                 }
                 const bool initialComplete = deep && verified;
-                if (run.settings.pipelineVersion >= 5 && row.refinementTarget && !initialComplete) {
+                if (!bounded && run.settings.pipelineVersion >= 5 && row.refinementTarget &&
+                    !initialComplete) {
                     if (!escalationPresent.has_value()) {
                         QSqlQuery present(db);
                         if (!exec(present,
@@ -1656,7 +1672,9 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                             review::needsEscalation(row.refinementTarget, initialComplete,
                                                     workStability());
                         row.escalationReasons[slot] = workStability().reason;
-                        if (!review::escalationBudget(budgets.verificationNodes, round)) {
+                        if (bounded ||
+                            !review::escalationBudget(budgets.verificationNodes, round)) {
+                            row.escalationEligible[slot] = false;
                             break;
                         }
                         const auto stage = static_cast<review::EvidenceStage>(round + 2);
@@ -1705,9 +1723,11 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     if ((run.summary.status == JobStatus::Complete ||
                          run.summary.status == JobStatus::Deriving) &&
                         row.escalationStop == review::EscalationStop::Pending) {
-                        row.escalationStop = review::escalationBudget(budgets.verificationNodes, 2)
-                                                 ? review::EscalationStop::RoundLimit
-                                                 : review::EscalationStop::BudgetCeiling;
+                        row.escalationStop =
+                            bounded ? review::EscalationStop::PresetLimit
+                            : review::escalationBudget(budgets.verificationNodes, 2)
+                                ? review::EscalationStop::RoundLimit
+                                : review::EscalationStop::BudgetCeiling;
                     }
                 }
                 if (chosen) {
@@ -1824,9 +1844,10 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
     }
     return page;
 }
-// Validate complete preceding rounds once at a round boundary; subsequent writes need
-// only the adjacent moves. Eligibility is derived from immutable preceding stages.
-std::optional<ReviewError> validateEscalation(QSqlDatabase& db, const StoredReview& run,
+// Bounded presets authorize each write against the ranked quick-scan plan.
+// Exhaustive reviews validate round coverage at boundaries and adjacent eligibility
+// on subsequent writes.
+std::optional<ReviewError> validateRefinement(QSqlDatabase& db, const StoredReview& run,
                                               const StoredGame& game,
                                               std::optional<review::EvidenceStage> stage,
                                               std::optional<int> index) {
@@ -1834,8 +1855,11 @@ std::optional<ReviewError> validateEscalation(QSqlDatabase& db, const StoredRevi
         return error(ReviewErrorCode::InvalidInput);
     }
     QSqlQuery q(db);
+    const bool bounded = boundedRefinement(run);
     bool boundary = !stage;
-    if (stage) {
+    if (bounded) {
+        boundary = true;
+    } else if (stage) {
         if (!stageAllowed(run, *stage) || !index) {
             return error(ReviewErrorCode::InvalidInput);
         }
@@ -1858,13 +1882,13 @@ std::optional<ReviewError> validateEscalation(QSqlDatabase& db, const StoredRevi
         return invalid();
     }
     std::array<std::vector<review::RefinementCandidate>, 3> candidates;
-    bool authorized = !stage;
+    bool authorized = bounded || !stage;
     review::ScanAssessment preceding;
     const int end = boundary ? run.summary.totalPositions - 1
                              : std::min(offset + 2, run.summary.totalPositions - 1);
     for (int at = offset; at < end; at += 50) {
         const auto result = readMovePage(db, run, game, *cursor, at, std::min(50, end - at),
-                                         at > offset ? &preceding : nullptr);
+                                         at > offset ? &preceding : nullptr, bounded && stage);
         if (const auto* failure = std::get_if<ReviewError>(&result)) {
             return *failure;
         }
@@ -1890,15 +1914,18 @@ std::optional<ReviewError> validateEscalation(QSqlDatabase& db, const StoredRevi
     if (!boundary) {
         return {};
     }
-    for (int value = 1; value <= 4; ++value) {
-        auto planned =
-            review::refinementQueue(candidates[static_cast<std::size_t>(std::max(0, value - 2))],
-                                    run.settings.pipelineVersion);
+    for (int value = 1; value <= (bounded ? 2 : 4); ++value) {
+        auto planned = review::refinementQueue(
+            candidates[static_cast<std::size_t>(std::max(0, value - 2))],
+            run.settings.pipelineVersion, run.settings.configuration.values.quality);
         if (!std::holds_alternative<std::vector<int>>(planned)) {
             return invalid();
         }
         auto required = std::get<std::vector<int>>(std::move(planned));
         std::sort(required.begin(), required.end());
+        if (bounded && stage && !std::binary_search(required.begin(), required.end(), *index)) {
+            return error(ReviewErrorCode::InvalidInput);
+        }
         if (!exec(q,
                   QStringLiteral("SELECT position_index FROM %1 WHERE review_id=? AND stage=? "
                                  "ORDER BY position_index")
@@ -1914,7 +1941,7 @@ std::optional<ReviewError> validateEscalation(QSqlDatabase& db, const StoredRevi
             return storage();
         }
         q.finish();
-        if (value >= 3 &&
+        if ((bounded || value >= 3) &&
             !std::includes(required.begin(), required.end(), retained.begin(), retained.end())) {
             return invalid();
         }
@@ -2051,7 +2078,8 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
             }
         }
     }
-    auto queue = review::refinementQueue(candidates, run.settings.pipelineVersion);
+    auto queue = review::refinementQueue(candidates, run.settings.pipelineVersion,
+                                         run.settings.configuration.values.quality);
     if (const auto* issue = std::get_if<review::RefinementQueueIssue>(&queue)) {
         return *issue == review::RefinementQueueIssue::UnsupportedPolicy
                    ? error(ReviewErrorCode::UnsupportedVersion)
@@ -2059,9 +2087,10 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
     }
     out.refinementPositions = std::get<std::vector<int>>(std::move(queue));
     std::array<int, 2> retainedEscalation{};
-    for (std::size_t round = 0; round < 2; ++round) {
+    for (std::size_t round = 0; !boundedRefinement(run) && round < 2; ++round) {
         auto planned =
-            review::refinementQueue(escalationCandidates[round], run.settings.pipelineVersion);
+            review::refinementQueue(escalationCandidates[round], run.settings.pipelineVersion,
+                                    run.settings.configuration.values.quality);
         if (!std::holds_alternative<std::vector<int>>(planned)) {
             return invalid();
         }

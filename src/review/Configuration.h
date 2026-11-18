@@ -38,7 +38,7 @@ struct SpecialLabelConfig {
 struct Configuration {
     std::uint32_t version = 1;
     std::array<NodeBudgets, 3> budgets{
-        {{50000, 500000, 2000000}, {100000, 1000000, 5000000}, {250000, 3000000, 10000000}}};
+        {{50000, 150000, 300000}, {50000, 250000, 500000}, {250000, 3000000, 10000000}}};
     ClassificationConfig classification;
     ConversionConfig conversion;
     RefinementConfig refinement;

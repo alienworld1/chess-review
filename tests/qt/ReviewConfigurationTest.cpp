@@ -276,7 +276,7 @@ class ReviewConfigurationTest final : public QObject {
         QVERIFY(changed);
         QCOMPARE(changed->values.quality, review::Quality::Fast);
         QCOMPARE(changed->values.budgets[0].quickScanNodes, 1000ULL);
-        QCOMPARE(changed->values.budgets[0].verificationNodes, 2000000ULL);
+        QCOMPARE(changed->values.budgets[0].verificationNodes, 300000ULL);
         QVERIFY(!changed->values.conversion.preferWdl);
         QCOMPARE(changed->values.conversion.fallbackScaleCp, 200);
         QCOMPARE(changed->values.openings, (openings::BookConfig{false, 16, 5}));
@@ -360,6 +360,13 @@ class ReviewConfigurationTest final : public QObject {
         QCOMPARE(parsed->identities.conversion.toHex(),
                  QByteArray("5136a1ae0435b81fc247490dd783b0a2949ef6c1030f17f407e12c26f5d48162"));
         QCOMPARE(parsed->identities.analysis.toHex(),
+                 QByteArray("bbaec7f0f0f8cb8d4e0eda066ec187c3063ec82cfba57b6ff901371ec2ba78a9"));
+        const auto previous =
+            valid("[analysis.fast]\nquickScanNodes=50000\ndeepeningNodes=500000\n"
+                  "verificationNodes=2000000\n[analysis.standard]\nquickScanNodes=100000\n"
+                  "deepeningNodes=1000000\nverificationNodes=5000000\n");
+        QVERIFY(previous);
+        QCOMPARE(previous->identities.analysis.toHex(),
                  QByteArray("cfade89abac9aa3dd679a8bbc3847e84c6bfcfe816674bddfd59459afac4da7c"));
     }
     void excellentThresholdAndLegacyIdentity() {

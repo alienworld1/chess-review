@@ -10,6 +10,12 @@ change them or turn Book classifications on or off for this run. If no engine
 is available, use **Set up engine…** to add one installed on your computer,
 such as Stockfish. Engines are never downloaded automatically.
 
+All three presets scan the full game. **Fast** checks up to two ranked moves
+more closely, and **Standard** checks up to four before finishing automatically.
+**Thorough** can spend additional time checking more moves and resolving
+uncertainty. Use **Analyze Position** to explore a specific move in more depth.
+Review completion and optional puzzle generation have separate progress.
+
 ## Your game at a glance
 
 When the played mainline matches the bundled opening dataset, the game header

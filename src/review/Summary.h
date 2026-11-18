@@ -1,6 +1,7 @@
 #pragma once
 #include "review/Classification.h"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -9,12 +10,20 @@
 namespace chess_review::review {
 inline constexpr std::uint32_t stabilityModelVersion = 3;
 inline constexpr std::uint32_t accuracyModelVersion = 1;
-inline constexpr std::uint32_t pipelineModelVersion = 12;
+inline constexpr std::uint32_t pipelineModelVersion = 13;
 [[nodiscard]] constexpr bool supportsPipelineModel(std::uint32_t version) {
     // Keep released policies explicit when the default advances.
     return version == 1 || version == 2 || version == 3 || version == 4 || version == 5 ||
            version == 6 || version == 7 || version == 8 || version == 9 || version == 10 ||
-           version == 11 || version == 12;
+           version == 11 || version == 12 || version == 13;
+}
+// Policy 13 limits whole moves before expanding their adjacent positions.
+[[nodiscard]] constexpr std::optional<std::size_t> refinementMoveLimit(std::uint32_t version,
+                                                                       Quality quality) {
+    if (version == 13 && quality != Quality::Thorough) {
+        return quality == Quality::Fast ? 2 : 4;
+    }
+    return std::nullopt;
 }
 // The persisted pipeline fixes stability semantics for scheduling and reproduction.
 [[nodiscard]] constexpr std::optional<std::uint32_t>
@@ -34,6 +43,7 @@ stabilityModelForPipeline(std::uint32_t version) {
     case 10:
     case 11:
     case 12:
+    case 13:
         return 3;
     default:
         return std::nullopt;
@@ -67,6 +77,7 @@ struct ScanAssessment {
     std::optional<double> qualifyingLoss;
     std::optional<double> opportunityLoss;
     std::optional<int> opportunityPosition;
+    bool repeatedMateSignal = false;
     [[nodiscard]] bool needsRefinement() const { return !reasons.empty(); }
     bool operator==(const ScanAssessment&) const = default;
 };
@@ -97,7 +108,7 @@ using RefinementQueueResult = std::variant<std::vector<int>, RefinementQueueIssu
 // Invalid inputs are errors, never an empty successful plan or a fallback policy.
 // Policies 1/2 retain chronological position order; adaptive policies rank then expand pairs.
 [[nodiscard]] RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candidates,
-                                                    std::uint32_t pipelineVersion);
+                                                    std::uint32_t pipelineVersion, Quality quality);
 enum class EvidenceStage {
     Quick = 0,
     Deepening = 1,
@@ -116,7 +127,8 @@ enum class EscalationStop {
     Confirmed,
     PersistentMate,
     RoundLimit,
-    BudgetCeiling
+    BudgetCeiling,
+    PresetLimit
 };
 enum class StabilityReason {
     Unselected,

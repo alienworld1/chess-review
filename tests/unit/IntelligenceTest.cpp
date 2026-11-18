@@ -175,7 +175,8 @@ TEST_CASE("New adaptive signals leave historical selection unchanged",
                       RefinementReason::TacticalOpportunity) != scan.reasons.end();
         CHECK(tactical == (policy == 10));
         const std::array<RefinementCandidate, 1> candidates{{{1, scan}}};
-        CHECK(std::holds_alternative<std::vector<int>>(refinementQueue(candidates, policy)));
+        CHECK(std::holds_alternative<std::vector<int>>(
+            refinementQueue(candidates, policy, Quality::Standard)));
     }
 }
 

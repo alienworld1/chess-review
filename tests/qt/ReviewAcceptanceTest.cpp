@@ -41,6 +41,18 @@ struct Result {
 };
 Result launch(const QTemporaryDir& root, const QString& mode, const QString& pgn,
               const QString& engine = {}) {
+    if (engine.isEmpty()) {
+        const auto config = root.filePath(QStringLiteral("config/chess-review"));
+        if (!QDir().mkpath(config)) {
+            qFatal("Cannot create acceptance configuration directory");
+        }
+        QFile file(config + QStringLiteral("/config.toml"));
+        const QByteArray budgets("[analysis.thorough]\nquickScanNodes=100000\n"
+                                 "deepeningNodes=1000000\nverificationNodes=5000000\n");
+        if (!file.open(QIODevice::WriteOnly) || file.write(budgets) != budgets.size()) {
+            qFatal("Cannot write exhaustive acceptance fixture budgets");
+        }
+    }
     auto environment = QProcessEnvironment::systemEnvironment();
     environment.insert(QStringLiteral("HOME"), root.path());
     environment.insert(QStringLiteral("XDG_DATA_HOME"), root.filePath(QStringLiteral("data")));
@@ -122,6 +134,9 @@ class ReviewAcceptanceTest final : public QObject {
         QTest::newRow("complete") << fixture("complete.pgn") << 60;
         QTest::newRow("terminal") << fixture("terminal.pgn") << 0;
         QTest::newRow("stress") << fixture("stress.pgn") << 512;
+        QTest::newRow("lasker-bauer") << fixture("lasker-bauer-1889.pgn") << 75;
+        QTest::newRow("byrne-fischer") << fixture("byrne-fischer-1956.pgn") << 82;
+        QTest::newRow("capablanca-tartakower") << fixture("capablanca-tartakower-1924.pgn") << 103;
     }
     void fixtures() {
         QFETCH(QString, path);
@@ -175,7 +190,7 @@ class ReviewAcceptanceTest final : public QObject {
         const auto saved = std::get<persistence::StoredReview>(record);
         QVERIFY(!engine::verifiedResources(saved.settings.fingerprint));
         QCOMPARE(saved.summary.selectedSide, chess::Color::Black);
-        QCOMPARE(saved.summary.quality, review::Quality::Standard);
+        QCOMPARE(saved.summary.quality, review::Quality::Thorough);
         const auto document = review_acceptance::readGame(path);
         auto position = std::get<chess::Position>(document->tree.position(document->tree.rootId()));
         const auto moves = document->originalMainline();

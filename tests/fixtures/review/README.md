@@ -10,6 +10,9 @@ replays each mainline through the chess adapter before process acceptance runs.
 | `complete.pgn` | A 60-ply completed training game, with development, both castlings, exchanges and an agreed draw. Requires 61 durable position records and full original-mainline navigation. The PGN result is metadata, not proof of terminality or of move quality. |
 | `terminal.pgn` | A checkmated Black king at a FEN root, no played moves. Requires one locally proven terminal position, no analysis search, and no invented move accuracy. |
 | `stress.pgn` | 512 legal plies of reversible knight moves, intentionally unfinished. Exercises history-bearing preparation, timeline navigation to both ends, background navigation and cancellation. Repetition is intentional; it is not a realistic engine-strength benchmark. |
+| `lasker-bauer-1889.pgn` | 75 plies with a kingside attack and double bishop sacrifice. [Game score](https://en.wikipedia.org/wiki/Lasker_versus_Bauer,_Amsterdam,_1889) |
+| `byrne-fischer-1956.pgn` | 82 plies, including a queen sacrifice and a terminal mate. [Game score](https://en.wikipedia.org/wiki/The_Game_of_the_Century_(chess)) |
+| `capablanca-tartakower-1924.pgn` | 103 plies with a long transition into a rook ending. [Game score](https://chess.rodeo/library/games/capablanca-tartakower-new-york-1924) |
 
 The fake engine supplies legal three-ply candidate lines and coherent synthetic
 `cp 200` best scores from the side to move. When a candidate contains the played

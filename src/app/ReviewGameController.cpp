@@ -666,6 +666,7 @@ void ReviewGameController::prepareIdentity() {
                     persistence::CreateReview creation{state_.gameId,     profileId_,
                                                        fingerprint_,      side_,
                                                        runConfiguration_, refinementEnabled_};
+                    creation.pipelineVersion = pipelineVersion_;
                     request([this, creation](QUuid id) { database_.createReview(id, creation); },
                             true);
                 }
@@ -699,7 +700,9 @@ void ReviewGameController::advance() {
                 refinementIndex_ = 0;
                 statusWrite_ = true;
                 checkpoint(JobStatus::Deepening);
-            } else if (pipelineVersion_ >= 5 && stage_ < review::EvidenceStage::EscalationTwo) {
+            } else if (pipelineVersion_ >= 5 && stage_ < review::EvidenceStage::EscalationTwo &&
+                       !review::refinementMoveLimit(pipelineVersion_,
+                                                    runConfiguration_.values.quality)) {
                 stage_ = static_cast<review::EvidenceStage>(static_cast<int>(stage_) + 1);
                 planning_ = true;
                 refreshOverview();
@@ -719,7 +722,9 @@ void ReviewGameController::advance() {
         }
         return;
     }
-    if (resuming_ || stage_ != review::EvidenceStage::Quick) {
+    if (resuming_ ||
+        (stage_ != review::EvidenceStage::Quick &&
+         !review::refinementMoveLimit(pipelineVersion_, runConfiguration_.values.quality))) {
         state_.phase = ReviewPhase::LookingUp;
         const auto id = state_.run->id;
         const auto index = index_;

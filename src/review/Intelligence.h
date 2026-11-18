@@ -22,6 +22,7 @@ intelligenceModelsForPipeline(std::uint32_t pipeline) {
     case 11:
         return IntelligenceModels{2, 2};
     case 12:
+    case 13:
         return IntelligenceModels{3, 3};
     default:
         return std::nullopt;

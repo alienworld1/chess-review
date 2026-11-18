@@ -501,12 +501,35 @@ TEST_CASE("Adaptive queue orders chess impact then expands unique adjacent posit
         candidate(16, RefinementReason::ExpectedScoreLoss, .2)};
     const auto expected =
         std::vector<int>{13, 14, 11, 12, 9, 10, 15, 16, 7, 8, 5, 6, 4, 2, 3, 0, 1};
-    CHECK(std::get<std::vector<int>>(refinementQueue(candidates, 3)) == expected);
+    CHECK(std::get<std::vector<int>>(refinementQueue(candidates, 3, Quality::Standard)) ==
+          expected);
     std::reverse(candidates.begin(), candidates.end());
-    CHECK(std::get<std::vector<int>>(refinementQueue(candidates, 3)) == expected);
-    CHECK(std::get<std::vector<int>>(refinementQueue(candidates, 2)) ==
+    CHECK(std::get<std::vector<int>>(refinementQueue(candidates, 3, Quality::Standard)) ==
+          expected);
+    CHECK(std::get<std::vector<int>>(refinementQueue(candidates, 2, Quality::Standard)) ==
           std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
-    CHECK(std::get<std::vector<int>>(refinementQueue({}, 3)).empty());
+    CHECK(std::get<std::vector<int>>(refinementQueue({}, 3, Quality::Standard)).empty());
+    for (auto& item : candidates) {
+        item.scan.pipelineVersion = 13;
+    }
+    CHECK(std::get<std::vector<int>>(refinementQueue(candidates, 13, Quality::Thorough)) ==
+          expected);
+    CHECK(std::get<std::vector<int>>(refinementQueue(candidates, 13, Quality::Standard)) ==
+          std::vector<int>{13, 14, 9, 10, 15, 16, 7, 8});
+    CHECK(std::get<std::vector<int>>(refinementQueue(candidates, 13, Quality::Fast)) ==
+          std::vector<int>{13, 14, 9, 10});
+    for (auto& item : candidates) {
+        if (item.positionIndex == 14) {
+            item.scan.repeatedMateSignal = true;
+        }
+        if (item.positionIndex == 12) {
+            item.scan.issue = EvidenceIssue::NegativeLoss;
+        }
+    }
+    CHECK(std::get<std::vector<int>>(refinementQueue(candidates, 13, Quality::Thorough)) ==
+          expected);
+    CHECK(std::get<std::vector<int>>(refinementQueue(candidates, 13, Quality::Standard)) ==
+          std::vector<int>{9, 10, 15, 16, 7, 8, 5, 6});
 }
 
 TEST_CASE("Adaptive selection uses the captured fallback conversion and error cutoff",
@@ -589,7 +612,7 @@ TEST_CASE("Adaptive queue rejects unsupported and malformed plans before sorting
     scan.reasons = {RefinementReason::ExpectedScoreLoss};
     RefinementCandidate candidate{2, scan};
     const auto build = [&](std::uint32_t policy = 4) {
-        return refinementQueue(std::span{&candidate, 1}, policy);
+        return refinementQueue(std::span{&candidate, 1}, policy, Quality::Standard);
     };
     SECTION("unknown policy") {
         CHECK(std::get<RefinementQueueIssue>(build(99)) == RefinementQueueIssue::UnsupportedPolicy);

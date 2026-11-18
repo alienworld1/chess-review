@@ -108,6 +108,17 @@ QT_QPA_PLATFORM=offscreen CHESS_REVIEW_STOCKFISH=/absolute/path/to/stockfish \
 The cache probe requires the reviewed pinned Stockfish binary. Other conformant
 engines can run reviews but cannot establish that resource policy's reuse gate.
 
+For end-to-end Standard timing, build `review_acceptance_probe` with the
+`release` preset and use an empty profile for each cold run. Set
+`CHESS_REVIEW_ACCEPTANCE_MODE=benchmark`, `CHESS_REVIEW_ACCEPTANCE_PGN` to an
+absolute fixture path, and `CHESS_REVIEW_STOCKFISH` to your local engine. Set
+`XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` to separate directories
+under the test profile. Run the probe with `QT_QPA_PLATFORM=offscreen`. A second
+launch with the same profile and `CHESS_REVIEW_ACCEPTANCE_MODE=benchmark-warm`
+measures a new run with reusable evidence. The probe emits scan readiness,
+search counts, engine time, evaluated moves, and elapsed time through the final
+summary. The historical PGNs cover different styles and game lengths.
+
 For review screenshots, create an output directory and set
 `CHESS_REVIEW_ACCEPTANCE_RENDER_DIR` when running `review_acceptance_tests renderJourney`.
 The default matrix covers both themes, normal/enlarged fonts and three window sizes.

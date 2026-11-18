@@ -698,8 +698,10 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
              : r.stable ? QObject::tr("Stable — two stronger passes agree.")
                         : QObject::tr("Provisional — stability has not been established."));
     if (move.quickScan.pipelineVersion >= 5 && move.refinementTarget) {
-        text << QObject::tr("Adaptive deeper searches: round %1 of at most 2.")
-                    .arg(move.escalationRound);
+        if (!move.boundedRefinement) {
+            text << QObject::tr("Adaptive deeper searches: round %1 of at most 2.")
+                        .arg(move.escalationRound);
+        }
         const auto reason = [](review::StabilityReason value) {
             switch (value) {
             case review::StabilityReason::Disagreement:
@@ -738,8 +740,11 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
                                 "unavailable within this review budget.");
             break;
         case review::EscalationStop::Pending:
-            text << QObject::tr("Further confirmation is required. Automatic work runs only while "
-                                "this review is active; resume is explicit.");
+            text << QObject::tr("Further confirmation is required.");
+            break;
+        case review::EscalationStop::PresetLimit:
+            text << QObject::tr("Automatic checks are complete. Use Analyze Position or run a "
+                                "Thorough review for more evidence.");
             break;
         case review::EscalationStop::NotSelected:
             break;

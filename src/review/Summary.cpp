@@ -8,6 +8,7 @@ namespace chess_review::review {
 namespace {
 std::optional<int> ticks(const PositionEvidence& evidence, chess::Color perspective);
 bool validExpected(const EvaluationResult& result, chess::Color mover);
+bool sameMate(const std::optional<RawScore>& a, const std::optional<RawScore>& b);
 bool sameEvaluation(const EvaluationResult& a, const EvaluationResult& b) {
     if (a.issue || b.issue || !a.expected || !b.expected) {
         return false;
@@ -197,6 +198,9 @@ ScanAssessment assessQuickScan(const ClassificationResult& result, const MoveEvi
         scan.loss = result.loss;
     }
     scan.reasons = refinementReasons(result, pair, config, pipelineVersion < 3);
+    if (pipelineVersion == 13) {
+        scan.repeatedMateSignal = sameMate(pair.mate.before, pair.mate.after);
+    }
     if (pipelineVersion >= 3) {
         if (scan.state == ScanState::Usable) {
             double measuredTicks = *scan.loss * 2000;
@@ -293,12 +297,13 @@ void addOpeningDeparture(ScanAssessment& scan, bool firstOutsideBook) {
     }
 }
 RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candidates,
-                                      std::uint32_t pipelineVersion) {
+                                      std::uint32_t pipelineVersion, Quality quality) {
     if (!supportsPipelineModel(pipelineVersion)) {
         return RefinementQueueIssue::UnsupportedPolicy;
     }
+    const auto moveLimit = refinementMoveLimit(pipelineVersion, quality);
     std::vector<std::tuple<int, double, int>> ranked;
-    const auto priority = [](const RefinementCandidate& candidate) {
+    const auto priority = [bounded = moveLimit.has_value()](const RefinementCandidate& candidate) {
         const auto& scan = candidate.scan;
         const auto has = [&](RefinementReason reason) {
             return std::find(scan.reasons.begin(), scan.reasons.end(), reason) !=
@@ -306,14 +311,18 @@ RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candi
         };
         int tier = 6;
         double loss = 0;
-        if (has(RefinementReason::MateSignal)) {
+        if (has(RefinementReason::MateSignal) && (!bounded || !scan.repeatedMateSignal)) {
             tier = 0;
-        } else if (has(RefinementReason::SearchConflict)) {
+        } else if (bounded && scan.qualifyingLoss) {
             tier = 1;
+            loss = *scan.qualifyingLoss;
+        } else if (has(RefinementReason::SearchConflict) &&
+                   (!bounded || scan.issue != EvidenceIssue::NegativeLoss)) {
+            tier = bounded ? 2 : 1;
         } else if (has(RefinementReason::TacticalOpportunity) ||
                    has(RefinementReason::SacrificeSignal) ||
                    has(RefinementReason::UniqueResource)) {
-            tier = 2;
+            tier = bounded ? 3 : 2;
         } else if (scan.qualifyingLoss) {
             tier = 3;
             loss = *scan.qualifyingLoss;
@@ -325,6 +334,9 @@ RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candi
                    has(RefinementReason::BoundedEvaluation) ||
                    has(RefinementReason::MixedConversion)) {
             tier = 5;
+        } else if (bounded &&
+                   (scan.repeatedMateSignal || scan.issue == EvidenceIssue::NegativeLoss)) {
+            tier = 7;
         }
         return std::tuple{tier, -loss, candidate.positionIndex};
     };
@@ -346,6 +358,8 @@ RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candi
                  scan.state != ScanState::AwaitingEvidence) ||
                 !validLoss(scan.loss) || !validLoss(scan.signedDelta) ||
                 !validLoss(scan.qualifyingLoss) || !validLoss(scan.opportunityLoss) ||
+                (scan.repeatedMateSignal &&
+                 (pipelineVersion != 13 || !has(RefinementReason::MateSignal))) ||
                 (scan.state == ScanState::AwaitingEvidence && scan.needsRefinement()) ||
                 (scan.qualifyingLoss &&
                  (scan.state != ScanState::Usable || *scan.qualifyingLoss == 0)) ||
@@ -394,6 +408,9 @@ RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candi
     }
     // All sort keys are finite, and each priority is derived once per candidate.
     std::sort(ranked.begin(), ranked.end());
+    if (moveLimit && ranked.size() > *moveLimit) {
+        ranked.resize(*moveLimit);
+    }
     std::set<int> seen;
     std::vector<int> positions;
     for (const auto& candidate : ranked) {

@@ -13,6 +13,7 @@
 #include <QComboBox>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QMessageBox>
@@ -26,7 +27,9 @@
 #include <QTest>
 #include <QTimer>
 #include <algorithm>
+#include <array>
 #include <cstdio>
+#include <optional>
 
 namespace chess_review::ui {
 class EnginePageTestAccess {
@@ -204,6 +207,8 @@ void run(ui::MainWindow& window) {
     const auto mode = qEnvironmentVariable("CHESS_REVIEW_ACCEPTANCE_MODE");
     const auto input = qEnvironmentVariable("CHESS_REVIEW_ACCEPTANCE_PGN");
     const auto real = qEnvironmentVariable("CHESS_REVIEW_STOCKFISH");
+    const bool warmBenchmark = mode == QStringLiteral("benchmark-warm");
+    const bool benchmark = warmBenchmark || mode == QStringLiteral("benchmark");
     until([&] { return settings.state().ready && !settings.state().listing; }, "startup ready");
     window.resize(1100, 720);
     const auto script = [&](int first, int end, int delay, bool crash) {
@@ -265,36 +270,42 @@ void run(ui::MainWindow& window) {
         return;
     }
 
-    render(window, QStringLiteral("home"), "homeImportButton");
-    // File-picker selection is supplied directly; validation, registration and all subsequent
-    // primary actions use production commands and visible widgets, never repository seeding.
-    child<QAction>(window, "engineSettingsAction")->trigger();
-    if (real.isEmpty()) {
-        engine::ValidatorTestAccess::configure(
-            supervisor,
-            engine_test::scenario(qEnvironmentVariable("CHESS_REVIEW_ACCEPTANCE_SCRIPT"),
-                                  engine_test::handshake(review_acceptance::handshake())),
-            10000);
+    if (warmBenchmark) {
+        until([&] { return review.state().run && !review.state().busy && navigation.ready(); },
+              "saved benchmark game restored");
+    } else {
+        render(window, QStringLiteral("home"), "homeImportButton");
+        // File-picker selection is supplied directly; validation, registration and import
+        // use the production commands and visible widgets.
+        child<QAction>(window, "engineSettingsAction")->trigger();
+        if (real.isEmpty()) {
+            engine::ValidatorTestAccess::configure(
+                supervisor,
+                engine_test::scenario(qEnvironmentVariable("CHESS_REVIEW_ACCEPTANCE_SCRIPT"),
+                                      engine_test::handshake(review_acceptance::handshake())),
+                10000);
+        }
+        settings.selectExecutable(real.isEmpty() ? QString::fromUtf8(FAKE_UCI_ENGINE) : real);
+        until(
+            [&] { return settings.state().registration == app::EngineRegistrationState::Selected; },
+            "executable selected");
+        activate(window, "registerEngine");
+        until([&] { return !settings.state().listing && settings.state().profiles.size() == 1; },
+              "engine registered");
+        render(window, QStringLiteral("settings"), "registerEngine");
+        child<QAction>(window, "pastePgnAction")->trigger();
+        auto* editor = child<QPlainTextEdit>(window, "pastePgnEditor");
+        QFile pgn(input);
+        require(pgn.open(QIODevice::ReadOnly), "read PGN");
+        editor->setPlainText(QString::fromUtf8(pgn.readAll()));
+        activate(window, "confirmPasteImport");
+        until(
+            [&] {
+                return navigation.ready() && !review.state().busy &&
+                       child<ui::ReviewPage>(window, "reviewPage")->isVisible();
+            },
+            "single import continues to review setup");
     }
-    settings.selectExecutable(real.isEmpty() ? QString::fromUtf8(FAKE_UCI_ENGINE) : real);
-    until([&] { return settings.state().registration == app::EngineRegistrationState::Selected; },
-          "executable selected");
-    activate(window, "registerEngine");
-    until([&] { return !settings.state().listing && settings.state().profiles.size() == 1; },
-          "engine registered");
-    render(window, QStringLiteral("settings"), "registerEngine");
-    child<QAction>(window, "pastePgnAction")->trigger();
-    auto* editor = child<QPlainTextEdit>(window, "pastePgnEditor");
-    QFile pgn(input);
-    require(pgn.open(QIODevice::ReadOnly), "read PGN");
-    editor->setPlainText(QString::fromUtf8(pgn.readAll()));
-    activate(window, "confirmPasteImport");
-    until(
-        [&] {
-            return navigation.ready() && !review.state().busy &&
-                   child<ui::ReviewPage>(window, "reviewPage")->isVisible();
-        },
-        "single import continues to review setup");
     child<QAction>(window, "gamesAction")->trigger();
     auto* games = child<QTableView>(window, "gamesTable");
     until([&] { return games->isVisible() && games->model()->rowCount() == 1; }, "game imported");
@@ -306,9 +317,12 @@ void run(ui::MainWindow& window) {
     }
     activate(window, "reviewGameButton");
     until([&] { return navigation.ready() && !review.state().busy; }, "game selected");
+    if (warmBenchmark) {
+        child<QAction>(window, "reviewSetupAction")->setChecked(true);
+    }
     choose(*child<QComboBox>(window, "reviewSide"), 2);
     activate(window, "reviewEngineOptions");
-    choose(*child<QComboBox>(window, "reviewQuality"), 1);
+    choose(*child<QComboBox>(window, "reviewQuality"), real.isEmpty() ? 2 : 1);
     if (real.isEmpty()) {
         script(0,
                mode == QStringLiteral("stress")   ? 24
@@ -322,6 +336,16 @@ void run(ui::MainWindow& window) {
     int searches = 0;
     int heartbeats = 0;
     qint64 maxGap = 0;
+    qint64 scanMs = 0;
+    qint64 attemptsMs = 0;
+    qint64 attemptStartedMs = 0;
+    qint64 queuedMs = 0;
+    std::optional<qint64> queuedAt;
+    qint64 lastPhaseAt = 0;
+    std::optional<std::size_t> storagePhase;
+    std::array<qint64, 2> storageMs{};
+    std::array<qint64, 3> engineMs{};
+    std::array<int, 3> stageSearches{};
     QElapsedTimer elapsed;
     elapsed.start();
     qint64 previous = 0;
@@ -333,13 +357,64 @@ void run(ui::MainWindow& window) {
         ++heartbeats;
     });
     heartbeat.start(5);
-    const auto searchConnection =
-        QObject::connect(&supervisor, &engine::EngineSupervisor::scheduledFinished, &heartbeat,
-                         [&](const engine::ScheduledResult&) { ++searches; });
+    const auto attemptConnection =
+        QObject::connect(&supervisor, &engine::EngineSupervisor::scheduledChanged, &heartbeat,
+                         [&](const engine::ScheduledState& state) {
+                             if (!benchmark || state.job != review.taskToken()) {
+                                 return;
+                             }
+                             if (state.phase == engine::ScheduledPhase::Queued) {
+                                 queuedAt = elapsed.elapsed();
+                             } else if (state.phase == engine::ScheduledPhase::Configuring) {
+                                 attemptStartedMs = elapsed.elapsed();
+                                 if (queuedAt) {
+                                     queuedMs += attemptStartedMs - *queuedAt;
+                                     queuedAt.reset();
+                                 }
+                             }
+                         });
+    const auto searchConnection = QObject::connect(
+        &supervisor, &engine::EngineSupervisor::scheduledFinished, &heartbeat,
+        [&](const engine::ScheduledResult& result) {
+            if (result.identity.job != review.taskToken()) {
+                return;
+            }
+            ++searches;
+            if (!benchmark || !result.evidence) {
+                return;
+            }
+            const auto& snapshot = result.evidence->evidence;
+            const auto limit = std::get<engine::NodeLimit>(snapshot.limit).nodes;
+            const auto budgets = review::Configuration{}.budgets[1];
+            require(limit == budgets.quickScanNodes || limit == budgets.deepeningNodes ||
+                        limit == budgets.verificationNodes,
+                    "Standard search budget");
+            const std::size_t stage = limit == budgets.quickScanNodes   ? 0
+                                      : limit == budgets.deepeningNodes ? 1
+                                                                        : 2;
+            ++stageSearches[stage];
+            engineMs[stage] += static_cast<qint64>(snapshot.statistics.timeMs.value_or(0));
+            attemptsMs += elapsed.elapsed() - attemptStartedMs;
+        });
     bool cancellationRequested = false;
     const auto cancelConnection =
         QObject::connect(&review, &app::ReviewGameController::taskChanged, &heartbeat, [&] {
             const auto& state = review.taskState();
+            if (benchmark) {
+                const auto now = elapsed.elapsed();
+                if (storagePhase) {
+                    storageMs[*storagePhase] += now - lastPhaseAt;
+                }
+                lastPhaseAt = now;
+                storagePhase.reset();
+                if (state.active && (state.phase == app::ReviewPhase::LookingUp ||
+                                     state.phase == app::ReviewPhase::Saving)) {
+                    storagePhase = state.refinementTotal > 0 ? 1 : 0;
+                }
+            }
+            if (scanMs == 0 && state.run && state.run->status == review::JobStatus::Reviewable) {
+                scanMs = elapsed.elapsed();
+            }
             const int cancelAt = mode == QStringLiteral("stress") ? 24 : 3;
             if ((mode == QStringLiteral("cancel") || mode == QStringLiteral("stress")) &&
                 state.active && state.run && state.run->completedPositions == cancelAt &&
@@ -396,6 +471,7 @@ void run(ui::MainWindow& window) {
           real.isEmpty() ? 90000 : 300000);
     QObject::disconnect(cancelConnection);
     QObject::disconnect(searchConnection);
+    QObject::disconnect(attemptConnection);
     heartbeat.stop();
     const auto saved = *review.state().run;
     if (mode == QStringLiteral("crash")) {
@@ -430,8 +506,33 @@ void run(ui::MainWindow& window) {
             require(review.state().overview->sides[0].evaluated > 0 &&
                         review.state().overview->sides[1].accuracy.has_value(),
                     "useful review");
-            require(review.state().overview->totalKeyMoments > 0, "selected player key moments");
+            if (!benchmark) {
+                require(review.state().overview->totalKeyMoments > 0,
+                        "selected player key moments");
+            }
         }
+    }
+    if (benchmark) {
+        const auto& overview = *review.state().overview;
+        require(stageSearches[1] <= 8 && stageSearches[2] <= 8 &&
+                    overview.escalationPositions[0].empty() &&
+                    overview.escalationPositions[1].empty(),
+                "bounded Standard review");
+        QJsonArray checkedPositions;
+        for (const int position : overview.refinementPositions) {
+            checkedPositions.append(position);
+        }
+        report(
+            {{"event", "benchmark"},
+             {"scan_ms", scanMs},
+             {"attempts_ms", attemptsMs},
+             {"queued_ms", queuedMs},
+             {"storage_phase_ms", QJsonArray{storageMs[0], storageMs[1]}},
+             {"engine_ms", QJsonArray{engineMs[0], engineMs[1], engineMs[2]}},
+             {"stage_searches", QJsonArray{stageSearches[0], stageSearches[1], stageSearches[2]}},
+             {"checked_positions", checkedPositions},
+             {"evaluated", QJsonArray{overview.sides[0].evaluated, overview.sides[1].evaluated}},
+             {"key_moments", overview.totalKeyMoments}});
     }
     report({{"event", "reviewed"},
             {"game", static_cast<qint64>(saved.gameId)},

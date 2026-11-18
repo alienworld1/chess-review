@@ -46,7 +46,8 @@ CreateReview seed(StorageSession& session,
     request.fingerprint = engine::makeFingerprint(engineValue(), {});
     // This fixture primarily exercises engine-based labels using synthetic evidence.
     request.configuration = *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
-        config::parse("[openings]\nenabled=false\n"));
+        config::parse("[openings]\nenabled=false\n[analysis.standard]\nquickScanNodes=100000\n"
+                      "deepeningNodes=1000000\nverificationNodes=5000000\n"));
     return request;
 }
 chess::Position positionAt(const pgn::PgnDocument& doc, int ply) {
@@ -277,7 +278,7 @@ class ReviewRepositoryTest final : public QObject {
         Fixture f;
         auto request = seed(f.session);
         request.refinement = true;
-        for (const auto policy : {10U, 11U, 12U}) {
+        for (const auto policy : {10U, 11U, 12U, 13U}) {
             request.pipelineVersion = policy;
             const auto bytes = encodeReviewSettings(request);
             QVERIFY(!bytes.isEmpty());
@@ -293,7 +294,7 @@ class ReviewRepositoryTest final : public QObject {
                 QVERIFY(!decodeReviewSettings(reviewDocument(altered)));
             }
         }
-        request.pipelineVersion = 13;
+        request.pipelineVersion = 14;
         QVERIFY(encodeReviewSettings(request).isEmpty());
     }
     void specialLabelsReproduceFromSavedEvidence_data() {
@@ -954,7 +955,7 @@ class ReviewRepositoryTest final : public QObject {
         for (const bool refinement : {false, true}) {
             request.refinement = refinement;
             for (const std::uint32_t version :
-                 {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U}) {
+                 {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U, 13U}) {
                 request.pipelineVersion = version;
                 const auto bytes = encodeReviewSettings(request);
                 QVERIFY(!bytes.isEmpty());
@@ -2532,6 +2533,73 @@ class ReviewRepositoryTest final : public QObject {
             QStringLiteral("UPDATE review_pairs SET paired=zeroblob(64) WHERE position_index=2")));
         QCOMPARE(std::get<ReviewError>(f.session.loadReviewEvidence(run.id, 2)).code,
                  ReviewErrorCode::InvalidRecord);
+    }
+    void boundedReviewRequiresOnlyItsRankedPlan() {
+        Fixture f;
+        const auto doc = document("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *");
+        auto request = seed(f.session, doc);
+        auto values = request.configuration.values;
+        values.quality = review::Quality::Fast;
+        request.configuration = *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
+            config::validate(values));
+        request.pipelineVersion = 13;
+        request.refinement = true;
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        const auto positionCheckpoint = [&](int index, review::EvidenceStage stage) {
+            auto analysis = resultAt(request, *doc, index);
+            const auto nodes = *review::stageBudget(values.budgets[0], stage);
+            analysis.evidence.limit = engine::NodeLimit{nodes};
+            analysis.evidence.statistics.nodes = nodes;
+            analysis.evidence.lines.front().statistics.nodes = nodes;
+            analysis.evidence.lines.front().score->value = 200;
+            auto cp = checkpoint(run.id, run.revision, index, analysis);
+            cp.stage = stage;
+            cp.status = stage == review::EvidenceStage::Quick ? JobStatus::QuickScanning
+                                                              : JobStatus::Deepening;
+            return cp;
+        };
+        for (int index = 0; index < run.totalPositions; ++index) {
+            run = std::get<ReviewSummary>(f.session.checkpointReview(
+                positionCheckpoint(index, review::EvidenceStage::Quick)));
+        }
+        const auto overview =
+            std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        const auto& plan = overview.refinementPositions;
+        QVERIFY(plan.size() >= 2 && plan.size() <= 4);
+        int skipped = 0;
+        while (std::find(plan.begin(), plan.end(), skipped) != plan.end()) {
+            ++skipped;
+        }
+        const auto rejected = [&](int index, review::EvidenceStage stage) {
+            const auto saved = f.session.checkpointReview(positionCheckpoint(index, stage));
+            QCOMPARE(std::get<ReviewError>(saved).code, ReviewErrorCode::InvalidInput);
+        };
+        rejected(skipped, review::EvidenceStage::Deepening);
+        rejected(plan.front(), review::EvidenceStage::Verification);
+        rejected(plan.front(), review::EvidenceStage::EscalationOne);
+        const auto finish = [&] {
+            ReviewCheckpoint cp;
+            cp.reviewId = run.id;
+            cp.expectedRevision = run.revision;
+            cp.status = JobStatus::Complete;
+            return f.session.checkpointReview(cp);
+        };
+        QCOMPARE(std::get<ReviewError>(finish()).code, ReviewErrorCode::InvalidInput);
+        for (const auto stage :
+             {review::EvidenceStage::Deepening, review::EvidenceStage::Verification}) {
+            for (const int index : plan) {
+                run = std::get<ReviewSummary>(
+                    f.session.checkpointReview(positionCheckpoint(index, stage)));
+            }
+        }
+        run = std::get<ReviewSummary>(finish());
+        QCOMPARE(run.status, JobStatus::Complete);
+        const auto saved =
+            std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        QCOMPARE(saved.refinementPositions, plan);
+        QCOMPARE(saved.verifiedPositions, static_cast<int>(plan.size()));
+        QVERIFY(saved.escalationPositions[0].empty());
+        QVERIFY(saved.escalationPositions[1].empty());
     }
     void unsupportedModelsAndForgedSettingsAreRejected() {
         Fixture f;

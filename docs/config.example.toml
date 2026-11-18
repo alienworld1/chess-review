@@ -10,13 +10,13 @@ verbose = false
 
 [analysis.fast]
 quickScanNodes = 50000
-deepeningNodes = 500000
-verificationNodes = 2000000
+deepeningNodes = 150000
+verificationNodes = 300000
 
 [analysis.standard]
-quickScanNodes = 100000
-deepeningNodes = 1000000
-verificationNodes = 5000000
+quickScanNodes = 50000
+deepeningNodes = 250000
+verificationNodes = 500000
 
 [analysis.thorough]
 quickScanNodes = 250000

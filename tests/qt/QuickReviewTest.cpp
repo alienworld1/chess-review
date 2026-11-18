@@ -67,7 +67,7 @@ class Fixture {
   public:
     explicit Fixture(const QString& path = {},
                      const std::optional<QString>& configuration = std::nullopt,
-                     const std::optional<QString>& uiState = std::nullopt)
+                     const std::optional<QString>& uiState = std::nullopt, bool exhaustive = true)
         : window(navigation, startup.analysis()) {
         window.installEngines(startup.engines());
         window.installEngineAnalysis(startup.engineAnalysis());
@@ -79,8 +79,27 @@ class Fixture {
             QObject::connect(&startup, &app::StartupCoordinator::initialUiState, &window,
                              &ui::MainWindow::restoreUiState);
         }
+        auto configPath = configuration;
+        if (exhaustive) {
+            QByteArray contents;
+            if (configuration) {
+                QFile source(*configuration);
+                if (!source.open(QIODevice::ReadOnly)) {
+                    qFatal("Cannot open review test configuration");
+                }
+                contents = source.readAll();
+            }
+            // The existing scenarios explicitly exercise the exhaustive pipeline at these budgets.
+            contents += "\n[analysis.thorough]\nquickScanNodes=100000\n"
+                        "deepeningNodes=1000000\nverificationNodes=5000000\n";
+            configPath = directory.filePath(QStringLiteral("config.toml"));
+            QFile config(*configPath);
+            if (!config.open(QIODevice::WriteOnly) || config.write(contents) != contents.size()) {
+                qFatal("Cannot write review test configuration");
+            }
+        }
         startup.start(path.isEmpty() ? directory.filePath(QStringLiteral("review.sqlite3")) : path,
-                      uiState, configuration);
+                      uiState, configPath);
     }
     ~Fixture() {
         shutdown();
@@ -170,7 +189,8 @@ class Fixture {
                 const std::vector<int>& verificationOrder = {}, int extraRounds = -1,
                 const std::vector<QString>& stageScores = {},
                 const std::array<std::vector<int>, 2>& escalationOrders = {},
-                bool weakThirdCandidate = false, bool promotionFirst = false) {
+                bool weakThirdCandidate = false, bool promotionFirst = false,
+                const review::NodeBudgets& limits = {100000, 1000000, 5000000}) {
         const bool retrySearches = retry != RetryScript::None;
         QJsonArray steps{
             engine_test::step(
@@ -200,9 +220,8 @@ class Fixture {
                                    : ((weak || score.isEmpty()) && refinedScore.isEmpty() ? 2 : 0);
         const int stages = end < 0 && total > 1 ? 3 + additional : 1;
         for (int stage = 0; stage < stages; ++stage) {
-            const std::array<std::uint64_t, 5> budgets{100000, 1000000, 5000000, 10000000,
-                                                       20000000};
-            const auto budget = budgets[static_cast<std::size_t>(stage)];
+            const auto budget =
+                *review::stageBudget(limits, static_cast<review::EvidenceStage>(stage));
             position = std::get<chess::Position>(document->tree.position(document->tree.rootId()));
             const auto& stageOrder =
                 stage >= 3 && !escalationOrders[static_cast<std::size_t>(stage - 3)].empty()
@@ -382,7 +401,7 @@ class Fixture {
             engine_test::scenario(directory.filePath(QStringLiteral("runtime.json")), steps), 1000);
         engine::ValidatorTestAccess::configureSearch(supervisor(), 10000, 1500);
     }
-    void run(review::Quality quality = review::Quality::Standard) {
+    void run(review::Quality quality = review::Quality::Thorough) {
         // Most synthetic move scenarios exercise engine labels.
         startup.reviewGame().start(chess::Color::Black, profileId, quality, false);
     }
@@ -453,6 +472,7 @@ class QuickReviewTest final : public QObject {
         QVERIFY(book && !book->isChecked());
         book->click();
         f.window.findChild<QComboBox*>(QStringLiteral("reviewSide"))->setCurrentIndex(2);
+        f.window.findChild<QComboBox*>(QStringLiteral("reviewQuality"))->setCurrentIndex(2);
         auto* start = f.window.findChild<QPushButton*>(QStringLiteral("runReview"));
         QTRY_VERIFY(start->isEnabled());
         start->click();
@@ -3487,14 +3507,22 @@ class QuickReviewTest final : public QObject {
     }
     void refinementCancellationResumesOnlyMissingPositions_data() {
         QTest::addColumn<bool>("gap");
-        QTest::newRow("ordinary-targets") << false;
-        QTest::newRow("gap-targets") << true;
+        QTest::addColumn<bool>("bounded");
+        QTest::newRow("ordinary-targets") << false << false;
+        QTest::newRow("gap-targets") << true << false;
+        QTest::newRow("bounded-standard") << false << true;
     }
     void refinementCancellationResumesOnlyMissingPositions() {
         QFETCH(bool, gap);
-        Fixture f;
+        QFETCH(bool, bounded);
+        Fixture f({}, {}, {}, !bounded);
         QVERIFY(f.seed());
-        f.script(0, -1, 0, gap);
+        const auto quality = bounded ? review::Quality::Standard : review::Quality::Thorough;
+        const auto budgets = bounded ? review::Configuration{}.budgets[1]
+                                     : review::NodeBudgets{100000, 1000000, 5000000};
+        f.script(0, -1, 0, gap, false, QStringLiteral("cp 40"), QStringLiteral("Test engine"), 0,
+                 false, {}, 0, 0, false, RetryScript::None, {}, {}, {}, gap ? 2 : 0, {}, {}, false,
+                 false, budgets);
         QFile runtime(f.directory.filePath(QStringLiteral("runtime.json")));
         QVERIFY(runtime.open(QIODevice::ReadOnly));
         auto script = QJsonDocument::fromJson(runtime.readAll()).object()["steps"].toArray();
@@ -3521,7 +3549,7 @@ class QuickReviewTest final : public QObject {
                     controller.cancel();
                 }
             });
-        f.run();
+        f.run(quality);
         QVERIFY(f.done());
         disconnect(cancel);
         QCOMPARE(controller.state().run->status, review::JobStatus::Cancelled);
@@ -3530,8 +3558,8 @@ class QuickReviewTest final : public QObject {
         QTRY_COMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnected);
         const std::array<std::vector<int>, 2> extraOrder{{{0, 1}, {1, 2}}};
         f.script(3, -1, 0, false, false, QStringLiteral("cp 40"), QStringLiteral("Test engine"), 0,
-                 false, {}, 1, 0, false, RetryScript::None, {}, {}, {}, gap ? 2 : 0, {},
-                 extraOrder);
+                 false, {}, 1, 0, false, RetryScript::None, {}, {}, {}, gap ? 2 : 0, {}, extraOrder,
+                 false, false, budgets);
         controller.resume(runId);
         QVERIFY(f.done());
         QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
@@ -3607,7 +3635,49 @@ class QuickReviewTest final : public QObject {
         auto run = std::get<persistence::StoredReview>(
             qvariant_cast<persistence::LoadReviewResult>(stored.front()[1]));
         QVERIFY(!engine::verifiedResources(run.settings.fingerprint));
-        QCOMPARE(run.settings.configuration.values.quality, review::Quality::Standard);
+        QCOMPARE(run.settings.configuration.values.quality, review::Quality::Thorough);
+    }
+    void boundedPresetsStopAfterTheRankedPairs_data() {
+        QTest::addColumn<int>("preset");
+        QTest::addColumn<int>("pairs");
+        QTest::newRow("fast") << static_cast<int>(review::Quality::Fast) << 2;
+        QTest::newRow("standard") << static_cast<int>(review::Quality::Standard) << 4;
+    }
+    void boundedPresetsStopAfterTheRankedPairs() {
+        QFETCH(int, preset);
+        QFETCH(int, pairs);
+        Fixture f({}, {}, {}, false);
+        QVERIFY(f.seed("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 *"));
+        std::vector<int> positions;
+        for (int index = 0; index <= pairs; ++index) {
+            positions.push_back(index);
+        }
+        // Every quick score is missing, so all eight moves have equal priority. Adjacent
+        // selected moves share positions and still require both full evidence passes.
+        const auto quality = static_cast<review::Quality>(preset);
+        const auto limits = review::Configuration{}.budgets[static_cast<std::size_t>(preset)];
+        f.script(0, -1, 0, false, false, {}, QStringLiteral("Test engine"), 0, false, {}, 0, 0,
+                 false, RetryScript::None, positions, {}, {}, 0, {}, {}, false, false, limits);
+        auto& controller = f.startup.reviewGame();
+        QSignalSpy searches(&f.supervisor(), &engine::EngineSupervisor::scheduledFinished);
+        f.run(quality);
+        QVERIFY(f.done());
+        QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
+        const auto run = *controller.state().run;
+        QCOMPARE(run.status, review::JobStatus::Complete);
+        QCOMPARE(run.completedPositions, 9);
+        QTRY_VERIFY(controller.state().overview &&
+                    controller.state().overview->revision == run.revision);
+        const auto& overview = *controller.state().overview;
+        QCOMPARE(overview.refinementPositions, positions);
+        QCOMPARE(overview.deepenedPositions, pairs + 1);
+        QCOMPARE(overview.verifiedPositions, pairs + 1);
+        QVERIFY(overview.escalationPositions[0].empty());
+        QVERIFY(overview.escalationPositions[1].empty());
+        QCOMPARE(searches.size(), 9 + 2 * (pairs + 1));
+        QTRY_VERIFY(controller.moves().state().page && !controller.moves().state().loading);
+        const auto& last = controller.moves().state().page->moves.back();
+        QVERIFY(!last.classification || !last.classification->stable);
     }
     void classificationsAppearBeforeTheScanFinishes() {
         Fixture f;
@@ -3904,7 +3974,7 @@ class QuickReviewTest final : public QObject {
         QVERIFY2(f.startup.reviewGame().state().error.isEmpty(),
                  qPrintable(f.startup.reviewGame().state().error));
         QCOMPARE(f.startup.reviewGame().state().run->status, review::JobStatus::Complete);
-        QCOMPARE(f.startup.reviewGame().state().run->quality, review::Quality::Standard);
+        QCOMPARE(f.startup.reviewGame().state().run->quality, review::Quality::Thorough);
     }
     void conflictingRevisionReloadsWithoutOverwriting() {
         Fixture f;
@@ -4078,13 +4148,7 @@ class QuickReviewTest final : public QObject {
         if (executable.isEmpty()) {
             QSKIP("Set CHESS_REVIEW_STOCKFISH to select the local engine for this regression.");
         }
-        QTemporaryFile configuration;
-        QVERIFY(configuration.open());
-        const QByteArray limits("[analysis.fast]\nquickScanNodes=50000\ndeepeningNodes="
-                                "100000\nverificationNodes=500000\n");
-        QCOMPARE(configuration.write(limits), limits.size());
-        configuration.close();
-        Fixture f({}, configuration.fileName());
+        Fixture f({}, {}, {}, false);
         QTRY_VERIFY(f.startup.engines().state().ready && !f.startup.engines().state().listing);
         QSignalSpy validated(&f.supervisor(), &engine::EngineSupervisor::completed);
         f.supervisor().validate(QUuid::createUuid(), executable);
@@ -4111,9 +4175,7 @@ class QuickReviewTest final : public QObject {
                        .id;
         f.startup.reviewGame().selectGame(f.gameId);
         QTRY_VERIFY(!f.startup.reviewGame().state().busy);
-        // This functional probe checks useful, durable real-engine evidence.
-        // Captured fixture budgets exercise every adaptive stage without making
-        // this a machine-speed benchmark. Production preset budgets are unchanged.
+        // Exercise the shipped Fast preset on a clear tactical mistake.
         f.run(review::Quality::Fast);
         auto& controller = f.startup.reviewGame();
         QVERIFY2(f.done(90000),
@@ -4155,7 +4217,7 @@ class QuickReviewTest final : public QObject {
         if (executable.isEmpty()) {
             QSKIP("Set CHESS_REVIEW_STOCKFISH to select a local engine for the cache probe.");
         }
-        Fixture f;
+        Fixture f({}, {}, {}, false);
         QTRY_VERIFY(f.startup.engines().state().ready && !f.startup.engines().state().listing);
         QSignalSpy validated(&f.supervisor(), &engine::EngineSupervisor::completed);
         f.supervisor().validate(QUuid::createUuid(), executable);
@@ -4183,7 +4245,7 @@ class QuickReviewTest final : public QObject {
                        .id;
         f.startup.reviewGame().selectGame(f.gameId);
         QTRY_VERIFY(!f.startup.reviewGame().state().busy);
-        f.run();
+        f.run(review::Quality::Standard);
         QVERIFY(f.done(90000));
         QVERIFY2(f.startup.reviewGame().state().error.isEmpty(),
                  qPrintable(f.startup.reviewGame().state().error));
@@ -4200,7 +4262,7 @@ class QuickReviewTest final : public QObject {
             f.startup.gameRepository().findAnalysis(
                 QUuid::createUuid(),
                 engine::CacheQuery{
-                    position.context(), fingerprint, engine::NodeLimit{100000}, 1, true, {}});
+                    position.context(), fingerprint, engine::NodeLimit{50000}, 1, true, {}});
             QVERIFY(found.wait());
             const auto lookup = qvariant_cast<persistence::FindAnalysisResult>(found.front()[1]);
             QVERIFY(std::holds_alternative<persistence::CacheLookup>(lookup));
@@ -4214,7 +4276,7 @@ class QuickReviewTest final : public QObject {
         }
         QVERIFY(compatibleHits > 0);
         QSignalSpy finished(&f.supervisor(), &engine::EngineSupervisor::scheduledFinished);
-        f.run();
+        f.run(review::Quality::Standard);
         QVERIFY(f.done(90000));
         QVERIFY2(f.startup.reviewGame().state().error.isEmpty(),
                  qPrintable(f.startup.reviewGame().state().error));
@@ -4225,7 +4287,7 @@ class QuickReviewTest final : public QObject {
             if (result.evidence) {
                 const auto* nodes =
                     std::get_if<engine::NodeLimit>(&result.evidence->evidence.limit);
-                if (nodes && nodes->nodes == 100000) {
+                if (nodes && nodes->nodes == 50000) {
                     ++quickSearches;
                 }
             }
@@ -4487,6 +4549,7 @@ class QuickReviewTest final : public QObject {
         QVERIFY(start);
         QVERIFY(!start->isEnabled());
         side->setCurrentIndex(2);
+        f.window.findChild<QComboBox*>(QStringLiteral("reviewQuality"))->setCurrentIndex(2);
         QVERIFY(start->isEnabled());
         start->click();
         QTRY_VERIFY(f.startup.reviewGame().state().run.has_value());
