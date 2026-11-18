@@ -124,3 +124,36 @@ check useful classifications, accuracy and cache-independent reopening with the
 explicitly selected local engine. It keeps its 90-second deadline. Standard and
 Thorough budgets, bounded rounds and exact work counts are covered by deterministic
 fake-engine tests; this real-engine probe is not a hardware performance benchmark.
+
+## Puzzle coverage
+
+`puzzle_tests` exercises pure verification, mate and ambiguity handling, exact
+history, effort limits, and multi-decision sequences for both colors.
+`puzzle_repository` covers codecs, completed-review candidate selection,
+transaction rollback, deletion suppression, and interrupted checkpoints.
+`puzzle_ui` uses the deterministic UCI engine for finite manual verification,
+cancellation/resume, weak evidence, offline solving, and independently verified
+unlisted alternatives. It also exercises hints, reveal, linked Analysis, and
+asynchronous shutdown. These fixtures do not calibrate human puzzle difficulty.
+
+For an optional native-widget capture, invoke the Qt executable with an absolute
+output directory:
+
+```sh
+QT_QPA_PLATFORM=offscreen CHESS_REVIEW_PUZZLE_RENDER_DIR=/tmp/puzzle-renders \
+  ./build/dev/tests/puzzle_ui_tests offlineSolveHintsRevealAnalyzeAndDelete
+```
+
+Repeat with `QT_SCALE_FACTOR=2` for enlarged-layout inspection. Ordinary tests do
+not produce screenshots or modify user storage.
+
+An optional functional probe uses an explicitly selected, trusted local engine,
+creates a puzzle with a 50,000-node baseline, then solves it offline:
+
+```sh
+QT_QPA_PLATFORM=offscreen CHESS_REVIEW_REAL_PUZZLE_ENGINE=/absolute/path/to/stockfish \
+  ./build/dev/tests/puzzle_ui_tests realEngineCreatesAnOfflinePuzzle
+```
+
+This probe checks integration rather than production-preset performance or puzzle
+difficulty calibration. It is skipped unless the environment variable is set.

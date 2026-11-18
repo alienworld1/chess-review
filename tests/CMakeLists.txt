@@ -218,3 +218,12 @@ set_target_properties(puzzle_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 target_link_libraries(puzzle_tests PRIVATE chess_review_puzzles Catch2::Catch2WithMain)
 chess_review_apply_options(puzzle_tests)
 catch_discover_tests(puzzle_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)
+
+if(TARGET fake_uci_engine)
+    chess_review_add_qt_test(puzzle_ui_tests puzzle_ui INTEGRATION WIDGETS
+        SOURCES qt/PuzzleTest.cpp
+        LIBRARIES chess_review_ui)
+    add_dependencies(puzzle_ui_tests fake_uci_engine)
+    target_compile_definitions(puzzle_ui_tests PRIVATE FAKE_UCI_ENGINE="$<TARGET_FILE:fake_uci_engine>")
+    set_tests_properties(puzzle_ui PROPERTIES TIMEOUT 90)
+endif()

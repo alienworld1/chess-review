@@ -5,6 +5,7 @@
 #include <QMainWindow>
 #include <QRect>
 #include <array>
+#include <cstdint>
 
 class QAction;
 class QLabel;
@@ -17,6 +18,9 @@ class EngineAnalysisController;
 class ReviewGameController;
 class ImportController;
 class GameLibraryController;
+class PuzzleController;
+class PuzzleGenerationController;
+class ReviewConfiguration;
 } // namespace chess_review::app
 namespace chess_review::diagnostics {
 class Logger;
@@ -38,6 +42,8 @@ class MainWindow final : public QMainWindow {
     MainWindow(app::NavigationController& navigation, app::AnalysisController& analysis,
                QWidget* parent = nullptr);
     void installReview(app::ReviewGameController& review);
+    void installPuzzles(app::PuzzleController& puzzles, app::PuzzleGenerationController& generation,
+                        app::ReviewConfiguration& configuration);
     void installEngineAnalysis(app::EngineAnalysisController& engine);
     void installEngines(app::EngineSettingsController& engines);
     void installImports(app::ImportController& imports, app::GameLibraryController& library);
@@ -79,6 +85,9 @@ class MainWindow final : public QMainWindow {
     bool reviewWasActive_ = false;
     AnalysisPage* analysis_ = nullptr;
     AnalysisPage* linkedAnalysis_ = nullptr;
+    AnalysisPage* puzzleAnalysis_ = nullptr;
+    std::uint64_t puzzleNavigationEpoch_ = 0;
+    app::EngineAnalysisController* liveEngine_ = nullptr;
     bool linkedAnalysisPending_ = false;
     bool verbose_ = false;
     QAction* importFile_ = nullptr;

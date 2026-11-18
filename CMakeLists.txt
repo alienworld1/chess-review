@@ -138,6 +138,7 @@ target_link_libraries(chess_review_startup PUBLIC chess_review_persistence chess
 chess_review_apply_options(chess_review_startup)
 
 add_library(chess_review_ui STATIC
+    src/ui/puzzles/PuzzlesPage.cpp
     src/ui/Theme.cpp
     src/ui/review/ReviewPage.cpp
     src/ui/chess/MoveTimeline.cpp

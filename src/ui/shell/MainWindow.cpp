@@ -5,12 +5,14 @@
 #include "ui/analysis/AnalysisPage.h"
 #include "ui/games/GamesPage.h"
 #include "ui/games/PgnTextEdit.h"
+#include "ui/puzzles/PuzzlesPage.h"
 #include "ui/review/ReviewPage.h"
 #include "ui/settings/EngineSettingsPage.h"
 #include "ui/shell/StartupPanel.h"
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QDialog>
@@ -241,6 +243,203 @@ void MainWindow::setVerbose(bool verbose) {
     if (auto* games = pages_->findChild<GamesPage*>()) {
         games->setVerbose(verbose);
     }
+}
+void MainWindow::installPuzzles(app::PuzzleController& puzzles,
+                                app::PuzzleGenerationController& generation,
+                                app::ReviewConfiguration& configuration) {
+    auto* placeholder =
+        pages_->findChild<QWidget*>(QStringLiteral("puzzlesPage"), Qt::FindDirectChildrenOnly);
+    Q_ASSERT(placeholder);
+    const int index = pages_->indexOf(placeholder);
+    pages_->removeWidget(placeholder);
+    delete placeholder;
+    auto* page = new PuzzlesPage(puzzles, generation, pages_);
+    if (analysis_) {
+        page->setPreferences(analysis_->preferences());
+    }
+    pages_->insertWidget(index, page);
+    puzzleAnalysis_ = new AnalysisPage(puzzles.linkedAnalysis(), pages_);
+    puzzleAnalysis_->setObjectName(QStringLiteral("puzzleAnalysisPage"));
+    puzzleAnalysis_->installEngineAnalysis(puzzles.linkedEngine());
+    pages_->addWidget(puzzleAnalysis_);
+    auto* back = new QPushButton(tr("Back to puzzle"), puzzleAnalysis_);
+    back->setObjectName(QStringLiteral("backToPuzzle"));
+    puzzleAnalysis_->findChild<QHBoxLayout*>(QStringLiteral("analysisCommands"))->addWidget(back);
+    connect(back, &QPushButton::clicked, this,
+            [this] { navigation_.navigate(app::Destination::Puzzles); });
+    connect(&navigation_, &app::NavigationController::destinationChanged, this,
+            [this] { ++puzzleNavigationEpoch_; });
+    connect(&puzzles, &app::PuzzleController::analysisRequested, this, [this, &puzzles] {
+        const auto epoch = puzzleNavigationEpoch_;
+        puzzleAnalysis_->requestDiscard([this, &puzzles, epoch] {
+            if (closing_ || epoch != puzzleNavigationEpoch_ || !puzzles.enterAnalysis()) {
+                return;
+            }
+            if (analysis_) {
+                puzzleAnalysis_->setPreferences(analysis_->preferences());
+            }
+            navigation_.navigate(app::Destination::Analyze);
+            pages_->setCurrentWidget(puzzleAnalysis_);
+        });
+    });
+    connect(pages_, &QStackedWidget::currentChanged, this, [this, &puzzles, page] {
+        puzzles.linkedEngine().setVisible(!closing_ && pages_->currentWidget() == puzzleAnalysis_);
+        if (!closing_ && pages_->currentWidget() == page) {
+            puzzles.refreshCurrent();
+        }
+    });
+    connect(puzzleAnalysis_, &AnalysisPage::manageEnginesRequested, this,
+            [this] { navigation_.navigate(app::Destination::Settings); });
+    const auto addSave = [this, &generation](AnalysisPage* analysisPage,
+                                             app::EngineAnalysisController* engine) {
+        if (!analysisPage) {
+            return;
+        }
+        auto* commands = analysisPage->findChild<QHBoxLayout*>(QStringLiteral("analysisCommands"));
+        auto* save = new QPushButton(tr("Save Position as Puzzle"), analysisPage);
+        save->setObjectName(QStringLiteral("savePositionAsPuzzle"));
+        commands->addWidget(save);
+        auto* notice = new QLabel(analysisPage);
+        notice->setObjectName(QStringLiteral("manualPuzzleStatus"));
+        notice->setTextFormat(Qt::PlainText);
+        notice->setWordWrap(true);
+        qobject_cast<QVBoxLayout*>(analysisPage->layout())->insertWidget(1, notice);
+        auto* openSaved = new QPushButton(tr("Open saved puzzle"), analysisPage);
+        openSaved->setObjectName(QStringLiteral("openManualPuzzle"));
+        commands->addWidget(openSaved);
+        const auto update = [save, notice, openSaved, analysisPage, &generation] {
+            save->setEnabled(generation.canSavePosition() && !analysisPage->controller().busy() &&
+                             analysisPage->controller().position());
+            const auto& state = generation.state();
+            notice->setText(state.error.isEmpty() ? state.message : state.error);
+            notice->setVisible(!notice->text().isEmpty());
+            openSaved->setVisible(state.lastSaved.has_value());
+        };
+        connect(&generation, &app::PuzzleGenerationController::changed, analysisPage, update);
+        connect(&analysisPage->controller(), &app::AnalysisController::changed, analysisPage,
+                update);
+        connect(save, &QPushButton::clicked, analysisPage, [analysisPage, engine, &generation] {
+            if (engine) {
+                engine->stop();
+            }
+            generation.savePosition(analysisPage->controller().position(),
+                                    analysisPage->controller().gameId());
+        });
+        connect(openSaved, &QPushButton::clicked, this, [this, &generation] {
+            if (generation.state().lastSaved) {
+                navigation_.navigate(app::Destination::Puzzles);
+            }
+        });
+        update();
+    };
+    addSave(analysis_, liveEngine_);
+    if (reviewController_) {
+        addSave(linkedAnalysis_, &reviewController_->exploration().linkedEngine());
+    }
+    addSave(puzzleAnalysis_, &puzzles.linkedEngine());
+    for (auto* openSaved : findChildren<QPushButton*>(QStringLiteral("openManualPuzzle"))) {
+        connect(openSaved, &QPushButton::clicked, &puzzles, [&puzzles, &generation] {
+            if (generation.state().lastSaved) {
+                puzzles.open(*generation.state().lastSaved);
+            }
+        });
+    }
+    if (auto* settings = pages_->findChild<EngineSettingsPage*>()) {
+        auto* automatic =
+            new QCheckBox(tr("Automatically generate puzzles after completed reviews"), settings);
+        automatic->setObjectName(QStringLiteral("automaticPuzzles"));
+        auto* error = new QLabel(settings);
+        error->setTextFormat(Qt::PlainText);
+        error->setWordWrap(true);
+        auto* layout = qobject_cast<QVBoxLayout*>(settings->layout());
+        layout->insertWidget(1, automatic);
+        layout->insertWidget(2, error);
+        connect(automatic, &QCheckBox::toggled, &configuration,
+                &app::ReviewConfiguration::setAutomaticPuzzles);
+        const auto update = [automatic, error, &configuration] {
+            const QSignalBlocker block(automatic);
+            automatic->setEnabled(configuration.canSavePuzzles());
+            if (const auto c = configuration.snapshot()) {
+                automatic->setChecked(c->puzzles.automatic);
+            }
+            error->setText(configuration.puzzleSettingsError());
+            error->setVisible(!error->text().isEmpty());
+        };
+        connect(&configuration, &app::ReviewConfiguration::changed, settings, update);
+        update();
+    }
+    if (reviewController_ && reviewPage_) {
+        auto* summary = reviewPage_->findChild<QWidget*>(QStringLiteral("reviewOverviewPanel"));
+        auto* layout = qobject_cast<QVBoxLayout*>(summary->layout());
+        auto* count = new QLabel(summary);
+        count->setObjectName(QStringLiteral("reviewPuzzleSummary"));
+        count->setTextFormat(Qt::PlainText);
+        count->setWordWrap(true);
+        auto* generate = new QPushButton(tr("Generate Puzzles"), summary);
+        generate->setObjectName(QStringLiteral("generateReviewPuzzles"));
+        auto* library = new QPushButton(tr("Open puzzles from this review"), summary);
+        layout->addWidget(count);
+        layout->addWidget(generate);
+        layout->addWidget(library);
+        const auto update = [this, count, generate, library, &puzzles, &generation] {
+            const auto& run = reviewController_->state().run;
+            if (run) {
+                puzzles.inspectReview(run->id);
+            }
+            const auto& saved = puzzles.reviewSummary();
+            const bool ready = run && run->status == review::JobStatus::Complete;
+            const bool same = run && saved.id == run->id;
+            count->setVisible(ready);
+            generate->setVisible(ready);
+            library->setVisible(ready && same && saved.count > 0);
+            count->setText(same ? tr("%1%2 saved puzzle(s)")
+                                      .arg(saved.count)
+                                      .arg(saved.more ? QStringLiteral("+") : QString{})
+                                : tr("Loading puzzles…"));
+            const bool resumable =
+                same && saved.generation &&
+                saved.generation->status != persistence::PuzzleJobStatus::Complete;
+            generate->setText(resumable ? tr("Resume puzzle generation") : tr("Generate Puzzles"));
+            generate->setEnabled(ready && !generation.state().active &&
+                                 (!same || !saved.generation || resumable));
+        };
+        connect(generate, &QPushButton::clicked, this, [this, &puzzles, &generation] {
+            const auto& run = reviewController_->state().run;
+            if (!run) {
+                return;
+            }
+            const auto& saved = puzzles.reviewSummary();
+            if (saved.id == run->id && saved.generation &&
+                saved.generation->status != persistence::PuzzleJobStatus::Complete) {
+                generation.resume(saved.generation->id);
+            } else {
+                generation.generate(run->id);
+            }
+        });
+        connect(library, &QPushButton::clicked, this, [this, &puzzles] {
+            if (const auto& run = reviewController_->state().run) {
+                puzzles.refresh(0, run->id);
+            }
+            navigation_.navigate(app::Destination::Puzzles);
+        });
+        connect(&puzzles, &app::PuzzleController::reviewSummaryChanged, reviewPage_, update);
+        connect(reviewController_, &app::ReviewGameController::changed, reviewPage_, update);
+        connect(&generation, &app::PuzzleGenerationController::changed, reviewPage_, update);
+        connect(&generation, &app::PuzzleGenerationController::libraryChanged, &puzzles,
+                [this, &puzzles] {
+                    if (const auto& run = reviewController_->state().run) {
+                        puzzles.inspectReview(run->id, true);
+                    }
+                });
+        update();
+    }
+    auto* home =
+        pages_->findChild<QWidget*>(QStringLiteral("homePage"), Qt::FindDirectChildrenOnly);
+    auto* shortcut = new QPushButton(tr("Open puzzle library"), home);
+    qobject_cast<QVBoxLayout*>(home->layout())->insertWidget(1, shortcut);
+    connect(shortcut, &QPushButton::clicked, this,
+            [this] { navigation_.navigate(app::Destination::Puzzles); });
+    selectDestination();
 }
 void MainWindow::installReview(app::ReviewGameController& review) {
     reviewController_ = &review;
@@ -511,6 +710,7 @@ void MainWindow::showReview() {
     pages_->setCurrentWidget(reviewPage_);
 }
 void MainWindow::installEngineAnalysis(app::EngineAnalysisController& engine) {
+    liveEngine_ = &engine;
     Q_ASSERT(analysis_);
     analysis_->installEngineAnalysis(engine);
     if (auto* duplicate =
@@ -571,7 +771,9 @@ void MainWindow::installAnalysis(app::AnalysisController& controller) {
     flip->setObjectName(QStringLiteral("flipBoardAction"));
     flip->setShortcut(QKeySequence(QStringLiteral("Ctrl+F")));
     connect(flip, &QAction::triggered, this, [this, &controller] {
-        if (linkedAnalysis_ && pages_->currentWidget() == linkedAnalysis_) {
+        if (puzzleAnalysis_ && pages_->currentWidget() == puzzleAnalysis_) {
+            puzzleAnalysis_->controller().flip();
+        } else if (linkedAnalysis_ && pages_->currentWidget() == linkedAnalysis_) {
             linkedAnalysis_->controller().flip();
         } else {
             controller.flip();
@@ -1172,7 +1374,13 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         if (analysis_) {
             analysis_->requestDiscard([this] {
                 if (linkedAnalysis_) {
-                    linkedAnalysis_->requestDiscard([this] { emit closeRequested(); });
+                    linkedAnalysis_->requestDiscard([this] {
+                        if (puzzleAnalysis_) {
+                            puzzleAnalysis_->requestDiscard([this] { emit closeRequested(); });
+                        } else {
+                            emit closeRequested();
+                        }
+                    });
                 } else {
                     emit closeRequested();
                 }

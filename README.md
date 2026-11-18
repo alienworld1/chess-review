@@ -10,8 +10,9 @@ local UCI engines. Games, review evidence, and preferences stay on your computer
 - **Review:** scan a saved game, inspect classifications and evidence, explore
   alternatives, and resume interrupted work. Saved reviews can be inspected without
   an engine.
+- **Puzzles:** generate verified lessons from reviews, save analysis positions,
+  and solve saved sequences with hints, retry, reveal, and analysis.
 - **Settings:** register trusted local UCI engines and manage connections.
-  Puzzles is currently a placeholder.
 
 ## Requirements
 
@@ -51,7 +52,8 @@ isolated manual runs. Automated tests use temporary storage.
 **Using the app**
 
 - [Importing games](docs/import.md) · [Analyze board](docs/analysis-board.md) ·
-  [Quick review](docs/quick-review.md) · [Reopen and recovery](docs/reopen-recovery.md)
+  [Quick review](docs/quick-review.md) · [Personal puzzles](docs/puzzles.md) ·
+  [Reopen and recovery](docs/reopen-recovery.md)
 - [Local UCI engines](docs/engines.md) · [Diagnostics and troubleshooting](docs/diagnostics.md)
 
 **Developing**
