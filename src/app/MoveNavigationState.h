@@ -24,6 +24,7 @@ struct NavigationEntry {
     chess::Color side;
     std::size_t accessibleIndex = 0;
     QString notes;
+    QString inlineNote;
 };
 struct NavigationLine {
     std::vector<chess::NodeId> moves;

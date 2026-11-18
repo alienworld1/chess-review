@@ -141,6 +141,16 @@ QByteArray identity(const pgn::PgnDocument& document, int version) {
         }
         fields.append(value);
     }
+    if (version == 2 && std::ranges::any_of(document.tags, [](const auto& tag) {
+            return tag.name == pgn::analysisCopyTag && tag.value == "1";
+        })) {
+        // Explicitly exported analysis copies are independent library entries.
+        // Ordinary imports retain their original position/mainline identity.
+        const QByteArrayView bytes(document.originalText.data(),
+                                   static_cast<qsizetype>(document.originalText.size()));
+        fields.append(QString::fromLatin1(
+            QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()));
+    }
     return QJsonDocument(fields).toJson(QJsonDocument::Compact);
 }
 std::shared_ptr<const pgn::PgnDocument> parse(const QByteArray& original) {

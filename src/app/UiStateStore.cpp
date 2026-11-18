@@ -42,7 +42,12 @@ bool validBoardPreferences(const BoardPreferences& preferences) {
         preferences.inputMode != BoardInputMode::Click) {
         return false;
     }
-    if (preferences.analysisSplit < 1 || preferences.analysisSplit > 99) {
+    if (preferences.analysisSplit < 1 || preferences.analysisSplit > 99 ||
+        preferences.analysisDetailSplit < 1 || preferences.analysisDetailSplit > 99) {
+        return false;
+    }
+    if (preferences.analysisMultiPv < 1 ||
+        preferences.analysisMultiPv > BoardPreferences::maxAnalysisMultiPv) {
         return false;
     }
     for (const auto& color : preferences.annotationColors) {
@@ -97,6 +102,24 @@ UiState readState(const QString& filename, std::optional<UiStateError>& error) {
     bool splitValid = false;
     state.board.analysisSplit =
         settings.value(QStringLiteral("analysis/v1/split"), 60).toInt(&splitValid);
+    bool detailSplitValid = false;
+    state.board.analysisDetailSplit =
+        settings.value(QStringLiteral("analysis/v1/detailSplit"), 48).toInt(&detailSplitValid);
+    if (!detailSplitValid || state.board.analysisDetailSplit < 1 ||
+        state.board.analysisDetailSplit > 99) {
+        error = UiStateError::Invalid;
+        state.board.analysisDetailSplit = 48;
+    }
+    bool multiPvValid = false;
+    state.board.analysisMultiPv =
+        settings
+            .value(QStringLiteral("analysis/v1/multiPv"), BoardPreferences::defaultAnalysisMultiPv)
+            .toInt(&multiPvValid);
+    if (!multiPvValid || state.board.analysisMultiPv < 1 ||
+        state.board.analysisMultiPv > BoardPreferences::maxAnalysisMultiPv) {
+        error = UiStateError::Invalid;
+        state.board.analysisMultiPv = BoardPreferences::defaultAnalysisMultiPv;
+    }
     bool reviewSplitValid = false;
     state.reviewSplit =
         settings.value(QStringLiteral("review/v1/split"), 55).toInt(&reviewSplitValid);
@@ -209,6 +232,9 @@ std::optional<UiStateError> writeState(const QString& filename, const UiState& s
         settings.setValue(QStringLiteral("board/v1/animation"), state.board.animation);
         settings.setValue(QStringLiteral("board/v1/blackAtBottom"), state.board.blackAtBottom);
         settings.setValue(QStringLiteral("analysis/v1/split"), state.board.analysisSplit);
+        settings.setValue(QStringLiteral("analysis/v1/multiPv"), state.board.analysisMultiPv);
+        settings.setValue(QStringLiteral("analysis/v1/detailSplit"),
+                          state.board.analysisDetailSplit);
         settings.setValue(QStringLiteral("review/v1/split"), state.reviewSplit);
         settings.remove(QStringLiteral("workspace/v1"));
         if (state.game) {

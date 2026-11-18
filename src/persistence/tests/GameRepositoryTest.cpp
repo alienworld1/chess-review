@@ -128,6 +128,7 @@ class GameRepositoryTest final : public QObject {
     void init() { QTest::failOnWarning(); }
     void roundTripAndReopen();
     void duplicatePolicy();
+    void analysisCopiesOpenSeparately();
     void atomicFailureAndRetry();
     void corruptRecords();
     void migrationFromOne();
@@ -294,6 +295,23 @@ void GameRepositoryTest::duplicatePolicy() {
     QCOMPARE(std::get<std::vector<GameSummary>>(games).size(), std::size_t(1));
     const auto loaded = session.loadGame(id);
     QCOMPARE(std::get<StoredGame>(loaded).document->originalText, std::string("1. e4 e5 *"));
+}
+void GameRepositoryTest::analysisCopiesOpenSeparately() {
+    QTemporaryDir directory;
+    StorageSession session;
+    QVERIFY(!session.initialize(directory.filePath(QStringLiteral("library.sqlite3")), migrations(),
+                                ignoreProgress));
+    const auto original = session.insertGame(*document("1. e4 e5 *"), {});
+    QVERIFY(std::holds_alternative<Inserted>(original));
+    const auto edited = document("[ChessReviewAnalysis \"1\"]\n\n1. e4 {Note [%csl Re4]} e5 *");
+    const auto result = session.insertGame(*edited, {});
+    QVERIFY(std::holds_alternative<Inserted>(result));
+    const auto id = std::get<Inserted>(result).id;
+    QVERIFY(id != std::get<Inserted>(original).id);
+    QCOMPARE(std::get<Duplicate>(session.insertGame(*edited, {})).id, id);
+    const auto reopened = std::get<StoredGame>(session.loadGame(id)).document;
+    QCOMPARE(reopened->tree.node(chess::NodeId{1})->annotations.commentAfter,
+             std::string("Note [%csl Re4]"));
 }
 void GameRepositoryTest::atomicFailureAndRetry() {
     QTemporaryDir directory;

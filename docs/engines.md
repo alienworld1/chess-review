@@ -35,21 +35,22 @@ limits, search APIs, scheduling, and cache rules, see
 
 ## Live Analysis panel
 
-Connect an engine in Settings, return to Analyze, and click **Start**. The panel
-analyzes the displayed position continuously with one principal variation. Legal
-moves and history navigation retarget the search; annotations, selections, and
-board flips do not. Previous work is cancelled before the latest position is
-submitted, preserving the position's full original history.
+Connect an engine in Settings, return to Analyze, and click **Start** to
+follow the board. **Lines** sets the preferred MultiPV width and starts at
+three. The engine and the number of legal moves cap the effective width. Engines
+without MultiPV show one candidate. The preference survives a restart.
 
-Checkmate and stalemate positions use a depth-one search and finish as Completed,
-with no principal variation. This accommodates engines that immediately return a
-null bestmove for terminal positions, including Stockfish, and keeps the connection
-ready for the next position.
+**Pause** releases the engine without leaving continuous-analysis mode. You
+can navigate and explicitly **Resume** at the new position. **Stop**, leaving
+Analyze, and New Analysis end the live session. **Deepen** replaces any current
+search with a finite search at the current position. Its target starts at depth
+18 or four plies beyond the last visible best-line depth, up to depth 64.
+Navigation cancels that position's Deepen request. The panel distinguishes
+finishing the search from reaching the target with full MultiPV evidence.
 
-**Stop**, leaving Analyze, or accepting New Analysis stops computation. Returning
-to Analyze and reconnecting an engine both require another explicit Start. Manage
-Engines opens the existing Settings page; no engine is automatically chosen or
-connected. Starting requires a ready connection and a fully published board position.
+Checkmate and stalemate use a depth-one search and finish with no continuation.
+Engines… opens Settings. Start and Deepen require an engine connection and a
+fully displayed board.
 
 The numeric score is always labeled **White perspective**: positive pawn scores
 favor White, negative scores favor Black, and mate text names the mating side.
@@ -61,13 +62,17 @@ at the favored extreme. It is not a win probability. Missing and bounded scores
 leave the bar unavailable. Flipping the board moves its light/dark ends without
 changing numeric perspective.
 
-The read-only, copyable PV uses numbered SAN; depth belongs to that exact line,
-not a newer global statistics update. SAN replay runs off the GUI thread. The
-panel distinguishes preparation, active analysis, stopping, disconnected and
-failed states. Last usable evidence remains labeled after Stop or failure only
-while its position remains displayed; moving to another position or connecting
-a new engine session clears it. Errors appear inline and reconnect stays explicit.
+Candidate lines use numbered SAN and their own depth. Select a row to preview
+the line. The evaluation bar represents the analyzed position and is unavailable
+during a preview. Engine details shows reported nodes, speed, and elapsed search
+time when available.
+
+The workspace distinguishes setup, analyzing, paused, stopped, completed,
+disconnected, and failed states. The last usable live evidence stays visible
+after Pause, Stop, or failure while its position remains displayed. Navigating
+or replacing the engine session clears it. Opening a position from Review may
+show labeled saved evidence for the exact position history. Live searches run
+separately and keep their results in memory.
+
 An unsolicited bestmove during infinite search remains a protocol error under
 the existing engine contract.
-
-Live analysis stays in memory and does not read or write the analysis cache.

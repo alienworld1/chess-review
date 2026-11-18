@@ -1,11 +1,10 @@
 # Analyze board
 
 Open **Analyze** to explore standard chess from the initial position. The board
-works without an engine. Moves, branches, and annotations last only until the app
-closes; leaving Analyze for another page keeps the session. New Analysis and all
-normal quit routes ask before discarding content. Cancel preserves the session.
-Imported games can also be opened here and resume from their saved snapshots;
-see [Imported games](#imported-games).
+works without an engine. **Save PGN** writes a standalone copy of the current
+tree and annotations. Unsaved edits stay in the session when you switch pages.
+New Analysis, replacing the session, and quitting offer to save or discard
+unsaved work.
 
 ## Moves and history
 
@@ -58,6 +57,23 @@ arrows move focus in the displayed orientation and Enter or Space selects a piec
 or attempts its move. Escape cancels a gesture, then selection, then square entry.
 Tab reaches ordinary controls; shortcuts do not take arrows from their editors.
 
+## Edit and save variations
+
+Play a legal move from any position to extend a line. Select a move and open
+**Variations**, or right-click it in the PGN pane, to promote it to the main
+continuation at that fork or delete it and its descendants. Deleting the line
+you are viewing returns the board to the position before it.
+
+**Edit Note** opens the position's comments and numeric PGN glyphs. For a move,
+you can edit the text before and after it separately. A short note appears
+beside its move in the tree, and the selected position shows a longer excerpt
+below the tree. The editor opens the full text.
+
+Use **Save PGN** to keep an edited copy. If the played line has changed, the
+copy is marked unfinished (`*`). Import the copy from Games to continue editing
+it later. An analysis copy with different annotations or variations can
+coexist with the original game in your library.
+
 ## Annotations
 
 Right-click a square to toggle its highlight; right-drag between squares to toggle
@@ -71,13 +87,15 @@ In keyboard square navigation, H toggles a highlight. A marks an arrow's start;
 navigate to its endpoint and press A again. The same color modifiers apply.
 Annotations belong to tree nodes and return when that node is revisited; identical
 positions in separate branches do not share them. Each node allows 256 active
-annotations and retains up to 64 annotation undo steps. Reset clears all nodes
-and their annotation histories.
+annotations and retains up to 64 drawing undo steps. PGN copies include arrows
+and square highlights as `%cal` and `%csl` drawing directives. Chess Review
+restores them when the copy is reopened. The saved PGN carries the four color
+slots, which follow the drawing preferences of the viewer.
 
 ## Preferences and artwork
 
 Input mode, coordinates, move animation, four annotation colors, manual board
-orientation, and the analysis split are saved on orderly exit in the existing UI
+orientation, both analysis splitters, and the engine line count are saved on orderly exit in the existing UI
 preference file. Orientation stays fixed while navigating or starting New Analysis;
 it defaults to White at bottom when no saved preference exists. Invalid board
 preferences use the documented defaults with a nonmodal notice. No chess records or annotations enter the UI preference file.
@@ -94,16 +112,13 @@ at runtime.
 In Games, select a row and choose **Open in Analyze**, double-click the row, or
 press Enter. The board shows the players and game result; the timeline and PGN
 tree expose every stored move and variation. Comments and numeric annotation glyphs (`$n`) for the selected
-move appear in a read-only plain-text pane and in move descriptions. Notes above
-4,096 characters are marked and clipped for responsive display; complete imported
-text remains in the saved snapshot. Comments before the first move appear when
-that move is selected. Game result metadata
+move appear below the tree and in move descriptions. The excerpt is limited to
+4,096 characters for responsive display. Game result metadata
 and current-board check/mate/stalemate status are displayed separately.
 
-Navigation does not change the saved snapshot or require an engine. Playing an
-existing continuation reuses it; new branches and visual annotations are temporary.
-Reset, replacement, and quit ask before discarding temporary content. The saved
-original stays available in Games. Saving edited analysis is a later feature.
+Playing an existing continuation reuses that move. The imported snapshot and its
+associated Review remain available in Games. Edits are made in the Analyze
+session and saved through **Save PGN**.
 
 After orderly exit, the last opened saved game and selected stored node resume
 from SQLite, even if its source PGN has been moved or deleted. A temporary branch
@@ -112,11 +127,17 @@ resume pointer on the next orderly exit. Damaged or missing games show a load
 error and leave the previous workspace intact; select another game to continue.
 
 
-## Live engine evidence
+## Engine analysis
 
-Connect a local engine in Settings, then use Start in Analyze to follow the current
-board with continuous analysis. Stop, leaving Analyze, and New Analysis stop the
-search. The panel shows a White-perspective evaluation, adjacent bar, one numbered
-read-only SAN line, its depth, and textual engine status. Stopped/failed evidence
-remains visible for the same position; navigation clears it. See
-[Local UCI engines](engines.md#live-analysis-panel) for score semantics and limits.
+Connect a local engine in Settings. **Start** follows the current board with
+continuous analysis. **Lines** chooses how many candidates to request, starting
+at three when the engine and position allow. Select a candidate to preview its
+first move, then use Previous and Next to explore the line. **Add Line** inserts
+the full legal continuation at the original position and opens its end.
+**Exit Preview** or Escape returns to the editable board.
+
+**Pause** releases the engine and stays paused through board navigation.
+**Resume** starts following from the position you are viewing. **Stop** ends
+the session. **Deepen** runs a finite search on the current position and shows
+its target depth. See [Local UCI engines](engines.md#live-analysis-panel) for
+score semantics, evidence retention, and the depth policy.

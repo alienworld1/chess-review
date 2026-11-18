@@ -37,8 +37,11 @@ class GameTreeView final : public QTreeView {
     bool canExpand(app::NavigationTarget target) const;
     bool expanded(app::NavigationTarget target) const;
     void toggleExpanded(app::NavigationTarget target);
+  signals:
+    void variationMenuRequested(app::NavigationTarget target, const QPoint& globalPosition);
 
   protected:
+    void contextMenuEvent(QContextMenuEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;

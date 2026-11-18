@@ -52,6 +52,8 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
                 linkedOrigin_.reset();
                 linkedEvidence_.reset();
                 linkedState_ = {};
+            } else if (linkedEvidence_) {
+                linkedEngine_.showSavedReviewEvidence(linkedEvidence_->evidence);
             }
             publish();
         }

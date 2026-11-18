@@ -2,6 +2,7 @@
 #include "EngineTestSupport.h"
 #include "TestEnvironment.h"
 #include "app/StartupCoordinator.h"
+#include "review/Evidence.h"
 #include "ui/analysis/EngineAnalysisPanel.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include "ui/shell/MainWindow.h"
@@ -9,11 +10,13 @@
 #include <QApplication>
 #include <QDir>
 #include <QLabel>
+#include <QListWidget>
 #include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextDocument>
@@ -74,15 +77,19 @@ class Application final {
         return app::EngineControllerTestAccess::validator(startup.engines());
     }
     bool prepare(const QJsonArray& searches,
-                 const QString& displayName = QStringLiteral("Test engine")) {
+                 const QString& displayName = QStringLiteral("Test engine"),
+                 const QString& options = {}) {
+        identity_ = QStringLiteral("id name Test engine\nid author Tests\n") + options +
+                    QStringLiteral("uciok\n");
         if (!QTest::qWaitFor([this] {
                 return startup.engines().state().ready && !startup.engines().state().listing &&
                        !startup.analysis().busy() && startup.analysis().position();
             })) {
             return false;
         }
-        const auto registration = engine_test::scenario(
-            directory.filePath(QStringLiteral("registration.json")), engine_test::handshake());
+        const auto registration =
+            engine_test::scenario(directory.filePath(QStringLiteral("registration.json")),
+                                  engine_test::handshake(identity_));
         engine::ValidatorTestAccess::configure(supervisor(), registration, 1000);
         QSignalSpy done(&supervisor(), &engine::EngineSupervisor::completed);
         supervisor().validate(QUuid::createUuid(), QString::fromUtf8(FAKE_UCI_ENGINE));
@@ -101,9 +108,7 @@ class Application final {
         return reconnect(searches);
     }
     bool reconnect(const QJsonArray& searches) {
-        QJsonArray steps{engine_test::step(QStringLiteral("uci"),
-                                           {engine_test::write(QStringLiteral(
-                                               "id name Test engine\nid author Tests\nuciok\n"))}),
+        QJsonArray steps{engine_test::step(QStringLiteral("uci"), {engine_test::write(identity_)}),
                          ready()};
         for (const auto& step : searches) {
             steps.append(step);
@@ -120,6 +125,7 @@ class Application final {
             },
             5000);
     }
+    QString identity_;
     QTemporaryDir directory;
     app::StartupCoordinator startup;
     app::NavigationController navigation;
@@ -481,6 +487,114 @@ class LiveAnalysisTest final : public QObject {
         a.navigation.navigate(app::Destination::Analyze);
         QCOMPARE(live.state().line.pv, QStringLiteral("1. d4"));
         QVERIFY(!live.state().canStop);
+    }
+    void savedEvidenceRequiresCompleteHistory() {
+        Application a;
+        auto& board = a.startup.analysis();
+        auto& live = a.startup.engineAnalysis();
+        QTRY_VERIFY(board.position() && !board.busy());
+        review::PositionEvidence saved;
+        saved.position = board.position()->context();
+        saved.complete = true;
+        const auto move = std::get<chess::Move>(board.position()->parseUci("e2e4"));
+        saved.candidates = {
+            {1,
+             {chess::Color::White,
+              review::RawScore{review::ScoreKind::Centipawns, 35, review::Bound::Exact},
+              {}},
+             {move},
+             {20, 100000, {}}}};
+        const auto valid = saved;
+        saved.position.provenance = chess::RootProvenance::FenAnalysisRoot;
+        live.showSavedReviewEvidence(saved);
+        QTest::qWait(100);
+        QVERIFY(!live.state().savedEvidence);
+        live.showSavedReviewEvidence(valid);
+        QTRY_VERIFY(live.state().savedEvidence);
+        QCOMPARE(live.state().line.pv, QStringLiteral("1. e4"));
+        board.attemptMove(move, board.board().revision);
+        QTRY_VERIFY(!board.busy());
+        QVERIFY(!live.state().savedEvidence);
+        QVERIFY(live.state().candidates.empty());
+    }
+    void multiPvPreviewPauseAndDeepen() {
+        Application a;
+        QJsonArray steps;
+        steps.append(engine_test::step(QStringLiteral("setoption name MultiPV value 2"), {}));
+        steps.append(engine_test::step(QStringLiteral("ucinewgame"), {}));
+        steps.append(ready());
+        steps.append(engine_test::step(QStringLiteral("position startpos"), {}));
+        steps.append(engine_test::step(QStringLiteral("go infinite"),
+                                       {engine_test::write(QStringLiteral(
+                                           "info depth 7 multipv 1 score cp 40 pv e2e4 e7e5\n"
+                                           "info depth 7 multipv 2 score cp 32 pv d2d4 d7d5\n"))}));
+        stop(steps, QStringLiteral("e2e4"));
+        steps.append(engine_test::step(QStringLiteral("setoption name MultiPV value 1"), {}));
+        search(steps, QStringLiteral("position startpos moves e2e4"), QStringLiteral("e7e5"));
+        stop(steps, QStringLiteral("e7e5"));
+        steps.append(engine_test::step(QStringLiteral("setoption name MultiPV value 1"), {}));
+        steps.append(engine_test::step(QStringLiteral("ucinewgame"), {}));
+        steps.append(ready());
+        steps.append(engine_test::step(QStringLiteral("position startpos moves e2e4"), {}));
+        steps.append(engine_test::step(
+            QStringLiteral("go depth 18"),
+            {engine_test::write(QStringLiteral("info depth 18 score cp 25 nodes 80000 nps 100000 "
+                                               "pv c7c5 g1f3\nbestmove c7c5\n"),
+                                50)}));
+        steps.append(ready());
+        QVERIFY(a.prepare(steps, QStringLiteral("MultiPV engine"),
+                          QStringLiteral("option name MultiPV type spin default 1 min 1 max 2\n")));
+        auto& board = a.startup.analysis();
+        auto& live = a.startup.engineAnalysis();
+        auto* count = a.window.findChild<QSpinBox*>(QStringLiteral("analysisMultiPv"));
+        auto* list = a.window.findChild<QListWidget*>(QStringLiteral("enginePv"));
+        QVERIFY(count && list);
+        QCOMPARE(count->value(), 2);
+        QCOMPARE(live.state().requestedLines, 3);
+        live.start();
+        QTRY_COMPARE(list->count(), 2);
+        list->itemClicked(list->item(1));
+        QTRY_VERIFY(live.previewBoard().has_value());
+        if (qEnvironmentVariableIsSet("CHESS_REVIEW_SCREENSHOT_DIR")) {
+            a.window.resize(1360, 850);
+            a.window.show();
+            QTest::qWait(100);
+            const QDir renders(qEnvironmentVariable("CHESS_REVIEW_SCREENSHOT_DIR"));
+            QVERIFY(a.window.grab().save(renders.filePath(QStringLiteral("multipv-preview.png"))));
+        }
+        const auto pawnAt = [](const app::BoardViewState& state, const char* name) {
+            return state.pieces[static_cast<std::size_t>(chess::Square::fromName(name)->index())];
+        };
+        QVERIFY(pawnAt(*live.previewBoard(), "d4"));
+        QVERIFY(!pawnAt(board.board(), "d4"));
+        QCOMPARE(board.navigationTree()->nodes.size(), std::size_t{1});
+        live.stepPreview(1);
+        QTRY_VERIFY(pawnAt(*live.previewBoard(), "d5"));
+        live.dismissPreview();
+        QVERIFY(!live.preview());
+        live.pause();
+        QTRY_COMPARE(live.state().status, QStringLiteral("Paused"));
+        QTRY_VERIFY(live.state().canStart);
+        QCOMPARE(live.state().candidates.size(), std::size_t{2});
+        const auto move = std::get<chess::Move>(board.position()->parseUci("e2e4"));
+        board.attemptMove(move, board.board().revision);
+        QTRY_VERIFY(!board.busy());
+        QCOMPARE(live.state().status, QStringLiteral("Paused"));
+        QVERIFY(live.state().candidates.empty());
+        count->setValue(1);
+        live.start();
+        QTRY_COMPARE(live.state().line.pv, QStringLiteral("1... e5"));
+        live.deepen();
+        QCOMPARE(live.state().targetDepth, std::optional<int>{18});
+        QTRY_COMPARE(live.state().line.pv, QStringLiteral("1... c5 2. Nf3"));
+        QTRY_COMPARE(live.state().status, QStringLiteral("Completed"));
+        QVERIFY(live.state().canStart);
+        live.previewLine(1);
+        QTRY_VERIFY(live.previewBoard().has_value());
+        live.addPreview();
+        QTRY_VERIFY(!board.busy());
+        QCOMPARE(board.position()->context().moves.size(), std::size_t{3});
+        QVERIFY(!live.preview());
     }
     void stopBoundaries_data() {
         QTest::addColumn<QString>("action");

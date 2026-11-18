@@ -261,6 +261,7 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
     puzzleAnalysis_ = new AnalysisPage(puzzles.linkedAnalysis(), pages_);
     puzzleAnalysis_->setObjectName(QStringLiteral("puzzleAnalysisPage"));
     puzzleAnalysis_->installEngineAnalysis(puzzles.linkedEngine());
+    shareAnalysisLineCount(*puzzleAnalysis_);
     pages_->addWidget(puzzleAnalysis_);
     auto* back = new QPushButton(tr("Back to puzzle"), puzzleAnalysis_);
     back->setObjectName(QStringLiteral("backToPuzzle"));
@@ -307,8 +308,9 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
         auto* openSaved = new QPushButton(tr("Open saved puzzle"), analysisPage);
         openSaved->setObjectName(QStringLiteral("openManualPuzzle"));
         commands->addWidget(openSaved);
-        const auto update = [save, notice, openSaved, analysisPage, &generation] {
-            save->setEnabled(generation.canSavePosition() && !analysisPage->controller().busy() &&
+        const auto update = [save, notice, openSaved, analysisPage, engine, &generation] {
+            save->setEnabled(generation.canSavePosition() && (!engine || !engine->preview()) &&
+                             !analysisPage->controller().busy() &&
                              analysisPage->controller().position());
             const auto& state = generation.state();
             notice->setText(state.error.isEmpty() ? state.message : state.error);
@@ -318,6 +320,9 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
         connect(&generation, &app::PuzzleGenerationController::changed, analysisPage, update);
         connect(&analysisPage->controller(), &app::AnalysisController::changed, analysisPage,
                 update);
+        if (engine) {
+            connect(engine, &app::EngineAnalysisController::changed, analysisPage, update);
+        }
         connect(save, &QPushButton::clicked, analysisPage, [analysisPage, engine, &generation] {
             if (engine) {
                 engine->stop();
@@ -451,6 +456,7 @@ void MainWindow::installReview(app::ReviewGameController& review) {
     linkedAnalysis_ = new AnalysisPage(linkedExplorer.linkedAnalysis(), pages_);
     linkedAnalysis_->setObjectName(QStringLiteral("reviewLinkedAnalysisPage"));
     linkedAnalysis_->installEngineAnalysis(linkedExplorer.linkedEngine());
+    shareAnalysisLineCount(*linkedAnalysis_);
     pages_->addWidget(linkedAnalysis_);
     auto* linkedCommands =
         linkedAnalysis_->findChild<QHBoxLayout*>(QStringLiteral("analysisCommands"));
@@ -709,10 +715,23 @@ void MainWindow::showReview() {
     navigation_.navigate(app::Destination::Games);
     pages_->setCurrentWidget(reviewPage_);
 }
+void MainWindow::shareAnalysisLineCount(AnalysisPage& page) {
+    if (analysis_) {
+        page.setAnalysisMultiPv(analysis_->preferences().analysisMultiPv);
+    }
+    connect(&page, &AnalysisPage::analysisMultiPvChanged, this, [this](int count) {
+        for (auto* view : {analysis_, linkedAnalysis_, puzzleAnalysis_}) {
+            if (view) {
+                view->setAnalysisMultiPv(count);
+            }
+        }
+    });
+}
 void MainWindow::installEngineAnalysis(app::EngineAnalysisController& engine) {
     liveEngine_ = &engine;
     Q_ASSERT(analysis_);
     analysis_->installEngineAnalysis(engine);
+    shareAnalysisLineCount(*analysis_);
     if (auto* duplicate =
             analysis_->findChild<QPushButton*>(QStringLiteral("analysisEngineSettings"))) {
         delete duplicate; // The live panel now owns the visible Manage Engines affordance.
@@ -1319,6 +1338,11 @@ void MainWindow::restoreUiState(const app::UiState& state) {
     }
     if (analysis_) {
         analysis_->setPreferences(state.board);
+        for (auto* view : {linkedAnalysis_, puzzleAnalysis_}) {
+            if (view) {
+                view->setAnalysisMultiPv(state.board.analysisMultiPv);
+            }
+        }
     }
     if (!state.geometry.isEmpty() && !restoreGeometry(state.geometry)) {
         showUiStateFailure();

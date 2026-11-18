@@ -1,6 +1,7 @@
 #include "ui/analysis/MoveNavigation.h"
 #include <QAbstractTableModel>
 #include <QAccessible>
+#include <QContextMenuEvent>
 #include <QFontMetrics>
 #include <QHeaderView>
 #include <QItemSelectionModel>
@@ -164,9 +165,16 @@ QVarLengthArray<MoveToken, 8> tokens(const VariationModel& model, const QModelIn
     std::optional<std::uint32_t> previousWhite;
     for (const auto node : model.line(index).moves) {
         const auto& entry = model.tree()->nodes.at(node);
-        const auto text = entry.side == chess::Color::Black && previousWhite == entry.number
-                              ? entry.san
-                              : entry.label;
+        auto text = entry.side == chess::Color::Black && previousWhite == entry.number
+                        ? entry.san
+                        : entry.label;
+        if (!entry.inlineNote.isEmpty()) {
+            const auto note =
+                metrics.elidedText(entry.inlineNote, Qt::ElideRight, std::max(0, rect.width() / 3));
+            if (!note.isEmpty()) {
+                text += QStringLiteral("  ·  ") + note;
+            }
+        }
         const int width = metrics.horizontalAdvance(text) + 16;
         if (x > contentLeft && x + width > rect.right()) {
             x = contentLeft;
@@ -410,6 +418,15 @@ void GameTreeView::mousePressEvent(QMouseEvent* event) {
     QTreeView::mousePressEvent(event);
     if (currentIndex().isValid() && currentIndex() != before) {
         focused_ = app::NavigationTarget{modelSession_, moves_->line(currentIndex()).moves.front()};
+    }
+}
+void GameTreeView::contextMenuEvent(QContextMenuEvent* event) {
+    const auto target = event->reason() == QContextMenuEvent::Keyboard
+                            ? focusedTarget()
+                            : targetAt(viewport()->mapFromGlobal(event->globalPos()));
+    if (target && validTarget(*target)) {
+        emit variationMenuRequested(*target, event->globalPos());
+        event->accept();
     }
 }
 void GameTreeView::mouseMoveEvent(QMouseEvent* event) {

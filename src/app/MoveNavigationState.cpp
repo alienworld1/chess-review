@@ -1,5 +1,7 @@
 #include "app/MoveNavigationState.h"
+#include "app/AnalysisPgn.h"
 #include <QCoreApplication>
+#include <algorithm>
 #include <string>
 
 namespace chess_review::app {
@@ -35,8 +37,10 @@ std::shared_ptr<const NavigationTree> makeNavigationTree(const chess::GameTree& 
                                      visit.number,
                                      visit.side,
                                      0,
+                                     {},
                                      {}});
-        auto& notes = navigation->nodes.at(item.id).notes;
+        auto& entry = navigation->nodes.at(item.id);
+        auto& notes = entry.notes;
         constexpr qsizetype maxNoteCharacters = 4096;
         bool truncated = false;
         const auto appendNote = [&](const QString& text) {
@@ -56,18 +60,30 @@ std::shared_ptr<const NavigationTree> makeNavigationTree(const chess::GameTree& 
                 truncated = true;
             }
         };
-        appendNote(QString::fromStdString(item.annotations.commentBefore));
+        appendNote(analysisComment(item.annotations.commentBefore));
         for (const auto nag : item.annotations.nags) {
             if (truncated) {
                 break;
             }
             appendNote(QStringLiteral("$%1").arg(nag));
         }
-        appendNote(QString::fromStdString(item.annotations.commentAfter));
+        appendNote(analysisComment(item.annotations.commentAfter));
         if (truncated) {
             notes += QCoreApplication::translate(
                 "AnalysisController",
                 "\n[Notes truncated for display; complete text remains saved.]");
+        }
+        if (!notes.isEmpty()) {
+            const auto firstLine = notes.section(u'\n', 0, 0).left(128).simplified();
+            constexpr qsizetype snippetLength = 22;
+            auto length = std::min(firstLine.size(), snippetLength);
+            if (length > 0 && firstLine.at(length - 1).isHighSurrogate()) {
+                --length;
+            }
+            entry.inlineNote = firstLine.left(length);
+            if (length < firstLine.size()) {
+                entry.inlineNote += u'…';
+            }
         }
         const auto nextSide =
             item.parent

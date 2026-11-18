@@ -10,14 +10,17 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFileDialog>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QResizeEvent>
 #include <QShortcut>
 #include <QShowEvent>
@@ -28,6 +31,7 @@
 #include <QVBoxLayout>
 #include <QWidgetAction>
 #include <algorithm>
+#include <utility>
 
 namespace chess_review::ui {
 AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
@@ -67,7 +71,11 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     animation_ = menu->addAction(tr("Animate Moves"));
     animation_->setCheckable(true);
     auto* clear = menu->addAction(tr("Clear Current Annotations"));
-    connect(clear, &QAction::triggered, &controller_, &app::AnalysisController::clearAnnotations);
+    connect(clear, &QAction::triggered, this, [this] {
+        if (!displayingPreview_) {
+            controller_.clearAnnotations();
+        }
+    });
     undo_ = menu->addAction(tr("Undo Annotation"));
     undo_->setShortcut(QKeySequence::Undo);
     undo_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
@@ -233,13 +241,52 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     addShortcut(Qt::Key_End, &app::AnalysisController::end);
     timeline_ = new MoveTimelineView(controller_, boardPane);
     boardLayout->addWidget(timeline_);
-    tree_ = new GameTreeView(controller_, splitter_);
-    notes_ = new QPlainTextEdit(this);
+    notation_ = new QWidget(splitter_);
+    auto* notationLayout = new QVBoxLayout(notation_);
+    notationLayout->setContentsMargins(0, 0, 0, 0);
+    auto* notationCommands = new QHBoxLayout;
+    edit_ = new QPushButton(tr("Edit Note…"), notation_);
+    edit_->setObjectName(QStringLiteral("editAnalysisNote"));
+    variations_ = new QPushButton(tr("Variations"), notation_);
+    variations_->setObjectName(QStringLiteral("analysisVariationActions"));
+    save_ = new QPushButton(tr("Save PGN…"), notation_);
+    save_->setObjectName(QStringLiteral("saveAnalysisPgn"));
+    save_->setToolTip(tr("Save a PGN copy with the current lines, notes, and board markings."));
+    notationCommands->addWidget(edit_);
+    notationCommands->addWidget(variations_);
+    notationCommands->addStretch();
+    notationCommands->addWidget(save_);
+    notationLayout->addLayout(notationCommands);
+    tree_ = new GameTreeView(controller_, notation_);
+    notationLayout->addWidget(tree_, 1);
+    notes_ = new QPlainTextEdit(notation_);
     notes_->setObjectName(QStringLiteral("positionNotes"));
     notes_->setAccessibleName(tr("PGN comments and numeric annotation glyphs"));
     notes_->setReadOnly(true);
-    notes_->setMaximumHeight(80);
-    layout->addWidget(notes_);
+    notes_->setMaximumHeight(88);
+    notationLayout->addWidget(notes_);
+    operationNotice_ = new QLabel(notation_);
+    operationNotice_->setTextFormat(Qt::PlainText);
+    operationNotice_->setWordWrap(true);
+    setTextRole(*operationNotice_, "secondary");
+    notationLayout->addWidget(operationNotice_);
+    operationNotice_->hide();
+    connect(tree_, &GameTreeView::variationMenuRequested, this, &AnalysisPage::showVariationMenu);
+    connect(edit_, &QPushButton::clicked, this,
+            [this] { editComment(controller_.target(controller_.currentNode())); });
+    connect(variations_, &QPushButton::clicked, this, [this] {
+        showVariationMenu(controller_.target(controller_.currentNode()),
+                          variations_->mapToGlobal(variations_->rect().bottomLeft()));
+    });
+    connect(save_, &QPushButton::clicked, this, [this] { savePgn(); });
+    connect(&controller_, &app::AnalysisController::pgnExported, this, [this] {
+        operationNotice_->setText(tr("Analysis PGN saved."));
+        operationNotice_->show();
+        if (auto done = std::exchange(afterExport_, {})) {
+            done();
+        }
+    });
+    connect(&controller_, &app::AnalysisController::failed, this, [this] { afterExport_ = {}; });
     splitter_->setStretchFactor(0, 1);
     splitter_->setStretchFactor(1, 1);
     connect(splitter_, &QSplitter::splitterMoved, this, [this] {
@@ -263,9 +310,20 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
             &app::AnalysisController::attemptMove);
     connect(board_, &ChessBoardWidget::annotationToggled, &controller_,
             &app::AnalysisController::toggleAnnotation);
-    connect(board_, &ChessBoardWidget::previousRequested, &controller_,
-            &app::AnalysisController::previous);
-    connect(board_, &ChessBoardWidget::nextRequested, &controller_, &app::AnalysisController::next);
+    connect(board_, &ChessBoardWidget::previousRequested, this, [this] {
+        if (engine_ && engine_->preview()) {
+            engine_->stepPreview(-1);
+        } else {
+            controller_.previous();
+        }
+    });
+    connect(board_, &ChessBoardWidget::nextRequested, this, [this] {
+        if (engine_ && engine_->preview()) {
+            engine_->stepPreview(1);
+        } else {
+            controller_.next();
+        }
+    });
     connect(board_, &ChessBoardWidget::beginningRequested, &controller_,
             &app::AnalysisController::beginning);
     connect(board_, &ChessBoardWidget::endRequested, &controller_, &app::AnalysisController::end);
@@ -288,13 +346,40 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     refresh();
 }
 void AnalysisPage::installEngineAnalysis(app::EngineAnalysisController& engine) {
-    auto* rightPane = new QWidget(this);
-    auto* rightLayout = new QVBoxLayout(rightPane);
-    rightLayout->setContentsMargins(0, 0, 0, 0);
-    splitter_->replaceWidget(splitter_->indexOf(tree_), rightPane);
+    engine_ = &engine;
+    auto* rightPane = new QSplitter(Qt::Vertical, this);
+    detailSplitter_ = rightPane;
+    rightPane->setObjectName(QStringLiteral("analysisDetailSplitter"));
+    rightPane->setChildrenCollapsible(false);
+    splitter_->replaceWidget(splitter_->indexOf(notation_), rightPane);
     auto* panel = new EngineAnalysisPanel(engine, rightPane);
-    rightLayout->addWidget(panel);
-    rightLayout->addWidget(tree_, 1);
+    rightPane->addWidget(panel);
+    rightPane->addWidget(notation_);
+    rightPane->setStretchFactor(1, 1);
+    connect(rightPane, &QSplitter::splitterMoved, this, [this] {
+        const auto sizes = detailSplitter_->sizes();
+        const auto total = sizes[0] + sizes[1];
+        if (total > 0) {
+            preferences_.analysisDetailSplit = std::clamp(sizes[0] * 100 / total, 1, 99);
+        }
+    });
+    auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    escape->setContext(Qt::WidgetWithChildrenShortcut);
+    escape->setEnabled(false);
+    connect(escape, &QShortcut::activated, &engine, &app::EngineAnalysisController::dismissPreview);
+    connect(&engine, &app::EngineAnalysisController::changed, this, [this, &engine, escape] {
+        escape->setEnabled(engine.preview().has_value());
+        if (preferences_.analysisMultiPv != engine.state().requestedLines) {
+            preferences_.analysisMultiPv = engine.state().requestedLines;
+            emit analysisMultiPvChanged(preferences_.analysisMultiPv);
+        }
+        if (engine.preview().has_value() != displayingPreview_) {
+            refresh();
+        } else if (displayingPreview_) {
+            refreshBoard();
+        }
+    });
+    engine.setMultiPv(preferences_.analysisMultiPv);
     auto* boardFrame = new QWidget(this);
     boardFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     boardFrame->setMinimumHeight(248);
@@ -307,8 +392,9 @@ void AnalysisPage::installEngineAnalysis(app::EngineAnalysisController& engine) 
     boardLayout_->insertWidget(boardIndex, boardFrame, 1);
     connect(panel, &EngineAnalysisPanel::manageEnginesRequested, this,
             &AnalysisPage::manageEnginesRequested);
-    connect(&engine, &app::EngineAnalysisController::changed, bar,
-            [&engine, bar] { bar->setEvaluation(engine.state().line); });
+    connect(&engine, &app::EngineAnalysisController::changed, bar, [&engine, bar] {
+        bar->setEvaluation(engine.preview() ? app::EngineLinePresentation{} : engine.state().line);
+    });
     connect(&controller_, &app::AnalysisController::changed, bar, [bar] { bar->update(); });
     bar->setEvaluation(engine.state().line);
 }
@@ -328,6 +414,7 @@ void AnalysisPage::setPreferences(const app::BoardPreferences& preferences) {
         color_->setItemData(index, preferences.annotationColors[i], Qt::ToolTipRole);
     }
     board_->setPreferences(preferences);
+    setAnalysisMultiPv(preferences.analysisMultiPv);
     controller_.setOrientation(preferences.blackAtBottom);
     applySplit();
 }
@@ -355,30 +442,207 @@ void AnalysisPage::applySplit() {
         splitter_->orientation() == Qt::Horizontal ? splitter_->width() : splitter_->height();
     const int board = extent * preferences_.analysisSplit / 100;
     splitter_->setSizes({board, extent - board});
+    if (detailSplitter_) {
+        const QSignalBlocker detailBlock(detailSplitter_);
+        const auto detailExtent = detailSplitter_->height();
+        const auto engine = detailExtent * preferences_.analysisDetailSplit / 100;
+        detailSplitter_->setSizes({engine, detailExtent - engine});
+    }
+}
+void AnalysisPage::setAnalysisMultiPv(int count) {
+    preferences_.analysisMultiPv = count;
+    if (engine_) {
+        engine_->setMultiPv(count);
+    }
+}
+void AnalysisPage::refreshBoard() {
+    displayingPreview_ = engine_ && engine_->preview();
+    if (displayingPreview_) {
+        auto state = engine_->previewBoard().value_or(controller_.board());
+        state.interactive = false;
+        state.selection.reset();
+        state.annotations.clear();
+        state.positionDescription = tr("Engine preview · %1").arg(state.positionDescription);
+        board_->setState(state);
+        status_->setText(state.positionDescription);
+        return;
+    }
+    board_->setState(controller_.board());
+    status_->setText(!controller_.error().isEmpty() ? controller_.error()
+                     : controller_.busy()           ? tr("Updating analysis…")
+                                                    : controller_.board().positionDescription);
 }
 void AnalysisPage::refresh() {
-    board_->setState(controller_.board());
+    refreshBoard();
     preferences_.blackAtBottom = controller_.board().blackAtBottom;
-    undo_->setEnabled(controller_.board().interactive && controller_.canUndoAnnotation());
-    redo_->setEnabled(controller_.board().interactive && controller_.canRedoAnnotation());
+    undo_->setEnabled(!displayingPreview_ && controller_.board().interactive &&
+                      controller_.canUndoAnnotation());
+    redo_->setEnabled(!displayingPreview_ && controller_.board().interactive &&
+                      controller_.canRedoAnnotation());
     const auto white =
         controller_.whitePlayer().isEmpty() ? tr("White") : controller_.whitePlayer();
     const auto black =
         controller_.blackPlayer().isEmpty() ? tr("Black") : controller_.blackPlayer();
     topPlayer_->setText(controller_.board().blackAtBottom ? white : black);
     bottomPlayer_->setText(controller_.board().blackAtBottom ? black : white);
-    notice_->setText(
-        controller_.gameId()
-            ? tr("%1\nExploration changes are not saved.").arg(controller_.gameDescription())
-            : tr("Analysis — exploration changes are not saved."));
+    const auto target = controller_.target(controller_.currentNode());
+    edit_->setEnabled(!displayingPreview_ && controller_.canEdit(target));
+    variations_->setEnabled(!displayingPreview_ && controller_.canDelete(target));
+    save_->setEnabled(controller_.canEdit(target));
+    const auto game = controller_.gameId() ? controller_.gameDescription() : tr("Analysis");
+    notice_->setText(controller_.hasContent() ? tr("%1 · Unsaved edits").arg(game) : game);
+    if (controller_.hasContent()) {
+        operationNotice_->hide();
+    }
     if (notes_->toPlainText() != controller_.positionNotes()) {
         notes_->setPlainText(controller_.positionNotes());
     }
     notes_->setVisible(!controller_.positionNotes().isEmpty());
-    status_->setText(controller_.busy() ? tr("Updating position…")
-                                        : controller_.board().positionDescription);
     QAccessibleEvent event(status_, QAccessible::NameChanged);
     QAccessible::updateAccessibility(&event);
+}
+void AnalysisPage::editComment(app::NavigationTarget target) {
+    if (!controller_.canEdit(target) || target.node != controller_.currentNode()) {
+        return;
+    }
+    auto* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(tr("Edit Position Note"));
+    auto* layout = new QVBoxLayout(dialog);
+    const auto makeEditor = [dialog, layout](const QString& labelText, const QString& value) {
+        auto* label = new QLabel(labelText, dialog);
+        auto* editor = new QPlainTextEdit(value, dialog);
+        label->setBuddy(editor);
+        layout->addWidget(label);
+        layout->addWidget(editor, 1);
+        return editor;
+    };
+    const auto& notes = controller_.notes();
+    QPlainTextEdit* before = nullptr;
+    const bool move = controller_.canDelete(target);
+    if (move || !notes.before.isEmpty()) {
+        before = makeEditor(tr("Comment &before the move"), notes.before);
+    }
+    auto* after =
+        makeEditor(move ? tr("Comment &after the move") : tr("&Position comment"), notes.after);
+    after->setObjectName(QStringLiteral("analysisCommentEditor"));
+    QLineEdit* nags = nullptr;
+    if (move) {
+        auto* nagLabel = new QLabel(tr("Numeric &glyphs"), dialog);
+        nags = new QLineEdit(dialog);
+        nags->setPlaceholderText(tr("For example, $1 $14"));
+        nags->setToolTip(tr("PGN numeric annotation glyphs from $0 to $255, separated by spaces."));
+        QStringList numbers;
+        for (const auto nag : notes.nags) {
+            numbers.append(QStringLiteral("$%1").arg(nag));
+        }
+        nags->setText(numbers.join(u' '));
+        nagLabel->setBuddy(nags);
+        auto* glyphRow = new QHBoxLayout;
+        glyphRow->addWidget(nagLabel);
+        glyphRow->addWidget(nags);
+        layout->addLayout(glyphRow);
+    }
+    auto* error = new QLabel(dialog);
+    error->setWordWrap(true);
+    layout->addWidget(error);
+    error->hide();
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, dialog);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, [=, this] {
+        app::AnalysisNotes edited{
+            before ? before->toPlainText() : QString{}, after->toPlainText(), {}};
+        constexpr auto commentLimit =
+            static_cast<qsizetype>(chess::GameTreeLimits{}.maxCommentBytes);
+        if (edited.before.toUtf8().size() > commentLimit ||
+            edited.after.toUtf8().size() > commentLimit) {
+            error->setText(tr("Each PGN comment can contain up to 64 KiB of text."));
+            error->show();
+            return;
+        }
+        if (nags) {
+            const auto entries =
+                nags->text().split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+            for (auto entry : entries) {
+                if (entry.startsWith(u'$')) {
+                    entry.remove(0, 1);
+                }
+                bool valid = false;
+                const auto value = entry.toUInt(&valid);
+                if (!valid || value > 255) {
+                    error->setText(tr("Enter glyph numbers from 0 to 255, separated by spaces."));
+                    error->show();
+                    nags->setFocus();
+                    return;
+                }
+                edited.nags.push_back(static_cast<std::uint8_t>(value));
+            }
+        }
+        controller_.setNotes(target, edited);
+        dialog->accept();
+    });
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    dialog->resize(520, move ? 450 : 280);
+    after->setFocus();
+    dialog->open();
+}
+void AnalysisPage::showVariationMenu(app::NavigationTarget target, const QPoint& globalPosition) {
+    if (displayingPreview_ || !controller_.canEdit(target)) {
+        return;
+    }
+    auto* menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    if (target.node == controller_.currentNode()) {
+        auto* note = menu->addAction(tr("Edit Note…"));
+        connect(note, &QAction::triggered, this, [this, target] { editComment(target); });
+        menu->addSeparator();
+    }
+    auto* promote = menu->addAction(tr("Promote to Main Continuation"));
+    promote->setEnabled(controller_.canPromote(target));
+    connect(promote, &QAction::triggered, this,
+            [this, target] { controller_.promoteVariation(target); });
+    auto* remove = menu->addAction(tr("Delete Line…"));
+    remove->setEnabled(controller_.canDelete(target));
+    connect(remove, &QAction::triggered, this, [this, target] { confirmDelete(target); });
+    menu->popup(globalPosition);
+}
+void AnalysisPage::confirmDelete(app::NavigationTarget target) {
+    if (!controller_.canDelete(target)) {
+        return;
+    }
+    auto* dialog =
+        new QMessageBox(QMessageBox::Question, tr("Delete variation?"),
+                        tr("Delete %1 and all of its continuations?")
+                            .arg(controller_.navigationTree()->nodes.at(target.node).label),
+                        QMessageBox::Yes | QMessageBox::Cancel, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setTextFormat(Qt::PlainText);
+    dialog->setDefaultButton(QMessageBox::Cancel);
+    connect(dialog, &QDialog::finished, this, [this, target](int result) {
+        if (result == QMessageBox::Yes) {
+            controller_.deleteVariation(target);
+        }
+    });
+    dialog->open();
+}
+void AnalysisPage::savePgn(std::function<void()> onSaved) {
+    if (!controller_.canEdit(controller_.target(controller_.currentNode()))) {
+        return;
+    }
+    auto* dialog =
+        new QFileDialog(this, tr("Save Analysis PGN"), QString{}, tr("PGN files (*.pgn)"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setAcceptMode(QFileDialog::AcceptSave);
+    dialog->setDefaultSuffix(QStringLiteral("pgn"));
+    dialog->selectFile(QStringLiteral("analysis.pgn"));
+    connect(dialog, &QFileDialog::fileSelected, this,
+            [this, onSaved = std::move(onSaved)](const QString& path) mutable {
+                if (controller_.canEdit(controller_.target(controller_.currentNode()))) {
+                    afterExport_ = std::move(onSaved);
+                    controller_.exportPgn(path);
+                }
+            });
+    dialog->open();
 }
 void AnalysisPage::requestDiscard(std::function<void()> onDiscard) {
     if (!controller_.hasContent() && !controller_.busy()) {
@@ -389,19 +653,30 @@ void AnalysisPage::requestDiscard(std::function<void()> onDiscard) {
         return;
     }
     confirming_ = true;
-    auto* dialog = new QMessageBox(
-        QMessageBox::Question, tr("Discard analysis?"),
-        tr("Discard session-only moves and annotations? Imported games remain saved in Games."),
-        QMessageBox::Discard | QMessageBox::Cancel, this);
+    auto* dialog =
+        new QMessageBox(QMessageBox::Question, tr("Discard analysis?"),
+                        tr("Save a PGN copy of your variations and annotations before leaving?"),
+                        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
+    dialog->button(QMessageBox::Save)->setText(tr("Save PGN…"));
+    auto* saveBeforeDiscard = dialog->button(QMessageBox::Save);
+    const auto updateSave = [this, saveBeforeDiscard] {
+        saveBeforeDiscard->setEnabled(
+            controller_.canEdit(controller_.target(controller_.currentNode())));
+    };
+    connect(&controller_, &app::AnalysisController::changed, dialog, updateSave);
+    updateSave();
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setObjectName(QStringLiteral("discardAnalysisDialog"));
     dialog->setDefaultButton(QMessageBox::Cancel);
-    connect(dialog, &QDialog::finished, this, [this, onDiscard = std::move(onDiscard)](int result) {
-        confirming_ = false;
-        if (result == QMessageBox::Discard) {
-            onDiscard();
-        }
-    });
+    connect(dialog, &QDialog::finished, this,
+            [this, onDiscard = std::move(onDiscard)](int result) mutable {
+                confirming_ = false;
+                if (result == QMessageBox::Save) {
+                    savePgn(std::move(onDiscard));
+                } else if (result == QMessageBox::Discard) {
+                    onDiscard();
+                }
+            });
     dialog->open();
 }
 void AnalysisPage::deactivate() {

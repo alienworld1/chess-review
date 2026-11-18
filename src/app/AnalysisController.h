@@ -15,6 +15,13 @@
 namespace chess_review::app {
 // GUI-thread facade. Only its serial worker accesses Session and its chess values.
 // close() is asynchronous; await closed() before destruction.
+struct AnalysisNotes {
+    QString before;
+    QString after;
+    std::vector<std::uint8_t> nags;
+    bool operator==(const AnalysisNotes&) const = default;
+};
+
 class AnalysisController final : public QObject {
     Q_OBJECT
   public:
@@ -33,7 +40,18 @@ class AnalysisController final : public QObject {
     bool canNavigate() const { return navigationTree_ && !closing_ && !resetting_; }
     bool canPrevious() const;
     bool canNext() const;
-    bool hasContent() const { return hasMoves_ || !annotations_.empty(); }
+    bool hasContent() const { return treeDirty_ || annotations_ != exportedAnnotations_; }
+    bool positionChanging() const {
+        return resetting_ || changingPosition_ || (pendingNavigation_ && requested_ != current_);
+    }
+    const AnalysisNotes& notes() const { return notes_; }
+    bool canEdit(NavigationTarget target) const;
+    bool canPromote(NavigationTarget target) const;
+    bool canDelete(NavigationTarget target) const;
+    void setNotes(NavigationTarget target, const AnalysisNotes& notes);
+    void promoteVariation(NavigationTarget target);
+    void deleteVariation(NavigationTarget target);
+    void exportPgn(const QString& filename);
     bool canUndoAnnotation() const;
     bool canRedoAnnotation() const;
     const std::shared_ptr<const chess::Position>& position() const { return position_; }
@@ -52,6 +70,7 @@ class AnalysisController final : public QObject {
     void selectSquare(chess::Square square);
     void clearSelection();
     void attemptMove(chess::Move move, std::uint64_t revision);
+    void addEngineLine(std::vector<chess::Move> moves, std::uint64_t revision);
     void navigate(chess::NodeId node);
     void navigate(NavigationTarget target);
     void setOrientation(bool blackAtBottom);
@@ -72,6 +91,7 @@ class AnalysisController final : public QObject {
     void failed(const QString& message);
     void closed();
     void gameOpened();
+    void pgnExported();
 
   private:
     struct Session;
@@ -88,7 +108,8 @@ class AnalysisController final : public QObject {
         std::vector<std::vector<BoardAnnotation>> redo;
     };
     void submit(std::function<QString(Session&)> operation, bool resetSession = false,
-                std::optional<chess::Move> animatedMove = std::nullopt);
+                std::optional<chess::Move> animatedMove = std::nullopt,
+                bool changesPosition = true);
     void publish(Snapshot snapshot, std::uint64_t request, std::optional<chess::Move> animatedMove);
     void startReset(ResetRequest reset);
     void requestReset(ResetRequest reset);
@@ -115,11 +136,16 @@ class AnalysisController final : public QObject {
     bool navigating_ = false;
     chess::NodeId current_{0};
     std::map<chess::NodeId, std::vector<BoardAnnotation>> annotations_;
+    std::map<chess::NodeId, std::vector<BoardAnnotation>> exportedAnnotations_;
+    std::vector<BoardAnnotation> originalAnnotations_;
     std::map<chess::NodeId, AnnotationHistory> annotationHistory_;
     std::uint64_t request_ = 0;
     bool busy_ = false;
     bool closing_ = false;
-    bool hasMoves_ = false;
+    bool treeDirty_ = false;
+    bool changingPosition_ = false;
+    bool exporting_ = false;
+    AnalysisNotes notes_;
     std::optional<persistence::GameId> gameId_;
     QString whitePlayer_;
     QString blackPlayer_;

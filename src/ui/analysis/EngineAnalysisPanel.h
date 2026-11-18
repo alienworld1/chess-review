@@ -3,8 +3,9 @@
 #include <QWidget>
 
 class QLabel;
+class QListWidget;
 class QPushButton;
-class QPlainTextEdit;
+class QSpinBox;
 namespace chess_review::ui {
 class ChessBoardWidget;
 class EvaluationBarWidget final : public QWidget {
@@ -40,8 +41,17 @@ class EngineAnalysisPanel final : public QWidget {
     QLabel* evaluation_;
     QLabel* depth_;
     QLabel* error_;
-    QPlainTextEdit* pv_;
+    QListWidget* pv_;
+    QSpinBox* width_;
     QPushButton* start_;
+    QPushButton* pause_;
     QPushButton* stop_;
+    QPushButton* deepen_;
+    QWidget* previewControls_;
+    QLabel* previewStatus_;
+    QPushButton* previous_;
+    QPushButton* next_;
+    QPushButton* add_;
+    std::optional<std::uint64_t> renderedCandidates_;
 };
 } // namespace chess_review::ui

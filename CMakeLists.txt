@@ -166,6 +166,7 @@ add_library(chess_review_startup STATIC
     src/app/EngineAnalysisController.cpp
     src/app/EngineSettingsController.cpp
     src/app/AnalysisController.cpp
+    src/app/AnalysisPgn.cpp
     src/app/MoveNavigationState.cpp
     src/app/GameImportService.cpp
     src/app/ImportController.cpp

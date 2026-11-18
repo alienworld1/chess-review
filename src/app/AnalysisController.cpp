@@ -1,16 +1,71 @@
 #include "app/AnalysisController.h"
+#include "app/AnalysisPgn.h"
+#include <QFileInfo>
 #include <QMetaObject>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
 #include <algorithm>
 #include <exception>
+#include <utility>
 
 namespace chess_review::app {
+BoardViewState makeAnalysisBoard(const chess::Position& position,
+                                 std::optional<chess::Move> lastMove, bool allowMoves) {
+    BoardViewState board;
+    board.sideToMove = position.sideToMove();
+    auto legal = position.legalMoves();
+    const bool inCheck = position.inCheck();
+    const bool noMoves = legal.empty();
+    const auto side = position.sideToMove() == chess::Color::White
+                          ? AnalysisController::tr("White")
+                          : AnalysisController::tr("Black");
+    if (noMoves && inCheck) {
+        board.status = BoardStatus::Checkmate;
+        board.positionDescription = AnalysisController::tr("Checkmate — %1 wins")
+                                        .arg(position.sideToMove() == chess::Color::White
+                                                 ? AnalysisController::tr("Black")
+                                                 : AnalysisController::tr("White"));
+    } else if (noMoves) {
+        board.status = BoardStatus::Stalemate;
+        board.positionDescription = AnalysisController::tr("Stalemate — draw");
+    } else if (inCheck) {
+        board.status = BoardStatus::Check;
+        board.positionDescription = AnalysisController::tr("%1 to move — check").arg(side);
+    } else {
+        board.positionDescription = AnalysisController::tr("%1 to move").arg(side);
+    }
+    for (int i = 0; i < 64; ++i) {
+        const auto square = *chess::Square::fromCoordinates(i % 8, i / 8);
+        const auto piece = position.pieceAt(square);
+        board.pieces[static_cast<std::size_t>(i)] = piece;
+        if (piece && piece->type == chess::PieceType::King &&
+            piece->color == position.sideToMove() && inCheck) {
+            board.checkedKing = square;
+        }
+    }
+    if (allowMoves) {
+        board.legalMoves = std::move(legal);
+    }
+    for (const auto& move : board.legalMoves) {
+        // En passant is also a capture although the destination is empty.
+        const auto piece = position.pieceAt(move.from);
+        if (position.pieceAt(move.to) || (piece && piece->type == chess::PieceType::Pawn &&
+                                          move.from.file() != move.to.file())) {
+            board.captureMoves.push_back(move);
+        }
+    }
+    board.lastMove = lastMove;
+    board.interactive = allowMoves;
+    return board;
+}
 struct AnalysisController::Session {
     std::optional<chess::GameTree> tree;
     chess::NodeId current{0};
     std::shared_ptr<const NavigationTree> navigation;
-    std::size_t savedNodes = 1;
+    bool treeDirty = false;
+    std::shared_ptr<const pgn::PgnDocument> source;
+    QString sourceFile;
     std::optional<persistence::GameId> gameId;
     QString white;
     QString black;
@@ -23,7 +78,9 @@ struct AnalysisController::Snapshot {
     std::vector<HistoryEntry> history;
     std::vector<HistoryEntry> continuations;
     chess::NodeId current{0};
-    bool hasMoves = false;
+    bool treeDirty = false;
+    AnalysisNotes editableNotes;
+    std::vector<BoardAnnotation> originalAnnotations;
     bool sessionReset = false;
     QString error;
     QString notes;
@@ -45,12 +102,13 @@ void AnalysisController::start() {
     }
 }
 void AnalysisController::submit(std::function<QString(Session&)> operation, bool resetSession,
-                                std::optional<chess::Move> animatedMove) {
+                                std::optional<chess::Move> animatedMove, bool changesPosition) {
     Q_ASSERT(QThread::currentThread() == thread());
     if (closing_ || busy_) {
         return;
     }
     busy_ = true;
+    changingPosition_ = changesPosition;
     board_.interactive = false;
     board_.selection.reset();
     const auto request = ++request_;
@@ -66,7 +124,6 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
                 snapshot.description = session_->description;
                 auto& tree = *session_->tree;
                 snapshot.current = session_->current;
-                // Scratch edits only append/reuse nodes; reset explicitly clears this cache.
                 if (!session_->navigation || session_->navigation->nodes.size() != tree.size()) {
                     session_->navigation = makeNavigationTree(tree);
                 }
@@ -76,47 +133,13 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
                 if (node && std::holds_alternative<chess::Position>(resolved)) {
                     const auto& position = std::get<chess::Position>(resolved);
                     snapshot.position = std::make_shared<const chess::Position>(position);
-                    snapshot.board.sideToMove = position.sideToMove();
-                    snapshot.board.legalMoves = position.legalMoves();
-                    const bool inCheck = position.inCheck();
-                    const bool noMoves = snapshot.board.legalMoves.empty();
-                    const auto side =
-                        position.sideToMove() == chess::Color::White ? tr("White") : tr("Black");
-                    if (noMoves && inCheck) {
-                        snapshot.board.status = BoardStatus::Checkmate;
-                        snapshot.board.positionDescription =
-                            tr("Checkmate — %1 wins")
-                                .arg(position.sideToMove() == chess::Color::White ? tr("Black")
-                                                                                  : tr("White"));
-                    } else if (noMoves) {
-                        snapshot.board.status = BoardStatus::Stalemate;
-                        snapshot.board.positionDescription = tr("Stalemate — draw");
-                    } else if (inCheck) {
-                        snapshot.board.status = BoardStatus::Check;
-                        snapshot.board.positionDescription = tr("%1 to move — check").arg(side);
-                    } else {
-                        snapshot.board.positionDescription = tr("%1 to move").arg(side);
-                    }
-                    for (int i = 0; i < 64; ++i) {
-                        const auto square = *chess::Square::fromCoordinates(i % 8, i / 8);
-                        const auto piece = position.pieceAt(square);
-                        snapshot.board.pieces[static_cast<std::size_t>(i)] = piece;
-                        if (piece && piece->type == chess::PieceType::King &&
-                            piece->color == position.sideToMove() && inCheck) {
-                            snapshot.board.checkedKing = square;
-                        }
-                    }
-                    for (const auto& move : snapshot.board.legalMoves) {
-                        // En passant is also a capture although the destination is empty.
-                        const auto piece = position.pieceAt(move.from);
-                        if (position.pieceAt(move.to) ||
-                            (piece && piece->type == chess::PieceType::Pawn &&
-                             move.from.file() != move.to.file())) {
-                            snapshot.board.captureMoves.push_back(move);
-                        }
-                    }
-                    snapshot.board.lastMove = node->move;
-                    snapshot.hasMoves = tree.size() > session_->savedNodes;
+                    snapshot.board = makeAnalysisBoard(position, node->move, true);
+                    snapshot.treeDirty = session_->treeDirty;
+                    snapshot.editableNotes = {analysisComment(node->annotations.commentBefore,
+                                                              &snapshot.originalAnnotations),
+                                              analysisComment(node->annotations.commentAfter,
+                                                              &snapshot.originalAnnotations),
+                                              node->annotations.nags};
                     snapshot.notes = session_->navigation->nodes.at(session_->current).notes;
                     auto cursor = node;
                     while (cursor) {
@@ -129,7 +152,6 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
                         snapshot.continuations.push_back(
                             {child, session_->navigation->nodes.at(child).label});
                     }
-                    snapshot.board.interactive = true;
                 } else {
                     snapshot.error = tr("The analysis position could not be resolved.");
                 }
@@ -137,7 +159,7 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
         } catch (const std::exception&) {
             // An edit may have completed before snapshot allocation failed. Preserve
             // the discard guard even when presenting the result must fail closed.
-            snapshot.hasMoves = session_->tree && session_->tree->size() > session_->savedNodes;
+            snapshot.treeDirty = session_->treeDirty;
             snapshot.current = session_->current;
             snapshot.error = tr("Analysis could not complete. The position was not displayed.");
             snapshot.board.interactive = false;
@@ -159,7 +181,16 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
         return;
     }
     error_ = snapshot.error;
+    if (exporting_) {
+        exporting_ = false;
+        if (snapshot.error.isEmpty()) {
+            exportedAnnotations_ = annotations_;
+            QTimer::singleShot(0, this, &AnalysisController::pgnExported);
+        }
+    }
     const bool wasNavigating = navigating_;
+    const bool changedPosition = changingPosition_ || snapshot.current != current_;
+    changingPosition_ = false;
     busy_ = false;
     navigating_ = false;
     resetting_ = false;
@@ -169,20 +200,33 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
         chosenLine_.clear();
         pendingNavigation_.reset();
         annotations_.clear();
+        exportedAnnotations_.clear();
         annotationHistory_.clear();
     }
     if (pendingReset_) {
-        hasMoves_ = snapshot.hasMoves;
+        treeDirty_ = snapshot.treeDirty;
         auto reset = std::move(*pendingReset_);
         pendingReset_.reset();
         startReset(std::move(reset));
         return;
     }
     if (snapshot.navigation) {
+        if (navigationTree_ && snapshot.navigation->nodes.size() < navigationTree_->nodes.size()) {
+            const auto& nodes = snapshot.navigation->nodes;
+            std::erase_if(chosen_, [&nodes](const auto& edge) {
+                return !nodes.contains(edge.first) || !nodes.contains(edge.second);
+            });
+            std::erase_if(annotations_,
+                          [&nodes](const auto& item) { return !nodes.contains(item.first); });
+            std::erase_if(annotationHistory_,
+                          [&nodes](const auto& item) { return !nodes.contains(item.first); });
+        }
         navigationTree_ = std::move(snapshot.navigation);
     }
-    hasMoves_ = snapshot.hasMoves;
-    if (!snapshot.error.isEmpty()) {
+    treeDirty_ = snapshot.treeDirty;
+    if (!snapshot.error.isEmpty() ||
+        (pendingNavigation_ &&
+         (!navigationTree_ || !navigationTree_->nodes.contains(*pendingNavigation_)))) {
         pendingNavigation_.reset();
     }
     if (animatedMove && snapshot.error.isEmpty() && navigationTree_ && pendingMoveChoice_) {
@@ -208,7 +252,9 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
     }
     requested_ = snapshot.current;
     if (navigationTree_) {
-        rememberPath(requested_);
+        if (changedPosition) {
+            rememberPath(requested_);
+        }
         updateChosenLine();
     }
     std::optional<chess::Move> navigationMove;
@@ -229,16 +275,21 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
     blackPlayer_ = std::move(snapshot.black);
     gameDescription_ = std::move(snapshot.description);
     positionNotes_ = std::move(snapshot.notes);
+    notes_ = std::move(snapshot.editableNotes);
+    originalAnnotations_ = std::move(snapshot.originalAnnotations);
     position_ = std::move(snapshot.position);
+    const auto oldRevision = board_.revision;
     board_ = std::move(snapshot.board);
     board_.blackAtBottom = orientation;
-    board_.revision = request;
+    board_.revision = changedPosition ? request : oldRevision;
     current_ = snapshot.current;
-    hasMoves_ = snapshot.hasMoves;
+    treeDirty_ = snapshot.treeDirty;
     history_ = std::move(snapshot.history);
     continuations_ = std::move(snapshot.continuations);
     if (const auto found = annotations_.find(current_); found != annotations_.end()) {
         board_.annotations = found->second;
+    } else {
+        board_.annotations = originalAnnotations_;
     }
     // Context-owned queued delivery survives reentrant changed() handlers safely:
     // deletion cancels the callback; close or another request invalidates it.
@@ -310,7 +361,10 @@ void AnalysisController::startReset(ResetRequest reset) {
             if (reset.game) {
                 const auto& game = *reset.game;
                 replacement.tree = game.document->tree;
-                replacement.savedNodes = replacement.tree->size();
+                replacement.source = game.document;
+                if (game.source.type == QStringLiteral("file")) {
+                    replacement.sourceFile = QUrl(game.source.uri).toLocalFile();
+                }
                 replacement.gameId = game.summary.id;
                 const auto playerName = [](const QString& value) {
                     auto name = value.left(256);
@@ -347,7 +401,6 @@ void AnalysisController::startReset(ResetRequest reset) {
                 replacement.tree = std::move(std::get<chess::GameTree>(result));
                 replacement.current =
                     chess::NodeId{context.moves.size() + static_cast<std::size_t>(reset.step)};
-                replacement.savedNodes = replacement.tree->size();
             } else {
                 auto result =
                     reset.fen ? chess::GameTree::fromFen(*reset.fen) : chess::GameTree::initial();
@@ -386,14 +439,141 @@ void AnalysisController::attemptMove(chess::Move move, std::uint64_t revision) {
                 return tr("Analysis is unavailable.");
             }
             const auto from = session.current;
+            const auto before = session.tree->size();
             auto result = session.tree->addMove(from, move);
             if (auto* error = std::get_if<chess::GameTreeError>(&result)) {
                 return QString::fromStdString(error->message);
             }
+            session.treeDirty |= session.tree->size() != before;
             session.current = std::get<chess::NodeId>(result);
             return QString{};
         },
         false, move);
+}
+void AnalysisController::addEngineLine(std::vector<chess::Move> moves, std::uint64_t revision) {
+    if (!board_.interactive || revision != board_.revision || moves.empty()) {
+        return;
+    }
+    submit([moves = std::move(moves)](Session& session) {
+        const auto before = session.tree->size();
+        auto result = session.tree->addLine(session.current, moves);
+        if (const auto* error = std::get_if<chess::GameTreeError>(&result)) {
+            return QString::fromStdString(error->message);
+        }
+        session.treeDirty |= before != session.tree->size();
+        session.current = std::get<chess::NodeId>(result);
+        return QString{};
+    });
+}
+
+bool AnalysisController::canEdit(NavigationTarget target) const {
+    return !busy_ && board_.interactive && canNavigate() && target.session == sessionGeneration_ &&
+           navigationTree_->nodes.contains(target.node);
+}
+bool AnalysisController::canPromote(NavigationTarget target) const {
+    if (!canDelete(target)) {
+        return false;
+    }
+    const auto parent = *navigationTree_->nodes.at(target.node).parent;
+    return navigationTree_->nodes.at(parent).children.front() != target.node;
+}
+bool AnalysisController::canDelete(NavigationTarget target) const {
+    return canEdit(target) && navigationTree_->nodes.at(target.node).parent.has_value();
+}
+void AnalysisController::setNotes(NavigationTarget target, const AnalysisNotes& notes) {
+    if (!canEdit(target) || target.node != current_ || notes == notes_) {
+        return;
+    }
+    if (notes.before.contains(QChar(0)) || notes.after.contains(QChar(0)) ||
+        (!canDelete(target) && !notes.nags.empty())) {
+        emit failed(tr("Invalid PGN annotation."));
+        return;
+    }
+    submit(
+        [notes, id = target.node](Session& session) {
+            const auto original = session.tree->node(id)->annotations;
+            auto updated = original;
+            const auto update = [](std::string& field, const QString& replacement) {
+                std::vector<BoardAnnotation> drawings;
+                if (analysisComment(field, &drawings) != replacement) {
+                    field = analysisCommentWithDrawings(replacement, drawings);
+                }
+            };
+            update(updated.commentBefore, notes.before);
+            update(updated.commentAfter, notes.after);
+            updated.nags = notes.nags;
+            const auto result = session.tree->setAnnotations(id, updated);
+            if (const auto* error = std::get_if<chess::GameTreeError>(&result)) {
+                return QString::fromStdString(error->message);
+            }
+            session.treeDirty = true;
+            session.navigation.reset();
+            return QString{};
+        },
+        false, std::nullopt, false);
+}
+void AnalysisController::promoteVariation(NavigationTarget target) {
+    if (!canPromote(target)) {
+        return;
+    }
+    // Forget the previously preferred sibling so forward navigation follows the promoted line.
+    const auto parent = *navigationTree_->nodes.at(target.node).parent;
+    chosen_.insert_or_assign(parent, target.node);
+    submit(
+        [id = target.node](Session& session) {
+            const auto result = session.tree->promote(id);
+            if (const auto* error = std::get_if<chess::GameTreeError>(&result)) {
+                return QString::fromStdString(error->message);
+            }
+            session.treeDirty = true;
+            session.navigation.reset();
+            return QString{};
+        },
+        false, std::nullopt, false);
+}
+void AnalysisController::deleteVariation(NavigationTarget target) {
+    if (!canDelete(target)) {
+        return;
+    }
+    const auto parent = *navigationTree_->nodes.at(target.node).parent;
+    const bool containsCurrent = std::ranges::any_of(
+        history_, [target](const auto& move) { return move.id == target.node; });
+    submit(
+        [id = target.node, parent, containsCurrent](Session& session) {
+            const auto result = session.tree->removeSubtree(id);
+            if (const auto* error = std::get_if<chess::GameTreeError>(&result)) {
+                return QString::fromStdString(error->message);
+            }
+            if (containsCurrent) {
+                session.current = parent;
+            }
+            session.treeDirty = true;
+            session.navigation.reset();
+            return QString{};
+        },
+        false, std::nullopt, containsCurrent);
+}
+void AnalysisController::exportPgn(const QString& filename) {
+    if (filename.isEmpty() || !canEdit(target(current_))) {
+        return;
+    }
+    auto drawings = annotations_;
+    // While an export holds the serialized tree the board is read-only, so these
+    // remain the exact annotations written even if a navigation request queues.
+    exporting_ = true;
+    submit(
+        [filename, drawings = std::move(drawings)](Session& session) {
+            if (!session.sourceFile.isEmpty() &&
+                QFileInfo(filename) == QFileInfo(session.sourceFile)) {
+                return tr("Choose a different file to keep the source PGN intact.");
+            }
+            auto error = writeAnalysisPgn(filename, *session.tree, session.source.get(), drawings);
+            if (error.isEmpty()) {
+                session.treeDirty = false;
+            }
+            return error;
+        },
+        false, std::nullopt, false);
 }
 void AnalysisController::rememberPath(chess::NodeId node) {
     while (navigationTree_->nodes.at(node).parent) {
@@ -494,7 +674,7 @@ void AnalysisController::replaceAnnotations(std::vector<BoardAnnotation> annotat
         history.undo.erase(history.undo.begin());
     }
     history.redo.clear();
-    if (annotations.empty()) {
+    if (annotations == originalAnnotations_) {
         annotations_.erase(current_);
     } else {
         annotations_[current_] = annotations;
@@ -539,7 +719,7 @@ void AnalysisController::undoAnnotation() {
     history.redo.push_back(board_.annotations);
     board_.annotations = std::move(history.undo.back());
     history.undo.pop_back();
-    if (board_.annotations.empty()) {
+    if (board_.annotations == originalAnnotations_) {
         annotations_.erase(current_);
     } else {
         annotations_[current_] = board_.annotations;
@@ -554,7 +734,7 @@ void AnalysisController::redoAnnotation() {
     history.undo.push_back(board_.annotations);
     board_.annotations = std::move(history.redo.back());
     history.redo.pop_back();
-    if (board_.annotations.empty()) {
+    if (board_.annotations == originalAnnotations_) {
         annotations_.erase(current_);
     } else {
         annotations_[current_] = board_.annotations;

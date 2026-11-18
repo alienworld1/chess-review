@@ -11,6 +11,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDir>
+#include <QFile>
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
@@ -24,6 +25,7 @@
 #include <QTextDocument>
 #include <QTimer>
 #include <QToolButton>
+#include <QUrl>
 #include <algorithm>
 #include <memory>
 
@@ -78,6 +80,7 @@ class AnalysisTest final : public QObject {
     void terminalStates();
     void controlsReference();
     void branchesAndAnnotations();
+    void editAndReopenAnalysisCopy();
     void directBranchNavigation();
     void releaseWithoutMoveEvent();
     void cancelledPromotionCannotSubmit_data();
@@ -131,6 +134,93 @@ void AnalysisTest::cleanup() {
     controller_->close();
     QTRY_COMPARE(closed.count(), 1);
     controller_.reset();
+}
+void AnalysisTest::editAndReopenAnalysisCopy() {
+    const std::string sourceText = "[Result \"1-0\"]\n\n1. e4 $1 e5 (1... {Before} c5 "
+                                   "{Sicilian [%csl Yc5]} 2. Nf3 (2. Nc3) d6) 2. Nf3 1-0";
+    pgn::PgnReader originalReader(sourceText);
+    auto source =
+        std::make_shared<const pgn::PgnDocument>(std::get<pgn::PgnDocument>(originalReader.next()));
+    QTemporaryDir directory;
+    const auto sourcePath = directory.filePath(QStringLiteral("original.pgn"));
+    QFile originalFile(sourcePath);
+    QVERIFY(originalFile.open(QIODevice::WriteOnly));
+    QCOMPARE(originalFile.write(QByteArray::fromStdString(sourceText)),
+             qsizetype(sourceText.size()));
+    originalFile.close();
+    const persistence::GameSummary summary{
+        42, QStringLiteral("White"), QStringLiteral("Black"), QStringLiteral("1-0"), {}, {}, {}};
+    controller_->openGame(
+        {summary, {QStringLiteral("file"), QUrl::fromLocalFile(sourcePath).toString()}, source});
+    QTRY_VERIFY(!controller_->busy());
+    const auto root = controller_->currentNode();
+    auto target = controller_->target(root);
+    controller_->setNotes(target, {{}, QStringLiteral("Root } note\nSecond line"), {}});
+    QTRY_VERIFY(!controller_->busy());
+    const app::BoardAnnotation arrow{square("e2"), square("e4"), 1};
+    controller_->toggleAnnotation(arrow);
+    controller_->next();
+    QTRY_VERIFY(!controller_->busy());
+    const auto e4 = controller_->currentNode();
+    const auto initialRevision = controller_->board().revision;
+    const auto [main, side] =
+        std::pair{controller_->continuations()[0].id, controller_->continuations()[1].id};
+    controller_->promoteVariation(controller_->target(side));
+    QTRY_VERIFY(!controller_->busy());
+    QCOMPARE(controller_->board().revision, initialRevision);
+    QCOMPARE(controller_->continuations().front().id, side);
+    controller_->next();
+    QTRY_VERIFY(!controller_->busy());
+    QCOMPARE(controller_->currentNode(), side);
+    QCOMPARE(controller_->board().annotations,
+             (std::vector<app::BoardAnnotation>{{square("c5"), square("c5"), 2}}));
+    auto edited = controller_->notes();
+    edited.after = QStringLiteral("My Sicilian note");
+    edited.nags = {14};
+    controller_->setNotes(controller_->target(side), edited);
+    QTRY_VERIFY(!controller_->busy());
+    controller_->deleteVariation(controller_->target(main));
+    QTRY_VERIFY(!controller_->busy());
+    QVERIFY(!controller_->navigationTree()->nodes.contains(main));
+    QCOMPARE(controller_->currentNode(), side);
+
+    QSignalSpy errors(controller_.get(), &app::AnalysisController::failed);
+    controller_->exportPgn(sourcePath);
+    QTRY_COMPARE(errors.size(), 1);
+    QVERIFY(controller_->hasContent());
+    const auto filename = directory.filePath(QStringLiteral("copy.pgn"));
+    QSignalSpy saved(controller_.get(), &app::AnalysisController::pgnExported);
+    controller_->exportPgn(filename);
+    QTRY_COMPARE(saved.size(), 1);
+    QVERIFY(!controller_->hasContent());
+
+    QFile copy(filename);
+    QVERIFY(copy.open(QIODevice::ReadOnly));
+    const auto bytes = copy.readAll().toStdString();
+    pgn::PgnReader reopened(bytes);
+    auto copyDocument =
+        std::make_shared<const pgn::PgnDocument>(std::get<pgn::PgnDocument>(reopened.next()));
+    QCOMPARE(copyDocument->result, pgn::GameResult::Unknown);
+    QCOMPARE(copyDocument->tree.size(), std::size_t{6});
+    QCOMPARE(source->tree.size(), std::size_t{8});
+    QCOMPARE(source->result, pgn::GameResult::WhiteWin);
+    controller_->openGame({summary, {}, copyDocument});
+    QTRY_VERIFY(!controller_->busy());
+    QCOMPARE(controller_->notes().after, QStringLiteral("Root } note\nSecond line"));
+    QCOMPARE(controller_->board().annotations, std::vector{arrow});
+    controller_->next();
+    QTRY_VERIFY(!controller_->busy());
+    QVERIFY(controller_->positionNotes().contains(QStringLiteral("$1")));
+    controller_->next();
+    QTRY_VERIFY(!controller_->busy());
+    QCOMPARE(controller_->positionNotes(), QStringLiteral("Before\n$14\nMy Sicilian note"));
+    QCOMPARE(controller_->board().annotations,
+             (std::vector<app::BoardAnnotation>{{square("c5"), square("c5"), 2}}));
+    QCOMPARE(controller_->continuations().size(), std::size_t{2});
+    QCOMPARE(controller_->continuations()[0].label, QStringLiteral("2. Nf3"));
+    QCOMPARE(controller_->continuations()[1].label, QStringLiteral("2. Nc3"));
+    QVERIFY(!controller_->hasContent());
+    QVERIFY(e4 != side);
 }
 void AnalysisTest::play(chess::Move attempted) {
     controller_->attemptMove(attempted, controller_->board().revision);
@@ -736,6 +826,8 @@ void AnalysisTest::preferenceRoundTrip() {
     state.board.animation = false;
     state.board.blackAtBottom = true;
     state.board.analysisSplit = 88;
+    state.board.analysisMultiPv = 7;
+    state.board.analysisDetailSplit = 65;
     state.board.annotationColors[0] = QStringLiteral("#123abc");
     app::UiStateStore writer;
     QSignalSpy loaded(&writer, &app::UiStateStore::loaded);

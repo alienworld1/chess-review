@@ -501,6 +501,7 @@ class Parser {
                 break;
             }
         }
+        analysisCopy_ |= token.text == analysisCopyTag && value == "1";
         tags_.push_back({std::string(token.text), std::move(value)});
         tagLocations_.push_back(token.at);
         return std::nullopt;
@@ -561,20 +562,24 @@ class Parser {
         return true;
     }
     std::optional<Diagnostic> comment(const Token& token) {
+        auto text = token.text;
+        auto* target = &occurrences_[current_].node.annotations.commentAfter;
+        if (analysisCopy_ && opening_ && !movesStarted_ && !numberPending_ &&
+            text.starts_with(rootCommentPrefix)) {
+            text.remove_prefix(std::string_view(rootCommentPrefix).size());
+        } else if (opening_ || (analysisCopy_ && numberPending_)) {
+            target = &pendingComment_;
+        }
         // Pending opening comments are charged when read, not when a move finally appears.
-        const auto separator =
-            opening_ ? (pendingComment_.empty() ? 0U : 1U)
-                     : (occurrences_[current_].node.annotations.commentAfter.empty() ? 0U : 1U);
+        const auto separator = target->empty() ? 0U : 1U;
         if (separator > limits_.tree.maxAnnotationBytes - annotationBytes_ ||
-            token.text.size() > limits_.tree.maxAnnotationBytes - annotationBytes_ - separator) {
+            text.size() > limits_.tree.maxAnnotationBytes - annotationBytes_ - separator) {
             return limit(token.at);
         }
-        auto& target =
-            opening_ ? pendingComment_ : occurrences_[current_].node.annotations.commentAfter;
-        if (!appendComment(target, token.text)) {
+        if (!appendComment(*target, text)) {
             return limit(token.at);
         }
-        annotationBytes_ += token.text.size() + separator;
+        annotationBytes_ += text.size() + separator;
         return std::nullopt;
     }
     std::optional<Diagnostic> movetext(const Token& token) {
@@ -860,6 +865,7 @@ class Parser {
     bool movesStarted_{};
     bool opening_{true};
     bool numberPending_{};
+    bool analysisCopy_{};
 };
 } // namespace
 

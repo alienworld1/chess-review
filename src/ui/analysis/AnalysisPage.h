@@ -5,6 +5,8 @@
 class QAction;
 class QComboBox;
 class QLabel;
+class QMenu;
+class QPushButton;
 class QSplitter;
 class QPlainTextEdit;
 class QVBoxLayout;
@@ -25,8 +27,10 @@ class AnalysisPage final : public QWidget {
     app::AnalysisController& controller() { return controller_; }
     void deactivate();
     void installEngineAnalysis(app::EngineAnalysisController& engine);
+    void setAnalysisMultiPv(int count);
   signals:
     void manageEnginesRequested();
+    void analysisMultiPvChanged(int count);
 
   protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -34,8 +38,14 @@ class AnalysisPage final : public QWidget {
 
   private:
     void refresh();
+    void refreshBoard();
     void applySplit();
+    void editComment(app::NavigationTarget target);
+    void confirmDelete(app::NavigationTarget target);
+    void savePgn(std::function<void()> onSaved = {});
+    void showVariationMenu(app::NavigationTarget target, const QPoint& globalPosition);
     app::AnalysisController& controller_;
+    app::EngineAnalysisController* engine_ = nullptr;
     ChessBoardWidget* board_;
     QLabel* status_;
     QLabel* notice_;
@@ -43,6 +53,8 @@ class AnalysisPage final : public QWidget {
     QLabel* topPlayer_;
     QLabel* bottomPlayer_;
     QSplitter* splitter_;
+    QSplitter* detailSplitter_ = nullptr;
+    QWidget* notation_;
     MoveTimelineView* timeline_;
     GameTreeView* tree_;
     QVBoxLayout* boardLayout_;
@@ -52,7 +64,13 @@ class AnalysisPage final : public QWidget {
     QAction* animation_;
     QAction* undo_;
     QAction* redo_;
+    QPushButton* edit_;
+    QPushButton* variations_;
+    QPushButton* save_;
+    QLabel* operationNotice_;
     app::BoardPreferences preferences_;
     bool confirming_ = false;
+    bool displayingPreview_ = false;
+    std::function<void()> afterExport_;
 };
 } // namespace chess_review::ui

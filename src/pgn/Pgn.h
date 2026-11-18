@@ -12,6 +12,10 @@
 #include <vector>
 
 namespace chess_review::pgn {
+// Versioned opt-in for the analysis workspace's comment placement.
+inline constexpr char analysisCopyTag[] = "ChessReviewAnalysis";
+// Identifies a comment on the initial position, before any move number or SAN.
+inline constexpr char rootCommentPrefix[] = "[%cr_root] ";
 
 struct SourceLocation {
     std::size_t offset{}; // Zero-based bytes, including any initial BOM.

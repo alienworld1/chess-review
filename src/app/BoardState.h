@@ -11,11 +11,15 @@ namespace chess_review::app {
 enum class BoardInputMode { Drag, Click };
 enum class BoardStatus { Playing, Check, Checkmate, Stalemate };
 struct BoardPreferences {
+    static constexpr int defaultAnalysisMultiPv = 3;
+    static constexpr int maxAnalysisMultiPv = 256;
     BoardInputMode inputMode = BoardInputMode::Drag;
     bool coordinates = true;
     bool animation = true;
     bool blackAtBottom = false;
     int analysisSplit = 60; // Board percentage, independent of splitter orientation.
+    int analysisMultiPv = defaultAnalysisMultiPv;
+    int analysisDetailSplit = 48; // Engine pane percentage within the detail splitter.
     std::array<QString, 4> annotationColors{QStringLiteral("#27834b"), QStringLiteral("#c53d49"),
                                             QStringLiteral("#d2a620"), QStringLiteral("#2476ca")};
     bool operator==(const BoardPreferences&) const = default;
@@ -45,6 +49,9 @@ struct HistoryEntry {
     chess::NodeId id;
     QString label;
 };
+// Build on a worker. Interaction state and user annotations are owned by the controller.
+BoardViewState makeAnalysisBoard(const chess::Position& position,
+                                 std::optional<chess::Move> lastMove, bool allowMoves);
 } // namespace chess_review::app
 
 Q_DECLARE_METATYPE(chess_review::chess::Square)

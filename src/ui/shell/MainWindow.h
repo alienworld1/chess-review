@@ -70,6 +70,7 @@ class MainWindow final : public QMainWindow {
     void showEvent(QShowEvent* event) override;
 
   private:
+    void shareAnalysisLineCount(AnalysisPage& page);
     void installAnalysis(app::AnalysisController& controller);
     void selectDestination();
     void showReview();
