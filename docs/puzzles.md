@@ -19,7 +19,8 @@ normal result.
 
 Verification uses stronger finite searches and checks the decisions and replies
 in the saved continuation. Searches can deepen within fixed effort and tree-size
-limits. A position that remains uncertain is skipped. The app saves engine-backed
+limits. The fresh searches must still support the lesson found in review. A
+position that remains uncertain is skipped. The app saves engine-backed
 lines, not a claim that every possible defense has been exhaustively proven.
 
 Interactive analysis and review work take priority over background puzzle

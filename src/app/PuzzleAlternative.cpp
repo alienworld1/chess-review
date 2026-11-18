@@ -29,6 +29,19 @@ PuzzleAlternativeResult evaluatePuzzleAlternative(const PuzzleAlternative& attem
         return {};
     }
     const auto& d = attempt.puzzle->document;
+    auto child = *attempt.position;
+    if (std::holds_alternative<chess::Error>(child.play(attempt.move))) {
+        return {};
+    }
+    const auto childContext = child.context();
+    const auto legal = child.legalMoves();
+    if (legal.empty() && child.inCheck()) {
+        // The board proves the objective, even if MultiPV omitted or underrated this move.
+        puzzles::Solution mate{d.solution.goal,
+                               d.solution.materialTarget,
+                               {{{}, {}, true, review::RetryIdea::General}}};
+        return {puzzles::AlternativeGrade::Strong, {}, std::move(mate)};
+    }
     const auto rootContext = attempt.position->context();
     std::vector<review::PositionEvidence> roots;
     for (const auto& raw : d.passes) {
@@ -48,11 +61,6 @@ PuzzleAlternativeResult evaluatePuzzleAlternative(const PuzzleAlternative& attem
     if (known == puzzles::AlternativeGrade::TryAgain) {
         return {known, {}, {}};
     }
-    auto child = *attempt.position;
-    if (std::holds_alternative<chess::Error>(child.play(attempt.move))) {
-        return {};
-    }
-    const auto childContext = child.context();
     const auto solver = d.definition.position.board.sideToMove;
     std::vector<review::PositionEvidence> passes;
     for (const auto& raw : attempt.passes) {
@@ -63,7 +71,6 @@ PuzzleAlternativeResult evaluatePuzzleAlternative(const PuzzleAlternative& attem
         passes.push_back(std::move(*e));
     }
     const auto baseline = d.definition.policy.baselineNodes;
-    const auto legal = child.legalMoves();
     review::PositionEvidence terminal = review::terminalEvidence(child);
     terminal.engineIdentity = roots.back().engineIdentity;
     terminal.sessionIdentity = "local-proof";

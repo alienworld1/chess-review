@@ -565,7 +565,7 @@ Repeated local terminal proofs remain valid. Quick evidence is frozen once its
 scan is complete, and position checkpoints cannot write an earlier stage after a
 later stage has begun. Status-only cancellation/failure writes remain available.
 
-## Puzzle persistence (schema 011)
+## Puzzle persistence (schemas 011 and 013)
 
 The asynchronous puzzle repository shares Database admission, storage-thread
 ownership, and accepted-write drainage. `puzzles` stores checksummed format-1
@@ -582,6 +582,9 @@ without launching an engine; resumption requires an explicit action. Completed
 jobs make repeated generation requests idempotent. Automatic persistence enforces
 the two-generated-puzzles-per-game cap and skips overlapping source lesson spans.
 Manual saves may exceed this automatic cap.
+Schema 013 preserves existing puzzle IDs and prevents reuse of IDs assigned
+after the upgrade. A checkpoint exposes a saved-puzzle shortcut only while
+its recorded ID still resolves to the candidate's exact position.
 
 `puzzle_suppressions` remembers deleted history-bearing identities. SHA-256 indexes
 lookup candidates, while complete decoded position identity gates duplication and

@@ -114,6 +114,33 @@ std::optional<PuzzleJob> readJob(const QSqlQuery& q) {
     job->status = static_cast<PuzzleJobStatus>(status);
     return job;
 }
+bool findAvailablePuzzles(QSqlDatabase& db, PuzzleJob& job) {
+    job.available.clear();
+    if (job.accepted.empty()) {
+        return true;
+    }
+    QSqlQuery query(db);
+    for (const auto& candidate : job.candidates) {
+        if (candidate.solution.nodes.empty()) {
+            continue;
+        }
+        const auto identity = positionIdentity(candidate.definition.position);
+        if (!exec(query, QStringLiteral("SELECT id FROM puzzles WHERE position_identity=?"),
+                  {identity})) {
+            return false;
+        }
+        if (query.next()) {
+            const auto id = query.value(0).toLongLong();
+            if (std::ranges::find(job.accepted, id) != job.accepted.end()) {
+                job.available.push_back(id);
+            }
+        } else if (query.lastError().isValid()) {
+            return false;
+        }
+        query.finish();
+    }
+    return true;
+}
 struct PuzzleSource {
     chess::Position before;
     ReviewMove move;
@@ -287,8 +314,14 @@ SavePuzzleJobResult StorageSession::loadPuzzleJob(PuzzleJobId id) {
         return error(q.lastError().isValid() ? ReviewErrorCode::Storage : ReviewErrorCode::Missing);
     }
     auto job = readJob(q);
-    return job ? SavePuzzleJobResult(std::move(*job))
-               : SavePuzzleJobResult(error(ReviewErrorCode::InvalidRecord));
+    q.finish();
+    if (!job) {
+        return error(ReviewErrorCode::InvalidRecord);
+    }
+    if (!findAvailablePuzzles(database_, *job)) {
+        return error();
+    }
+    return std::move(*job);
 }
 ListPuzzleJobsResult StorageSession::listPuzzleJobs(std::int64_t offset, int limit,
                                                     std::optional<ReviewId> reviewId) {
@@ -362,50 +395,13 @@ SavePuzzleJobResult StorageSession::preparePuzzleJob(ReviewId id,
             QStringLiteral(
                 "Finish a review with verified deeper analysis before generating puzzles.")};
     }
-    struct Ranked {
-        int index;
-        int priority;
-        double loss;
-    };
-    std::vector<Ranked> ranked;
-    for (int offset = 0; offset < run->summary.totalPositions - 1; offset += 50) {
-        const auto pageResult = deriveReviewMoves(id, run->summary.revision, offset, 50);
-        const auto* page = std::get_if<ReviewMovePage>(&pageResult);
-        if (!page) {
-            return std::get<ReviewError>(pageResult);
-        }
-        for (const auto& move : page->moves) {
-            if (move.mover != run->summary.selectedSide) {
-                continue;
-            }
-            const bool loss =
-                move.stability.stable && move.classification && move.classification->label &&
-                review::isError(*move.classification->label) && move.classification->loss &&
-                *move.classification->loss >=
-                    run->settings.configuration.values.classification.inaccuracyLoss;
-            const bool mate = move.rawBefore.score &&
-                              move.rawBefore.score->kind == review::ScoreKind::Mate &&
-                              move.rawBefore.score->value > 0;
-            if (loss || mate) {
-                ranked.push_back(
-                    {move.positionIndex, mate ? 0 : (!move.tacticalFacts.empty() ? 1 : 2),
-                     move.classification && move.classification->loss ? *move.classification->loss
-                                                                      : 0});
-            }
-        }
+    auto ranked = rankPuzzlePositions(id, run->summary.revision);
+    if (const auto* failure = std::get_if<ReviewError>(&ranked)) {
+        return *failure;
     }
-    std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) {
-        if (a.priority != b.priority) {
-            return a.priority < b.priority;
-        }
-        if (a.loss != b.loss) {
-            return a.loss > b.loss;
-        }
-        return a.index < b.index;
-    });
     PuzzleJob job;
     job.reviewId = id;
-    for (const auto& candidate : ranked) {
+    for (const auto& candidate : std::get<std::vector<RankedPuzzlePosition>>(ranked)) {
         if (job.candidates.size() == 6) {
             break;
         }
@@ -427,6 +423,7 @@ SavePuzzleJobResult StorageSession::preparePuzzleJob(ReviewId id,
         d.definition.position = e->before.context();
         d.definition.origin = puzzles::Origin::Generated;
         d.definition.policy.review = run->settings.configuration.values;
+        d.definition.policy.review.openings = {};
         config::applyPuzzleLimits(d.definition.policy, settings);
         const auto& budgets = d.definition.policy.review.budgets;
         d.definition.policy.baselineNodes =
@@ -460,6 +457,7 @@ SavePuzzleJobResult StorageSession::checkpointPuzzleJob(PuzzleCheckpoint checkpo
     if (job.revision == std::numeric_limits<std::int64_t>::max() || job.id < 0) {
         return error(ReviewErrorCode::InvalidInput);
     }
+    bool confirmedLesson = true;
     if (checkpoint.accepted &&
         checkpoint.accepted->definition.origin == puzzles::Origin::Generated) {
         const auto& d = *checkpoint.accepted;
@@ -468,10 +466,15 @@ SavePuzzleJobResult StorageSession::checkpointPuzzleJob(PuzzleCheckpoint checkpo
         }
         const auto loaded = loadReview(*d.reviewId);
         const auto* run = std::get_if<StoredReview>(&loaded);
+        auto sourcePolicy = d.definition.policy.review;
+        if (run) {
+            // Puzzle policy v1 stores only the review settings used for chess evaluation.
+            sourcePolicy.openings = run->settings.configuration.values.openings;
+        }
         if (!run || run->summary.status != review::JobStatus::Complete ||
             run->summary.gameId != d.gameId || run->settings.fingerprint != d.fingerprint ||
             run->settings.engineProfileId != d.engineProfileId ||
-            run->settings.configuration.values != d.definition.policy.review) {
+            run->settings.configuration.values != sourcePolicy) {
             return error(ReviewErrorCode::InvalidInput);
         }
         const auto explored = readSource(*this, *run, *d.sourcePosition);
@@ -488,6 +491,17 @@ SavePuzzleJobResult StorageSession::checkpointPuzzleJob(PuzzleCheckpoint checkpo
         if (!missed && !missedMate(*e)) {
             return error(ReviewErrorCode::InvalidInput);
         }
+        const auto goal =
+            puzzles::candidateGoal(e->before, e->deep, e->verified, d.definition.policy);
+        // A stronger search can change the lesson or find that the played move works.
+        // Checkpoint the verification either way, but publish only a confirmed lesson.
+        if (!goal) {
+            return error(ReviewErrorCode::InvalidInput);
+        }
+        confirmedLesson =
+            *goal == d.solution.goal && !d.solution.nodes.empty() &&
+            std::ranges::none_of(d.solution.nodes.front().moves,
+                                 [&](const auto& edge) { return edge.move == e->deep.playedMove; });
     }
     Transaction tx(database_, usable_);
     if (!tx.begin()) {
@@ -561,7 +575,7 @@ SavePuzzleJobResult StorageSession::checkpointPuzzleJob(PuzzleCheckpoint checkpo
         }
         const bool suppressed = q.value(0).toBool();
         q.finish();
-        if (!suppressed || d.definition.origin == puzzles::Origin::Manual) {
+        if (confirmedLesson && (!suppressed || d.definition.origin == puzzles::Origin::Manual)) {
             if (!exec(q,
                       puzzleProjection +
                           QStringLiteral("WHERE position_key=? AND position_identity=?"),
@@ -681,7 +695,7 @@ SavePuzzleJobResult StorageSession::checkpointPuzzleJob(PuzzleCheckpoint checkpo
             return error();
         }
     }
-    if (!tx.commit()) {
+    if (!findAvailablePuzzles(database_, job) || !tx.commit()) {
         return error();
     }
     return job;

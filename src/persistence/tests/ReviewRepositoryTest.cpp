@@ -2773,7 +2773,7 @@ class ReviewRepositoryTest final : public QObject {
                  ReviewErrorCode::Unavailable);
         db.value.initialize(path);
         QTRY_COMPARE(ready.size(), 1);
-        QCOMPARE(ready[0][0].toInt(), 12);
+        QCOMPARE(ready[0][0].toInt(), migrations().back().version);
         std::vector<QUuid> ids;
         for (int i = 0; i < 17; ++i) {
             ids.push_back(QUuid::createUuid());

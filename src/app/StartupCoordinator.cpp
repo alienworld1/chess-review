@@ -16,6 +16,8 @@ StartupCoordinator::StartupCoordinator(diagnostics::Logger& logger, QObject* par
     });
 }
 void StartupCoordinator::connectServices() {
+    connect(&puzzles_, &PuzzleController::puzzleRemoved, &puzzleGeneration_,
+            &PuzzleGenerationController::puzzleRemoved);
     connect(&puzzleGeneration_, &PuzzleGenerationController::closed, this, [this] {
         puzzleGenerationClosed_ = true;
         closeSupervisorWhenProducersFinish();

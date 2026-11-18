@@ -13,6 +13,8 @@
 #include <QStackedWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <algorithm>
+#include <optional>
 
 namespace chess_review::ui {
 namespace {
@@ -84,7 +86,7 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
         }
     };
     connect(open_, &QPushButton::clicked, this, openSelected);
-    connect(library_, &QTableWidget::cellDoubleClicked, this,
+    connect(library_, &QTableWidget::cellActivated, this,
             [openSelected](int, int) { openSelected(); });
     remove_ = new QPushButton(tr("Delete…"), libraryPage);
     connect(remove_, &QPushButton::clicked, this, &PuzzlesPage::removeSelected);
@@ -139,6 +141,8 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
     auto* lineControls = new QHBoxLayout;
     stepBack_ = new QPushButton(tr("Previous move"), lesson);
     stepNext_ = new QPushButton(tr("Next move"), lesson);
+    stepBack_->setObjectName(QStringLiteral("previousPuzzleMove"));
+    stepNext_->setObjectName(QStringLiteral("nextPuzzleMove"));
     connect(stepBack_, &QPushButton::clicked, &controller_, &app::PuzzleController::previous);
     connect(stepNext_, &QPushButton::clicked, &controller_, &app::PuzzleController::next);
     lineControls->addWidget(stepBack_);
@@ -190,12 +194,13 @@ void PuzzlesPage::refresh() {
                           ? (state.loading ? tr("Opening puzzle…") : state.message)
                           : state.error);
     hints_->setText(state.hints.join(QLatin1Char('\n')));
+    hints_->setVisible(!state.hints.empty());
     retry_->setEnabled(state.selected.has_value() && !state.loading && !state.grading);
-    hint_->setEnabled(controller_.board().interactive);
+    hint_->setEnabled(controller_.canHint());
     reveal_->setEnabled(state.selected.has_value() && !state.loading && !state.revealed);
     analyze_->setEnabled(state.selected.has_value() && !state.loading);
-    stepBack_->setEnabled(!state.loading);
-    stepNext_->setEnabled(!state.loading);
+    stepBack_->setEnabled(controller_.canStepBack());
+    stepNext_->setEnabled(controller_.canStepForward());
     stepBack_->setVisible(state.revealed);
     stepNext_->setVisible(state.revealed);
     std::vector<persistence::PuzzleId> ids;
@@ -203,6 +208,10 @@ void PuzzlesPage::refresh() {
         ids.push_back(row.id);
     }
     if (ids != rows_) {
+        const auto row = library_->currentRow();
+        const auto previousId = row >= 0 && static_cast<std::size_t>(row) < rows_.size()
+                                    ? std::optional{rows_[static_cast<std::size_t>(row)]}
+                                    : std::nullopt;
         const QSignalBlocker block(library_);
         rows_ = std::move(ids);
         library_->setRowCount(static_cast<int>(rows_.size()));
@@ -220,7 +229,9 @@ void PuzzlesPage::refresh() {
                 new QTableWidgetItem(item.createdAt.toLocalTime().toString(Qt::ISODate)));
         }
         if (!rows_.empty()) {
-            library_->selectRow(0);
+            const auto selected = previousId ? std::ranges::find(rows_, *previousId) : rows_.end();
+            library_->selectRow(
+                selected == rows_.end() ? 0 : static_cast<int>(selected - rows_.begin()));
         }
     }
     open_->setEnabled(library_->currentRow() >= 0);

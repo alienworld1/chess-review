@@ -73,6 +73,13 @@ class StorageSession final {
                                         std::optional<ReviewId> reviewId);
 
   private:
+    struct RankedPuzzlePosition {
+        int index;
+        int priority;
+        double loss;
+    };
+    std::variant<std::vector<RankedPuzzlePosition>, ReviewError>
+    rankPuzzlePositions(ReviewId id, std::int64_t revision);
     LoadReviewResult loadReviewRecord(ReviewId id, StoredGame* owningGame);
     bool refreshGameValidationCache();
     std::optional<OpeningResolution> recognizeOpening(const pgn::PgnDocument& document,

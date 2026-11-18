@@ -2,6 +2,7 @@
 #include "EngineTestSupport.h"
 #include "PuzzleTestSupport.h"
 #include "TestEnvironment.h"
+#include "app/ReviewExplorationController.h"
 #include "app/StartupCoordinator.h"
 #include "engine/AnalysisCache.h"
 #include "engine/private/SearchProtocol.h"
@@ -329,7 +330,7 @@ class PuzzleTest final : public QObject {
         const auto gameId = std::get<persistence::Inserted>(added).id;
         f.startup.reviewGame().selectGame(gameId);
         QTRY_VERIFY(!f.startup.reviewGame().state().busy);
-        f.startup.reviewGame().start(chess::Color::White, 1, review::Quality::Standard);
+        f.startup.reviewGame().start(chess::Color::White, 1, review::Quality::Standard, false);
         QTRY_VERIFY_WITH_TIMEOUT(!f.startup.reviewGame().taskState().active, 10000);
         QVERIFY2(f.startup.reviewGame().taskState().run.has_value(),
                  qPrintable(f.startup.reviewGame().taskState().error));
@@ -344,6 +345,111 @@ class PuzzleTest final : public QObject {
         puzzles.attemptMove(std::get<chess::Move>(puzzle_test::root().parseUci("d1d8")),
                             puzzles.board().revision);
         QTRY_VERIFY(puzzles.state().complete);
+    }
+    void reviewBlunderRetryAndSavedPuzzleWorkOffline_data() {
+        QTest::addColumn<bool>("playedMoveNowBest");
+        QTest::newRow("offline journey") << false;
+        QTest::newRow("fresh searches contradict the lesson") << true;
+    }
+    void reviewBlunderRetryAndSavedPuzzleWorkOffline() {
+        QFETCH(bool, playedMoveNowBest);
+        Fixture f;
+        QVERIFY(f.readyForWork());
+        QVERIFY(f.validate());
+        auto& settings = f.startup.engines();
+        const auto fingerprint = std::get<engine::EngineFingerprint>(
+            engine::quickReviewFingerprint(settings.state().profiles.front().engine));
+        const auto document = puzzle_test::normalPuzzle(fingerprint);
+        const auto root = chess::Position::initial();
+        auto after = root;
+        QVERIFY(std::holds_alternative<std::monostate>(
+            after.play(std::get<chess::Move>(root.parseUci("d2d4")))));
+        QJsonArray searches;
+        for (const auto nodes : {1ULL, 5ULL, 10ULL}) {
+            const int width = nodes == 1 ? 1 : 3;
+            auto before = puzzle_test::normalPass(document, root, nodes, "e2e4", 600);
+            auto played = puzzle_test::normalPass(document, after, nodes, "e7e5", 850);
+            for (auto* raw : {&before, &played}) {
+                auto& snapshot = raw->evidence;
+                snapshot.lines.resize(static_cast<std::size_t>(width));
+                snapshot.requestedMultiPv = snapshot.effectiveMultiPv = snapshot.achievedWidth =
+                    width;
+                auto provenance = *snapshot.provenance;
+                provenance.fingerprint = engine::reviewWidthFingerprint(fingerprint, width);
+                snapshot.provenance =
+                    std::make_shared<const engine::AnalysisProvenance>(std::move(provenance));
+                f.normalSearch(searches, *raw);
+            }
+        }
+        if (playedMoveNowBest) {
+            auto position = root;
+            for (const auto* uci : {"d2d4", "e7e5", "g1f3"}) {
+                for (const auto nodes : {20ULL, 40ULL}) {
+                    f.normalSearch(searches,
+                                   puzzle_test::normalPass(
+                                       document, position, nodes, uci,
+                                       position.sideToMove() == chess::Color::White ? 600 : 400));
+                }
+                QVERIFY(std::holds_alternative<std::monostate>(
+                    position.play(std::get<chess::Move>(position.parseUci(uci)))));
+            }
+        } else {
+            for (const auto& pass : document.passes) {
+                f.normalSearch(searches, pass);
+            }
+        }
+        QVERIFY(f.connectRuntime(searches));
+        pgn::PgnReader reader("1. d4 *");
+        const auto game =
+            std::make_shared<const pgn::PgnDocument>(std::get<pgn::PgnDocument>(reader.next()));
+        auto& database = f.startup.gameRepository();
+        QSignalSpy inserted(&database, &persistence::Database::gameInserted);
+        database.insertGame(QUuid::createUuid(), game);
+        QVERIFY(inserted.wait());
+        const auto added = qvariant_cast<persistence::InsertGameResult>(inserted.front()[1]);
+        QVERIFY(std::holds_alternative<persistence::Inserted>(added));
+        auto& review = f.startup.reviewGame();
+        review.selectGame(std::get<persistence::Inserted>(added).id);
+        QTRY_VERIFY(!review.state().busy);
+        review.start(chess::Color::White, 1, review::Quality::Standard, false);
+        QTRY_VERIFY_WITH_TIMEOUT(!review.taskState().active, 10000);
+        const auto& generation = f.startup.puzzleGeneration().state();
+        QTRY_VERIFY_WITH_TIMEOUT(!generation.active && generation.job &&
+                                     generation.job->status ==
+                                         persistence::PuzzleJobStatus::Complete,
+                                 10000);
+        QVERIFY2(generation.error.isEmpty(), qPrintable(generation.error));
+        QCOMPARE(generation.lastSaved.has_value(), !playedMoveNowBest);
+        if (playedMoveNowBest) {
+            QVERIFY(f.startup.puzzles().state().library.puzzles.empty());
+            return;
+        }
+        settings.disconnectEngine();
+        QTRY_COMPARE(settings.state().runtime.phase, engine::RuntimePhase::Disconnected);
+
+        auto& exploration = review.exploration();
+        review.selectMoment(1);
+        QTRY_VERIFY(exploration.state().canRetry);
+        const auto* blunder = review.navigation().move(1);
+        QVERIFY(blunder && blunder->classification);
+        QCOMPARE(blunder->classification->label, review::Classification::Blunder);
+        const auto best = std::get<chess::Move>(root.parseUci("e2e4"));
+        exploration.tryAgain();
+        QTRY_VERIFY(exploration.board().interactive);
+        exploration.attemptMove(best, exploration.board().revision);
+        QTRY_COMPARE(exploration.state().mode, app::ExplorationMode::Success);
+
+        f.navigation.navigate(app::Destination::Puzzles);
+        auto& puzzles = f.startup.puzzles();
+        QTRY_COMPARE(puzzles.state().library.puzzles.size(), std::size_t{1});
+        auto* solve = f.window.findChild<QPushButton*>(QStringLiteral("openPuzzle"));
+        QVERIFY(solve && solve->isEnabled());
+        solve->click();
+        QTRY_VERIFY(puzzles.board().interactive);
+        QCOMPARE(puzzles.state().message, QStringLiteral("Find the move that holds the position."));
+        puzzles.attemptMove(best, puzzles.board().revision);
+        QTRY_VERIFY(puzzles.state().complete);
+        QCOMPARE(settings.state().runtime.phase, engine::RuntimePhase::Disconnected);
     }
     void init() {
         QTest::failOnWarning(QRegularExpression(
@@ -362,6 +468,7 @@ class PuzzleTest final : public QObject {
         puzzles.hint();
         puzzles.hint();
         QCOMPARE(puzzles.state().hints.size(), 3);
+        QVERIFY(!f.window.findChild<QPushButton*>(QStringLiteral("hintPuzzle"))->isEnabled());
         const auto stored = puzzle_test::complete();
         const auto knownWeak = stored.passes.front().evidence.lines[1].pv.front();
         puzzles.attemptMove(knownWeak, puzzles.board().revision);
@@ -389,10 +496,14 @@ class PuzzleTest final : public QObject {
         puzzles.reveal();
         QTRY_VERIFY(puzzles.state().revealed && !puzzles.state().loading &&
                     puzzles.board().status != app::BoardStatus::Checkmate);
-        puzzles.next();
+        auto* previous = f.window.findChild<QPushButton*>(QStringLiteral("previousPuzzleMove"));
+        auto* next = f.window.findChild<QPushButton*>(QStringLiteral("nextPuzzleMove"));
+        QVERIFY(previous && next && !previous->isEnabled() && next->isEnabled());
+        next->click();
         QTRY_COMPARE(puzzles.board().status, app::BoardStatus::Checkmate);
         QVERIFY(!puzzles.state().complete);
-        puzzles.previous();
+        QVERIFY(previous->isEnabled() && !next->isEnabled());
+        previous->click();
         QTRY_VERIFY(puzzles.board().status != app::BoardStatus::Checkmate);
         puzzles.openAnalysis();
         QTRY_VERIFY(!puzzles.linkedAnalysis().busy() && puzzles.linkedAnalysis().position());
@@ -413,6 +524,54 @@ class PuzzleTest final : public QObject {
         puzzles.remove(id);
         QTRY_VERIFY(!puzzles.state().selected);
         QTRY_VERIFY(puzzles.state().library.puzzles.empty());
+    }
+    void reopeningAfterLeavingDuringReconstruction() {
+        Fixture f;
+        QVERIFY(f.readyForWork());
+        const auto id = f.saveOffline();
+        QVERIFY(id > 0);
+        auto& puzzles = f.startup.puzzles();
+        bool left = false;
+        connect(&puzzles, &app::PuzzleController::changed, this, [&] {
+            if (!left && puzzles.state().loading && puzzles.state().selected == id) {
+                left = true;
+                puzzles.showLibrary();
+            }
+        });
+        puzzles.open(id);
+        QTRY_VERIFY(left);
+        QVERIFY(!puzzles.state().solving);
+        puzzles.open(id);
+        QTRY_VERIFY(puzzles.board().interactive);
+        QCOMPARE(puzzles.state().selected, id);
+    }
+    void locallyProvenMateOutsideSavedSolutionsWorksOffline() {
+        Fixture f;
+        QVERIFY(f.readyForWork());
+        const auto root = std::get<chess::Position>(
+            chess::Position::fromFen("6k1/5ppp/8/8/8/8/5PPP/R2R2K1 w - - 0 1"));
+        const auto alternate = std::get<chess::Move>(root.parseUci("a1a8"));
+        auto d = puzzle_test::seed();
+        d.definition.position = root.context();
+        for (const auto nodes : {20ULL, 40ULL}) {
+            auto pass = puzzle_test::normalPass(d, root, nodes, "d1d8", 900, alternate);
+            pass.evidence.lines.front().score =
+                engine::AnalysisScore{engine::ScoreType::Mate, 1, engine::ScoreBound::Exact};
+            pass.evidence.lines.front().wdl = engine::Wdl{1000, 0, 0};
+            d.passes.push_back(std::move(pass));
+        }
+        const auto verified = std::get<puzzles::Verification>(persistence::verifyPuzzle(d));
+        QCOMPARE(verified.outcome, puzzles::Outcome::Accepted);
+        d.solution = verified.solution;
+        QCOMPARE(d.solution.nodes.front().moves.size(), std::size_t{1});
+        const auto id = f.saveOffline(d);
+        QVERIFY(id > 0);
+        auto& puzzles = f.startup.puzzles();
+        puzzles.open(id);
+        QTRY_VERIFY(puzzles.board().interactive);
+        puzzles.attemptMove(alternate, puzzles.board().revision);
+        QTRY_VERIFY(puzzles.state().complete);
+        QCOMPARE(puzzles.board().status, app::BoardStatus::Checkmate);
     }
     void manualGenerationVerifiesAndPersistsBeforeCompleting() {
         Fixture f;

@@ -38,6 +38,9 @@ class PuzzleController final : public QObject {
     ~PuzzleController() override;
     const PuzzleState& state() const { return state_; }
     const BoardViewState& board() const { return displayed_; }
+    bool canHint() const;
+    bool canStepBack() const;
+    bool canStepForward() const;
     const ReviewPuzzleState& reviewSummary() const { return reviewSummary_; }
     void inspectReview(review::ReviewId id, bool refresh = false);
     void setReady(bool ready);
@@ -65,6 +68,7 @@ class PuzzleController final : public QObject {
     void moveFeedback(chess_review::chess::Move move, bool success);
     void analysisRequested();
     void reviewSummaryChanged();
+    void puzzleRemoved(persistence::PuzzleId id);
     void closed();
 
   private:

@@ -1952,6 +1952,70 @@ std::optional<ReviewError> validateRefinement(QSqlDatabase& db, const StoredRevi
     return {};
 }
 } // namespace
+std::variant<std::vector<StorageSession::RankedPuzzlePosition>, ReviewError>
+StorageSession::rankPuzzlePositions(ReviewId id, std::int64_t revision) {
+    ReviewTransaction tx(database_, usable_);
+    if (!usable_ || !tx.begin()) {
+        return storage();
+    }
+    StoredGame game;
+    const auto loaded = loadReviewRecord(id, &game);
+    const auto* run = std::get_if<StoredReview>(&loaded);
+    if (!run) {
+        return std::get<ReviewError>(loaded);
+    }
+    if (run->summary.revision != revision) {
+        return error(ReviewErrorCode::Conflict);
+    }
+    auto restored = gamePosition(game, 0);
+    auto* position = std::get_if<chess::Position>(&restored);
+    if (!position) {
+        return invalid();
+    }
+    std::vector<RankedPuzzlePosition> ranked;
+    review::ScanAssessment preceding;
+    for (int offset = 0; offset < run->summary.totalPositions - 1; offset += 50) {
+        const auto pageResult =
+            readMovePage(database_, *run, game, *position, offset, 50, &preceding);
+        const auto* page = std::get_if<ReviewMovePage>(&pageResult);
+        if (!page) {
+            return std::get<ReviewError>(pageResult);
+        }
+        for (const auto& move : page->moves) {
+            preceding = move.quickScan;
+            if (move.mover != run->summary.selectedSide) {
+                continue;
+            }
+            const bool loss =
+                move.stability.stable && move.classification && move.classification->label &&
+                review::isError(*move.classification->label) && move.classification->loss &&
+                *move.classification->loss >=
+                    run->settings.configuration.values.classification.inaccuracyLoss;
+            const bool mate = move.rawBefore.score &&
+                              move.rawBefore.score->kind == review::ScoreKind::Mate &&
+                              move.rawBefore.score->value > 0;
+            if (loss || mate) {
+                ranked.push_back(
+                    {move.positionIndex, mate ? 0 : (!move.tacticalFacts.empty() ? 1 : 2),
+                     move.classification && move.classification->loss ? *move.classification->loss
+                                                                      : 0});
+            }
+        }
+    }
+    std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) {
+        if (a.priority != b.priority) {
+            return a.priority < b.priority;
+        }
+        if (a.loss != b.loss) {
+            return a.loss > b.loss;
+        }
+        return a.index < b.index;
+    });
+    if (!tx.commit()) {
+        return storage();
+    }
+    return ranked;
+}
 LoadReviewMovesResult StorageSession::deriveReviewMoves(ReviewId id, std::int64_t expectedRevision,
                                                         int offset, int limit) {
     if (!usable_) {

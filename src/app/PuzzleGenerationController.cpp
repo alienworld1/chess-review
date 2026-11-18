@@ -145,6 +145,7 @@ void PuzzleGenerationController::savePosition(std::shared_ptr<const chess::Posit
                 d.definition.position = position->context();
                 d.definition.origin = puzzles::Origin::Manual;
                 d.definition.policy.review = config->values;
+                d.definition.policy.review.openings = {};
                 config::applyPuzzleLimits(d.definition.policy, config->puzzles);
                 d.definition.policy.baselineNodes =
                     config->values.budgets[static_cast<std::size_t>(config->values.quality)]
@@ -191,10 +192,13 @@ void PuzzleGenerationController::loaded(const persistence::SavePuzzleJobResult& 
                          ? job_->candidates[static_cast<std::size_t>(job_->current)].passes.size()
                          : 0;
     state_.job = summary(*job_);
-    if (!job_->accepted.empty()) {
-        state_.lastSaved = job_->accepted.back();
-    }
+    state_.lastSaved =
+        job_->available.empty() ? std::nullopt : std::optional{job_->available.back()};
+    const auto loadedJob = job_;
     emit libraryChanged();
+    if (job_ != loadedJob || !pending_.isNull() || workerBusy_ || !search_.isNull()) {
+        return;
+    }
     if (job_->status == persistence::PuzzleJobStatus::Complete) {
         const bool manual = !job_->candidates.empty() &&
                             job_->candidates.front().definition.origin == puzzles::Origin::Manual;
@@ -205,7 +209,9 @@ void PuzzleGenerationController::loaded(const persistence::SavePuzzleJobResult& 
                         return pass.evidence.effectiveMultiPv < pass.evidence.requestedMultiPv;
                     });
             });
-        if (manual && job_->reusedExisting) {
+        if (job_->available.empty() && !job_->accepted.empty()) {
+            state_.message = tr("Previously saved puzzles from this job have been deleted.");
+        } else if (manual && job_->reusedExisting) {
             state_.message = tr("This position is already saved. Open the existing puzzle.");
         } else if (job_->accepted.empty() && narrow) {
             state_.message = tr("No puzzle saved: the engine did not report enough alternatives. "
@@ -217,7 +223,7 @@ void PuzzleGenerationController::loaded(const persistence::SavePuzzleJobResult& 
                        : tr("No suitable puzzles found. Only clear, verified lessons are saved.");
         } else {
             state_.message = tr("%n puzzle(s) available in your library.", nullptr,
-                                static_cast<int>(job_->accepted.size()));
+                                static_cast<int>(job_->available.size()));
         }
         idle();
         return;
@@ -380,6 +386,15 @@ void PuzzleGenerationController::cancel() {
     }
     advance();
     emit changed();
+}
+void PuzzleGenerationController::puzzleRemoved(persistence::PuzzleId id) {
+    if (state_.lastSaved == id) {
+        state_.lastSaved.reset();
+        if (!state_.active) {
+            state_.message.clear();
+        }
+        emit changed();
+    }
 }
 void PuzzleGenerationController::idle() {
     state_.active = false;

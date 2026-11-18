@@ -49,6 +49,7 @@ struct PuzzleJob {
     int current = 0;
     std::vector<PuzzleId> accepted;
     bool reusedExisting = false;
+    std::vector<PuzzleId> available; // Read projection of still-present accepted puzzles.
 };
 struct PuzzleCheckpoint {
     PuzzleJob job;

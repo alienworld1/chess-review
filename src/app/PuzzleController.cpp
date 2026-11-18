@@ -22,6 +22,9 @@ PuzzleController::PuzzleController(persistence::Database& database,
     connect(&reads_, &QTimer::timeout, this, [this] { refresh(offset_, filter_); });
     connect(&board_, &AnalysisController::changed, this, &PuzzleController::publish);
     connect(&board_, &AnalysisController::moveAccepted, this, [this](chess::Move) {
+        if (!moving_ || closing_) {
+            return;
+        }
         moving_ = false;
         reply_.start();
         publish();
@@ -177,14 +180,18 @@ PuzzleController::PuzzleController(persistence::Database& database,
                 }
                 if (const auto* e = std::get_if<persistence::ReviewError>(&result)) {
                     state_.error = e->message;
-                } else if (state_.selected == deleting_) {
-                    ++epoch_;
-                    cancelAlternative();
-                    reply_.stop();
-                    state_.solving = false;
-                    state_.selected.reset();
-                    puzzle_.reset();
-                    root_.reset();
+                } else {
+                    const auto deleted = deleting_;
+                    if (state_.selected == deleted) {
+                        ++epoch_;
+                        cancelAlternative();
+                        reply_.stop();
+                        state_.solving = false;
+                        state_.selected.reset();
+                        puzzle_.reset();
+                        root_.reset();
+                    }
+                    emit puzzleRemoved(deleted);
                 }
                 refresh(offset_, filter_);
                 inspectReview(reviewSummary_.id, true);
@@ -270,8 +277,11 @@ void PuzzleController::open(persistence::PuzzleId id) {
     ++epoch_;
     cancelAlternative();
     reply_.stop();
+    moving_ = false;
     state_.loading = true;
     state_.solving = true;
+    state_.revealed = false;
+    state_.complete = false;
     state_.error.clear();
     state_.hints.clear();
     state_.selected.reset();
@@ -307,6 +317,14 @@ void PuzzleController::showLibrary() {
     }
     ++epoch_;
     cancelAlternative();
+    if (state_.loading) {
+        opening_ = 0;
+        pendingReset_ = false;
+        state_.loading = false;
+        state_.selected.reset();
+        puzzle_.reset();
+        root_.reset();
+    }
     state_.solving = false;
     refresh(offset_, filter_);
     publish();
@@ -330,7 +348,20 @@ void PuzzleController::resetBoard() {
     state_.loading = true;
     state_.hints.clear();
     state_.error.clear();
-    state_.message = tr("Find the best continuation.");
+    switch (puzzle_->document.solution.goal) {
+    case puzzles::Goal::Mate:
+        state_.message = tr("Find checkmate.");
+        break;
+    case puzzles::Goal::Material:
+        state_.message = tr("Find a way to win material.");
+        break;
+    case puzzles::Goal::Defence:
+        state_.message = tr("Find the move that holds the position.");
+        break;
+    case puzzles::Goal::Practice:
+        state_.message = tr("Find the best continuation.");
+        break;
+    }
     workerBusy_ = true;
     const auto puzzle = puzzle_;
     worker_.start(QRunnable::create([this, puzzle, epoch] {
@@ -354,9 +385,13 @@ void PuzzleController::resetBoard() {
                 }
                 root_ = position;
                 if (root_) {
+                    const bool black = puzzle_->document.definition.position.board.sideToMove ==
+                                       chess::Color::Black;
                     board_.openPosition(root_);
-                    board_.setOrientation(puzzle_->document.definition.position.board.sideToMove ==
-                                          chess::Color::Black);
+                    if (closing_ || epoch != epoch_) {
+                        return;
+                    }
+                    board_.setOrientation(black);
                 } else {
                     state_.loading = false;
                     state_.error = tr("The saved position could not be reconstructed.");
@@ -374,15 +409,15 @@ void PuzzleController::retry() {
     hintLevels_.assign(puzzle_->document.solution.nodes.size(), 0);
     resetBoard();
 }
+bool PuzzleController::canHint() const {
+    return displayed_.interactive && puzzle_ && node_ < hintLevels_.size() &&
+           hintLevels_[node_] < 3 && !puzzle_->document.solution.nodes[node_].moves.empty();
+}
 void PuzzleController::hint() {
-    if (!puzzle_ || state_.revealed || state_.complete || state_.loading || state_.grading ||
-        board_.busy() || node_ >= puzzle_->document.solution.nodes.size()) {
+    if (!canHint()) {
         return;
     }
     const auto& n = puzzle_->document.solution.nodes[node_];
-    if (n.moves.empty() || node_ >= hintLevels_.size() || hintLevels_[node_] >= 3) {
-        return;
-    }
     const auto move = n.moves.front().move;
     const auto piece = displayed_.pieces[static_cast<std::size_t>(move.from.index())];
     if (!piece) {
@@ -416,14 +451,20 @@ void PuzzleController::reveal() {
     state_.message = tr("Solution revealed. Step through the verified line, or retry.");
     publish();
 }
+bool PuzzleController::canStepBack() const {
+    return state_.revealed && !state_.loading && !board_.busy() && puzzle_ &&
+           board_.currentNode().value > puzzle_->document.definition.position.moves.size();
+}
+bool PuzzleController::canStepForward() const {
+    return state_.revealed && !state_.loading && !board_.busy() && !board_.continuations().empty();
+}
 void PuzzleController::previous() {
-    if (state_.revealed && root_ && puzzle_ &&
-        board_.currentNode().value > puzzle_->document.definition.position.moves.size()) {
+    if (canStepBack()) {
         board_.previous();
     }
 }
 void PuzzleController::next() {
-    if (state_.revealed) {
+    if (canStepForward()) {
         board_.next();
     }
 }
@@ -439,11 +480,12 @@ void PuzzleController::play(puzzles::Edge edge, bool solverMove) {
         return;
     }
     const auto move = edge.move;
+    const auto epoch = epoch_;
     node_ = edge.next;
     state_.hints.clear();
     moving_ = true;
     board_.attemptMove(move, board_.board().revision);
-    if (solverMove) {
+    if (solverMove && epoch == epoch_ && !closing_) {
         emit moveFeedback(move, true);
     }
     publish();
@@ -555,8 +597,9 @@ void PuzzleController::evaluateAlternative() {
                     const auto edge = puzzle_->document.solution.nodes[node_].moves.back();
                     alternative_.reset();
                     state_.grading = false;
-                    play(edge, true);
                     state_.message = tr("Strong alternative. Continue the idea.");
+                    play(edge, true);
+                    return;
                 } else if (result.grade == puzzles::AlternativeGrade::TryAgain) {
                     const auto move = attempt->move;
                     alternative_.reset();
@@ -624,7 +667,8 @@ void PuzzleController::scheduleAlternative(puzzles::SearchNeed need) {
     }));
 }
 void PuzzleController::openAnalysis() {
-    if (!puzzle_ || board_.busy() || !board_.position() || closing_) {
+    if (!state_.solving || state_.loading || !puzzle_ || board_.busy() || !board_.position() ||
+        closing_) {
         return;
     }
     analysisOrigin_ = board_.position();
@@ -649,7 +693,7 @@ void PuzzleController::publish() {
         board_.canNavigate()) {
         state_.loading = false;
     }
-    displayed_ = board_.board();
+    displayed_ = state_.loading || !root_ ? BoardViewState{} : board_.board();
     displayed_.interactive = displayed_.interactive && state_.solving && !state_.loading &&
                              state_.error.isEmpty() && !state_.revealed && !state_.complete &&
                              !state_.grading && !moving_ && !reply_.isActive() && !workerBusy_ &&

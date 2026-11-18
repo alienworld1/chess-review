@@ -145,7 +145,9 @@ transaction rollback, deletion suppression, and interrupted checkpoints.
 `puzzle_ui` uses the deterministic UCI engine for finite manual verification,
 cancellation/resume, weak evidence, offline solving, and independently verified
 unlisted alternatives. It also exercises hints, reveal, linked Analysis, and
-asynchronous shutdown. These fixtures do not calibrate human puzzle difficulty.
+asynchronous shutdown. The milestone journey reviews a synthetic blunder, then
+disconnects the engine before retrying the position and solving the generated
+puzzle from the library. These fixtures do not calibrate human puzzle difficulty.
 
 For an optional native-widget capture, invoke the Qt executable with an absolute
 output directory:

@@ -55,6 +55,7 @@ class PuzzleRepositoryTest final : public QObject {
         auto values = review::Configuration{};
         values.refinement.multiPv = 4;
         values.budgets[1] = {1, 5, 10};
+        values.openings = {false, 10, 4};
         request.configuration = *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
             config::validate(values));
         const auto completedReview = [&]() {
@@ -214,6 +215,11 @@ class PuzzleRepositoryTest final : public QObject {
                  std::size_t{0});
         const auto restored = f.accept(f.start());
         QCOMPARE(restored.accepted.size(), std::size_t{1});
+        QVERIFY(restored.accepted.front() > id);
+        QVERIFY(std::holds_alternative<ReviewError>(f.session.loadPuzzle(id)));
+        const auto previous = std::get<PuzzleJob>(f.session.loadPuzzleJob(saved.id));
+        QCOMPARE(previous.accepted, saved.accepted);
+        QVERIFY(previous.available.empty());
         QCOMPARE(std::get<PuzzlePage>(f.session.listPuzzles(0, 50, {})).puzzles.size(),
                  std::size_t{1});
     }
@@ -243,6 +249,33 @@ class PuzzleRepositoryTest final : public QObject {
         const auto result = std::get<puzzles::Verification>(verifyPuzzle(reopened.candidates[0]));
         QVERIFY(result.next);
         QCOMPARE(result.next->nodes, std::uint64_t{40});
+    }
+    void upgradePreservesPuzzleAndJobIdentity() {
+        QTemporaryDir dir;
+        const auto path = dir.filePath(QStringLiteral("upgrade.sqlite3"));
+        PuzzleId id = 0;
+        PuzzleJobId jobId = 0;
+        const auto document = puzzle_test::complete();
+        {
+            StorageSession storage;
+            const auto legacy = std::span(migrations()).first(12);
+            QVERIFY(!storage.initialize(path, legacy, [](const QString&) {}));
+            PuzzleJob job;
+            job.candidates = {puzzle_test::seed()};
+            job = std::get<PuzzleJob>(storage.checkpointPuzzleJob({job, {}}));
+            job.current = 1;
+            job.candidates[0] = document;
+            job = std::get<PuzzleJob>(storage.checkpointPuzzleJob({job, document}));
+            QCOMPARE(job.accepted.size(), std::size_t{1});
+            id = job.accepted.front();
+            jobId = job.id;
+        }
+        StorageSession storage;
+        QVERIFY(!storage.initialize(path, migrations(), [](const QString&) {}));
+        const auto saved = std::get<std::shared_ptr<const StoredPuzzle>>(storage.loadPuzzle(id));
+        QCOMPARE(saved->document.solution, document.solution);
+        const auto job = std::get<PuzzleJob>(storage.loadPuzzleJob(jobId));
+        QCOMPARE(job.available, std::vector{id});
     }
     void failedPuzzleInsertRollsBackCheckpoint() {
         Fixture f;

@@ -38,6 +38,7 @@ class PuzzleGenerationController final : public QObject {
                       std::optional<persistence::GameId> gameId = std::nullopt);
     void resume(persistence::PuzzleJobId id);
     void cancel();
+    void puzzleRemoved(persistence::PuzzleId id);
     void close();
   signals:
     void changed();

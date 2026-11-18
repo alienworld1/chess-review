@@ -113,6 +113,7 @@ target_link_libraries(chess_review_analysis PUBLIC chess_review_engine chess_rev
 chess_review_apply_options(chess_review_analysis)
 
 add_library(chess_review_persistence STATIC
+    src/persistence/migrations/013_puzzle_ids.cpp
     src/persistence/migrations/012_openings.cpp
     src/persistence/private/PuzzleCodec.cpp
     src/persistence/private/PuzzleRepository.cpp
