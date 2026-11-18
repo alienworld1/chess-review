@@ -62,6 +62,14 @@ class StorageSession final {
     InsertGameResult insertGame(const pgn::PgnDocument& document, const GameSource& source);
     LoadGameResult loadGame(GameId id);
     ListGamesResult listGames(std::int64_t offset, int limit);
+    ListPuzzlesResult listPuzzles(std::int64_t offset, int limit, std::optional<ReviewId> reviewId);
+    LoadPuzzleResult loadPuzzle(PuzzleId id);
+    DeletePuzzleResult deletePuzzle(PuzzleId id);
+    SavePuzzleJobResult preparePuzzleJob(ReviewId id, config::PuzzleConfiguration settings = {});
+    SavePuzzleJobResult checkpointPuzzleJob(PuzzleCheckpoint checkpoint);
+    SavePuzzleJobResult loadPuzzleJob(PuzzleJobId id);
+    ListPuzzleJobsResult listPuzzleJobs(std::int64_t offset, int limit,
+                                        std::optional<ReviewId> reviewId);
 
   private:
     LoadReviewResult loadReviewRecord(ReviewId id, StoredGame* owningGame);

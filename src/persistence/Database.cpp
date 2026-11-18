@@ -866,6 +866,207 @@ void Database::close() {
     QMetaObject::invokeMethod(impl_->worker, &detail::StorageWorker::close, Qt::QueuedConnection);
 }
 
+void Database::listPuzzles(RequestId request, std::int64_t offset, int limit,
+                           std::optional<ReviewId> reviewId) {
+    if (auto error = acceptRequest()) {
+        const ReviewError failure{
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable),
+            QStringLiteral("Puzzle storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, request, failure] { emit puzzlesListed(request, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, offset, limit, reviewId]() mutable {
+            const auto result = impl_->worker->executeReview<ListPuzzlesResult>(
+                [&](detail::StorageSession& session) {
+                    return session.listPuzzles(offset, limit, reviewId);
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit puzzlesListed(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::loadPuzzle(RequestId request, PuzzleId id) {
+    if (auto error = acceptRequest()) {
+        const ReviewError failure{
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable),
+            QStringLiteral("Puzzle storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, request, failure] { emit puzzleLoaded(request, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, id]() mutable {
+            const auto result = impl_->worker->executeReview<LoadPuzzleResult>(
+                [&](detail::StorageSession& session) { return session.loadPuzzle(id); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit puzzleLoaded(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::deletePuzzle(RequestId request, PuzzleId id) {
+    if (auto error = acceptRequest()) {
+        const ReviewError failure{
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable),
+            QStringLiteral("Puzzle storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, request, failure] { emit puzzleDeleted(request, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, id]() mutable {
+            const auto result = impl_->worker->executeReview<DeletePuzzleResult>(
+                [&](detail::StorageSession& session) { return session.deletePuzzle(id); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit puzzleDeleted(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::preparePuzzleJob(RequestId request, ReviewId id,
+                                config::PuzzleConfiguration settings) {
+    if (auto error = acceptRequest()) {
+        const ReviewError failure{
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable),
+            QStringLiteral("Puzzle storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, request, failure] { emit puzzleJobPrepared(request, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, id, settings]() mutable {
+            const auto result = impl_->worker->executeReview<SavePuzzleJobResult>(
+                [&](detail::StorageSession& session) {
+                    return session.preparePuzzleJob(id, settings);
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit puzzleJobPrepared(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::loadPuzzleJob(RequestId request, PuzzleJobId id) {
+    if (auto error = acceptRequest()) {
+        const ReviewError failure{
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable),
+            QStringLiteral("Puzzle storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, request, failure] { emit puzzleJobLoaded(request, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, id]() mutable {
+            const auto result = impl_->worker->executeReview<SavePuzzleJobResult>(
+                [&](detail::StorageSession& session) { return session.loadPuzzleJob(id); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit puzzleJobLoaded(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::listPuzzleJobs(RequestId request, std::int64_t offset, int limit,
+                              std::optional<ReviewId> reviewId) {
+    if (auto error = acceptRequest()) {
+        const ReviewError failure{
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable),
+            QStringLiteral("Puzzle storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, request, failure] { emit puzzleJobsListed(request, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, offset, limit, reviewId]() mutable {
+            const auto result = impl_->worker->executeReview<ListPuzzleJobsResult>(
+                [&](detail::StorageSession& session) {
+                    return session.listPuzzleJobs(offset, limit, reviewId);
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit puzzleJobsListed(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::checkpointPuzzleJob(RequestId request, PuzzleCheckpoint checkpoint) {
+    if (auto error = acceptRequest()) {
+        const ReviewError failure{
+            error->code == GameErrorCode::Busy
+                ? ReviewErrorCode::Busy
+                : (error->code == GameErrorCode::Closing ? ReviewErrorCode::Closing
+                                                         : ReviewErrorCode::Unavailable),
+            QStringLiteral("Puzzle storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(
+            0, this, [this, request, failure] { emit puzzleJobCheckpointed(request, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, checkpoint = std::move(checkpoint)]() mutable {
+            const auto result = impl_->worker->executeReview<SavePuzzleJobResult>(
+                [&](detail::StorageSession& session) {
+                    return session.checkpointPuzzleJob(std::move(checkpoint));
+                });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit puzzleJobCheckpointed(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
 void Database::finishClose() {
     // finished() precedes native thread-local cleanup. Poll a nonblocking join so closed()
     // means the thread is fully gone, without waiting on it in the GUI thread.

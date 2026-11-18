@@ -178,7 +178,18 @@ std::optional<DatabaseError> StorageSession::initialize(const QString& path,
     // Custom historical registries are used only by persistence migration fixtures.
     if (registry.back().version >= 6) {
         progress(QStringLiteral("Recovering unfinished reviews…"));
-        return interruptReviewJobs(canonicalPath);
+        if (auto error = interruptReviewJobs(canonicalPath)) {
+            return error;
+        }
+    }
+    if (registry.back().version >= 11) {
+        QSqlQuery query(database_);
+        if (!query.exec(QStringLiteral(
+                "UPDATE puzzle_jobs SET status=2, revision=revision+1 WHERE status=0"))) {
+            return failure(DatabaseErrorCode::Configuration,
+                           QStringLiteral("Recover puzzle generation"),
+                           QStringLiteral("Puzzle generation recovery failed."));
+        }
     }
     return std::nullopt;
 }

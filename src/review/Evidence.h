@@ -106,6 +106,11 @@ struct MoveEvidence {
 };
 [[nodiscard]] EvaluationResult convertEvaluation(const RawEvaluation& raw, chess::Color perspective,
                                                  const ConversionConfig& config = {});
+// Validates the complete candidate set against its original history. MateClaim means
+// valid mate-valued evidence needing a mate-aware interpreter, not a numeric score.
+[[nodiscard]] std::optional<EvidenceIssue>
+validatePositionEvidence(const chess::Position& position, const PositionEvidence& evidence,
+                         const ConversionConfig& config = {});
 // Local proof only: no PGN result, repetition, move-count or material adjudication.
 [[nodiscard]] PositionEvidence terminalEvidence(const chess::Position& position);
 // The supplied board is a replay witness; complete history equality gates its use.

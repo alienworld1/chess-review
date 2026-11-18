@@ -212,3 +212,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         REVIEW_ACCEPTANCE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/review"
         REVIEW_ACCEPTANCE_SCREEN="${CMAKE_CURRENT_SOURCE_DIR}/support/desktop-screen.json")
 endif()
+
+add_executable(puzzle_tests unit/PuzzleTest.cpp)
+set_target_properties(puzzle_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+target_link_libraries(puzzle_tests PRIVATE chess_review_puzzles Catch2::Catch2WithMain)
+chess_review_apply_options(puzzle_tests)
+catch_discover_tests(puzzle_tests ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 30)

@@ -63,7 +63,9 @@ games to snapshot/identity v2 while preserving IDs, original PGN, source metadat
 and import times. Damaged records are copied unchanged and remain individually
 unreadable. Migration 004 adds engine profiles. Migration 005 adds the disposable analysis cache. Migration 006 adds durable review
 runs, jobs, evidence, current-position references, paired interpretations and transition
-history. Puzzle tables remain future work.
+history. Migration 011 adds durable puzzles, generation jobs, and deletion
+suppressions. Puzzle verification evidence is owned by the puzzle document rather
+than by the disposable raw-analysis cache.
 
 To add a migration:
 
@@ -562,3 +564,29 @@ missing prerequisite mappings before returning move pages or exploration data.
 Repeated local terminal proofs remain valid. Quick evidence is frozen once its
 scan is complete, and position checkpoints cannot write an earlier stage after a
 later stage has begun. Status-only cancellation/failure writes remain available.
+
+## Puzzle persistence (schema 011)
+
+The asynchronous puzzle repository shares Database admission, storage-thread
+ownership, and accepted-write drainage. `puzzles` stores checksummed format-1
+position/policy/solution documents with owned raw verification attempts. Decoding
+reconstructs legal history, qualifies effective engine identities and requested
+and achieved strength, and rederives the solution before exposing it. Source
+review/game references are optional metadata; cache eviction cannot remove puzzle
+solutions.
+
+`puzzle_jobs` owns bounded candidate snapshots and completed-search checkpoints.
+An accepted puzzle and the advanced generation checkpoint commit together.
+Revision checks reject stale writes. Startup changes running jobs to interrupted
+without launching an engine; resumption requires an explicit action. Completed
+jobs make repeated generation requests idempotent. Automatic persistence enforces
+the two-generated-puzzles-per-game cap and skips overlapping source lesson spans.
+Manual saves may exceed this automatic cap.
+
+`puzzle_suppressions` remembers deleted history-bearing identities. SHA-256 indexes
+lookup candidates, while complete decoded position identity gates duplication and
+suppression. Manual saving restores a suppressed position. Puzzle document limits
+are 16 MiB, generation-job documents 32 MiB, and candidate lists six entries.
+Serialized data remains versioned and bounded; unsupported or damaged records fail
+closed. Checksums detect corruption, not deliberate rewriting by the database
+owner. No learner history is stored.

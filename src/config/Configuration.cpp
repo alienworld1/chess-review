@@ -1,12 +1,15 @@
 #include "config/Configuration.h"
+#include "puzzles/Puzzle.h"
 #include "review/Intelligence.h"
 #include <QCryptographicHash>
 #include <QDataStream>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QSaveFile>
 #include <QScopeGuard>
 #include <algorithm>
+#include <sstream>
 #ifdef Q_OS_UNIX
 #include <cerrno>
 #include <fcntl.h>
@@ -19,6 +22,7 @@
 #include <cmath>
 #include <initializer_list>
 #include <toml++/toml.hpp>
+#include <tuple>
 #include <utility>
 
 namespace chess_review::config {
@@ -159,8 +163,39 @@ Result parse(std::string_view contents) {
     Reader reader;
     reader.keys(root, "configuration",
                 {"version", "analysis", "classification", "review", "expectedScore", "refinement",
-                 "special", "ui"});
+                 "special", "ui", "puzzles"});
     UiConfiguration ui;
+    PuzzleConfiguration puzzles;
+    if (const auto* table = reader.table(root, "puzzles", "puzzles")) {
+        reader.keys(*table, "puzzles",
+                    {"automatic", "maximumPlayerMoves", "maximumPositions", "maximumBudgetUnits",
+                     "minimumMaterialGain", "immediateMaterialGain"});
+        if (const auto* node = table->get("automatic")) {
+            if (const auto* value = node->as_boolean()) {
+                puzzles.automatic = value->get();
+            } else {
+                reader.error("puzzles.automatic", "Expected a boolean", node);
+            }
+        }
+        for (const auto& [key, target, maximum] :
+             {std::tuple{"maximumPlayerMoves", &puzzles.maximumPlayerMoves, 4},
+              std::tuple{"maximumPositions", &puzzles.maximumPositions, 64},
+              std::tuple{"maximumBudgetUnits", &puzzles.maximumBudgetUnits, 64},
+              std::tuple{"minimumMaterialGain", &puzzles.minimumMaterialGain, 9},
+              std::tuple{"immediateMaterialGain", &puzzles.immediateMaterialGain, 9}}) {
+            auto number = static_cast<std::uint64_t>(*target);
+            reader.integer(*table, key, std::string("puzzles.") + key, number,
+                           static_cast<std::uint64_t>(maximum));
+            *target = static_cast<int>(number);
+        }
+        if (puzzles.maximumBudgetUnits < 6 || puzzles.minimumMaterialGain < 2 ||
+            puzzles.immediateMaterialGain < puzzles.minimumMaterialGain) {
+            reader.error("puzzles",
+                         "Puzzle budgets require at least six units; material thresholds must "
+                         "satisfy 2 <= minimum <= immediate",
+                         table);
+        }
+    }
     if (const auto* table = reader.table(root, "ui", "ui")) {
         reader.keys(*table, "ui", {"verbose"});
         if (const auto* node = table->get("verbose")) {
@@ -275,6 +310,7 @@ Result parse(std::string_view contents) {
     if (const auto* valid = std::get_if<std::shared_ptr<const ValidatedConfiguration>>(&result)) {
         auto withUi = **valid;
         withUi.ui = ui;
+        withUi.puzzles = puzzles;
         return std::make_shared<const ValidatedConfiguration>(std::move(withUi));
     }
     return result;
@@ -313,9 +349,10 @@ Result validate(const review::Configuration& values, std::uint32_t classificatio
         ValidatedConfiguration{values,
                                identities(values, classificationIdentityVersion),
                                classificationIdentityVersion,
+                               {},
                                {}});
 }
-Result load(const QString& filename) {
+static Result loadWithBytes(const QString& filename, QByteArray* original) {
     if (!QDir::isAbsolutePath(filename) || filename.contains(QChar::Null) ||
         !filename.isValidUtf16()) {
         return failure("Configuration location is unavailable");
@@ -390,6 +427,65 @@ Result load(const QString& filename) {
     if (file.error() != QFileDevice::NoError) {
         return failure("Configuration could not be read");
     }
+    if (original) {
+        *original = bytes;
+    }
     return parse(std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())));
+}
+void applyPuzzleLimits(puzzles::Policy& policy, const PuzzleConfiguration& c) {
+    policy.maximumPlayerMoves = c.maximumPlayerMoves;
+    policy.maximumPositions = c.maximumPositions;
+    policy.maximumBudgetUnits = c.maximumBudgetUnits;
+    policy.minimumMaterialGain = c.minimumMaterialGain;
+    policy.immediateMaterialGain = c.immediateMaterialGain;
+}
+Result load(const QString& filename) { return loadWithBytes(filename, nullptr); }
+Result setAutomaticPuzzles(const QString& filename, bool enabled) {
+    QByteArray original;
+    auto result = loadWithBytes(filename, &original);
+    if (std::holds_alternative<Diagnostics>(result)) {
+        return result;
+    }
+    auto parsed = toml::parse(
+        std::string_view(original.constData(), static_cast<std::size_t>(original.size())));
+    if (!parsed) {
+        return failure("Configuration could not be parsed for updating");
+    }
+    auto& root = parsed.table();
+    if (!root.contains("puzzles")) {
+        root.insert("puzzles", toml::table{});
+    }
+    auto* table = root.get_as<toml::table>("puzzles");
+    if (!table) {
+        return failure("Puzzle configuration is not a table");
+    }
+    table->insert_or_assign("automatic", enabled);
+    std::ostringstream formatted;
+    formatted << root;
+    const auto text = formatted.str();
+    const auto validated = parse(text);
+    if (std::holds_alternative<Diagnostics>(validated)) {
+        return validated;
+    }
+    QByteArray current;
+    const auto reread = loadWithBytes(filename, &current);
+    if (std::holds_alternative<Diagnostics>(reread) || original != current) {
+        return failure("Configuration changed during the update; try again");
+    }
+    if (!QDir().mkpath(QFileInfo(filename).absolutePath()) || QFileInfo(filename).isSymLink()) {
+        return failure("Configuration location is unavailable");
+    }
+    QSaveFile file(filename);
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly)) {
+        return failure("Configuration could not be opened for saving");
+    }
+    if (!file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
+        file.write(text.data(), static_cast<qint64>(text.size())) !=
+            static_cast<qint64>(text.size()) ||
+        !file.commit()) {
+        return failure("Configuration could not be saved atomically");
+    }
+    return validated;
 }
 } // namespace chess_review::config

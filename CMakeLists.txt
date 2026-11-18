@@ -37,6 +37,12 @@ target_include_directories(chess_review_review PUBLIC src)
 target_link_libraries(chess_review_review PUBLIC chess_review_chess)
 chess_review_apply_options(chess_review_review)
 
+add_library(chess_review_puzzles STATIC src/puzzles/Puzzle.cpp)
+set_target_properties(chess_review_puzzles PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+target_include_directories(chess_review_puzzles PUBLIC src)
+target_link_libraries(chess_review_puzzles PUBLIC chess_review_review)
+chess_review_apply_options(chess_review_puzzles)
+
 add_library(chess_review_config STATIC src/config/Configuration.cpp)
 set_target_properties(chess_review_config PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 target_include_directories(chess_review_config PUBLIC src)
@@ -67,6 +73,9 @@ target_link_libraries(chess_review_analysis PUBLIC chess_review_engine chess_rev
 chess_review_apply_options(chess_review_analysis)
 
 add_library(chess_review_persistence STATIC
+    src/persistence/private/PuzzleCodec.cpp
+    src/persistence/private/PuzzleRepository.cpp
+    src/persistence/migrations/011_puzzles.cpp
     src/persistence/private/ReviewCodec.cpp
     src/persistence/private/ReviewRepository.cpp
     src/persistence/migrations/006_reviews.cpp
@@ -93,7 +102,7 @@ add_library(chess_review_persistence STATIC
     src/persistence/migrations/001_initial.cpp
 )
 target_include_directories(chess_review_persistence PUBLIC src)
-target_link_libraries(chess_review_persistence PUBLIC Qt6::Core chess_review_pgn chess_review_engine chess_review_config chess_review_analysis PRIVATE Qt6::Sql chess_review_diagnostics)
+target_link_libraries(chess_review_persistence PUBLIC Qt6::Core chess_review_pgn chess_review_engine chess_review_config chess_review_analysis chess_review_puzzles PRIVATE Qt6::Sql chess_review_diagnostics)
 chess_review_apply_options(chess_review_persistence)
 
 add_library(chess_review_app_paths STATIC src/app/AppPaths.cpp)

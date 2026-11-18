@@ -74,6 +74,46 @@ engine::AnalysisResult analysisResult() {
 class ReviewConfigurationTest final : public QObject {
     Q_OBJECT
   private slots:
+    void puzzleSettingsDoNotChangeReviewIdentities() {
+        const auto defaults = valid({});
+        const auto custom =
+            valid("[puzzles]\nautomatic=false\nmaximumPlayerMoves=2\nminimumMaterialGain=3\n");
+        QVERIFY(defaults && custom);
+        QVERIFY(defaults->puzzles.automatic);
+        QVERIFY(!custom->puzzles.automatic);
+        QCOMPARE(custom->puzzles.maximumPlayerMoves, 2);
+        QCOMPARE(custom->values, defaults->values);
+        QCOMPARE(custom->identities.analysis, defaults->identities.analysis);
+        QCOMPARE(custom->identities.classification, defaults->identities.classification);
+        for (const auto* input :
+             {"[puzzles]\nautomatic=1", "[puzzles]\nmaximumPlayerMoves=5",
+              "[puzzles]\nmaximumBudgetUnits=5", "[puzzles]\nminimumMaterialGain=1",
+              "[puzzles]\nminimumMaterialGain=6\nimmediateMaterialGain=5"}) {
+            QVERIFY(std::holds_alternative<config::Diagnostics>(config::parse(input)));
+        }
+    }
+    void puzzleAutomaticSettingIsWrittenAtomically() {
+        QTemporaryDir dir;
+        const auto filename = dir.filePath(QStringLiteral("settings.toml"));
+        write(filename,
+              "[review]\nquality='fast'\n[ui]\nverbose=true\n[puzzles]\nmaximumPlayerMoves=2\n");
+        const auto result = config::setAutomaticPuzzles(filename, false);
+        QVERIFY(
+            std::holds_alternative<std::shared_ptr<const config::ValidatedConfiguration>>(result));
+        const auto saved =
+            std::get<std::shared_ptr<const config::ValidatedConfiguration>>(config::load(filename));
+        QVERIFY(!saved->puzzles.automatic);
+        QVERIFY(saved->ui.verbose);
+        QCOMPARE(saved->values.quality, review::Quality::Fast);
+        QCOMPARE(saved->puzzles.maximumPlayerMoves, 2);
+        const auto linked = dir.filePath(QStringLiteral("link.toml"));
+        QVERIFY(QFile::link(filename, linked));
+        QVERIFY(
+            std::holds_alternative<config::Diagnostics>(config::setAutomaticPuzzles(linked, true)));
+        const auto unchanged =
+            std::get<std::shared_ptr<const config::ValidatedConfiguration>>(config::load(filename));
+        QVERIFY(!unchanged->puzzles.automatic);
+    }
     void specialRulesAreValidatedAndDoNotAffectEngineOrAccuracyInputs() {
         const auto defaults = valid({});
         const auto custom =

@@ -3,6 +3,7 @@
 #include "persistence/AnalysisRepository.h"
 #include "persistence/EngineRepository.h"
 #include "persistence/GameRepository.h"
+#include "persistence/PuzzleRepository.h"
 #include "persistence/ReviewRepository.h"
 #include <QMetaType>
 #include <QObject>
@@ -64,6 +65,16 @@ class Database final : public QObject {
                     GameSource source = {});
     void loadGame(RequestId request, GameId id);
     void listGames(RequestId request, std::int64_t offset = 0, int limit = 50);
+    void listPuzzles(RequestId request, std::int64_t offset = 0, int limit = 50,
+                     std::optional<ReviewId> reviewId = std::nullopt);
+    void loadPuzzle(RequestId request, PuzzleId id);
+    void deletePuzzle(RequestId request, PuzzleId id);
+    void preparePuzzleJob(RequestId request, ReviewId id,
+                          config::PuzzleConfiguration settings = {});
+    void checkpointPuzzleJob(RequestId request, PuzzleCheckpoint checkpoint);
+    void loadPuzzleJob(RequestId request, PuzzleJobId id);
+    void listPuzzleJobs(RequestId request, std::int64_t offset = 0, int limit = 50,
+                        std::optional<ReviewId> reviewId = std::nullopt);
 
     void loadReviewContext(RequestId requestId, GameId gameId, ReviewId reviewId);
     void saveReviewContext(RequestId requestId, ReviewContext context);
@@ -87,6 +98,13 @@ class Database final : public QObject {
                                int limit = 50);
 
   signals:
+    void puzzlesListed(RequestId request, const ListPuzzlesResult& result);
+    void puzzleLoaded(RequestId request, const LoadPuzzleResult& result);
+    void puzzleDeleted(RequestId request, const DeletePuzzleResult& result);
+    void puzzleJobPrepared(RequestId request, const SavePuzzleJobResult& result);
+    void puzzleJobCheckpointed(RequestId request, const SavePuzzleJobResult& result);
+    void puzzleJobLoaded(RequestId request, const SavePuzzleJobResult& result);
+    void puzzleJobsListed(RequestId request, const ListPuzzleJobsResult& result);
     void reviewContextLoaded(RequestId requestId, const LoadReviewContextResult& result);
     void reviewContextSaved(RequestId requestId, const SaveReviewContextResult& result);
     void libraryReviewsListed(RequestId requestId, const ListLibraryReviewsResult& result);

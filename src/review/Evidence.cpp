@@ -128,6 +128,18 @@ EvaluationResult positionEvaluation(const PositionEvidence& evidence, chess::Col
     return convertEvaluation(evidence.evaluation, perspective, config);
 }
 } // namespace
+std::optional<EvidenceIssue> validatePositionEvidence(const chess::Position& position,
+                                                      const PositionEvidence& evidence,
+                                                      const ConversionConfig& config) {
+    if (position.context() != evidence.position || evidence.modelVersion != evidenceModelVersion ||
+        evidence.engineIdentity.empty() || evidence.attemptIdentity.empty() ||
+        evidence.sessionIdentity.empty() ||
+        evidence.evaluation.perspective != position.sideToMove() ||
+        evidence.terminal != terminalOutcome(position) || !validConfig(config)) {
+        return EvidenceIssue::Invalid;
+    }
+    return candidateIssue(position, evidence, config);
+}
 EvaluationResult convertEvaluation(const RawEvaluation& raw, chess::Color perspective,
                                    const ConversionConfig& config) {
     const auto fail = [](EvidenceIssue issue) { return EvaluationResult{std::nullopt, issue}; };

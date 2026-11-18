@@ -1871,6 +1871,9 @@ class ReviewRepositoryTest final : public QObject {
             complete.status = JobStatus::Complete;
             QVERIFY(std::holds_alternative<ReviewSummary>(session.checkpointReview(complete)));
             QSqlQuery q(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+            QVERIFY(q.exec(QStringLiteral("DROP TABLE puzzles")));
+            QVERIFY(q.exec(QStringLiteral("DROP TABLE puzzle_jobs")));
+            QVERIFY(q.exec(QStringLiteral("DROP TABLE puzzle_suppressions")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE review_classifications")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE review_escalation_positions")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE review_stage_positions")));
@@ -2579,7 +2582,7 @@ class ReviewRepositoryTest final : public QObject {
                  ReviewErrorCode::Unavailable);
         db.value.initialize(path);
         QTRY_COMPARE(ready.size(), 1);
-        QCOMPARE(ready[0][0].toInt(), 10);
+        QCOMPARE(ready[0][0].toInt(), 11);
         std::vector<QUuid> ids;
         for (int i = 0; i < 17; ++i) {
             ids.push_back(QUuid::createUuid());

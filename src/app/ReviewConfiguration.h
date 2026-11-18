@@ -12,6 +12,13 @@ class ReviewConfiguration final : public QObject {
     ~ReviewConfiguration() override;
     void load(const std::optional<QString>& filename);
     void close();
+    void setAutomaticPuzzles(bool enabled);
+    bool savingPuzzles() const { return savingPuzzles_; }
+    bool canSavePuzzles() const {
+        return filename_.has_value() && state_ == ConfigurationState::Valid && !savingPuzzles_ &&
+               !closing_;
+    }
+    const QString& puzzleSettingsError() const { return puzzleSettingsError_; }
     ConfigurationState state() const { return state_; }
     std::shared_ptr<const config::ValidatedConfiguration> snapshot() const {
         return configuration_;
@@ -28,6 +35,9 @@ class ReviewConfiguration final : public QObject {
     ConfigurationState state_ = ConfigurationState::Loading;
     std::shared_ptr<const config::ValidatedConfiguration> configuration_;
     config::Diagnostics diagnostics_;
+    std::optional<QString> filename_;
+    QString puzzleSettingsError_;
+    bool savingPuzzles_ = false;
     bool started_ = false;
     bool closing_ = false;
 };

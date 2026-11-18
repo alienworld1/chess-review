@@ -16,6 +16,7 @@ void ReviewConfiguration::load(const std::optional<QString>& filename) {
         return;
     }
     started_ = true;
+    filename_ = filename;
     pool_.start([this, filename] {
         config::Result result;
         try {
@@ -42,6 +43,40 @@ void ReviewConfiguration::load(const std::optional<QString>& filename) {
             },
             Qt::QueuedConnection);
     });
+}
+void ReviewConfiguration::setAutomaticPuzzles(bool enabled) {
+    if (!canSavePuzzles()) {
+        return;
+    }
+    savingPuzzles_ = true;
+    puzzleSettingsError_.clear();
+    const auto filename = *filename_;
+    pool_.start([this, filename, enabled] {
+        config::Result result;
+        try {
+            result = config::setAutomaticPuzzles(filename, enabled);
+        } catch (...) {
+            result = config::Diagnostics{{"puzzles", "Puzzle settings could not be saved", {}, {}}};
+        }
+        QMetaObject::invokeMethod(
+            this,
+            [this, result = std::move(result)] {
+                savingPuzzles_ = false;
+                if (const auto* valid =
+                        std::get_if<std::shared_ptr<const config::ValidatedConfiguration>>(
+                            &result)) {
+                    configuration_ = *valid;
+                } else {
+                    puzzleSettingsError_ = tr("Puzzle settings could not be saved. Check the "
+                                              "configuration file and try again.");
+                }
+                if (!closing_) {
+                    emit changed();
+                }
+            },
+            Qt::QueuedConnection);
+    });
+    emit changed();
 }
 void ReviewConfiguration::close() {
     Q_ASSERT(QThread::currentThread() == thread());

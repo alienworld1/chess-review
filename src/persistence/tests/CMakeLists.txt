@@ -21,3 +21,7 @@ endif()
 chess_review_add_qt_test(review_repository_tests review_repository INTEGRATION
     SOURCES ReviewRepositoryTest.cpp
     LIBRARIES chess_review_persistence Qt6::Sql)
+
+chess_review_add_qt_test(puzzle_repository_tests puzzle_repository INTEGRATION
+    SOURCES PuzzleRepositoryTest.cpp
+    LIBRARIES chess_review_persistence Qt6::Sql)
