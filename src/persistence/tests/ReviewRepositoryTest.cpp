@@ -44,8 +44,9 @@ CreateReview seed(StorageSession& session,
     request.engineProfileId =
         std::get<RegisteredEngine>(session.registerEngine(engineValue())).profile.id;
     request.fingerprint = engine::makeFingerprint(engineValue(), {});
-    request.configuration =
-        *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(config::parse({}));
+    // This fixture primarily exercises engine-based labels using synthetic evidence.
+    request.configuration = *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
+        config::parse("[openings]\nenabled=false\n"));
     return request;
 }
 chess::Position positionAt(const pgn::PgnDocument& doc, int ply) {
@@ -171,6 +172,81 @@ class ReviewRepositoryTest final : public QObject {
         QVERIFY(stored.settings.opening);
         QVERIFY(!stored.settings.opening->match);
         QCOMPARE(stored.settings.opening->datasetVersion, originalVersion);
+    }
+
+    void bookClassificationAndBoundaryReopenFromCapturedSettings() {
+        Fixture f;
+        const auto doc = document("1. d4 d5 2. c4 *");
+        auto request = seed(f.session, doc);
+        auto values = request.configuration.values;
+        values.openings.enabled = true;
+        values.openings.maximumPly = 2;
+        request.configuration = *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
+            config::validate(values));
+        auto run = std::get<ReviewSummary>(f.session.createReview(request));
+        QVERIFY(run.opening);
+        QCOMPARE(run.opening->bookPlies, 2);
+        for (int index = 0; index < 4; ++index) {
+            auto analysis = resultAt(request, *doc, index);
+            if (index == 3) {
+                analysis.evidence.lines.front().score->value = 75;
+            }
+            run = std::get<ReviewSummary>(
+                f.session.checkpointReview(checkpoint(run.id, run.revision, index, analysis)));
+        }
+        ReviewCheckpoint finish;
+        finish.reviewId = run.id;
+        finish.expectedRevision = run.revision;
+        finish.status = JobStatus::Complete;
+        run = std::get<ReviewSummary>(f.session.checkpointReview(finish));
+
+        // Reopen a snapshot from an older dataset after the live game cache is discarded.
+        auto previous = std::get<StoredReview>(f.session.loadReview(run.id)).settings;
+        QCOMPARE(previous.configuration.values.openings, values.openings);
+        previous.opening->datasetVersion = QStringLiteral("2025.12.01");
+        QSqlQuery query(QSqlDatabase::database(QSqlDatabase::connectionNames().front()));
+        QVERIFY(query.prepare(QStringLiteral("UPDATE reviews SET settings=? WHERE id=?")));
+        query.addBindValue(encodeReviewSettings(previous));
+        query.addBindValue(static_cast<qlonglong>(run.id));
+        QVERIFY(query.exec());
+        QVERIFY(f.exec(QStringLiteral("DELETE FROM game_openings")));
+
+        const auto page =
+            std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50));
+        QCOMPARE(page.moves.size(), 3);
+        for (int index = 0; index < 2; ++index) {
+            const auto& move = page.moves[static_cast<std::size_t>(index)];
+            QVERIFY(move.classification);
+            QCOMPARE(move.classification->label, review::Classification::Book);
+            QCOMPARE(move.classification->ruleId, "opening.book.v1");
+            QVERIFY(move.classification->stable);
+            QVERIFY(!move.bookDeparture);
+            QCOMPARE(move.accuracyLoss, 0.0);
+        }
+        QVERIFY(page.moves.back().bookDeparture);
+        QCOMPARE(page.moves.back().classification->label, review::Classification::Inaccuracy);
+        const auto overview =
+            std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        QCOMPARE(overview.keyPositions, (std::vector<int>{3}));
+        for (const auto& side : overview.sides) {
+            QCOMPARE(side.counts[static_cast<std::size_t>(review::Classification::Book)], 1);
+        }
+
+        // The released snapshot format had opening identity but no book evidence.
+        previous.opening->bookPlies.reset();
+        previous.configuration = request.configuration;
+        previous.configuration.values.openings = {};
+        query.bindValue(0, encodeReviewSettings(previous));
+        QVERIFY(query.exec());
+        const auto legacy =
+            std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50));
+        QVERIFY(legacy.moves.front().classification->label != review::Classification::Book);
+        QVERIFY(!legacy.moves.back().bookDeparture);
+        const auto legacyOverview =
+            std::get<ReviewOverview>(f.session.loadReviewOverview(run.id, run.revision));
+        QVERIFY(legacyOverview.keyPositions.empty());
+        QCOMPARE(overview.sides[0].accuracy, legacyOverview.sides[0].accuracy);
+        QCOMPARE(overview.sides[1].accuracy, legacyOverview.sides[1].accuracy);
     }
 
     void intelligenceSettingsAreCapturedAndVersioned() {

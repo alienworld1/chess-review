@@ -11,6 +11,7 @@
 #include <QAccessible>
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
 #include <QDialog>
@@ -790,7 +791,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     quality_->setCurrentIndex(static_cast<int>(controller.defaultQuality()));
     form->addRow(tr("&Player:"), side_);
     setupLayout->addLayout(form);
-    auto* engineOptions = new QPushButton(tr("Engine and review quality"), setup_);
+    auto* engineOptions = new QPushButton(tr("Engine and review options"), setup_);
     engineOptions->setObjectName(QStringLiteral("reviewEngineOptions"));
     engineOptions->setCheckable(true);
     setupLayout->addWidget(engineOptions, 0, Qt::AlignLeft);
@@ -799,6 +800,11 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     advancedForm->setContentsMargins(0, 0, 0, 0);
     advancedForm->addRow(tr("&Engine:"), engine_);
     advancedForm->addRow(tr("&Quality:"), quality_);
+    bookEnabled_ = new QCheckBox(tr("Classify opening-book moves"), advanced);
+    bookEnabled_->setObjectName(QStringLiteral("reviewBookEnabled"));
+    connect(bookEnabled_, &QCheckBox::clicked, this,
+            [this](bool enabled) { bookOverride_ = enabled; });
+    advancedForm->addRow(bookEnabled_);
     setupLayout->addWidget(advanced);
     advanced->hide();
     connect(engineOptions, &QPushButton::toggled, advanced, &QWidget::setVisible);
@@ -1007,10 +1013,10 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     });
     connect(start_, &QPushButton::clicked, this, [this] {
         if (side_->currentIndex() > 0) {
-            controller_.start(side_->currentIndex() == 1 ? chess::Color::White
-                                                         : chess::Color::Black,
-                              engine_->currentData().toLongLong(),
-                              static_cast<review::Quality>(quality_->currentIndex()));
+            controller_.start(
+                side_->currentIndex() == 1 ? chess::Color::White : chess::Color::Black,
+                engine_->currentData().toLongLong(),
+                static_cast<review::Quality>(quality_->currentIndex()), bookOverride_);
         }
     });
     connect(cancel_, &QPushButton::clicked, &controller_, &app::ReviewGameController::cancel);
@@ -1050,7 +1056,22 @@ void ReviewPage::updateSummary() {
     summaryPanel_->setVisible(hasRun && !guiding_);
     lesson_->setVisible(hasRun && guiding_);
     startGuided_->setEnabled(hasRun && controller_.navigation().ready());
-    updateOpeningLabel(*summaryOpening_, openingText(state.opening));
+    auto opening = openingText(state.opening);
+    if (state.run && state.opening && state.opening->bookPlies) {
+        const int plies = *state.opening->bookPlies;
+        if (!opening.isEmpty()) {
+            opening += u'\n';
+        }
+        if (plies == 0) {
+            opening += tr("No opening-book moves found.");
+        } else if (plies == state.run->totalPositions - 1) {
+            opening += tr("In book through the final move.");
+        } else {
+            opening += plies % 2 != 0 ? tr("Book ends after White’s move %1.").arg((plies + 1) / 2)
+                                      : tr("Book ends after Black’s move %1.").arg(plies / 2);
+        }
+    }
+    updateOpeningLabel(*summaryOpening_, opening);
     classificationCounts_->setRowCount(0);
     if (!state.run || !state.overview) {
         accuracyValue_->setText(QStringLiteral("—"));
@@ -1208,7 +1229,9 @@ void ReviewPage::update() {
         gameId_ = state.gameId;
         side_->setCurrentIndex(0);
         quality_->setCurrentIndex(static_cast<int>(controller_.defaultQuality()));
+        bookOverride_.reset();
     }
+    bookEnabled_->setChecked(bookOverride_.value_or(controller_.defaultBookEnabled()));
     const auto& engines = controller_.engines();
     if (profilesRevision_ != engines.profilesRevision ||
         (engine_->count() == 0 && !engines.profiles.empty())) {
@@ -1242,6 +1265,7 @@ void ReviewPage::update() {
     side_->setEnabled(!state.busy);
     engine_->setEnabled(!state.busy);
     quality_->setEnabled(!state.busy);
+    bookEnabled_->setEnabled(!state.busy);
     cancel_->setEnabled(state.active && !state.cancelling);
     QString status =
         state.phase == app::ReviewPhase::Finished ? state.message : phaseText(state.phase);

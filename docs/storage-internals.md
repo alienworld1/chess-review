@@ -609,6 +609,11 @@ fill one game at a time as the library pages are viewed or games are opened.
 
 New reviews capture the opening result and dataset version in their immutable
 settings. An explicit null opening records no match or unavailable recognition,
-with the dataset version present when a lookup completed. Legacy settings keep
-their existing encoding and the UI uses the game-level opening when opening
-those reviews.
+with the dataset version present when a lookup completed. The `openingBook`
+settings array records the policy version, enabled setting, depth and reference
+cutoffs, and the verified mainline prefix length when available. Book labels
+derive from that prefix and usable move assessments. The review can be reopened
+without consulting the current opening dataset or game cache. Raw evidence,
+engine-based classification documents, and accuracy retain their own identities.
+Legacy settings keep their existing encoding and use any opening identity
+available to them.

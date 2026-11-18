@@ -53,7 +53,8 @@ enum class RefinementReason {
     OpportunityReply,
     TacticalOpportunity,
     SacrificeSignal,
-    UniqueResource
+    UniqueResource,
+    OpeningDeparture
 };
 struct ScanAssessment {
     std::optional<std::uint32_t> pipelineVersion;
@@ -85,6 +86,7 @@ struct ScanCoverage {
 // Apply only to adjacent original-mainline assessments, never refined presentation values.
 void addOpportunityContext(ScanAssessment& current, const ScanAssessment& previous,
                            int previousPosition);
+void addOpeningDeparture(ScanAssessment& scan, bool firstOutsideBook);
 struct RefinementCandidate {
     int positionIndex;
     ScanAssessment scan;
@@ -171,6 +173,7 @@ struct SummaryMoveFacts {
     std::optional<double> loss;
     RawEvaluation before;
     RawEvaluation after;
+    bool bookDeparture = false;
 };
 struct KeyMomentSelection {
     bool selected = false;

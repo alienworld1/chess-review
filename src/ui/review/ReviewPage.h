@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 class QComboBox;
+class QCheckBox;
 class QLabel;
 class QPushButton;
 class QProgressBar;
@@ -131,6 +132,8 @@ class ReviewPage final : public QWidget {
     QComboBox* side_;
     QComboBox* engine_;
     QComboBox* quality_;
+    QCheckBox* bookEnabled_;
+    std::optional<bool> bookOverride_;
     QLabel* game_;
     QLabel* headerOpening_;
     QLabel* status_;

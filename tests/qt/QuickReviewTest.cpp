@@ -13,6 +13,7 @@
 #include "ui/shell/MainWindow.h"
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDialog>
@@ -382,7 +383,8 @@ class Fixture {
         engine::ValidatorTestAccess::configureSearch(supervisor(), 10000, 1500);
     }
     void run(review::Quality quality = review::Quality::Standard) {
-        startup.reviewGame().start(chess::Color::Black, profileId, quality);
+        // Most synthetic move scenarios exercise engine labels.
+        startup.reviewGame().start(chess::Color::Black, profileId, quality, false);
     }
     bool done(int timeout = 12000) {
         return QTest::qWaitFor(
@@ -439,10 +441,21 @@ class QuickReviewTest final : public QObject {
         QCOMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnected);
     }
     void summaryFirstAndVerboseInspectorPreserveTheReview() {
-        Fixture f;
+        QTemporaryFile configuration;
+        QVERIFY(configuration.open());
+        const QByteArray settings("[openings]\nenabled=false\n");
+        QCOMPARE(configuration.write(settings), settings.size());
+        configuration.close();
+        Fixture f({}, configuration.fileName());
         QVERIFY(f.seed());
         f.script();
-        f.run();
+        auto* book = f.window.findChild<QCheckBox*>(QStringLiteral("reviewBookEnabled"));
+        QVERIFY(book && !book->isChecked());
+        book->click();
+        f.window.findChild<QComboBox*>(QStringLiteral("reviewSide"))->setCurrentIndex(2);
+        auto* start = f.window.findChild<QPushButton*>(QStringLiteral("runReview"));
+        QTRY_VERIFY(start->isEnabled());
+        start->click();
         QVERIFY(f.done());
         f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
         f.window.resize(1100, 720);
@@ -452,7 +465,8 @@ class QuickReviewTest final : public QObject {
         QTRY_VERIFY(summary->isVisible());
         auto* opening = summary->findChild<QLabel*>(QStringLiteral("reviewSummaryOpening"));
         QVERIFY(opening && opening->isVisible());
-        QCOMPARE(opening->text(), QStringLiteral("King's Pawn Game (C20)"));
+        QCOMPARE(opening->text(),
+                 QStringLiteral("King's Pawn Game (C20)\nIn book through the final move."));
         auto* shell = f.window.findChild<QScrollArea*>(QStringLiteral("shellScrollArea"));
         QTRY_COMPARE(shell->verticalScrollBar()->maximum(), 0);
         QTRY_COMPARE(shell->horizontalScrollBar()->maximum(), 0);
@@ -493,6 +507,8 @@ class QuickReviewTest final : public QObject {
         QTRY_VERIFY(review.navigation().move(1) && review.navigation().move(1)->classification);
         const auto label = review.navigation().move(1)->classification->label;
         auto* badge = f.window.findChild<QLabel*>(QStringLiteral("reviewClassification"));
+        QCOMPARE(label, review::Classification::Book);
+        QVERIFY(badge->text().contains(QStringLiteral("Book")));
         const auto originalPalette = qApp->palette();
         const auto restorePalette = qScopeGuard([&] { qApp->setPalette(originalPalette); });
         for (const bool dark : {false, true, false}) {

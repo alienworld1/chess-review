@@ -331,6 +331,10 @@ review::Quality ReviewGameController::defaultQuality() const {
     const auto configuration = configuration_.snapshot();
     return configuration ? configuration->values.quality : review::Quality::Standard;
 }
+bool ReviewGameController::defaultBookEnabled() const {
+    const auto configuration = configuration_.snapshot();
+    return !configuration || configuration->values.openings.enabled;
+}
 void ReviewGameController::publish() {
     if (closed_) {
         return;
@@ -402,8 +406,9 @@ ReviewExplorationController& ReviewGameController::exploration() {
 void ReviewGameController::selectGame(persistence::GameId id) { workspace_->selectGame(id); }
 void ReviewGameController::inspect(review::ReviewId id) { workspace_->inspect(id); }
 void ReviewGameController::refreshRuns(std::int64_t page) { workspace_->refreshRuns(page); }
-void ReviewGameController::start(chess::Color side, std::int64_t profile, review::Quality quality) {
-    workspace_->start(side, profile, quality);
+void ReviewGameController::start(chess::Color side, std::int64_t profile, review::Quality quality,
+                                 std::optional<bool> bookEnabled) {
+    workspace_->start(side, profile, quality, bookEnabled);
 }
 QString ReviewGameController::resumeBlocker() const {
     if (closing_ || !state_.ready) {
@@ -452,13 +457,14 @@ QString ReviewGameController::startBlocker(std::int64_t profileId) const {
     return {};
 }
 void ReviewGameController::startJob(chess::Color side, std::int64_t profileId,
-                                    review::Quality quality) {
+                                    review::Quality quality, std::optional<bool> bookEnabled) {
     if (!startBlocker(profileId).isEmpty() ||
         (side != chess::Color::White && side != chess::Color::Black)) {
         return;
     }
     auto values = configuration_.snapshot()->values;
     values.quality = quality;
+    values.openings.enabled = bookEnabled.value_or(values.openings.enabled);
     auto validated = config::validate(values);
     const auto* result =
         std::get_if<std::shared_ptr<const config::ValidatedConfiguration>>(&validated);

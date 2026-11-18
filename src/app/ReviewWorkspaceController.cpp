@@ -593,7 +593,7 @@ void ReviewWorkspaceController::selectMoment(int index) {
     remember();
 }
 void ReviewWorkspaceController::start(chess::Color side, std::int64_t profile,
-                                      review::Quality quality) {
+                                      review::Quality quality, std::optional<bool> bookEnabled) {
     if (closing_ || !game_ || state_.busy || !task_.startBlocker(profile).isEmpty()) {
         return;
     }
@@ -616,7 +616,7 @@ void ReviewWorkspaceController::start(chess::Color side, std::int64_t profile,
     stored_.reset();
     updateCompatibility();
     desiredRun_.reset();
-    task_.startJob(side, profile, quality);
+    task_.startJob(side, profile, quality, bookEnabled);
 }
 void ReviewWorkspaceController::resume(review::ReviewId id) {
     if (closing_ || !game_) {

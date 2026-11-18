@@ -103,6 +103,8 @@ QString refinementReason(review::RefinementReason reason, std::optional<std::uin
     case RefinementReason::UniqueResource:
         return QObject::tr(
             "a check evasion or constrained choice needing alternative verification");
+    case RefinementReason::OpeningDeparture:
+        return QObject::tr("expected-score loss on the first move outside the local book");
     case RefinementReason::MixedConversion:
         return QObject::tr("incompatible score conversion methods");
     }
@@ -266,6 +268,8 @@ QString classificationSymbol(std::optional<review::Classification> classificatio
         return QStringLiteral("+");
     case review::Classification::Good:
         return QStringLiteral("✓");
+    case review::Classification::Book:
+        return QStringLiteral("▤");
     case review::Classification::Inaccuracy:
         return QStringLiteral("?!");
     case review::Classification::Mistake:
@@ -286,7 +290,9 @@ ReviewMomentPresentation presentReviewMoment(const persistence::ReviewMove* move
     }
     if (!move || !move->classification) {
         view.availability = QObject::tr("Not analyzed yet");
-        view.explanation = QObject::tr("This move hasn’t been analyzed yet.");
+        view.explanation = move && move->bookDeparture
+                               ? QObject::tr("This is the first move outside the local book.")
+                               : QObject::tr("This move hasn’t been analyzed yet.");
         return view;
     }
     const auto& result = *move->classification;
@@ -304,6 +310,10 @@ ReviewMomentPresentation presentReviewMoment(const persistence::ReviewMove* move
     if (result.loss) {
         view.impact = QObject::tr("Expected-score loss: %1 percentage points")
                           .arg(*result.loss * 100, 0, 'f', 1);
+    }
+    if (result.label == review::Classification::Book) {
+        view.explanation = QObject::tr("This move follows a line in the bundled opening book.");
+        return view;
     }
     // Explain one verified fact. A fact in an engine line is not a claim about every defence.
     for (const auto& fact : move->tacticalFacts) {
@@ -362,6 +372,9 @@ ReviewMomentPresentation presentReviewMoment(const persistence::ReviewMove* move
                 ? QObject::tr("This matches the engine’s best move.")
                 : QObject::tr("Compare this move with the engine’s continuation.");
     }
+    if (move->bookDeparture) {
+        view.explanation.prepend(QObject::tr("This is the first move outside the local book. "));
+    }
     return view;
 }
 QString classificationText(const std::optional<review::ClassificationResult>& result) {
@@ -385,6 +398,8 @@ QString classificationText(const std::optional<review::ClassificationResult>& re
         return QObject::tr("Excellent");
     case Classification::Good:
         return QObject::tr("Good");
+    case Classification::Book:
+        return QObject::tr("Book");
     case Classification::Inaccuracy:
         return QObject::tr("Inaccuracy");
     case Classification::Mistake:
@@ -440,8 +455,11 @@ std::vector<BoardAnnotation> reviewTacticalAnnotations(const persistence::Review
     return annotations;
 }
 QString reviewMoveMarker(const persistence::ReviewMove* move) {
+    const auto departure = move && move->bookDeparture
+                               ? QObject::tr("\nFirst move outside the local book")
+                               : QString{};
     if (!move || !move->classification) {
-        return QObject::tr("Awaiting evidence");
+        return QObject::tr("Awaiting evidence") + departure;
     }
     QString glyph;
     if (move->classification->label) {
@@ -464,6 +482,9 @@ QString reviewMoveMarker(const persistence::ReviewMove* move) {
         case review::Classification::Good:
             glyph = QStringLiteral("✓ ");
             break;
+        case review::Classification::Book:
+            glyph = classificationSymbol(review::Classification::Book) + QLatin1Char(' ');
+            break;
         case review::Classification::Inaccuracy:
             glyph = QStringLiteral("?! ");
             break;
@@ -477,13 +498,14 @@ QString reviewMoveMarker(const persistence::ReviewMove* move) {
     }
     if (move->pendingRevision) {
         return glyph + classificationText(move->classification) +
-               QObject::tr("\nprevious checkpoint; updating");
+               QObject::tr("\nprevious checkpoint; updating") + departure;
     }
     return glyph + classificationText(move->classification) +
            (move->classification->label
                 ? (move->classification->stable ? QObject::tr("\nstable")
                                                 : QObject::tr("\nprovisional"))
-                : QString{});
+                : QString{}) +
+           departure;
 }
 QString reviewMomentHeadline(const persistence::ReviewMove* move, int position) {
     if (position == 0) {
@@ -671,8 +693,10 @@ QString reviewMoveDetails(const persistence::ReviewMove& move) {
         return specialDetails + text.join(QLatin1Char('\n'));
     }
     const auto& r = *move.classification;
-    text << (r.stable ? QObject::tr("Stable — two stronger passes agree.")
-                      : QObject::tr("Provisional — stability has not been established."));
+    text << (r.label == review::Classification::Book
+                 ? QObject::tr("Verified by the bundled opening book.")
+             : r.stable ? QObject::tr("Stable — two stronger passes agree.")
+                        : QObject::tr("Provisional — stability has not been established."));
     if (move.quickScan.pipelineVersion >= 5 && move.refinementTarget) {
         text << QObject::tr("Adaptive deeper searches: round %1 of at most 2.")
                     .arg(move.escalationRound);

@@ -37,12 +37,14 @@ class ReviewGameController final : public QObject {
     ReviewExplorationController& exploration();
     ReviewNavigationController& navigation();
     review::Quality defaultQuality() const;
+    bool defaultBookEnabled() const;
     void setReady(bool ready);
     void selectGame(persistence::GameId id);
     void refreshRuns(std::int64_t page = 0);
     void inspect(review::ReviewId id);
     QString startBlocker(std::int64_t profileId) const;
-    void start(chess::Color side, std::int64_t profileId, review::Quality quality);
+    void start(chess::Color side, std::int64_t profileId, review::Quality quality,
+               std::optional<bool> bookEnabled = {});
     QString resumeBlocker() const;
     void resume(review::ReviewId id);
     void refreshOverview(int keyOffset = 0);
@@ -57,7 +59,8 @@ class ReviewGameController final : public QObject {
 
   private:
     friend class ReviewWorkspaceController;
-    void startJob(chess::Color side, std::int64_t profileId, review::Quality quality);
+    void startJob(chess::Color side, std::int64_t profileId, review::Quality quality,
+                  std::optional<bool> bookEnabled);
     void resumeJob(review::ReviewId id);
     struct Cursor;
     void publish();

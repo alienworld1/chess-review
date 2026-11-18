@@ -29,7 +29,8 @@ class ReviewWorkspaceController final : public QObject {
     void refreshRuns(std::int64_t page = 0);
     void refreshOverview(int offset = 0);
     void selectMoment(int index);
-    void start(chess::Color side, std::int64_t profile, review::Quality quality);
+    void start(chess::Color side, std::int64_t profile, review::Quality quality,
+               std::optional<bool> bookEnabled);
     void resume(review::ReviewId id);
     void returnToTask();
     void setVisible(bool visible);

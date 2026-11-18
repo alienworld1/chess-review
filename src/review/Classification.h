@@ -20,9 +20,10 @@ enum class Classification {
     Blunder = 5,
     Brilliant = 6,
     Great = 7,
-    Miss = 8
+    Miss = 8,
+    Book = 9
 };
-inline constexpr std::size_t classificationCount = 9;
+inline constexpr std::size_t classificationCount = 10;
 [[nodiscard]] constexpr bool isError(Classification label) {
     return label == Classification::Inaccuracy || label == Classification::Mistake ||
            label == Classification::Blunder || label == Classification::Miss;
@@ -61,4 +62,6 @@ struct ClassificationResult {
 classify(const chess::Position& position, const MoveEvidence& evidence,
          const ClassificationConfig& config, const ConversionConfig& conversion = {},
          std::uint32_t modelVersion = classificationModelVersion);
+// Apply a verified mainline book fact to an otherwise usable classification.
+void applyBookClassification(ClassificationResult& result);
 } // namespace chess_review::review

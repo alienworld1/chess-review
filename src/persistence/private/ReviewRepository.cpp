@@ -2,6 +2,7 @@
 #include "engine/EffectiveSearch.h"
 #include "persistence/private/ReviewCodec.h"
 #include "persistence/private/StorageSession.h"
+#include <QJsonArray>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStringList>
@@ -179,9 +180,18 @@ std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
             return error(ReviewErrorCode::UnsupportedVersion);
         }
     }
+    if (doc->contains("openingBook")) {
+        const auto book = (*doc)["openingBook"].toArray();
+        if (book.isEmpty() || !book.at(0).isDouble()) {
+            return invalid();
+        }
+        if (book.at(0).toInt(-1) != openings::bookPolicyVersion) {
+            return error(ReviewErrorCode::UnsupportedVersion);
+        }
+    }
     auto settings = decodeReviewSettings(bytes);
-    if (!settings || settings->gameId != s->gameId ||
-        settings->engineProfileId != q.value(2).toLongLong() ||
+    if (!settings || (settings->opening && settings->opening->bookPlies >= s->totalPositions) ||
+        settings->gameId != s->gameId || settings->engineProfileId != q.value(2).toLongLong() ||
         settings->selectedSide != s->selectedSide ||
         settings->configuration.values.quality != s->quality) {
         return invalid();
@@ -192,6 +202,13 @@ std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
     }
     q.finish();
     return StoredReview{snapshot, std::move(*settings), identity};
+}
+int bookPlies(const StoredReview& run) {
+    return run.settings.opening ? run.settings.opening->bookPlies.value_or(0) : 0;
+}
+bool bookDeparture(const StoredReview& run, int index) {
+    const int plies = bookPlies(run);
+    return plies > 0 && index == plies + 1;
 }
 chess::Result<chess::Position> gamePosition(const StoredGame& game, int index) {
     auto root = game.document->tree.position(game.document->tree.rootId());
@@ -721,7 +738,8 @@ CreateReviewResult StorageSession::createReview(const CreateReview& request) {
         return error(ReviewErrorCode::InvalidInput);
     }
     auto snapshot = request;
-    snapshot.opening = recognizeOpening(*game->document).value_or(OpeningResolution{});
+    snapshot.opening = recognizeOpening(*game->document, &request.configuration.values.openings)
+                           .value_or(OpeningResolution{});
     const auto settings = encodeReviewSettings(snapshot);
     if (settings.isEmpty() || settings.size() > maxReviewSettingsBytes) {
         return error(ReviewErrorCode::InvalidInput);
@@ -824,8 +842,14 @@ LoadReviewResult StorageSession::loadReviewRecord(ReviewId id, StoredGame* ownin
         return invalid();
     }
     auto final = gamePosition(*game, s->totalPositions - 1);
-    if (!std::holds_alternative<chess::Position>(final) ||
-        positionIdentity(std::get<chess::Position>(final).context()) != run->mainlineIdentity) {
+    const auto* position = std::get_if<chess::Position>(&final);
+    if (!position) {
+        return invalid();
+    }
+    const auto context = position->context();
+    static const auto initialFen = chess::Position::initial().fen();
+    if (positionIdentity(context) != run->mainlineIdentity ||
+        (bookPlies(*run) > 0 && context.rootFen != initialFen)) {
         return invalid();
     }
     if (!exec(
@@ -1284,6 +1308,7 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
                                                     run.settings.pipelineVersion);
                 review::addIntelligenceCandidates(scan, beforePosition, quickPair,
                                                   run.settings.configuration.values);
+                review::addOpeningDeparture(scan, bookDeparture(run, index));
                 if (scan.state == review::ScanState::Invalid && run.settings.pipelineVersion >= 2) {
                     return invalid();
                 }
@@ -1421,6 +1446,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                                    run.settings.pipelineVersion);
             review::addIntelligenceCandidates(previousScan, *precedingPosition, quickPair,
                                               run.settings.configuration.values);
+            review::addOpeningDeparture(previousScan, bookDeparture(run, offset));
             if (previousScan.state == review::ScanState::Invalid) {
                 return invalid();
             }
@@ -1442,6 +1468,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
         }
         ReviewMove row;
         row.positionIndex = ply + 1;
+        row.bookDeparture = bookDeparture(run, row.positionIndex);
         row.special.thresholds = run.settings.configuration.values.special;
         if (intelligenceModels) {
             row.special.modelVersion = intelligenceModels->special;
@@ -1480,6 +1507,7 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                                     run.settings.pipelineVersion);
             review::addIntelligenceCandidates(row.quickScan, *position, quickPair,
                                               run.settings.configuration.values);
+            review::addOpeningDeparture(row.quickScan, row.bookDeparture);
             if (row.quickScan.state == review::ScanState::Invalid &&
                 run.settings.pipelineVersion >= 2) {
                 return invalid();
@@ -1727,6 +1755,9 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     result.label = row.special.label;
                     result.ruleId = row.special.ruleId;
                 }
+            }
+            if (row.positionIndex <= bookPlies(run)) {
+                review::applyBookClassification(result);
             }
             // Full PVs remain in selected exploration snapshots, not timeline pages.
             for (auto& fact : row.tacticalFacts) {
@@ -1994,9 +2025,10 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
                 break;
             }
             const auto& c = move.classification;
-            const auto selection = summaryBuilder.add(
-                {move.positionIndex, move.mover, c.has_value(), c && c->stable,
-                 c ? c->label : std::nullopt, move.accuracyLoss, move.rawBefore, move.rawAfter});
+            const auto selection =
+                summaryBuilder.add({move.positionIndex, move.mover, c.has_value(), c && c->stable,
+                                    c ? c->label : std::nullopt, move.accuracyLoss, move.rawBefore,
+                                    move.rawAfter, move.bookDeparture});
             if (move.refinementTarget) {
                 candidates.push_back({move.positionIndex, move.quickScan});
                 for (std::size_t round = 0; round < 2; ++round) {

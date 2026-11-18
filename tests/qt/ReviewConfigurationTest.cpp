@@ -271,13 +271,15 @@ class ReviewConfigurationTest final : public QObject {
         QCOMPARE(defaults->values, review::Configuration{});
         const auto changed =
             valid("version=1\n[review]\nquality='fast'\npreferWdl=false\n[analysis.fast]"
-                  "\nquickScanNodes=1000\n[expectedScore]\nfallbackScaleCp=200\n");
+                  "\nquickScanNodes=1000\n[expectedScore]\nfallbackScaleCp=200\n"
+                  "[openings]\nenabled=false\nmaximumPly=16\nminimumReferences=5\n");
         QVERIFY(changed);
         QCOMPARE(changed->values.quality, review::Quality::Fast);
         QCOMPARE(changed->values.budgets[0].quickScanNodes, 1000ULL);
         QCOMPARE(changed->values.budgets[0].verificationNodes, 2000000ULL);
         QVERIFY(!changed->values.conversion.preferWdl);
         QCOMPARE(changed->values.conversion.fallbackScaleCp, 200);
+        QCOMPARE(changed->values.openings, (openings::BookConfig{false, 16, 5}));
     }
     void verboseIsPresentationOnly() {
         const auto defaults = valid("");
@@ -317,6 +319,9 @@ class ReviewConfigurationTest final : public QObject {
                                   "[analysis.fast]\nquickScanNodes=500001",
                                   "[analysis.fast]\nquickScanNodes=true",
                                   "[analysis.fast]\nunknown=2",
+                                  "[openings]\nmaximumPly=65",
+                                  "[openings]\nminimumReferences=0",
+                                  "[openings]\nenabled='true'",
                                   "key=",
                                   "version=1\nversion=1"}) {
             QTest::newRow(input) << QByteArray(input);

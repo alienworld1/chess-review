@@ -107,4 +107,12 @@ ClassificationResult classify(const chess::Position& position, const MoveEvidenc
     }
     return out;
 }
+
+void applyBookClassification(ClassificationResult& result) {
+    if (!result.issue && result.label) {
+        result.label = Classification::Book;
+        result.ruleId = "opening.book.v1";
+        result.stable = true;
+    }
+}
 } // namespace chess_review::review

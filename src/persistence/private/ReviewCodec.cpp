@@ -202,6 +202,16 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
             document["opening"] = QJsonValue();
         }
     }
+    const auto bookPlies = settings.opening ? settings.opening->bookPlies : std::nullopt;
+    if (bookPlies && (!c.openings.enabled || settings.opening->datasetVersion.isEmpty() ||
+                      *bookPlies < 0 || *bookPlies > c.openings.maximumPly)) {
+        return {};
+    }
+    if (bookPlies || c.openings != openings::BookConfig{}) {
+        document["openingBook"] = QJsonArray{openings::bookPolicyVersion, c.openings.enabled,
+                                             c.openings.maximumPly, c.openings.minimumReferences,
+                                             bookPlies ? QJsonValue(*bookPlies) : QJsonValue()};
+    }
     if (settings.configuration.classificationIdentityVersion == 2) {
         document["excellentLoss"] = c.classification.excellentLoss;
     }
@@ -317,6 +327,20 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
             }
             out.opening->match = openings::Opening{fields[0].toString().toStdString(),
                                                    fields[1].toString().toStdString()};
+        }
+    }
+    if (o.contains("openingBook")) {
+        const auto fields = o["openingBook"].toArray();
+        if (fields.size() != 5 || fields[0].toInt(-1) != openings::bookPolicyVersion ||
+            !fields[1].isBool()) {
+            return std::nullopt;
+        }
+        c.openings = {fields[1].toBool(), fields[2].toInt(-1), fields[3].toInt(-1)};
+        if (!fields[4].isNull()) {
+            if (!out.opening) {
+                return std::nullopt;
+            }
+            out.opening->bookPlies = fields[4].toInt(-1);
         }
     }
     // Canonical agreement validates all wire types, versions, keys, identities and null metadata.

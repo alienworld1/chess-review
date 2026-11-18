@@ -35,6 +35,8 @@ struct OpeningResolution {
     // Empty only for a review explicitly saved while recognition was unavailable.
     QString datasetVersion;
     std::optional<openings::Opening> match;
+    // Present only for a review with a resolved book lookup.
+    std::optional<int> bookPlies = std::nullopt;
 };
 struct GameSummary {
     GameId id{};

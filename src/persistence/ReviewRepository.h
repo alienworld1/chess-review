@@ -141,6 +141,7 @@ struct ReviewMove {
     QString engineIdentity;
     std::int64_t beforeEvidenceId = 0;
     std::int64_t afterEvidenceId = 0;
+    bool bookDeparture = false;
 };
 struct ReviewMovePage {
     ReviewId reviewId = 0;

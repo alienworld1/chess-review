@@ -1,4 +1,5 @@
 #pragma once
+#include "openings/Book.h"
 #include "review/Evidence.h"
 #include <array>
 #include <cstdint>
@@ -43,6 +44,7 @@ struct Configuration {
     RefinementConfig refinement;
     SpecialLabelConfig special;
     Quality quality = Quality::Standard;
+    openings::BookConfig openings;
     bool operator==(const Configuration&) const = default;
 };
 } // namespace chess_review::review

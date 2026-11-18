@@ -1,6 +1,7 @@
 #include "ReviewAcceptanceSupport.h"
 #include "TestEnvironment.h"
 #include "engine/AnalysisCache.h"
+#include "openings/PackagedOpenings.h"
 #include "persistence/Database.h"
 #include <QCoreApplication>
 #include <QDir>
@@ -181,6 +182,12 @@ class ReviewAcceptanceTest final : public QObject {
         QCOMPARE(saved.summary.totalPositions, static_cast<int>(moves.size()) + 1);
         QSignalSpy evidence(&database, &persistence::Database::reviewEvidenceLoaded);
         QSignalSpy rows(&database, &persistence::Database::reviewMovesLoaded);
+        const auto* openingIndex = openings::loadPackagedOpenings();
+        QVERIFY(openingIndex);
+        const int bookPlies =
+            openingIndex->bookPrefix(position, moves, saved.settings.configuration.values.openings);
+        QVERIFY(saved.settings.opening);
+        QCOMPARE(saved.settings.opening->bookPlies, bookPlies);
         for (int index = 0; index < saved.summary.totalPositions; ++index) {
             evidence.clear();
             database.loadReviewEvidence(QUuid::createUuid(), id, index);
@@ -237,8 +244,14 @@ class ReviewAcceptanceTest final : public QObject {
                     position, pair, saved.settings.configuration.values.classification,
                     saved.settings.configuration.values.conversion,
                     row.classification->modelVersion);
-                QCOMPARE(row.classification->label, derived.label);
-                QCOMPARE(row.classification->ruleId, derived.ruleId);
+                if (index < bookPlies && derived.label) {
+                    QCOMPARE(row.classification->label, review::Classification::Book);
+                    QCOMPARE(row.classification->ruleId, "opening.book.v1");
+                } else {
+                    QCOMPARE(row.classification->label, derived.label);
+                    QCOMPARE(row.classification->ruleId, derived.ruleId);
+                }
+                QCOMPARE(row.bookDeparture, bookPlies > 0 && index == bookPlies);
                 QCOMPARE(row.classification->loss, derived.loss);
                 QCOMPARE(row.classification->thresholds,
                          saved.settings.configuration.values.classification);

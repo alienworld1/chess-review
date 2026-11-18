@@ -75,7 +75,8 @@ class StorageSession final {
   private:
     LoadReviewResult loadReviewRecord(ReviewId id, StoredGame* owningGame);
     bool refreshGameValidationCache();
-    std::optional<OpeningResolution> recognizeOpening(const pgn::PgnDocument& document);
+    std::optional<OpeningResolution> recognizeOpening(const pgn::PgnDocument& document,
+                                                      const openings::BookConfig* book = nullptr);
     void readOpeningCache(std::span<GameSummary> games);
     void writeOpeningCache(GameId id, const OpeningResolution& opening);
     diagnostics::Logger* logger_;

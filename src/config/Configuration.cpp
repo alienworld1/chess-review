@@ -163,7 +163,7 @@ Result parse(std::string_view contents) {
     Reader reader;
     reader.keys(root, "configuration",
                 {"version", "analysis", "classification", "review", "expectedScore", "refinement",
-                 "special", "ui", "puzzles"});
+                 "special", "ui", "puzzles", "openings"});
     UiConfiguration ui;
     PuzzleConfiguration puzzles;
     if (const auto* table = reader.table(root, "puzzles", "puzzles")) {
@@ -231,6 +231,24 @@ Result parse(std::string_view contents) {
                              table);
             }
         }
+    }
+    if (const auto* table = reader.table(root, "openings", "openings")) {
+        reader.keys(*table, "openings", {"enabled", "maximumPly", "minimumReferences"});
+        auto& book = config.openings;
+        if (const auto* node = table->get("enabled")) {
+            if (const auto* value = node->as_boolean()) {
+                book.enabled = value->get();
+            } else {
+                reader.error("openings.enabled", "Expected a boolean", node);
+            }
+        }
+        auto ply = static_cast<std::uint64_t>(book.maximumPly);
+        auto references = static_cast<std::uint64_t>(book.minimumReferences);
+        reader.integer(*table, "maximumPly", "openings.maximumPly", ply, openings::maxBookPly);
+        reader.integer(*table, "minimumReferences", "openings.minimumReferences", references,
+                       openings::maxBookSupport);
+        book.maximumPly = static_cast<int>(ply);
+        book.minimumReferences = static_cast<int>(references);
     }
     if (const auto* table = reader.table(root, "refinement", "refinement")) {
         reader.keys(*table, "refinement", {"boundaryMargin", "maximumDrift", "multiPv"});
@@ -319,6 +337,9 @@ Result validate(const review::Configuration& values, std::uint32_t classificatio
     const auto& c = values.classification;
     const auto& e = values.conversion;
     const auto& r = values.refinement;
+    if (!openings::validBookConfig(values.openings)) {
+        return failure("Invalid opening-book configuration values");
+    }
     if (!review::validSpecialConfig(values.special)) {
         return failure("Invalid special-label configuration values");
     }

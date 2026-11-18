@@ -287,6 +287,11 @@ void addOpportunityContext(ScanAssessment& current, const ScanAssessment& previo
     current.opportunityLoss = previous.qualifyingLoss;
     current.reasons.push_back(RefinementReason::OpportunityReply);
 }
+void addOpeningDeparture(ScanAssessment& scan, bool firstOutsideBook) {
+    if (firstOutsideBook && scan.qualifyingLoss) {
+        scan.reasons.push_back(RefinementReason::OpeningDeparture);
+    }
+}
 RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candidates,
                                       std::uint32_t pipelineVersion) {
     if (!supportsPipelineModel(pipelineVersion)) {
@@ -369,6 +374,11 @@ RefinementQueueResult refinementQueue(std::span<const RefinementCandidate> candi
                 case RefinementReason::SacrificeSignal:
                 case RefinementReason::UniqueResource:
                     if (pipelineVersion < 10) {
+                        return RefinementQueueIssue::InvalidCandidate;
+                    }
+                    break;
+                case RefinementReason::OpeningDeparture:
+                    if (!scan.qualifyingLoss) {
                         return RefinementQueueIssue::InvalidCandidate;
                     }
                     break;
@@ -693,7 +703,8 @@ KeyMomentSelection SummaryBuilder::add(const SummaryMoveFacts& move) {
             facts_.largestLoss = move.loss;
             facts_.largestLossPosition = move.positionIndex;
         }
-        if (major || mateTransition) {
+        const bool instructiveDeparture = move.bookDeparture && move.label && isError(*move.label);
+        if (major || mateTransition || instructiveDeparture) {
             selection.selected = true;
             ++facts_.keyMoments;
             if (previousOpponentError_) {

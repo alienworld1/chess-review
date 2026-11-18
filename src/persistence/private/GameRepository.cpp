@@ -98,7 +98,8 @@ QByteArray utf8TextBytes(const QString& value) {
 }
 
 std::optional<OpeningResolution>
-StorageSession::recognizeOpening(const pgn::PgnDocument& document) {
+StorageSession::recognizeOpening(const pgn::PgnDocument& document,
+                                 const openings::BookConfig* book) {
     try {
         if (!openingIndexLoaded_) {
             openingIndexLoaded_ = true;
@@ -117,9 +118,13 @@ StorageSession::recognizeOpening(const pgn::PgnDocument& document) {
         }
         auto root = document.tree.position(document.tree.rootId());
         if (auto* position = std::get_if<chess::Position>(&root)) {
-            return OpeningResolution{
-                QString::fromLatin1(openings::datasetVersion),
-                openingIndex_->recognize(std::move(*position), document.originalMainline())};
+            const auto moves = document.originalMainline();
+            const auto plies =
+                book && book->enabled
+                    ? std::optional(openingIndex_->bookPrefix(*position, moves, *book))
+                    : std::nullopt;
+            return OpeningResolution{QString::fromLatin1(openings::datasetVersion),
+                                     openingIndex_->recognize(std::move(*position), moves), plies};
         }
     } catch (const std::exception&) {
         qWarning("Opening recognition could not complete.");

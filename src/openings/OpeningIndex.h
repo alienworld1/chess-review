@@ -1,6 +1,7 @@
 #pragma once
 
 #include "chess/Position.h"
+#include "openings/Book.h"
 #include <span>
 #include <unordered_map>
 
@@ -27,6 +28,9 @@ class OpeningIndex {
     [[nodiscard]] static std::optional<OpeningIndex> build(std::string_view references);
     [[nodiscard]] std::optional<Opening> recognize(chess::Position root,
                                                    std::span<const chess::Move> moves) const;
+    // Length of the uninterrupted mainline prefix supported by local reference lines.
+    [[nodiscard]] int bookPrefix(chess::Position root, std::span<const chess::Move> moves,
+                                 const BookConfig& config) const;
 
   private:
     struct Reference {
@@ -36,6 +40,7 @@ class OpeningIndex {
 
     OpeningIndex() = default;
     std::unordered_map<std::string, std::vector<Reference>> positions_;
+    std::unordered_map<std::string, int> bookSupport_;
     std::size_t maxPly_ = 0;
 };
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <ranges>
+#include <unordered_set>
 #include <utility>
 
 namespace chess_review::openings {
@@ -48,18 +49,38 @@ std::optional<std::string> replay(chess::Position& position, std::span<const che
     return order;
 }
 
-std::size_t referencePly(std::string_view order) {
-    std::size_t ply = 0;
+const std::string& initialFen() {
+    static const auto fen = chess::Position::initial().fen();
+    return fen;
+}
+
+std::string bookEdge(const chess::Position& position, std::string_view uci) {
+    return position.epd().append(" ").append(uci);
+}
+
+std::optional<std::unordered_set<std::string>> referenceEdges(std::string_view order,
+                                                              std::string_view epd) {
+    auto position = chess::Position::initial();
+    std::unordered_set<std::string> edges;
+    int ply = 0;
     for (const auto token : order | std::views::split(' ')) {
         const std::string_view uci(token.begin(), token.end());
-        if ((uci.size() != 4 && uci.size() != 5) || !chess::Square::fromName(uci.substr(0, 2)) ||
-            !chess::Square::fromName(uci.substr(2, 2)) ||
-            (uci.size() == 5 && std::string_view("qrbn").find(uci[4]) == std::string_view::npos)) {
-            return 0;
+        const auto move = position.parseUci(uci);
+        const auto* legal = std::get_if<chess::Move>(&move);
+        if (!legal) {
+            return std::nullopt;
         }
-        ++ply;
+        if (++ply <= maxBookPly) {
+            edges.insert(bookEdge(position, uci));
+        }
+        if (std::holds_alternative<chess::Error>(position.play(*legal))) {
+            return std::nullopt;
+        }
     }
-    return ply;
+    if (position.epd() != epd) {
+        return std::nullopt;
+    }
+    return edges;
 }
 } // namespace
 
@@ -131,6 +152,7 @@ std::optional<OpeningIndex> OpeningIndex::build(std::string_view references) {
         return std::nullopt;
     }
     OpeningIndex index;
+    std::unordered_map<std::string_view, std::string_view> countedOrders;
     while (!references.empty()) {
         std::array<std::string_view, 4> columns;
         auto& [eco, name, epd, order] = columns;
@@ -138,13 +160,19 @@ std::optional<OpeningIndex> OpeningIndex::build(std::string_view references) {
             epd.size() > 96 || order.size() > 512 || order.empty() || order.back() == ' ') {
             return std::nullopt;
         }
-        const auto ply = referencePly(order);
-        const auto position =
-            chess::Position::fromFen(std::string(epd) + " 0 " + std::to_string(ply / 2 + 1));
-        const auto* board = std::get_if<chess::Position>(&position);
-        if (ply == 0 || !board || board->epd() != epd) {
+        const auto [orderEntry, firstOrder] = countedOrders.try_emplace(order, epd);
+        if (firstOrder) {
+            const auto edges = referenceEdges(order, epd);
+            if (!edges) {
+                return std::nullopt;
+            }
+            for (const auto& edge : *edges) {
+                ++index.bookSupport_[edge];
+            }
+        } else if (orderEntry->second != epd) {
             return std::nullopt;
         }
+        const auto ply = static_cast<std::size_t>(std::ranges::count(order, ' ') + 1);
         index.maxPly_ = std::max(index.maxPly_, ply);
         index.positions_[std::string(epd)].push_back(
             {{std::string(eco), std::string(name)}, std::string(order)});
@@ -154,8 +182,7 @@ std::optional<OpeningIndex> OpeningIndex::build(std::string_view references) {
 
 std::optional<Opening> OpeningIndex::recognize(chess::Position position,
                                                std::span<const chess::Move> moves) const {
-    static const auto initialFen = chess::Position::initial().fen();
-    if (position.fen() != initialFen) {
+    if (position.fen() != initialFen()) {
         return std::nullopt;
     }
     const Opening* deepest = nullptr;
@@ -197,5 +224,30 @@ std::optional<Opening> OpeningIndex::recognize(chess::Position position,
         }
     }
     return deepest ? std::optional{*deepest} : std::nullopt;
+}
+
+int OpeningIndex::bookPrefix(chess::Position position, std::span<const chess::Move> moves,
+                             const BookConfig& config) const {
+    if (!config.enabled || !validBookConfig(config) || position.fen() != initialFen()) {
+        return 0;
+    }
+    int prefix = 0;
+    for (const auto& move :
+         moves.first(std::min(moves.size(), static_cast<std::size_t>(config.maximumPly)))) {
+        const auto notation = position.uci(move);
+        const auto* uci = std::get_if<std::string>(&notation);
+        if (!uci) {
+            return 0;
+        }
+        const auto support = bookSupport_.find(bookEdge(position, *uci));
+        if (support == bookSupport_.end() || support->second < config.minimumReferences) {
+            break;
+        }
+        if (std::holds_alternative<chess::Error>(position.play(move))) {
+            return 0;
+        }
+        ++prefix;
+    }
+    return prefix;
 }
 } // namespace chess_review::openings

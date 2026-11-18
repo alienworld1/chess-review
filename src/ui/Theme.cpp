@@ -183,6 +183,8 @@ QColor classificationColor(std::optional<review::Classification> classification)
         return QColor(dark ? "#62bac8" : "#25808e");
     case review::Classification::Good:
         return QColor(dark ? "#65c486" : "#227843");
+    case review::Classification::Book:
+        return palette.color(QPalette::Text);
     case review::Classification::Inaccuracy:
         return QColor(dark ? "#f0c46c" : "#9d660b");
     case review::Classification::Mistake:

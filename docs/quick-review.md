@@ -5,16 +5,29 @@ one. A single game opens its review setup. If you import several games, choose
 one from the list. Your saved games remain available in **Games**.
 
 Choose the side you played, then **Analyze game**. The app uses your default
-engine and configured review quality. Open **Engine and review quality** to
-change them. If no engine is available, use **Set up engine…** to add one installed
-on your computer, such as Stockfish. Engines are never downloaded automatically.
+engine and configured review quality. Open **Engine and review options** to
+change them or turn Book classifications on or off for this run. If no engine
+is available, use **Set up engine…** to add one installed on your computer,
+such as Stockfish. Engines are never downloaded automatically.
 
 ## Your game at a glance
 
 When the played mainline matches the bundled opening dataset, the game header
 and summary show the opening name, variation, and ECO code. The header is
-available before engine analysis. A saved review keeps the opening recorded
-when it was created.
+available before engine analysis. The review summary shows where the local
+book ends. Moves in the verified book prefix receive **Book** once the review has
+usable analysis for the move. The first move outside the book receives the usual
+engine-based assessment and a departure note. An error at that boundary can
+appear among the guided moments.
+
+Book lookup runs offline and follows the played mainline. The default policy
+requires each move from its current position to appear in at least two distinct
+bundled reference lines, up to 24 half-moves. Shared positions reached by
+transposition can use the same continuations. The book ends at the first
+unsupported move or when the depth limit is reached. You can tune these cutoffs
+in the `[openings]` section of the [example configuration](config.example.toml).
+A saved review keeps its opening, book policy, and boundary. Book labels leave
+the engine-based accuracy calculation independent.
 
 The summary shows your accuracy, analyzed-move coverage, move classifications,
 and number of key moments. Choose **Start review** to walk through those moments.

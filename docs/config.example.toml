@@ -56,3 +56,9 @@ viableScore = 0.50
 alreadyWinningScore = 0.95
 margin = 0.01
 sacrificeValue = 2
+
+# The local book is a prefix of the mainline, bounded in half-moves.
+[openings]
+enabled = true
+maximumPly = 24
+minimumReferences = 2
