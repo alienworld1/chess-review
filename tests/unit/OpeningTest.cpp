@@ -39,7 +39,7 @@ TEST_CASE("Bundled openings resolve legal mainlines and ignore PGN tags and vari
     CHECK(result->family() == "Sicilian Defense");
     CHECK(result->variation() == "Najdorf Variation");
     CHECK((recognize(*index, "1. c4 d5 2. d4 *") == openings::Opening{"D06", "Queen's Gambit"}));
-    CHECK_FALSE(recognize(*index, "[Opening \"Sicilian Defense\"]\n[ECO \"B20\"]\n\n*"));
+    CHECK(!recognize(*index, "[Opening \"Sicilian Defense\"]\n[ECO \"B20\"]\n\n*"));
 }
 
 TEST_CASE("Opening recognition prefers a unique reference order at ambiguous positions",
@@ -54,7 +54,7 @@ TEST_CASE("Opening recognition prefers a unique reference order at ambiguous pos
     CHECK((recognize(index, "1. Nf3 Nf6 2. d4 d5 *") == openings::Opening{"D01", "Second Name"}));
     CHECK((recognize(index, "1. Nf3 d5 2. d4 Nf6 *") ==
            openings::Opening{"A04", "Zukertort Opening"}));
-    CHECK_FALSE(recognize(index, "1. d4 Nf6 2. Nf3 d5 *"));
+    CHECK(!recognize(index, "1. d4 Nf6 2. Nf3 d5 *"));
 }
 
 TEST_CASE("Opening recognition uses normalized rights and legal en passant", "[openings][unit]") {
@@ -67,7 +67,7 @@ TEST_CASE("Opening recognition uses normalized rights and legal en passant", "[o
            openings::Opening{"A06", "Fewer Castling Rights"}));
     CHECK((recognize(index, "1. e4 h6 2. e5 d5 *") ==
            openings::Opening{"B00", "En Passant Available"}));
-    CHECK_FALSE(recognize(index, "1. e4 d5 2. e5 h6 *"));
+    CHECK(!recognize(index, "1. e4 d5 2. e5 h6 *"));
     CHECK((recognize(index, "1. Nf3 Nf6 2. d4 d5 *") == openings::Opening{"D00", "Transposed"}));
 }
 
@@ -78,7 +78,7 @@ TEST_CASE("Opening recognition skips repeat positions and bounds its scan", "[op
                                  "D00\tToo Late\t1. d4 d5 2. c4 e6 3. Nc3\n");
     CHECK(
         (recognize(index, "1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 *") == openings::Opening{"A05", "Deeper"}));
-    CHECK_FALSE(recognize(index, "1. Nc3 Nc6 2. Nb1 Nb8 3. d4 d5 4. c4 e6 5. Nc3 *"));
+    CHECK(!recognize(index, "1. Nc3 Nc6 2. Nb1 Nb8 3. d4 d5 4. c4 e6 5. Nc3 *"));
 }
 
 TEST_CASE("Opening recognition accepts only the exact standard starting position",
@@ -87,23 +87,22 @@ TEST_CASE("Opening recognition accepts only the exact standard starting position
     CHECK(recognize(index, "[SetUp \"1\"]\n"
                            "[FEN \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"]\n\n"
                            "1. e4 c5 *"));
-    CHECK_FALSE(recognize(index,
-                          "[SetUp \"1\"]\n"
-                          "[FEN \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 1 1\"]\n\n"
-                          "1. e4 c5 *"));
-    CHECK_FALSE(
-        recognize(index, "[SetUp \"1\"]\n"
-                         "[FEN \"rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1\"]\n\n"
-                         "1... c5 *"));
+    CHECK(!recognize(index, "[SetUp \"1\"]\n"
+                            "[FEN \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 1 1\"]\n\n"
+                            "1. e4 c5 *"));
+    CHECK(!recognize(index,
+                     "[SetUp \"1\"]\n"
+                     "[FEN \"rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1\"]\n\n"
+                     "1... c5 *"));
 }
 
 TEST_CASE("An invalid opening dataset does not publish a partial lookup", "[openings][unit]") {
     using namespace std::string_view_literals;
-    CHECK_FALSE(openings::compileReferences(std::array{"eco\tname\tpgn\n"sv}));
-    CHECK_FALSE(
-        openings::compileReferences(std::array{"eco\tname\tpgn\nA04\tZukertort Opening\t1. Nf3\n"sv,
-                                               "eco\tname\tpgn\nB30\tInvalid Opening\t1. e5\n"sv}));
-    CHECK_FALSE(openings::OpeningIndex::build("eco\tname\tepd\tuci\nE05\tBroken\tinvalid\tg1f3\n"));
+    CHECK(!openings::compileReferences(std::array{"eco\tname\tpgn\n"sv}));
+    CHECK(!openings::compileReferences(
+        std::array{"eco\tname\tpgn\nA04\tZukertort Opening\t1. Nf3\n"sv,
+                   "eco\tname\tpgn\nB30\tInvalid Opening\t1. e5\n"sv}));
+    CHECK(!openings::OpeningIndex::build("eco\tname\tepd\tuci\nE05\tBroken\tinvalid\tg1f3\n"));
 }
 
 TEST_CASE("Book needs supported position and move pairs until the first departure",

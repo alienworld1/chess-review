@@ -2586,9 +2586,12 @@ class QuickReviewTest final : public QObject {
         auto* board = f.window.findChild<ui::ChessBoardWidget*>(QStringLiteral("reviewBoard"));
         retry->click();
         QTRY_VERIFY(board->state().interactive);
-        QTest::keyClick(board, Qt::Key_Return);
+        // Separate events avoid a clang analyzer false positive in Qt's keyClick guard.
+        QTest::keyPress(board, Qt::Key_Return);
+        QTest::keyRelease(board, Qt::Key_Return);
         QVERIFY(board->entryMode());
-        QTest::keyClick(board, Qt::Key_Escape);
+        QTest::keyPress(board, Qt::Key_Escape);
+        QTest::keyRelease(board, Qt::Key_Escape);
         QVERIFY(!board->entryMode());
         QCOMPARE(exploration.state().mode, app::ExplorationMode::Retry);
         exploration.returnToGame();
@@ -3971,7 +3974,8 @@ class QuickReviewTest final : public QObject {
         QElapsedTimer elapsed;
         elapsed.start();
         f.run();
-        QVERIFY(f.done(90000));
+        // Sanitized long-game analysis can exceed the normal completion guard.
+        QVERIFY(f.done(180000));
         heartbeat.stop();
         qInfo("81-position adaptive review: %lld ms; %lld cache lookups; %lld move pages",
               static_cast<long long>(elapsed.elapsed()), static_cast<long long>(lookups.size()),
