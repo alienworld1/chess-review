@@ -21,6 +21,10 @@ endif()
 chess_review_add_qt_test(review_repository_tests review_repository INTEGRATION
     SOURCES ReviewRepositoryTest.cpp
     LIBRARIES chess_review_persistence Qt6::Sql)
+if(CHESS_REVIEW_SANITIZERS)
+    # Repeated database setup and recovery fixtures can exceed 30 seconds in CI.
+    set_tests_properties(review_repository PROPERTIES TIMEOUT 120)
+endif()
 
 chess_review_add_qt_test(puzzle_repository_tests puzzle_repository INTEGRATION
     SOURCES PuzzleRepositoryTest.cpp
