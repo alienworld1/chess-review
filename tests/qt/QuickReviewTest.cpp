@@ -1271,7 +1271,8 @@ class QuickReviewTest final : public QObject {
         QVERIFY(f.seed(text + "*"));
         f.script(0, -1, 0, false, false, QStringLiteral("cp 0"));
         f.run();
-        QVERIFY(f.done(40000));
+        // Populate the second page even when the full review runs under sanitizers.
+        QVERIFY(f.done(90000));
         auto& owner = f.startup.reviewGame();
         owner.moves().close();
         QTRY_VERIFY(owner.moves().drained());
