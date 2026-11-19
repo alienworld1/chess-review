@@ -313,7 +313,9 @@ class PuzzleTest final : public QObject {
         puzzles.open(id);
         QTRY_VERIFY(puzzles.state().solving && !puzzles.state().loading);
         open->setFocus();
-        QTest::keyClick(open, Qt::Key_Space);
+        // Separate events avoid a clang analyzer false positive in Qt's keyClick guard.
+        QTest::keyPress(open, Qt::Key_Space);
+        QTest::keyRelease(open, Qt::Key_Space);
         QCOMPARE(f.navigation.current(), app::Destination::Puzzles);
         QVERIFY(!puzzles.state().solving);
         QTRY_COMPARE(puzzles.state().library.puzzles.size(), std::size_t{1});
