@@ -8,6 +8,7 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStringDecoder>
+#include <QStringList>
 #include <QVariant>
 #include <algorithm>
 #include <exception>
@@ -51,18 +52,47 @@ std::optional<GameSummary> readSummary(QSqlQuery& query) {
     return GameSummary{
         query.value(0).toLongLong(), *white, *black, *result, *playedAt, *timeControl, *importedAt};
 }
-void clipSummary(GameSummary& summary) {
+void clipText(QString& value, qsizetype length, bool& truncated) {
+    if (value.size() > length) {
+        if (value.at(length - 1).isHighSurrogate()) {
+            --length;
+        }
+        // A fresh small allocation releases the large tag's retained capacity too.
+        value = QString(value.constData(), length);
+        truncated = true;
+    }
+}
+void clipSummary(GameSummary& summary, qsizetype length) {
     for (auto* value : {&summary.white, &summary.black, &summary.playedAt, &summary.timeControl}) {
-        if (value->size() > 256) {
-            qsizetype length = 256;
-            if (value->at(length - 1).isHighSurrogate()) {
-                --length;
+        clipText(*value, length, summary.metadataTruncated);
+    }
+}
+
+QString playerPattern(const QString& term) {
+    // SQLite GLOB matches UTF-8 code points but has no Unicode case-insensitive mode.
+    QString pattern = QStringLiteral("*");
+    for (const auto value : term.toUcs4()) {
+        const auto codePoint = static_cast<char32_t>(value);
+        const auto lower = QChar::toLower(codePoint);
+        const auto upper = QChar::toUpper(codePoint);
+        if (lower != upper) {
+            pattern += u'[';
+            pattern += QString::fromUcs4(&lower, 1);
+            pattern += QString::fromUcs4(&upper, 1);
+            pattern += QString::fromUcs4(&codePoint, 1);
+            pattern += u']';
+        } else {
+            const bool special = codePoint == U'*' || codePoint == U'?' || codePoint == U'[';
+            if (special) {
+                pattern += u'[';
             }
-            // A fresh small allocation releases the large tag's retained capacity too.
-            *value = QString(value->constData(), length);
-            summary.metadataTruncated = true;
+            pattern += QString::fromUcs4(&codePoint, 1);
+            if (special) {
+                pattern += u']';
+            }
         }
     }
+    return pattern + u'*';
 }
 // Failure to roll back makes this session unusable for further product operations.
 class Transaction {
@@ -312,12 +342,20 @@ InsertGameResult StorageSession::insertGame(const pgn::PgnDocument& document,
         return storageError();
     }
     query.finish();
-    if (!query.prepare(QStringLiteral(
-            "INSERT INTO "
-            "games(identity_version,content_hash,identity,original_pgn,snapshot,format_version,"
-            "white_name,black_name,result,played_at,time_control,source_type,source_uri,imported_"
-            "at) VALUES(2,?,?,?,?,2,CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS "
-            "TEXT),CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS TEXT))"))) {
+    const auto idSource =
+        schemaVersion_ >= 14 ? QStringLiteral("last_id+1") : QStringLiteral("NULL");
+    const auto sequence =
+        schemaVersion_ >= 14 ? QStringLiteral(" FROM game_id_sequence WHERE id=1") : QString{};
+    if (!query.prepare(
+            QStringLiteral(
+                "INSERT INTO "
+                "games(id,identity_version,content_hash,identity,original_pgn,snapshot,format_"
+                "version,"
+                "white_name,black_name,result,played_at,time_control,source_type,source_uri,"
+                "imported_"
+                "at) SELECT %1,2,?,?,?,?,2,CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS TEXT),"
+                "CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS TEXT)%2")
+                .arg(idSource, sequence))) {
         return storageError();
     }
     query.addBindValue(game.hash);
@@ -447,25 +485,181 @@ LoadGameResult readGame(QSqlDatabase& database, GameId id) {
     return result;
 }
 
-ListGamesResult StorageSession::listGames(std::int64_t offset, int limit) {
+GamePreviewResult StorageSession::previewGame(GameId id) {
+    auto result = loadGame(id, true);
+    if (const auto* error = std::get_if<GameError>(&result)) {
+        return *error;
+    }
+    auto& game = std::get<StoredGame>(result);
+    const auto& tree = game.document->tree;
+    const auto plies = game.document->originalMainline().size();
+    const auto mainLine = tree.mainLine(tree.rootId());
+    const auto* nodes = std::get_if<std::vector<chess::NodeId>>(&mainLine);
+    if (!nodes || plies >= nodes->size()) {
+        return invalid();
+    }
+    // A merged variation can extend the tree past the last move actually played.
+    const auto node = tree.node(nodes->at(plies));
+    auto position = tree.position(nodes->at(plies));
+    auto* board = std::get_if<chess::Position>(&position);
+    if (!node || !board) {
+        return invalid();
+    }
+    clipSummary(game.summary, 1024);
+    clipText(game.source.uri, 4096, game.summary.metadataTruncated);
+    const auto tag = [&game](std::string_view name) {
+        const auto& tags = game.document->tags;
+        const auto found = std::ranges::find(tags, name, &pgn::Tag::name);
+        auto value = found == tags.end() ? QString{} : QString::fromStdString(found->value);
+        clipText(value, 1024, game.summary.metadataTruncated);
+        return value;
+    };
+    auto event = tag("Event");
+    auto site = tag("Site");
+    auto round = tag("Round");
+    auto opening = tag("Opening");
+    auto eco = tag("ECO");
+    return GamePreview{std::move(game.summary),
+                       std::move(game.source),
+                       std::move(event),
+                       std::move(site),
+                       std::move(round),
+                       std::move(opening),
+                       std::move(eco),
+                       board->boardIdentity(),
+                       node->move,
+                       plies};
+}
+
+DeleteGameResult StorageSession::deleteGame(GameId id) {
+    Transaction transaction(database_, usable_);
+    if (!usable_ || id <= 0 || !transaction.begin()) {
+        return storageError();
+    }
+    QSqlQuery query(database_);
+    const auto execute = [&](const QString& sql) {
+        if (!query.prepare(sql)) {
+            return false;
+        }
+        query.addBindValue(static_cast<qlonglong>(id));
+        return query.exec();
+    };
+    if (!execute(QStringLiteral(
+            "SELECT EXISTS(SELECT 1 FROM review_jobs j JOIN reviews r ON r.id=j.review_id "
+            "WHERE r.game_id=? AND j.status BETWEEN 0 AND 4)")) ||
+        !query.next()) {
+        return storageError();
+    }
+    const bool running = query.value(0).toBool();
+    query.finish();
+    if (running) {
+        return GameError{GameErrorCode::Busy,
+                         QStringLiteral("Stop the active review before deleting this game.")};
+    }
+    if (!execute(QStringLiteral(
+            "SELECT EXISTS(SELECT 1 FROM puzzle_jobs j JOIN reviews r ON r.id=j.source_review_id "
+            "WHERE r.game_id=? AND j.status=0)")) ||
+        !query.next()) {
+        return storageError();
+    }
+    const bool generating = query.value(0).toBool();
+    query.finish();
+    if (generating) {
+        return GameError{
+            GameErrorCode::Busy,
+            QStringLiteral("Stop puzzle generation for this game before deleting it.")};
+    }
+
+    // Drop game-owned review state in foreign-key order. Saved puzzles retain their
+    // standalone definitions, with their source foreign keys cleared by SQLite.
+    const auto reviewIds = QStringLiteral(" IN (SELECT id FROM reviews WHERE game_id=?)");
+    if (!execute(QStringLiteral("DELETE FROM review_workspace WHERE game_id=?")) ||
+        !execute(QStringLiteral("DELETE FROM review_workspace WHERE review_id") + reviewIds) ||
+        !execute(QStringLiteral("DELETE FROM review_selection WHERE game_id=?")) ||
+        !execute(QStringLiteral("DELETE FROM review_selection WHERE review_id") + reviewIds) ||
+        !execute(QStringLiteral("DELETE FROM puzzle_jobs WHERE source_review_id") + reviewIds)) {
+        return storageError();
+    }
+    for (const auto* table :
+         {"review_moments", "review_classifications", "review_escalation_positions",
+          "review_stage_positions", "review_pairs", "review_positions", "review_transitions",
+          "review_evidence", "review_jobs"}) {
+        if (!execute(QStringLiteral("DELETE FROM %1 WHERE review_id").arg(QLatin1String(table)) +
+                     reviewIds)) {
+            return storageError();
+        }
+    }
+    if (!execute(QStringLiteral("DELETE FROM reviews WHERE game_id=?")) ||
+        !execute(QStringLiteral("DELETE FROM games WHERE id=?"))) {
+        return storageError();
+    }
+    if (query.numRowsAffected() == 0) {
+        return GameError{GameErrorCode::Missing, QStringLiteral("Game not found.")};
+    }
+    query.finish();
+    if (!transaction.commit()) {
+        return storageError();
+    }
+    validatedGames_.erase(id);
+    return std::monostate{};
+}
+
+ListGamesResult StorageSession::listGames(std::int64_t offset, int limit,
+                                          const GameLibraryQuery& filter) {
     if (!usable_) {
         return storageError();
     }
-    if (offset < 0 || limit < 1 || limit > 200) {
+    const QStringList results{QString{}, QStringLiteral("1-0"), QStringLiteral("0-1"),
+                              QStringLiteral("1/2-1/2"), QStringLiteral("*")};
+    const QStringList sorts{
+        QStringLiteral("imported_at DESC,id DESC"), QStringLiteral("imported_at ASC,id ASC"),
+        QStringLiteral("CASE WHEN played_at GLOB '[0-9][0-9][0-9][0-9].??.?"
+                       "?' "
+                       "THEN replace(played_at,'?','0') ELSE '' END DESC,id DESC"),
+        QStringLiteral("white_name='',white_name COLLATE NOCASE,id DESC"),
+        QStringLiteral("black_name='',black_name COLLATE NOCASE,id DESC")};
+    const auto resultIndex = static_cast<int>(filter.result);
+    const auto sortIndex = static_cast<int>(filter.sort);
+    if (offset < 0 || limit < 1 || limit > 200 || resultIndex < 0 ||
+        resultIndex >= results.size() || sortIndex < 0 || sortIndex >= sorts.size() ||
+        filter.review < GameReviewFilter::All || filter.review > GameReviewFilter::NoReview ||
+        filter.players.size() > GameLibraryQuery::maxSearchLength ||
+        filter.players.contains(QChar::Null) || !filter.players.isValidUtf16()) {
         return GameError{GameErrorCode::InvalidSnapshot,
-                         QStringLiteral("Invalid game page bounds.")};
+                         QStringLiteral("Invalid game search or page options.")};
     }
     QSqlQuery query(database_);
     query.setForwardOnly(true);
-    if (!query.prepare(QStringLiteral(
-            "SELECT id,substr(CAST(white_name AS BLOB),1,65537),substr(CAST(black_name AS "
-            "BLOB),1,65537),substr(CAST(result AS BLOB),1,17),substr(CAST(played_at AS "
-            "BLOB),1,65537),substr(CAST(time_control AS BLOB),1,65537),substr(CAST(imported_at AS "
-            "BLOB),1,65) ,(id>0 AND typeof(white_name)='text' AND typeof(black_name)='text' AND "
-            "typeof(result)='text' AND typeof(played_at)='text' AND typeof(time_control)='text' "
-            "AND typeof(imported_at)='text') FROM games ORDER BY imported_at DESC,id DESC LIMIT ? "
-            "OFFSET ?"))) {
+    auto sql = QStringLiteral(
+        "SELECT id,substr(CAST(white_name AS BLOB),1,65537),substr(CAST(black_name AS "
+        "BLOB),1,65537),substr(CAST(result AS BLOB),1,17),substr(CAST(played_at AS "
+        "BLOB),1,65537),substr(CAST(time_control AS BLOB),1,65537),substr(CAST(imported_at AS "
+        "BLOB),1,65) ,(id>0 AND typeof(white_name)='text' AND typeof(black_name)='text' AND "
+        "typeof(result)='text' AND typeof(played_at)='text' AND typeof(time_control)='text' "
+        "AND typeof(imported_at)='text') FROM games WHERE 1");
+    const auto terms = filter.players.simplified().split(u' ', Qt::SkipEmptyParts);
+    for (qsizetype i = 0; i < terms.size(); ++i) {
+        sql += QStringLiteral(" AND (white_name GLOB ? OR black_name GLOB ?)");
+    }
+    if (filter.result != GameResultFilter::All) {
+        sql += QStringLiteral(" AND result=?");
+    }
+    if (filter.review != GameReviewFilter::All) {
+        sql += filter.review == GameReviewFilter::NoReview ? QStringLiteral(" AND NOT ")
+                                                           : QStringLiteral(" AND ");
+        sql += QStringLiteral("EXISTS(SELECT 1 FROM reviews WHERE game_id=games.id)");
+    }
+    sql += QStringLiteral(" ORDER BY ") + sorts.at(sortIndex) + QStringLiteral(" LIMIT ? OFFSET ?");
+    if (!query.prepare(sql)) {
         return storageError();
+    }
+    for (const auto& term : terms) {
+        const auto pattern = playerPattern(term);
+        query.addBindValue(pattern);
+        query.addBindValue(pattern);
+    }
+    if (filter.result != GameResultFilter::All) {
+        query.addBindValue(results.at(resultIndex));
     }
     query.addBindValue(limit);
     query.addBindValue(static_cast<qlonglong>(offset));
@@ -482,7 +676,7 @@ ListGamesResult StorageSession::listGames(std::int64_t offset, int limit) {
             games.push_back(std::move(damaged));
             continue;
         }
-        clipSummary(*metadata);
+        clipSummary(*metadata, 256);
         games.push_back(std::move(*metadata));
     }
     if (query.lastError().isValid()) {

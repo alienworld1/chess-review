@@ -5,6 +5,7 @@
 #include <QMetaType>
 #include <QString>
 #include <QUuid>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -58,6 +59,33 @@ struct StoredGame {
     GameSource source;
     std::shared_ptr<const pgn::PgnDocument> document;
 };
+enum class GameResultFilter { All, WhiteWin, BlackWin, Draw, Unrecorded };
+enum class GameReviewFilter { All, HasReview, NoReview };
+enum class GameSort { NewestImport, OldestImport, PlayedDate, White, Black };
+struct GameLibraryQuery {
+    static constexpr int maxSearchLength = 160;
+    QString players;
+    GameResultFilter result = GameResultFilter::All;
+    GameReviewFilter review = GameReviewFilter::All;
+    GameSort sort = GameSort::NewestImport;
+    bool filtered() const {
+        return !players.isEmpty() || result != GameResultFilter::All ||
+               review != GameReviewFilter::All;
+    }
+    bool operator==(const GameLibraryQuery&) const = default;
+};
+struct GamePreview {
+    GameSummary summary;
+    GameSource source;
+    QString event;
+    QString site;
+    QString round;
+    QString openingTag;
+    QString ecoTag;
+    chess::BoardIdentity board;
+    std::optional<chess::Move> lastMove;
+    std::size_t plies;
+};
 struct Inserted {
     GameId id;
 };
@@ -66,10 +94,14 @@ struct Duplicate {
 };
 using InsertGameResult = std::variant<Inserted, Duplicate, GameError>;
 using LoadGameResult = std::variant<StoredGame, GameError>;
+using GamePreviewResult = std::variant<GamePreview, GameError>;
+using DeleteGameResult = std::variant<std::monostate, GameError>;
 using ListGamesResult = std::variant<std::vector<GameSummary>, GameError>;
 using ResolveGameOpeningResult = std::variant<std::optional<OpeningResolution>, GameError>;
 } // namespace chess_review::persistence
 Q_DECLARE_METATYPE(chess_review::persistence::InsertGameResult)
 Q_DECLARE_METATYPE(chess_review::persistence::LoadGameResult)
+Q_DECLARE_METATYPE(chess_review::persistence::GamePreviewResult)
+Q_DECLARE_METATYPE(chess_review::persistence::DeleteGameResult)
 Q_DECLARE_METATYPE(chess_review::persistence::ListGamesResult)
 Q_DECLARE_METATYPE(chess_review::persistence::ResolveGameOpeningResult)

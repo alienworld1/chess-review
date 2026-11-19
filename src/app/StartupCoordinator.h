@@ -61,6 +61,7 @@ class StartupCoordinator final : public QObject {
     bool eventFilter(QObject* watched, QEvent* event) override;
 
   private:
+    QString gameDeletionBlocker(persistence::GameId id) const;
     void connectServices();
     void finishServices();
     void closeStorageWhenProducersFinish();
@@ -72,10 +73,11 @@ class StartupCoordinator final : public QObject {
     EngineAnalysisController engineAnalysis_{analysis_, engines_, engineSupervisor_};
     GameImportService imports_{database_};
     ImportController localImports_{imports_};
-    GameLibraryController library_{database_};
     UiStateStore uiState_;
     ReviewConfiguration configuration_;
     ReviewGameController reviewGame_{database_, engines_, engineSupervisor_, configuration_};
+    GameLibraryController library_{
+        database_, [this](persistence::GameId id) { return gameDeletionBlocker(id); }};
     PuzzleGenerationController puzzleGeneration_{database_, engines_, engineSupervisor_,
                                                  configuration_};
     PuzzleController puzzles_{database_, engines_, engineSupervisor_};

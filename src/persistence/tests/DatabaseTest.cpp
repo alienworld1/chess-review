@@ -219,16 +219,16 @@ void DatabaseTest::freshAndRepeatInitialization() {
     QCOMPARE(QSqlDatabase::connectionNames(), connectionsBefore);
     QVERIFY(!initialize(path, migrations()));
     FixtureConnection fixture(path);
-    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")).toInt(), 13);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")).toInt(), 14);
     QCOMPARE(fixture.scalar(QStringLiteral("SELECT MAX(version) FROM schema_migrations")).toInt(),
-             13);
+             14);
     QCOMPARE(fixture.scalar(QStringLiteral("PRAGMA journal_mode")).toString(),
              QStringLiteral("wal"));
     QCOMPARE(fixture
                  .scalar(QStringLiteral("SELECT COUNT(*) FROM sqlite_schema "
                                         "WHERE type='table' AND name NOT GLOB 'sqlite_*'"))
                  .toInt(),
-             20);
+             21);
     QVERIFY(!QDir(directory.filePath(QStringLiteral("nested/backups"))).exists());
 }
 

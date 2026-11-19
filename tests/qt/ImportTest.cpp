@@ -3,6 +3,8 @@
 #include "app/NavigationController.h"
 #include "app/StartupCoordinator.h"
 #include "import/LocalPgnInput.h"
+#include "ui/Theme.h"
+#include "ui/chess/ChessBoardWidget.h"
 #include "ui/games/GamesPage.h"
 #include "ui/games/PgnTextEdit.h"
 #include "ui/shell/MainWindow.h"
@@ -10,6 +12,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QComboBox>
 #include <QDialog>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -17,6 +20,8 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -111,6 +116,7 @@ class ImportTest final : public QObject {
     void desktopPasteAndDrop();
     void startupFailure();
     void metadataPresentation();
+    void librarySearchPreviewAndDeletion();
     void layouts_data();
     void layouts();
 };
@@ -781,6 +787,102 @@ void ImportTest::metadataPresentation() {
     disconnect(connection);
     window.completeShutdown();
 }
+void ImportTest::librarySearchPreviewAndDeletion() {
+    Fixture fixture;
+    app::NavigationController navigation;
+    ui::MainWindow window(navigation);
+    auto& library = fixture.startup.library();
+    auto& imports = fixture.startup.localImports();
+    window.installImports(imports, library);
+    window.resize(1360, 850);
+    window.show();
+    QTRY_VERIFY(imports.available());
+    QString batch = QStringLiteral(
+        "[White \"Élodie\"]\n[Black \"Rivera\"]\n[Event \"Club final\"]\n\n1. e4 e5 1-0\n\n");
+    for (int i = 0; i < 51; ++i) {
+        batch += QStringLiteral("[White \"Player %1\"]\n\n1. d4 *\n\n").arg(i);
+    }
+    QVERIFY(imports.importText(batch));
+    QVERIFY(waitForBatch(imports));
+    auto* table = window.findChild<QTableView*>(QStringLiteral("gamesTable"));
+    auto* search = window.findChild<QLineEdit*>(QStringLiteral("gameSearch"));
+    auto* result = window.findChild<QComboBox*>(QStringLiteral("gameResultFilter"));
+    auto* metadata = window.findChild<QPlainTextEdit*>(QStringLiteral("gameMetadata"));
+    auto* board = window.findChild<ui::ChessBoardWidget*>(QStringLiteral("gamePreviewBoard"));
+    auto* status = window.findChild<QLabel*>(QStringLiteral("libraryStatus"));
+    auto* remove = window.findChild<QPushButton*>(QStringLiteral("deleteGameButton"));
+    QVERIFY(table && search && result && metadata && board && status && remove);
+    QTRY_COMPARE(table->model()->rowCount(), 50);
+    QVERIFY(library.hasNext() || library.busy());
+    search->setText(QStringLiteral("Élodie"));
+    QTest::keyClick(search, Qt::Key_Return);
+    QTRY_COMPARE(table->model()->rowCount(), 1);
+    QCOMPARE(table->model()->index(0, 0).data().toString(), QStringLiteral("Élodie"));
+    table->setCurrentIndex(table->model()->index(0, 0));
+    auto* detailsToggle = window.findChild<QPushButton*>(QStringLiteral("toggleGamePreview"));
+    QVERIFY(detailsToggle);
+    if (!detailsToggle->isChecked()) {
+        detailsToggle->click();
+    }
+    QTRY_VERIFY(metadata->toPlainText().contains(QStringLiteral("Club final")));
+    QVERIFY(board->isVisible());
+    QVERIFY(board->state().lastMove);
+    QCOMPARE(board->state().lastMove->to.name(), std::string("e5"));
+    QSignalSpy resets(table->model(), &QAbstractItemModel::modelReset);
+    result->setCurrentIndex(2);
+    QTRY_COMPARE(table->model()->rowCount(), 0);
+    QVERIFY(status->text().contains(QStringLiteral("No games match")));
+    result->setCurrentIndex(1);
+    QTRY_COMPARE(table->model()->rowCount(), 1);
+    QCOMPARE(resets.count(), 2);
+
+    navigation.navigate(app::Destination::Home);
+    QTRY_VERIFY(!library.busy());
+    QCOMPARE(library.rows().size(), std::size_t{5});
+    navigation.navigate(app::Destination::Games);
+    QTRY_COMPARE(table->model()->rowCount(), 1);
+    QCOMPARE(search->text(), QStringLiteral("Élodie"));
+    table->setCurrentIndex(table->model()->index(0, 0));
+    const auto game = library.rows().front().id;
+    auto& analysis = fixture.startup.analysis();
+    library.open(game);
+    QTRY_COMPARE(analysis.gameId(), std::optional{game});
+    QSignalSpy blocked(&library, &app::GameLibraryController::deletionFailed);
+    library.remove(game);
+    QCOMPARE(blocked.count(), 1);
+    QVERIFY(!library.deleting());
+    analysis.reset();
+    QTRY_VERIFY(!analysis.gameId() && !analysis.positionChanging());
+
+    QTRY_VERIFY(remove->isEnabled());
+    remove->click();
+    auto* confirmation = window.findChild<QMessageBox*>(QStringLiteral("confirmGameDeletion"));
+    QVERIFY(confirmation);
+    QCOMPARE(confirmation->defaultButton(), confirmation->button(QMessageBox::Cancel));
+    QTest::keyClick(confirmation, Qt::Key_Escape);
+    QVERIFY(!library.deleting());
+    QTRY_VERIFY(!window.findChild<QMessageBox*>(QStringLiteral("confirmGameDeletion")));
+    QCOMPARE(table->model()->rowCount(), 1);
+    remove->click();
+    auto* confirm = window.findChild<QPushButton*>(QStringLiteral("confirmDeleteGame"));
+    QVERIFY(confirm);
+    confirm->click();
+    QTRY_COMPARE(table->model()->rowCount(), 0);
+    QVERIFY(window.findChild<QLabel*>(QStringLiteral("gameDeletionStatus"))
+                ->text()
+                .contains(QStringLiteral("deleted")));
+
+    window.findChild<QPushButton*>(QStringLiteral("importReportButton"))->click();
+    auto* report = window.findChild<QTableView*>(QStringLiteral("importResults"));
+    report->setCurrentIndex(report->model()->index(1, 0));
+    QVERIFY(!window.findChild<QPushButton*>(QStringLiteral("openImportedGame"))->isEnabled());
+    QVERIFY(window.findChild<QPlainTextEdit*>(QStringLiteral("importDetails"))
+                ->toPlainText()
+                .contains(QStringLiteral("since been deleted")));
+    report->setCurrentIndex(report->model()->index(2, 0));
+    QVERIFY(window.findChild<QPushButton*>(QStringLiteral("openImportedGame"))->isEnabled());
+    window.completeShutdown();
+}
 void ImportTest::layouts_data() {
     QTest::addColumn<QSize>("size");
     QTest::newRow("laptop") << QSize(1100, 720);
@@ -799,29 +901,50 @@ void ImportTest::layouts() {
     page.show();
     QTRY_VERIFY(fixture.startup.localImports().available());
     fixture.startup.library().activate();
-    QVERIFY(fixture.startup.localImports().importText(
-        QStringLiteral("[White \"Alice\"]\n1.e4 * 1.e5 *")));
+    QVERIFY(fixture.startup.localImports().importText(QStringLiteral(
+        "[White \"Alexandra van der Meer – Long Player Name\"]\n"
+        "[Black \"Rajesh Vishwanathan\"]\n[Event \"City club championship\"]\n"
+        "[Date \"2026.11.18\"]\n[TimeControl \"600+5\"]\n\n1. d4 d5 2. c4 *\n\n1. e5 *")));
     QTRY_VERIFY(!fixture.startup.localImports().busy());
     auto* table = page.findChild<QTableView*>(QStringLiteral("gamesTable"));
     QTRY_COMPARE(table->model()->rowCount(), 1);
-    QTest::qWait(120);
+    table->setCurrentIndex(table->model()->index(0, 0));
+    auto* filters = page.findChild<QPushButton*>(QStringLiteral("toggleGameFilters"));
+    QVERIFY(filters);
+    filters->click();
+    auto* previewToggle = page.findChild<QPushButton*>(QStringLiteral("toggleGamePreview"));
+    QVERIFY(previewToggle);
+    if (previewToggle->isChecked()) {
+        auto* board = page.findChild<ui::ChessBoardWidget*>(QStringLiteral("gamePreviewBoard"));
+        auto* metadata = page.findChild<QPlainTextEdit*>(QStringLiteral("gameMetadata"));
+        QTRY_VERIFY_WITH_TIMEOUT(board->isVisible() &&
+                                     board->mapTo(&page, QPoint(0, board->height())).y() <=
+                                         metadata->mapTo(&page, QPoint{}).y(),
+                                 5000);
+    }
     auto* results = page.findChild<QTableView*>(QStringLiteral("importResults"));
     QCOMPARE(page.size(), size);
     QVERIFY(table->width() > 200);
     QVERIFY(table->height() > 50);
     QVERIFY(page.rect().contains(QRect(table->mapTo(&page, QPoint{}), table->size())));
     QVERIFY(!results->isVisible());
+    const auto directory = qEnvironmentVariable("CHESS_REVIEW_SCREENSHOT_DIR");
+    const auto screenshotSuffix = QStringLiteral("%1x%2-%3.png")
+                                      .arg(size.width())
+                                      .arg(size.height())
+                                      .arg(page.devicePixelRatioF());
+    if (!directory.isEmpty()) {
+        QVERIFY(page.grab().save(directory + QStringLiteral("/games-") + screenshotSuffix));
+    }
     page.findChild<QPushButton*>(QStringLiteral("importReportButton"))->click();
     QTRY_VERIFY(results->isVisible());
     QVERIFY(results->height() > 30);
     QVERIFY(results->window()->rect().contains(
         QRect(results->mapTo(results->window(), QPoint{}), results->size())));
-    const auto directory = qEnvironmentVariable("CHESS_REVIEW_SCREENSHOT_DIR");
     if (!directory.isEmpty()) {
-        QVERIFY(page.grab().save(directory + QStringLiteral("/import-%1x%2-%3.png")
-                                                 .arg(size.width())
-                                                 .arg(size.height())
-                                                 .arg(page.devicePixelRatioF())));
+        results->setCurrentIndex(results->model()->index(results->model()->rowCount() - 1, 0));
+        QVERIFY(results->window()->grab().save(directory + QStringLiteral("/import-") +
+                                               screenshotSuffix));
     }
 }
 void ImportTest::startupFailure() {
@@ -846,6 +969,14 @@ int main(int argc, char** argv) {
     QApplication application(argc, argv);
     application.setApplicationName(QStringLiteral("chess-review"));
     application.setQuitOnLastWindowClosed(false);
+    if (qEnvironmentVariableIsSet("CHESS_REVIEW_SCREENSHOT_DIR")) {
+        if (qEnvironmentVariableIsSet("CHESS_REVIEW_SCREENSHOT_DARK")) {
+            auto palette = application.palette();
+            palette.setColor(QPalette::Window, QColor("#191f2a"));
+            application.setPalette(palette);
+        }
+        ui::installTheme();
+    }
     ImportTest test;
     return QTest::qExec(&test, argc, argv);
 }

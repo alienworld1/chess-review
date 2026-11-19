@@ -25,6 +25,7 @@ class ReviewWorkspaceController final : public QObject {
     bool hasGame() const { return game_.has_value(); }
     void setReady(bool ready);
     void selectGame(persistence::GameId id, std::optional<review::ReviewId> run = std::nullopt);
+    void gameRemoved(persistence::GameId id);
     void inspect(review::ReviewId id);
     void refreshRuns(std::int64_t page = 0);
     void refreshOverview(int offset = 0);

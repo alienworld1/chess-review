@@ -15,6 +15,16 @@ StartupCoordinator::StartupCoordinator(diagnostics::Logger& logger, QObject* par
         emit finished();
     });
 }
+QString StartupCoordinator::gameDeletionBlocker(persistence::GameId id) const {
+    if (analysis_.gameId() == id || analysis_.positionChanging()) {
+        return tr("Open another game or start a new board in Analyze before deleting this game.");
+    }
+    const auto& task = reviewGame_.taskState();
+    if (task.gameId == id && (task.busy || task.active)) {
+        return tr("Stop the active review before deleting this game.");
+    }
+    return {};
+}
 void StartupCoordinator::connectServices() {
     connect(&puzzles_, &PuzzleController::puzzleRemoved, &puzzleGeneration_,
             &PuzzleGenerationController::puzzleRemoved);
@@ -81,6 +91,13 @@ void StartupCoordinator::connectServices() {
             });
     connect(&library_, &GameLibraryController::opened, &analysis_, &AnalysisController::openGame);
     connect(&library_, &GameLibraryController::openFailed, this, [this] { resume_.reset(); });
+    connect(&library_, &GameLibraryController::removed, this, [this](persistence::GameId id) {
+        if (resume_ && resume_->id == id) {
+            resume_.reset();
+        }
+        reviewGame_.workspace().gameRemoved(id);
+        puzzles_.refreshCurrent();
+    });
     connect(&analysis_, &AnalysisController::gameOpened, this, [this] {
         const auto resume = std::exchange(resume_, std::nullopt);
         if (resume && analysis_.gameId() == resume->id) {

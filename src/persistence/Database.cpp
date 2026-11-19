@@ -312,7 +312,8 @@ void Database::resolveGameOpening(RequestId request, GameId id) {
         },
         Qt::QueuedConnection);
 }
-void Database::listGames(RequestId request, std::int64_t offset, int limit) {
+void Database::listGames(RequestId request, std::int64_t offset, int limit,
+                         GameLibraryQuery filter) {
     if (auto error = acceptRequest()) {
         QTimer::singleShot(0, this,
                            [this, request, error = *error] { emit gamesListed(request, error); });
@@ -320,14 +321,60 @@ void Database::listGames(RequestId request, std::int64_t offset, int limit) {
     }
     QMetaObject::invokeMethod(
         impl_->worker,
-        [this, request, offset, limit] {
-            const auto result = impl_->worker->execute<ListGamesResult>(
-                [&](detail::StorageSession& session) { return session.listGames(offset, limit); });
+        [this, request, offset, limit, filter = std::move(filter)] {
+            const auto result =
+                impl_->worker->execute<ListGamesResult>([&](detail::StorageSession& session) {
+                    return session.listGames(offset, limit, filter);
+                });
             QMetaObject::invokeMethod(
                 this,
                 [this, request, result] {
                     --impl_->pending;
                     emit gamesListed(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
+void Database::previewGame(RequestId request, GameId id) {
+    if (auto error = acceptRequest()) {
+        QTimer::singleShot(0, this,
+                           [this, request, error = *error] { emit gamePreviewed(request, error); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, id] {
+            auto result = impl_->worker->execute<GamePreviewResult>(
+                [&](detail::StorageSession& session) { return session.previewGame(id); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result = std::move(result)] {
+                    --impl_->pending;
+                    emit gamePreviewed(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
+void Database::deleteGame(RequestId request, GameId id) {
+    if (auto error = acceptRequest()) {
+        QTimer::singleShot(0, this,
+                           [this, request, error = *error] { emit gameDeleted(request, error); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, id] {
+            const auto result = impl_->worker->execute<DeleteGameResult>(
+                [&](detail::StorageSession& session) { return session.deleteGame(id); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit gameDeleted(request, result);
                 },
                 Qt::QueuedConnection);
         },

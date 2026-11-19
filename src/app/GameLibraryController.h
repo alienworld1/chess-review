@@ -5,6 +5,7 @@
 #include <QString>
 #include <QTimer>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -13,7 +14,9 @@ namespace chess_review::app {
 class GameLibraryController final : public QObject {
     Q_OBJECT
   public:
-    explicit GameLibraryController(persistence::Database& database, QObject* parent = nullptr);
+    using DeleteGuard = std::function<QString(persistence::GameId)>;
+    explicit GameLibraryController(persistence::Database& database, DeleteGuard deleteGuard = {},
+                                   QObject* parent = nullptr);
     void setReady(bool ready);
     // Home only needs recent games, without deriving review summaries.
     void activate(bool reviewDetails = true);
@@ -22,6 +25,15 @@ class GameLibraryController final : public QObject {
     bool opening() const { return !pendingOpen_.isNull(); }
     void refresh(bool newest = false);
     void importedGame();
+    void setQuery(persistence::GameLibraryQuery query);
+    const persistence::GameLibraryQuery& query() const { return query_; }
+    void selectPreview(std::optional<persistence::GameId> game);
+    const std::optional<persistence::GamePreview>& preview() const { return preview_; }
+    const QString& previewError() const { return previewError_; }
+    bool previewLoading() const { return previewGame_ && !preview_ && previewError_.isEmpty(); }
+    void remove(persistence::GameId id);
+    bool deleting() const { return !deletePending_.isNull(); }
+    std::uint64_t rowsVersion() const { return rowsVersion_; }
     QString reviewStatus(persistence::GameId id) const;
     QString reviewAccuracy(persistence::GameId id) const;
     std::optional<chess::Color> reviewedSide(persistence::GameId id) const;
@@ -30,27 +42,35 @@ class GameLibraryController final : public QObject {
     const std::vector<persistence::GameSummary>& rows() const { return rows_; }
     bool busy() const { return !pending_.isNull(); }
     bool ready() const { return ready_; }
+    bool showingGames() const { return reviewDetails_; }
     bool hasNext() const { return hasNext_; }
-    std::int64_t page() const { return offset_ / 50; }
+    std::int64_t page() const { return offset_ / pageSize; }
     const QString& error() const { return openError_.isEmpty() ? error_ : openError_; }
   signals:
     void changed();
+    void reviewsChanged();
+    void previewChanged();
+    void deletionFailed(const QString& message);
+    void removed(persistence::GameId id);
     void openingChanged(persistence::GameId id, const persistence::OpeningResolution& opening);
     void openFailed(const QString& message);
     void opened(const chess_review::persistence::StoredGame& game);
 
   private:
+    static constexpr int pageSize = 50;
+    static constexpr int recentGamesLimit = 5;
     void refreshMetadata(bool newest, bool invalidateAccuracy);
     void requestPage();
     void requestReviews();
     void requestAccuracy();
     void requestOpening();
-    struct OpeningRequest {
+    void requestPreview();
+    struct RowRequest {
         persistence::RequestId id;
         persistence::GameId game;
         std::uint64_t revision;
     };
-    std::optional<OpeningRequest> openingRequest_;
+    std::optional<RowRequest> openingRequest_;
     std::size_t nextOpeningRow_ = 0;
     struct ReviewRow {
         persistence::LibraryReview metadata;
@@ -66,6 +86,17 @@ class GameLibraryController final : public QObject {
     std::uint64_t accuracyRevision_ = 0;
     persistence::Database& database_;
     QTimer refreshTimer_;
+    QTimer previewTimer_;
+    persistence::GameLibraryQuery query_;
+    std::optional<persistence::GameId> previewGame_;
+    std::optional<RowRequest> previewPending_;
+    std::optional<persistence::GamePreview> preview_;
+    QString previewError_;
+    std::uint64_t previewGeneration_ = 0;
+    DeleteGuard deleteGuard_;
+    persistence::RequestId deletePending_;
+    persistence::GameId deletingGame_ = 0;
+    std::uint64_t rowsVersion_ = 0;
     persistence::RequestId pending_;
     persistence::RequestId pendingOpen_;
     std::vector<persistence::GameSummary> rows_;

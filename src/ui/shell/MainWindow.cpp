@@ -872,9 +872,6 @@ void MainWindow::installImports(app::ImportController& imports,
         if (!closing_ &&
             (pages_->currentWidget() == games || pages_->currentWidget() == pages_->widget(0))) {
             library.activate(pages_->currentWidget() == games);
-            if (pages_->currentWidget() == pages_->widget(0)) {
-                library.refresh(true);
-            }
         } else {
             library.deactivate();
         }
@@ -947,8 +944,8 @@ void MainWindow::installImports(app::ImportController& imports,
     connect(recent, &QListWidget::currentRowChanged, openRecent,
             [openRecent](int row) { openRecent->setEnabled(row >= 0); });
     connect(&library, &app::GameLibraryController::changed, recent,
-            [&library, recent, recentHeading, openRecent] {
-                if (library.busy()) {
+            [this, &library, home, recent, recentHeading, openRecent] {
+                if (library.busy() || pages_->currentWidget() != home) {
                     return;
                 }
                 const auto* selected = recent->currentItem();

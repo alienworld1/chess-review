@@ -176,7 +176,8 @@ std::optional<DatabaseError> StorageSession::initialize(const QString& path,
         return error;
     }
     // Custom historical registries are used only by persistence migration fixtures.
-    openingCacheUsable_ = registry.back().version >= 12;
+    schemaVersion_ = registry.back().version;
+    openingCacheUsable_ = schemaVersion_ >= 12;
     if (registry.back().version >= 6) {
         progress(QStringLiteral("Recovering unfinished reviews…"));
         if (auto error = interruptReviewJobs(canonicalPath)) {

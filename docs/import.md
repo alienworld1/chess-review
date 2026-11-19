@@ -50,9 +50,10 @@ errors skip that game; an unrecoverable tail stops that file. A storage failure
 stops the entire batch. Reaching the game limit leaves subsequent files visibly
 unprocessed. Empty input reports **No games found**.
 
-Choose **Import report** to open the results table. It lists each source and its per-game outcomes. Select a row for
-copyable diagnostic details, including source byte ranges, line/byte-column
-locations, warnings, and suppression counts. The latest batch's report remains
+Choose **Import report** to open the results table. It lists each source and its
+per-game outcomes. Select a saved game from the report to open it in Analyze or
+review it. Select any row for copyable errors and warnings. Verbose diagnostics
+also show source byte ranges and exact line and byte-column locations. The latest batch's report remains
 available while navigating, until another batch is submitted or the app exits.
 Reports are not saved to the database. Completion, completion with errors,
 cancellation, game-limit stops, and terminal failures have distinct feedback;
@@ -69,10 +70,17 @@ analysis automatically.
 
 ## Saved games and privacy
 
-Games shows a newest-first table with 50 rows per page, Previous/Next, and
-Refresh. Import completion returns the table to its newest page. Damaged metadata
-rows remain identifiable, and truncated fields are marked. Search, selectable
-sorting and previews are not implemented yet.
+Games shows 50 rows per page. Search for either player with **Ctrl+F** or the
+search field. Multiple words can match across both player names. **Filters**
+offers result and saved-review filters and lets you sort by import order, played
+date, or player name. Search and filters apply to the whole library and stay in
+place when you leave Games. **Reset** clears them and restores newest-first
+ordering. A completed import returns to the first page of the current view.
+
+Select a row for the final mainline position and copyable game details, including
+event, site, round, time control, source, and review accuracy when available.
+Use **Details** to show the preview on a narrow window. Long metadata fields may
+be shortened in the preview.
 
 The **Opening** column shows the local opening name, variation, and ECO code
 when the played mainline matches the bundled Lichess dataset. Common move-order
@@ -92,3 +100,11 @@ The complete validated snapshot opens with all moves and variations. The players
 result, and selected move's comments and NAGs remain visible. Loading errors are
 shown without replacing the current workspace. No engine is required or started.
 See [Analyze board](analysis-board.md#imported-games) for exploration and recovery.
+
+## Deleting saved games
+
+Select a row and choose **Delete game…**. Confirm to permanently remove the local
+snapshot, opening lookup, saved reviews, and review recovery state. Your original
+PGN file and already saved puzzles are kept. Finish or stop an active review or
+puzzle generation for that game first. If the game is open in Analyze, export any
+edits you want to keep and open another game or start a new board before deleting.

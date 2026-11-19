@@ -1994,6 +1994,8 @@ class ReviewRepositoryTest final : public QObject {
             q.addBindValue(settings);
             q.addBindValue(static_cast<qlonglong>(id));
             QVERIFY(q.exec());
+            QVERIFY(q.exec(QStringLiteral("DROP TRIGGER track_game_id")));
+            QVERIFY(q.exec(QStringLiteral("DROP TABLE game_id_sequence")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE game_openings")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE puzzles")));
             QVERIFY(q.exec(QStringLiteral("DROP TABLE puzzle_jobs")));

@@ -65,7 +65,10 @@ class Database final : public QObject {
                     GameSource source = {});
     void loadGame(RequestId request, GameId id);
     void resolveGameOpening(RequestId request, GameId id);
-    void listGames(RequestId request, std::int64_t offset = 0, int limit = 50);
+    void listGames(RequestId request, std::int64_t offset = 0, int limit = 50,
+                   GameLibraryQuery query = {});
+    void previewGame(RequestId request, GameId id);
+    void deleteGame(RequestId request, GameId id);
     void listPuzzles(RequestId request, std::int64_t offset = 0, int limit = 50,
                      std::optional<ReviewId> reviewId = std::nullopt);
     void loadPuzzle(RequestId request, PuzzleId id);
@@ -151,6 +154,8 @@ class Database final : public QObject {
     void gameLoaded(chess_review::persistence::RequestId request,
                     const chess_review::persistence::LoadGameResult& result);
     void gameOpeningResolved(RequestId request, const ResolveGameOpeningResult& result);
+    void gamePreviewed(RequestId request, const GamePreviewResult& result);
+    void gameDeleted(RequestId request, const DeleteGameResult& result);
     void gamesListed(chess_review::persistence::RequestId request,
                      const chess_review::persistence::ListGamesResult& result);
 

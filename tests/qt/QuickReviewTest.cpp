@@ -832,7 +832,8 @@ class QuickReviewTest final : public QObject {
         QVERIFY(summaries.empty());
         f.navigation.navigate(app::Destination::Games);
         QTRY_VERIFY(!metadata.empty());
-        QTRY_VERIFY(!summaries.empty());
+        // Reentry can reuse the already verified summary when the run revision matches.
+        QTRY_VERIFY(library.reviewAccuracy(f.gameId).contains(QLatin1Char('%')));
     }
     void missingContextShowsAnErrorWithoutSelectingAnotherRun() {
         Fixture f;

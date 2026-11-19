@@ -5,31 +5,92 @@
 #include <utility>
 
 namespace chess_review::app {
-GameLibraryController::GameLibraryController(persistence::Database& database, QObject* parent)
-    : QObject(parent), database_(database) {
+GameLibraryController::GameLibraryController(persistence::Database& database,
+                                             DeleteGuard deleteGuard, QObject* parent)
+    : QObject(parent), database_(database), deleteGuard_(std::move(deleteGuard)) {
     connect(&database_, &persistence::Database::gameLoaded, this,
             [this](persistence::RequestId request, const persistence::LoadGameResult& result) {
                 if (pendingOpen_.isNull() || request != pendingOpen_) {
                     return;
                 }
                 pendingOpen_ = {};
-                if (!ready_ || requestedOpenGeneration_ != openGeneration_) {
-                    emit changed();
-                    return;
-                }
-                if (const auto* game = std::get_if<persistence::StoredGame>(&result)) {
-                    openError_.clear();
-                    emit opened(*game);
-                } else {
-                    openError_ = std::get<persistence::GameError>(result).message;
-                    emit openFailed(openError_);
+                if (ready_ && requestedOpenGeneration_ == openGeneration_) {
+                    if (const auto* game = std::get_if<persistence::StoredGame>(&result)) {
+                        openError_.clear();
+                        emit opened(*game);
+                    } else {
+                        openError_ = std::get<persistence::GameError>(result).message;
+                        emit openFailed(openError_);
+                    }
                 }
                 emit changed();
+                requestPreview();
                 requestOpening();
             });
     refreshTimer_.setSingleShot(true);
     refreshTimer_.setInterval(250);
     connect(&refreshTimer_, &QTimer::timeout, this, [this] { refreshMetadata(false, false); });
+    previewTimer_.setSingleShot(true);
+    previewTimer_.setInterval(120);
+    connect(&previewTimer_, &QTimer::timeout, this, &GameLibraryController::requestPreview);
+    connect(&database_, &persistence::Database::gamePreviewed, this,
+            [this](QUuid id, const persistence::GamePreviewResult& result) {
+                if (!previewPending_ || previewPending_->id != id) {
+                    return;
+                }
+                const auto request = *std::exchange(previewPending_, std::nullopt);
+                if (ready_ && active_ && reviewDetails_ && previewGame_ == request.game &&
+                    previewGeneration_ == request.revision) {
+                    if (const auto* preview = std::get_if<persistence::GamePreview>(&result)) {
+                        preview_ = *preview;
+                        const auto row =
+                            std::ranges::find(rows_, request.game, &persistence::GameSummary::id);
+                        if (row != rows_.end() && !row->opening && preview->summary.opening) {
+                            row->opening = preview->summary.opening;
+                            emit openingChanged(request.game, *preview->summary.opening);
+                        }
+                        emit previewChanged();
+                    } else {
+                        const auto& error = std::get<persistence::GameError>(result);
+                        if (error.code == persistence::GameErrorCode::Busy) {
+                            previewTimer_.start();
+                        } else {
+                            previewError_ = error.message;
+                            emit previewChanged();
+                        }
+                    }
+                }
+                requestPreview();
+                requestOpening();
+                requestAccuracy();
+            });
+    connect(&database_, &persistence::Database::gameDeleted, this,
+            [this](QUuid id, const persistence::DeleteGameResult& result) {
+                if (!deleting() || deletePending_ != id) {
+                    return;
+                }
+                deletePending_ = {};
+                const auto game = std::exchange(deletingGame_, 0);
+                if (const auto* error = std::get_if<persistence::GameError>(&result)) {
+                    emit deletionFailed(error->message);
+                    if (error->code == persistence::GameErrorCode::Missing) {
+                        refreshMetadata(false, false);
+                    }
+                } else {
+                    pageStale_ = true;
+                    if (previewGame_ == game) {
+                        selectPreview(std::nullopt);
+                    }
+                    reviews_.erase(game);
+                    openError_.clear();
+                    refreshMetadata(false, false);
+                    emit removed(game);
+                }
+                emit changed();
+                requestPreview();
+                requestOpening();
+                requestAccuracy();
+            });
     connect(&database_, &persistence::Database::gamesListed, this,
             [this](persistence::RequestId request, const persistence::ListGamesResult& result) {
                 if (pending_.isNull() || request != pending_) {
@@ -44,18 +105,18 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                     return;
                 }
                 rows_.clear();
+                ++rowsVersion_;
                 nextOpeningRow_ = 0;
                 hasNext_ = false;
                 if (const auto* rows =
                         std::get_if<std::vector<persistence::GameSummary>>(&result)) {
-                    hasNext_ = rows->size() > 50;
-                    const auto size = std::min<std::size_t>(50, rows->size());
+                    hasNext_ = reviewDetails_ && rows->size() > pageSize;
+                    const auto size = std::min<std::size_t>(pageSize, rows->size());
                     rows_.assign(rows->begin(), rows->begin() + static_cast<std::ptrdiff_t>(size));
                     error_.clear();
                     pageStale_ = false;
-                    // Concurrent imports can shift pages; never strand the user on an empty page.
-                    if (rows_.empty() && offset_ > 0) {
-                        offset_ = 0;
+                    if (rows_.empty() && reviewDetails_ && offset_ > 0) {
+                        offset_ -= pageSize;
                         ++revision_;
                         requestPage();
                         return;
@@ -65,6 +126,7 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                 }
                 requestReviews();
                 emit changed();
+                requestPreview();
                 requestOpening();
             });
     connect(&database_, &persistence::Database::gameOpeningResolved, this,
@@ -131,7 +193,10 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                     std::reverse(accuracyQueue_.begin(), accuracyQueue_.end());
                     requestAccuracy();
                 }
-                emit changed();
+                emit reviewsChanged();
+                if (std::holds_alternative<persistence::ReviewError>(result)) {
+                    emit changed();
+                }
             });
     connect(
         &database_, &persistence::Database::reviewOverviewLoaded, this,
@@ -162,7 +227,7 @@ GameLibraryController::GameLibraryController(persistence::Database& database, QO
                         }
                     }
                 }
-                emit changed();
+                emit reviewsChanged();
             }
             accuracyRun_.reset();
             requestAccuracy();
@@ -177,6 +242,8 @@ void GameLibraryController::setReady(bool ready) {
         accuracyQueue_.clear();
         reviews_.clear();
         rows_.clear();
+        ++rowsVersion_;
+        selectPreview(std::nullopt);
         pageStale_ = true;
         hasNext_ = false;
     } else if (active_) {
@@ -185,7 +252,7 @@ void GameLibraryController::setReady(bool ready) {
     emit changed();
 }
 void GameLibraryController::open(persistence::GameId id) {
-    if (!ready_ || opening() || id <= 0) {
+    if (!ready_ || opening() || (deleting() && deletingGame_ == id) || id <= 0) {
         return;
     }
     pendingOpen_ = QUuid::createUuid();
@@ -197,9 +264,10 @@ void GameLibraryController::open(persistence::GameId id) {
 void GameLibraryController::activate(bool reviewDetails) {
     if (reviewDetails_ != reviewDetails) {
         reviewDetails_ = reviewDetails;
-        ++revision_;
-        accuracyQueue_.clear();
-        nextOpeningRow_ = 0;
+        active_ = true;
+        selectPreview(std::nullopt);
+        refreshMetadata(false, false);
+        return;
     }
     if (!active_) {
         active_ = true;
@@ -207,6 +275,7 @@ void GameLibraryController::activate(bool reviewDetails) {
             refresh();
         } else {
             requestReviews();
+            emit changed();
         }
     } else if (reviewDetails_) {
         requestReviews();
@@ -222,6 +291,7 @@ void GameLibraryController::deactivate() {
     nextOpeningRow_ = 0;
     refreshTimer_.stop();
     accuracyQueue_.clear();
+    selectPreview(std::nullopt);
 }
 void GameLibraryController::refresh(bool newest) { refreshMetadata(newest, true); }
 void GameLibraryController::refreshMetadata(bool newest, bool invalidateAccuracy) {
@@ -229,6 +299,7 @@ void GameLibraryController::refreshMetadata(bool newest, bool invalidateAccuracy
     refreshTimer_.stop();
     if (invalidateAccuracy) {
         reviews_.clear();
+        emit reviewsChanged();
     }
     if (newest) {
         offset_ = 0;
@@ -237,6 +308,62 @@ void GameLibraryController::refreshMetadata(bool newest, bool invalidateAccuracy
     accuracyQueue_.clear();
     requestPage();
 }
+void GameLibraryController::setQuery(persistence::GameLibraryQuery query) {
+    query.players = query.players.simplified();
+    if (query_ == query) {
+        return;
+    }
+    query_ = std::move(query);
+    offset_ = 0;
+    openError_.clear();
+    if (reviewDetails_) {
+        refreshMetadata(false, false);
+    }
+}
+void GameLibraryController::selectPreview(std::optional<persistence::GameId> game) {
+    if (game && (*game <= 0 || !active_ || !reviewDetails_ || !ready_)) {
+        game.reset();
+    }
+    if (game == previewGame_) {
+        return;
+    }
+    previewTimer_.stop();
+    ++previewGeneration_;
+    previewGame_ = game;
+    preview_.reset();
+    previewError_.clear();
+    if (game) {
+        previewTimer_.start();
+    } else {
+        requestOpening();
+        requestAccuracy();
+    }
+    emit previewChanged();
+}
+void GameLibraryController::requestPreview() {
+    if (busy() || opening() || deleting() || previewPending_ || previewTimer_.isActive() ||
+        !previewLoading()) {
+        return;
+    }
+    previewPending_ = RowRequest{QUuid::createUuid(), *previewGame_, previewGeneration_};
+    database_.previewGame(previewPending_->id, previewPending_->game);
+}
+void GameLibraryController::remove(persistence::GameId id) {
+    if (!ready_ || deleting() || opening() || id <= 0) {
+        return;
+    }
+    if (deleteGuard_) {
+        const auto error = deleteGuard_(id);
+        if (!error.isEmpty()) {
+            emit deletionFailed(error);
+            return;
+        }
+    }
+    deletingGame_ = id;
+    deletePending_ = QUuid::createUuid();
+    database_.deleteGame(deletePending_, id);
+    emit changed();
+}
 void GameLibraryController::importedGame() {
     pageStale_ = true;
     if (ready_ && active_ && !refreshTimer_.isActive()) {
@@ -244,17 +371,17 @@ void GameLibraryController::importedGame() {
     }
 }
 void GameLibraryController::previous() {
-    if (busy() || offset_ == 0) {
+    if (busy() || !reviewDetails_ || offset_ == 0) {
         return;
     }
-    offset_ -= 50;
+    offset_ -= pageSize;
     refresh();
 }
 void GameLibraryController::next() {
     if (busy() || !hasNext_) {
         return;
     }
-    offset_ += 50;
+    offset_ += pageSize;
     refresh();
 }
 void GameLibraryController::requestPage() {
@@ -263,7 +390,9 @@ void GameLibraryController::requestPage() {
     }
     pending_ = QUuid::createUuid();
     requestedRevision_ = revision_;
-    database_.listGames(pending_, offset_, 51);
+    database_.listGames(pending_, reviewDetails_ ? offset_ : 0,
+                        reviewDetails_ ? pageSize + 1 : recentGamesLimit,
+                        reviewDetails_ ? query_ : persistence::GameLibraryQuery{});
     emit changed();
 }
 void GameLibraryController::requestReviews() {
@@ -272,16 +401,28 @@ void GameLibraryController::requestReviews() {
     }
     std::vector<persistence::GameId> ids;
     for (const auto& row : rows_) {
-        ids.push_back(row.id);
+        if (row.id > 0) {
+            ids.push_back(row.id);
+        }
+    }
+    if (ids.empty()) {
+        return;
     }
     reviewsRevision_ = revision_;
     reviewsPending_ = QUuid::createUuid();
     database_.listLibraryReviews(reviewsPending_, std::move(ids));
 }
 void GameLibraryController::requestAccuracy() {
-    if (!ready_ || !active_ || !reviewDetails_ || !accuracyPending_.isNull() ||
-        accuracyQueue_.empty()) {
+    if (!ready_ || !active_ || !reviewDetails_ || busy() || deleting() || pageStale_ ||
+        !accuracyPending_.isNull() || accuracyQueue_.empty() || previewLoading()) {
         return;
+    }
+    if (previewGame_) {
+        const auto selected =
+            std::ranges::find(accuracyQueue_, *previewGame_, &persistence::ReviewSummary::gameId);
+        if (selected != accuracyQueue_.end()) {
+            std::iter_swap(selected, accuracyQueue_.end() - 1);
+        }
     }
     accuracyRun_ = accuracyQueue_.back();
     accuracyQueue_.pop_back();
@@ -290,14 +431,14 @@ void GameLibraryController::requestAccuracy() {
     database_.loadReviewOverview(accuracyPending_, accuracyRun_->id, accuracyRun_->revision);
 }
 void GameLibraryController::requestOpening() {
-    if (!ready_ || !active_ || !reviewDetails_ || busy() || opening() || pageStale_ ||
-        openingRequest_) {
+    if (!ready_ || !active_ || !reviewDetails_ || busy() || opening() || pageStale_ || deleting() ||
+        previewLoading() || openingRequest_) {
         return;
     }
     while (nextOpeningRow_ < rows_.size()) {
         const auto& row = rows_[nextOpeningRow_++];
         if (!row.opening && !row.metadataError) {
-            openingRequest_ = OpeningRequest{QUuid::createUuid(), row.id, revision_};
+            openingRequest_ = RowRequest{QUuid::createUuid(), row.id, revision_};
             database_.resolveGameOpening(openingRequest_->id, row.id);
             return;
         }

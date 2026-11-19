@@ -61,7 +61,9 @@ class StorageSession final {
 
     InsertGameResult insertGame(const pgn::PgnDocument& document, const GameSource& source);
     LoadGameResult loadGame(GameId id, bool includeOpening = false);
-    ListGamesResult listGames(std::int64_t offset, int limit);
+    ListGamesResult listGames(std::int64_t offset, int limit, const GameLibraryQuery& filter = {});
+    GamePreviewResult previewGame(GameId id);
+    DeleteGameResult deleteGame(GameId id);
     ResolveGameOpeningResult resolveGameOpening(GameId id);
     ListPuzzlesResult listPuzzles(std::int64_t offset, int limit, std::optional<ReviewId> reviewId);
     LoadPuzzleResult loadPuzzle(PuzzleId id);
@@ -91,6 +93,7 @@ class StorageSession final {
     bool openingCacheUsable_ = true;
     const openings::OpeningIndex* openingIndex_ = nullptr;
     bool usable_ = true;
+    int schemaVersion_ = 0;
     std::optional<std::pair<std::int64_t, std::int64_t>> validationStamp_;
     std::set<GameId> validatedGames_; // At most 256 IDs, never snapshots or source payloads.
     QString connectionName_;

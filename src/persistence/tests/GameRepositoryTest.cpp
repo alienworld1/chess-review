@@ -54,6 +54,13 @@ class Fixture {
         QSqlQuery query(database_);
         return query.exec(sql);
     }
+    QVariant scalar(const QString& sql) {
+        QSqlQuery query(database_);
+        if (!query.exec(sql) || !query.next()) {
+            qFatal("Cannot read fixture result");
+        }
+        return query.value(0);
+    }
     bool insertLegacy(GameId id, const pgn::PgnDocument& document) {
         const auto encoded = encodeGame(document, 1);
         const auto* game = std::get_if<EncodedGame>(&encoded);
@@ -146,7 +153,138 @@ class GameRepositoryTest final : public QObject {
     void legacyTextUpgradePreservesGames();
     void openingCacheUpgradesAndBackfills();
     void openingCacheFailureKeepsGamesAvailable();
+    void libraryQueriesAndPreview();
+    void deleteGameAndDependencies();
 };
+void GameRepositoryTest::libraryQueriesAndPreview() {
+    QTemporaryDir directory;
+    StorageSession session;
+    QVERIFY(!session.initialize(directory.filePath(QStringLiteral("games.sqlite3")), migrations(),
+                                ignoreProgress));
+    const auto insert = [&](const std::string& pgn) {
+        return std::get<Inserted>(session.insertGame(*document(pgn), {QStringLiteral("paste"), {}}))
+            .id;
+    };
+    const auto white = insert("[White \"Željko [A]*\"]\n[Black \"Alice\"]\n"
+                              "[Event \"Club final\"]\n[Round \"4\"]\n[Date \"2023.08.20\"]\n"
+                              "\n1. e4 (1. c4) e5 1-0");
+    const auto latest =
+        insert("[White \"Zoe\"]\n[Black \"Željko\"]\n[Date \"2025.12.01\"]\n\n1. d4 0-1");
+    insert("[White \"Eleanor\"]\n[Black \"Alice\"]\n\n1. Nf3 *");
+    GameLibraryQuery filter;
+    filter.players = QStringLiteral("  žELJKO    ALICE  ");
+    auto rows = std::get<std::vector<GameSummary>>(session.listGames(0, 1, filter));
+    QCOMPARE(rows.size(), std::size_t{1});
+    QCOMPARE(rows.front().id, white);
+    filter.players = QStringLiteral("[a]*");
+    rows = std::get<std::vector<GameSummary>>(session.listGames(0, 20, filter));
+    QCOMPARE(rows.size(), std::size_t{1});
+    QCOMPARE(rows.front().id, white);
+    filter.players = QStringLiteral("' OR 1=1 --");
+    QVERIFY(std::get<std::vector<GameSummary>>(session.listGames(0, 1, filter)).empty());
+    filter.players.clear();
+    filter.sort = GameSort::PlayedDate;
+    rows = std::get<std::vector<GameSummary>>(session.listGames(0, 1, filter));
+    QCOMPARE(rows.front().id, latest);
+    rows = std::get<std::vector<GameSummary>>(session.listGames(1, 1, filter));
+    QCOMPARE(rows.front().id, white);
+    filter.result = GameResultFilter::BlackWin;
+    rows = std::get<std::vector<GameSummary>>(session.listGames(0, 20, filter));
+    QCOMPARE(rows.size(), std::size_t{1});
+    QCOMPARE(rows.front().id, latest);
+    filter.review = GameReviewFilter::HasReview;
+    QVERIFY(std::get<std::vector<GameSummary>>(session.listGames(0, 1, filter)).empty());
+
+    const auto preview = std::get<GamePreview>(session.previewGame(white));
+    QCOMPARE(preview.event, QStringLiteral("Club final"));
+    QCOMPARE(preview.round, QStringLiteral("4"));
+    QCOMPARE(preview.source.type, QStringLiteral("paste"));
+    QCOMPARE(preview.plies, std::size_t{2});
+    QCOMPARE(preview.lastMove->to.name(), std::string("e5"));
+    const auto pieceAt = [](const GamePreview& value, std::string_view name) {
+        return value.board.pieces.at(
+            static_cast<std::size_t>(chess::Square::fromName(name)->index()));
+    };
+    QVERIFY(pieceAt(preview, "e4"));
+    QVERIFY(!pieceAt(preview, "c4"));
+    const auto merged = std::get<GamePreview>(session.previewGame(insert("1. e4 (1. e4 e5) *")));
+    QCOMPARE(merged.plies, std::size_t{1});
+    QCOMPARE(merged.lastMove->to.name(), std::string("e4"));
+    QVERIFY(!pieceAt(merged, "e5"));
+}
+void GameRepositoryTest::deleteGameAndDependencies() {
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("games.sqlite3"));
+    const auto firstGame = document("1. e4 e5 2. Nf3 *");
+    GameId first = 0;
+    {
+        StorageSession old;
+        QVERIFY(!old.initialize(path, std::span(migrations()).first(13), ignoreProgress));
+        first = std::get<Inserted>(old.insertGame(*firstGame, {})).id;
+    }
+    {
+        StorageSession session;
+        QVERIFY(!session.initialize(path, migrations(), ignoreProgress));
+        Fixture sql(path);
+        QVERIFY(sql.exec(QStringLiteral("PRAGMA foreign_keys=ON")));
+        QVERIFY(sql.exec(QStringLiteral(
+            "INSERT INTO engines VALUES(1,'engine','/test',zeroblob(32),'engine',NULL,NULL,"
+            "X'00',X'00',1,'','')")));
+        QVERIFY(sql.exec(
+            QStringLiteral("INSERT INTO reviews SELECT 1,id,1,0,0,X'00',X'00',1,0 FROM games")));
+        QVERIFY(sql.exec(QStringLiteral("INSERT INTO review_jobs VALUES(1,1,0,0,4,0,0)")));
+        QVERIFY(sql.exec(QStringLiteral("INSERT INTO review_workspace VALUES(1,1,1,1,1)")));
+        QVERIFY(sql.exec(QStringLiteral("INSERT INTO review_selection VALUES(1,1)")));
+        QVERIFY(sql.exec(QStringLiteral("INSERT INTO review_moments VALUES(1,1)")));
+        QVERIFY(sql.exec(
+            QStringLiteral("INSERT INTO review_evidence VALUES(1,1,0,NULL,NULL,NULL,X'00',1)")));
+        QVERIFY(sql.exec(QStringLiteral("INSERT INTO review_positions VALUES(1,0,1)")));
+        QVERIFY(
+            sql.exec(QStringLiteral("INSERT INTO review_classifications VALUES(1,1,1,1,X'00')")));
+        QVERIFY(sql.exec(QStringLiteral("INSERT INTO review_stage_positions VALUES(1,1,0,1)")));
+        QVERIFY(
+            sql.exec(QStringLiteral("INSERT INTO review_escalation_positions VALUES(1,3,0,1)")));
+        QVERIFY(sql.exec(QStringLiteral("INSERT INTO review_pairs VALUES(1,1,1,1,X'00')")));
+        QVERIFY(sql.exec(QStringLiteral("INSERT INTO review_transitions VALUES(1,0,NULL,0,0,0)")));
+        QVERIFY(sql.exec(QStringLiteral("INSERT INTO puzzle_jobs VALUES(1,1,0,0,0,0,0,X'00')")));
+        QVERIFY(
+            sql.exec(QStringLiteral("INSERT INTO puzzles VALUES(1,X'00',X'00',1,1,0,X'00','')")));
+        const auto other = std::get<Inserted>(session.insertGame(*document("1. d4 d5 *"), {})).id;
+        QVERIFY(other > first);
+        GameLibraryQuery filter;
+        filter.review = GameReviewFilter::HasReview;
+        const auto rows = std::get<std::vector<GameSummary>>(session.listGames(0, 20, filter));
+        QCOMPARE(rows.size(), std::size_t{1});
+        QCOMPARE(rows.front().id, first);
+        filter.review = GameReviewFilter::NoReview;
+        QCOMPARE(std::get<std::vector<GameSummary>>(session.listGames(0, 20, filter)).front().id,
+                 other);
+        QCOMPARE(std::get<GameError>(session.deleteGame(first)).code, GameErrorCode::Busy);
+        QVERIFY(sql.exec(QStringLiteral("UPDATE review_jobs SET status=8")));
+        QCOMPARE(std::get<GameError>(session.deleteGame(first)).code, GameErrorCode::Busy);
+        QVERIFY(sql.exec(QStringLiteral("UPDATE puzzle_jobs SET status=2")));
+        QVERIFY(sql.exec(QStringLiteral("CREATE TRIGGER reject_delete BEFORE DELETE ON games BEGIN "
+                                        "SELECT RAISE(ABORT,'fixture'); END")));
+        QCOMPARE(std::get<GameError>(session.deleteGame(first)).code, GameErrorCode::Storage);
+        QCOMPARE(sql.scalar(QStringLiteral("SELECT review_id FROM review_workspace")).toInt(), 1);
+        QCOMPARE(sql.scalar(QStringLiteral("SELECT source_review_id FROM puzzles")).toInt(), 1);
+        QVERIFY(sql.exec(QStringLiteral("DROP TRIGGER reject_delete")));
+        QVERIFY(std::holds_alternative<std::monostate>(session.deleteGame(first)));
+        QCOMPARE(std::get<GameError>(session.loadGame(first)).code, GameErrorCode::Missing);
+        QCOMPARE(std::get<GameError>(session.deleteGame(first)).code, GameErrorCode::Missing);
+        QVERIFY(std::holds_alternative<StoredGame>(session.loadGame(other)));
+        QCOMPARE(sql.scalar(QStringLiteral("SELECT count(*) FROM reviews")).toInt(), 0);
+        QCOMPARE(sql.scalar(QStringLiteral("SELECT count(*) FROM puzzle_jobs")).toInt(), 0);
+        QVERIFY(sql.scalar(QStringLiteral("SELECT source_review_id FROM puzzles")).isNull());
+        QVERIFY(sql.scalar(QStringLiteral("SELECT source_game_id FROM puzzles")).isNull());
+        QCOMPARE(
+            sql.scalar(QStringLiteral("SELECT count(*) FROM pragma_foreign_key_check")).toInt(), 0);
+        QVERIFY(std::holds_alternative<std::monostate>(session.deleteGame(other)));
+    }
+    StorageSession reopened;
+    QVERIFY(!reopened.initialize(path, migrations(), ignoreProgress));
+    QVERIFY(std::get<Inserted>(reopened.insertGame(*firstGame, {})).id > first + 1);
+}
 void GameRepositoryTest::openingCacheUpgradesAndBackfills() {
     QTemporaryDir directory;
     const auto path = directory.filePath(QStringLiteral("openings.sqlite3"));

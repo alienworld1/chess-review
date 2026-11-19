@@ -6,14 +6,17 @@
 #include <QWidget>
 
 class QAction;
+class QComboBox;
 class QLabel;
+class QLineEdit;
 class QPushButton;
 class QPlainTextEdit;
 class QTableView;
 class QTimer;
 namespace chess_review::ui {
+class ChessBoardWidget;
 class LibraryTableModel;
-class ImportTableModel;
+class ImportReportDialog;
 class GamesPage final : public QWidget {
     Q_OBJECT
   public:
@@ -28,19 +31,21 @@ class GamesPage final : public QWidget {
   protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
   private:
     void updateLibrary();
+    void applyQuery();
+    void updatePreview();
+    void updatePreviewVisibility();
+    void confirmDeletion();
     void requestOpen();
     void updateOpenAction();
     void updateImport();
-    void showResultDetails();
     app::ImportController& imports_;
     app::GameLibraryController& library_;
     LibraryTableModel* libraryModel_;
-    ImportTableModel* importModel_;
     QTableView* games_;
-    QTableView* results_;
     QLabel* libraryStatus_;
     QLabel* importStatus_;
     QPushButton* previous_;
@@ -48,11 +53,27 @@ class GamesPage final : public QWidget {
     QPushButton* refresh_;
     QPushButton* open_;
     QPushButton* review_;
+    QPushButton* remove_;
+    QPushButton* toggleFilters_;
+    QPushButton* togglePreview_;
+    QPushButton* clearFilters_;
+    QLineEdit* search_;
+    QComboBox* resultFilter_;
+    QComboBox* reviewFilter_;
+    QComboBox* sort_;
+    QWidget* previewPane_;
+    ChessBoardWidget* board_;
+    QLabel* previewHeading_;
+    QLabel* previewStatus_;
+    QPlainTextEdit* metadata_;
+    QTimer* searchTimer_;
+    std::optional<bool> previewPreference_;
+    std::optional<persistence::GameId> selectedGame_;
+    std::optional<persistence::GameId> displayedPreview_;
+    QLabel* deletionStatus_;
     QPushButton* cancel_;
-    QPlainTextEdit* details_;
     QPushButton* report_;
-    QString detailText_;
-    bool verbose_ = false;
+    ImportReportDialog* reportDialog_;
     QTimer* updateTimer_;
 };
 } // namespace chess_review::ui

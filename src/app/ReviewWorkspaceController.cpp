@@ -358,6 +358,10 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
                     return;
                 }
                 write_ = {};
+                if (!saving_) {
+                    flush();
+                    return;
+                }
                 if (const auto* issue = std::get_if<ReviewError>(&result)) {
                     if (issue->code == ReviewErrorCode::Busy) {
                         writes_.push_front(*saving_);
@@ -525,6 +529,41 @@ void ReviewWorkspaceController::selectGame(GameId id, std::optional<review::Revi
     state_.gameId = id;
     state_.phase = ReviewPhase::Loading;
     request([this, id](QUuid request) { database_.loadGame(request, id); });
+}
+void ReviewWorkspaceController::gameRemoved(GameId id) {
+    std::erase_if(writes_, [id](const ReviewContext& context) { return context.gameId == id; });
+    if (saving_ && saving_->gameId == id) {
+        saving_.reset();
+    }
+    if (remembered_ && remembered_->gameId == id) {
+        remembered_.reset();
+    }
+    if (state_.gameId == id && !closing_) {
+        const auto generation = ++generation_;
+        followingTask_ = false;
+        retry_.stop();
+        liveTimer_.stop();
+        operation_ = {};
+        next_ = {};
+        game_.reset();
+        stored_.reset();
+        desiredRun_.reset();
+        pendingResume_.reset();
+        restoreMoment_.reset();
+        userMoment_.reset();
+        restorePending_ = false;
+        contextLoading_ = false;
+        const bool ready = state_.ready;
+        state_ = ReviewGameState{};
+        state_.ready = ready;
+        navigation_.clear();
+        if (!closing_ && generation == generation_) {
+            publish();
+        }
+    }
+    if (!closing_) {
+        refreshRecovery(recoveryPage_);
+    }
 }
 void ReviewWorkspaceController::loadContext(review::ReviewId id) {
     contextLoading_ = true;
