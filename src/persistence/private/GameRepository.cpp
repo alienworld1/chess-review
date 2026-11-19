@@ -612,17 +612,21 @@ ListGamesResult StorageSession::listGames(std::int64_t offset, int limit,
     const QStringList results{QString{}, QStringLiteral("1-0"), QStringLiteral("0-1"),
                               QStringLiteral("1/2-1/2"), QStringLiteral("*")};
     const QStringList sorts{
-        QStringLiteral("imported_at DESC,id DESC"), QStringLiteral("imported_at ASC,id ASC"),
+        QStringLiteral("imported_at DESC,id DESC"),
+        QStringLiteral("imported_at ASC,id ASC"),
         QStringLiteral("CASE WHEN played_at GLOB '[0-9][0-9][0-9][0-9].??.?"
                        "?' "
                        "THEN replace(played_at,'?','0') ELSE '' END DESC,id DESC"),
         QStringLiteral("white_name='',white_name COLLATE NOCASE,id DESC"),
-        QStringLiteral("black_name='',black_name COLLATE NOCASE,id DESC")};
+        QStringLiteral("black_name='',black_name COLLATE NOCASE,id DESC"),
+        QStringLiteral("activity DESC,games.id DESC")};
     const auto resultIndex = static_cast<int>(filter.result);
     const auto sortIndex = static_cast<int>(filter.sort);
-    if (offset < 0 || limit < 1 || limit > 200 || resultIndex < 0 ||
-        resultIndex >= results.size() || sortIndex < 0 || sortIndex >= sorts.size() ||
-        filter.review < GameReviewFilter::All || filter.review > GameReviewFilter::NoReview ||
+    const bool recent = filter.sort == GameSort::RecentActivity;
+    if (offset < 0 || limit < 1 || limit > 200 || (recent && (offset != 0 || filter.filtered())) ||
+        resultIndex < 0 || resultIndex >= results.size() || sortIndex < 0 ||
+        sortIndex >= sorts.size() || filter.review < GameReviewFilter::All ||
+        filter.review > GameReviewFilter::NoReview ||
         filter.players.size() > GameLibraryQuery::maxSearchLength ||
         filter.players.contains(QChar::Null) || !filter.players.isValidUtf16()) {
         return GameError{GameErrorCode::InvalidSnapshot,
@@ -630,13 +634,31 @@ ListGamesResult StorageSession::listGames(std::int64_t offset, int limit,
     }
     QSqlQuery query(database_);
     query.setForwardOnly(true);
-    auto sql = QStringLiteral(
-        "SELECT id,substr(CAST(white_name AS BLOB),1,65537),substr(CAST(black_name AS "
+    // Get the first page from two small candidate sets, then deduplicate by game.
+    // The review ID and per-game review indexes locate each game's newest run.
+    QString sql;
+    if (recent) {
+        sql = QStringLiteral(
+            "WITH imports AS (SELECT id,substr(imported_at,1,65) AS activity FROM games "
+            "ORDER BY imported_at DESC,id DESC LIMIT ?), "
+            "recent_reviews AS (SELECT r.game_id AS id,"
+            "strftime('%Y-%m-%dT%H:%M:%fZ',r.created_at/1000.0,'unixepoch') AS activity "
+            "FROM reviews r WHERE r.id=(SELECT id FROM reviews WHERE game_id=r.game_id "
+            "ORDER BY id DESC LIMIT 1) ORDER BY r.id DESC LIMIT ?), "
+            "activity_by_game AS (SELECT id,max(activity) AS activity FROM "
+            "(SELECT * FROM imports UNION ALL SELECT * FROM recent_reviews) GROUP BY id) ");
+    }
+    sql += QStringLiteral(
+        "SELECT games.id,substr(CAST(white_name AS BLOB),1,65537),substr(CAST(black_name AS "
         "BLOB),1,65537),substr(CAST(result AS BLOB),1,17),substr(CAST(played_at AS "
         "BLOB),1,65537),substr(CAST(time_control AS BLOB),1,65537),substr(CAST(imported_at AS "
-        "BLOB),1,65) ,(id>0 AND typeof(white_name)='text' AND typeof(black_name)='text' AND "
+        "BLOB),1,65) ,(games.id>0 AND typeof(white_name)='text' AND typeof(black_name)='text' AND "
         "typeof(result)='text' AND typeof(played_at)='text' AND typeof(time_control)='text' "
-        "AND typeof(imported_at)='text') FROM games WHERE 1");
+        "AND typeof(imported_at)='text') FROM games");
+    if (recent) {
+        sql += QStringLiteral(" JOIN activity_by_game ON activity_by_game.id=games.id");
+    }
+    sql += QStringLiteral(" WHERE 1");
     const auto terms = filter.players.simplified().split(u' ', Qt::SkipEmptyParts);
     for (qsizetype i = 0; i < terms.size(); ++i) {
         sql += QStringLiteral(" AND (white_name GLOB ? OR black_name GLOB ?)");
@@ -652,6 +674,10 @@ ListGamesResult StorageSession::listGames(std::int64_t offset, int limit,
     sql += QStringLiteral(" ORDER BY ") + sorts.at(sortIndex) + QStringLiteral(" LIMIT ? OFFSET ?");
     if (!query.prepare(sql)) {
         return storageError();
+    }
+    if (recent) {
+        query.addBindValue(limit);
+        query.addBindValue(limit);
     }
     for (const auto& term : terms) {
         const auto pattern = playerPattern(term);
@@ -683,7 +709,9 @@ ListGamesResult StorageSession::listGames(std::int64_t offset, int limit,
         return storageError();
     }
     query.finish();
-    readOpeningCache(games);
+    if (!recent) {
+        readOpeningCache(games);
+    }
     return games;
 }
 } // namespace chess_review::persistence::detail

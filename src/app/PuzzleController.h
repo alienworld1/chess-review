@@ -30,6 +30,11 @@ struct ReviewPuzzleState {
     bool more = false;
     std::optional<persistence::PuzzleJobSummary> generation;
 };
+struct SavedPuzzleSummary {
+    std::optional<int> count;
+    bool more = false;
+    QString error;
+};
 class PuzzleController final : public QObject {
     Q_OBJECT
   public:
@@ -43,12 +48,16 @@ class PuzzleController final : public QObject {
     bool canStepForward() const;
     const ReviewPuzzleState& reviewSummary() const { return reviewSummary_; }
     void inspectReview(review::ReviewId id, bool refresh = false);
+    const SavedPuzzleSummary& savedSummary() const { return savedSummary_; }
+    void setSummaryVisible(bool visible);
+    void invalidateSummary();
     void setReady(bool ready);
     void refresh(std::int64_t offset = 0, std::optional<review::ReviewId> review = std::nullopt);
     void refreshCurrent() { refresh(offset_, filter_); }
     void open(persistence::PuzzleId id);
     void remove(persistence::PuzzleId id);
     void showLibrary();
+    void showAllPuzzles();
     void retry();
     void hint();
     void reveal();
@@ -68,10 +77,13 @@ class PuzzleController final : public QObject {
     void moveFeedback(chess_review::chess::Move move, bool success);
     void analysisRequested();
     void reviewSummaryChanged();
+    void savedSummaryChanged();
     void puzzleRemoved(persistence::PuzzleId id);
     void closed();
 
   private:
+    void requestSummary();
+    void returnToLibrary(bool clearFilter);
     void publish();
     void resetBoard();
     void advance();
@@ -89,6 +101,7 @@ class PuzzleController final : public QObject {
     EngineAnalysisController linkedEngine_;
     PuzzleState state_;
     ReviewPuzzleState reviewSummary_;
+    SavedPuzzleSummary savedSummary_;
     BoardViewState displayed_;
     std::shared_ptr<const persistence::StoredPuzzle> puzzle_;
     std::shared_ptr<const chess::Position> root_;
@@ -102,6 +115,8 @@ class PuzzleController final : public QObject {
     QThreadPool worker_;
     QTimer reply_;
     QTimer reads_;
+    QTimer summaryRetry_;
+    QUuid summaryRequest_;
     QUuid list_;
     QUuid reviewList_;
     QUuid reviewJobs_;
@@ -115,6 +130,8 @@ class PuzzleController final : public QObject {
     QUuid analysisJob_;
     std::optional<review::ReviewId> filter_;
     std::int64_t offset_ = 0;
+    bool summaryVisible_ = false;
+    bool summaryDirty_ = true;
     bool ready_ = false;
     bool workerBusy_ = false;
     bool moving_ = false;
@@ -125,5 +142,6 @@ class PuzzleController final : public QObject {
     bool engineClosed_ = false;
     bool pendingReset_ = false;
     bool refreshPending_ = false;
+    bool listStale_ = false;
 };
 } // namespace chess_review::app

@@ -39,6 +39,7 @@
 #include <QSplitter>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QStackedWidget>
 #include <QTabWidget>
 #include <QTableView>
 #include <QTableWidget>
@@ -551,6 +552,56 @@ class QuickReviewTest final : public QObject {
         if (!renderDirectory.isEmpty()) {
             QVERIFY(f.window.grab().save(renderDirectory + QStringLiteral("/home-recent.png")));
         }
+    }
+    void homeListsRecentReviewActivityAndOpensGamesWithTheKeyboard() {
+        Fixture f;
+        QVERIFY(f.seed("[White \"Ada\"]\n[Black \"Bela\"]\n\n1. e4 e5 *"));
+        f.window.show();
+        auto* recent = f.window.findChild<QListWidget*>(QStringLiteral("homeRecentGames"));
+        QVERIFY(recent);
+        auto& db = f.startup.gameRepository();
+        QSignalSpy inserted(&db, &persistence::Database::gameInserted);
+        for (const auto* text : {"1. d4 *", "1. c4 *", "1. Nc3 *", "1. g3 *", "1. b3 *"}) {
+            pgn::PgnReader reader(text);
+            db.insertGame(QUuid::createUuid(), std::make_shared<const pgn::PgnDocument>(
+                                                   std::get<pgn::PgnDocument>(reader.next())));
+            QTRY_VERIFY(!inserted.empty());
+            QVERIFY(std::holds_alternative<persistence::Inserted>(
+                qvariant_cast<persistence::InsertGameResult>(inserted.takeFirst()[1])));
+        }
+        persistence::GameLibraryQuery filtered;
+        filtered.players = QStringLiteral("No player matches");
+        f.startup.library().setQuery(filtered);
+        f.navigation.navigate(app::Destination::Games);
+        QTRY_VERIFY(!f.startup.library().busy() && f.startup.library().rows().empty());
+        f.navigation.navigate(app::Destination::Home);
+        QTRY_COMPARE(recent->count(), 5);
+        QVERIFY(!f.startup.library().rows().front().metadataError);
+        for (int i = 0; i < recent->count(); ++i) {
+            QVERIFY(recent->item(i)->data(Qt::UserRole).toLongLong() != f.gameId);
+        }
+
+        f.script(0, -1, 250);
+        f.run();
+        auto& controller = f.startup.reviewGame();
+        QTRY_VERIFY(controller.taskState().active && controller.taskState().run);
+        auto* resume = f.window.findChild<QPushButton*>(QStringLiteral("homeResumeReview"));
+        QVERIFY(resume && resume->isVisible());
+        QCOMPARE(resume->text(), QStringLiteral("Return to review"));
+        QTRY_COMPARE(recent->item(0)->data(Qt::UserRole).toLongLong(), f.gameId);
+        resume->click();
+        auto* pages = f.window.findChild<QStackedWidget*>(QStringLiteral("destinationPages"));
+        QCOMPARE(pages->currentWidget()->objectName(), QStringLiteral("reviewPage"));
+        QVERIFY(f.done());
+        f.navigation.navigate(app::Destination::Home);
+        QTRY_COMPARE(recent->count(), 5);
+        QVERIFY(recent->item(0)->text().startsWith(QStringLiteral("Ada vs Bela")));
+        recent->setCurrentRow(0);
+        recent->setFocus();
+        QTest::keyClick(recent, Qt::Key_Return);
+        QCOMPARE(pages->currentWidget()->objectName(), QStringLiteral("reviewPage"));
+        QTRY_VERIFY(!controller.state().busy && controller.state().run);
+        QCOMPARE(controller.state().gameId, f.gameId);
     }
     void revisionUpdatesRetainTheSelectedExplanationUntilReplacement() {
         Fixture f;
@@ -3683,9 +3734,10 @@ class QuickReviewTest final : public QObject {
     void classificationsAppearBeforeTheScanFinishes() {
         Fixture f;
         QVERIFY(f.seed("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *"));
-        f.script(0, -1, 100, false, false, QStringLiteral("cp 0"));
-        f.run();
+        f.script(0, -1, 200, false, false, QStringLiteral("cp 0"));
         auto& controller = f.startup.reviewGame();
+        controller.workspace().setVisible(true);
+        f.run();
         QVERIFY(QTest::qWaitFor(
             [&] {
                 const auto& state = controller.moves().state();

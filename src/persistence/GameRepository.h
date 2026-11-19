@@ -61,7 +61,7 @@ struct StoredGame {
 };
 enum class GameResultFilter { All, WhiteWin, BlackWin, Draw, Unrecorded };
 enum class GameReviewFilter { All, HasReview, NoReview };
-enum class GameSort { NewestImport, OldestImport, PlayedDate, White, Black };
+enum class GameSort { NewestImport, OldestImport, PlayedDate, White, Black, RecentActivity };
 struct GameLibraryQuery {
     static constexpr int maxSearchLength = 160;
     QString players;

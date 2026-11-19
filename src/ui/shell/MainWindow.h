@@ -27,6 +27,7 @@ class Logger;
 }
 namespace chess_review::ui {
 class StartupPanel;
+class HomePage;
 class AnalysisPage;
 class ReviewPage;
 
@@ -95,6 +96,7 @@ class MainWindow final : public QMainWindow {
     QAction* pastePgn_ = nullptr;
     app::GameLibraryController* library_ = nullptr;
     StartupPanel* startup_;
+    HomePage* home_ = nullptr;
     QStackedWidget* pages_;
     QLabel* preferencesNotice_;
     std::array<QAction*, 5> destinations_{};

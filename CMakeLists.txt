@@ -194,6 +194,7 @@ add_library(chess_review_ui STATIC
     src/ui/analysis/AnalysisPage.cpp
     src/ui/analysis/MoveNavigation.cpp
     src/ui/analysis/MoveNavigationAccessibility.cpp
+    src/ui/home/HomePage.cpp
     src/ui/shell/MainWindow.cpp
     src/ui/games/GamesPage.cpp
     src/ui/games/ImportReportDialog.cpp

@@ -2,7 +2,14 @@
 
 On Home, choose **Review a game** to open a PGN file, or **Paste PGN** to paste
 one. A single game opens its review setup. If you import several games, choose
-one from the list. Your saved games remain available in **Games**.
+one from the list. **Recent games** shows up to five games by import or new
+review activity. Select one and press Enter or **Open selected game** to open its
+review or setup. **Open Games** takes you to the full library.
+
+Home also shows the default engine and its connection state. Use **Engine
+Settings** to add an engine or check a connection failure. You can import games,
+open saved reviews, and access saved puzzles while the engine is disconnected.
+**Open Puzzles** opens the full puzzle library.
 
 Choose the side you played, then **Analyze game**. The app uses your default
 engine and configured review quality. Open **Engine and review options** to

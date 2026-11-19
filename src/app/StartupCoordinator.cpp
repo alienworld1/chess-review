@@ -38,11 +38,18 @@ void StartupCoordinator::connectServices() {
         closeSupervisorWhenProducersFinish();
         closeStorageWhenProducersFinish();
     });
-    connect(&puzzleGeneration_, &PuzzleGenerationController::libraryChanged, &puzzles_, [this] {
-        if (state_ == Lifecycle::Ready) {
-            puzzles_.refreshCurrent();
-        }
-    });
+    connect(&puzzleGeneration_, &PuzzleGenerationController::libraryChanged, &puzzles_,
+            [this, lastSaved = std::optional<persistence::PuzzleId>{}]() mutable {
+                if (state_ != Lifecycle::Ready) {
+                    return;
+                }
+                puzzles_.refreshCurrent();
+                const auto latest = puzzleGeneration_.state().lastSaved;
+                if (latest && latest != lastSaved) {
+                    lastSaved = latest;
+                    puzzles_.invalidateSummary();
+                }
+            });
     connect(&reviewGame_, &ReviewGameController::reviewCompleted, this,
             [this](review::ReviewId id) {
                 const auto config = configuration_.snapshot();
@@ -79,14 +86,20 @@ void StartupCoordinator::connectServices() {
                 }
             });
     connect(&reviewGame_.workspace(), &ReviewWorkspaceController::contextCommitted, &library_,
-            &GameLibraryController::importedGame);
+            [this] {
+                if (library_.showingGames()) {
+                    library_.importedGame();
+                }
+            });
     connect(&reviewGame_, &ReviewGameController::taskChanged, &library_,
             [this, lastRun = review::ReviewId{0}, lastRevision = std::int64_t{-1}]() mutable {
                 const auto& run = reviewGame_.taskState().run;
                 if (run && (run->id != lastRun || run->revision != lastRevision)) {
+                    if (run->id != lastRun || library_.showingGames()) {
+                        library_.importedGame();
+                    }
                     lastRun = run->id;
                     lastRevision = run->revision;
-                    library_.importedGame();
                 }
             });
     connect(&library_, &GameLibraryController::opened, &analysis_, &AnalysisController::openGame);

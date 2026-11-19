@@ -5,6 +5,7 @@
 #include "ui/analysis/AnalysisPage.h"
 #include "ui/games/GamesPage.h"
 #include "ui/games/PgnTextEdit.h"
+#include "ui/home/HomePage.h"
 #include "ui/puzzles/PuzzlesPage.h"
 #include "ui/review/ReviewPage.h"
 #include "ui/settings/EngineSettingsPage.h"
@@ -17,11 +18,8 @@
 #include <QCloseEvent>
 #include <QDialog>
 #include <QDialogButtonBox>
-#include <QDragEnterEvent>
-#include <QDropEvent>
 #include <QFile>
 #include <QFileDialog>
-#include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -30,11 +28,9 @@
 #include <QLayout>
 #include <QLineEdit>
 #include <QListWidget>
-#include <QLocale>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
-#include <QMimeData>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScreen>
@@ -78,6 +74,16 @@ class DestinationStack final : public QStackedWidget {
     int heightForWidth(int width) const override {
         const auto* page = currentWidget();
         return page ? page->heightForWidth(width) : -1;
+    }
+};
+// QWidgetItem normally asks the widget's layout for its height, which makes
+// QStackedLayout include hidden pages with wrapped content.
+class DestinationItem final : public QWidgetItem {
+  public:
+    explicit DestinationItem(QStackedWidget* pages) : QWidgetItem(pages) {}
+    bool hasHeightForWidth() const override { return !isEmpty() && widget()->hasHeightForWidth(); }
+    int heightForWidth(int width) const override {
+        return hasHeightForWidth() ? widget()->heightForWidth(width) : -1;
     }
 };
 } // namespace
@@ -156,6 +162,11 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
         button->setToolButtonStyle(Qt::ToolButtonTextOnly);
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         buttons->addWidget(button);
+        if (values[i] == app::Destination::Home) {
+            home_ = new HomePage(pages_);
+            pages_->addWidget(home_);
+            continue;
+        }
         auto* page = new QWidget(pages_);
         page->setObjectName(app::destinationId(values[i]) + QStringLiteral("Page"));
         auto* layout = new QVBoxLayout(page);
@@ -166,9 +177,19 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
         layout->addStretch();
         pages_->addWidget(page);
     }
+    connect(home_, &HomePage::gamesRequested, destinations_[1], &QAction::trigger);
+    connect(home_, &HomePage::settingsRequested, destinations_[4], &QAction::trigger);
+    connect(home_, &HomePage::reviewRequested, this, &MainWindow::showReview);
+    connect(home_, &HomePage::recentGameRequested, this, [this](persistence::GameId id) {
+        if (!closing_ && reviewController_) {
+            reviewController_->selectGame(id);
+            showReview();
+        }
+    });
     buttons->addStretch();
     row->addWidget(sidebar);
-    row->addWidget(pages_, 1);
+    row->addItem(new DestinationItem(pages_));
+    row->setStretch(row->count() - 1, 1);
     column->addLayout(row, 1);
     // Keep every command reachable when enlarged fonts/errors exceed a small work area.
     auto* scroll = new QScrollArea(this);
@@ -438,12 +459,18 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
                 });
         update();
     }
-    auto* home =
-        pages_->findChild<QWidget*>(QStringLiteral("homePage"), Qt::FindDirectChildrenOnly);
-    auto* shortcut = new QPushButton(tr("Open puzzle library"), home);
-    qobject_cast<QVBoxLayout*>(home->layout())->insertWidget(1, shortcut);
-    connect(shortcut, &QPushButton::clicked, this,
-            [this] { navigation_.navigate(app::Destination::Puzzles); });
+    home_->installPuzzles(puzzles);
+    connect(home_, &HomePage::puzzlesRequested, this, [this, &puzzles] {
+        if (!closing_) {
+            puzzles.showAllPuzzles();
+            destinations_[2]->trigger();
+        }
+    });
+    const auto updateSummaryVisibility = [this, &puzzles] {
+        puzzles.setSummaryVisible(!closing_ && pages_->currentWidget() == home_);
+    };
+    connect(pages_, &QStackedWidget::currentChanged, this, updateSummaryVisibility);
+    updateSummaryVisibility();
     selectDestination();
 }
 void MainWindow::installReview(app::ReviewGameController& review) {
@@ -553,9 +580,8 @@ void MainWindow::installReview(app::ReviewGameController& review) {
         reviewWasActive_ = state.active;
         const bool viewingTask = pages_->currentWidget() == reviewPage_ && review.state().run &&
                                  state.run && review.state().run->id == state.run->id;
-        const bool onHome = pages_->currentWidget() == pages_->widget(0);
-        task->setVisible(!viewingTask && (state.active || (!onHome && state.run.has_value()) ||
-                                          !state.error.isEmpty()));
+        task->setVisible(!viewingTask && pages_->currentWidget() != home_ &&
+                         (state.active || state.run.has_value() || !state.error.isEmpty()));
         task->setText(state.active ? tr("Review in progress — Return to review")
                                    : tr("Open your saved review"));
     };
@@ -566,147 +592,7 @@ void MainWindow::installReview(app::ReviewGameController& review) {
                                       pages_->currentWidget() == linkedAnalysis_);
         updateTask();
     });
-    auto* home = pages_->widget(0);
-    auto* resumeReview = new QPushButton(tr("Resume review"), home);
-    resumeReview->setObjectName(QStringLiteral("homeResumeReview"));
-    resumeReview->hide();
-    qobject_cast<QVBoxLayout*>(home->layout())->insertWidget(3, resumeReview, 0, Qt::AlignLeft);
-    connect(resumeReview, &QPushButton::clicked, this, &MainWindow::showReview);
-    connect(&review, &app::ReviewGameController::changed, resumeReview,
-            [&review, resumeReview] { resumeReview->setVisible(review.state().run.has_value()); });
-    auto* recovery = new QWidget(home);
-    recovery->setObjectName(QStringLiteral("reviewRecovery"));
-    auto* recoveryLayout = new QVBoxLayout(recovery);
-    auto* recoveryNotice = new QLabel(tr("You have unfinished reviews."), recovery);
-    recoveryNotice->setWordWrap(true);
-    recoveryLayout->addWidget(recoveryNotice);
-    auto* showRecovery = new QPushButton(tr("Unfinished reviews"), recovery);
-    showRecovery->setObjectName(QStringLiteral("showInterruptedReviews"));
-    showRecovery->setCheckable(true);
-    recoveryLayout->addWidget(showRecovery);
-    auto* recoveryDetails = new QWidget(recovery);
-    recoveryDetails->setObjectName(QStringLiteral("interruptedReviewList"));
-    auto* detailsLayout = new QVBoxLayout(recoveryDetails);
-    auto* recoveryRows = new QListWidget(recoveryDetails);
-    recoveryRows->setObjectName(QStringLiteral("interruptedReviewRows"));
-    recoveryRows->setAccessibleName(tr("Interrupted reviews"));
-    recoveryRows->setSelectionMode(QAbstractItemView::SingleSelection);
-    recoveryRows->setMinimumHeight(100);
-    recoveryRows->setMaximumHeight(240);
-    detailsLayout->addWidget(recoveryRows);
-    auto* openRecovery = new QPushButton(tr("Open selected review"), recoveryDetails);
-    openRecovery->setObjectName(QStringLiteral("openInterruptedReview"));
-    openRecovery->setEnabled(false);
-    detailsLayout->addWidget(openRecovery);
-    const auto openSelected = [this, recoveryRows, &review] {
-        const auto* item = recoveryRows->currentItem();
-        if (closing_ || !item || !item->data(Qt::UserRole + 2).toBool()) {
-            return;
-        }
-        review.workspace().selectGame(item->data(Qt::UserRole + 1).toLongLong(),
-                                      item->data(Qt::UserRole).toLongLong());
-        showReview();
-    };
-    connect(openRecovery, &QPushButton::clicked, this, openSelected);
-    connect(recoveryRows, &QListWidget::itemActivated, this,
-            [openSelected](QListWidgetItem*) { openSelected(); });
-    connect(recoveryRows, &QListWidget::currentRowChanged, this, [recoveryRows, openRecovery] {
-        const auto* item = recoveryRows->currentItem();
-        openRecovery->setEnabled(item && item->data(Qt::UserRole + 2).toBool());
-    });
-    recoveryLayout->addWidget(recoveryDetails);
-    recoveryDetails->hide();
-    connect(showRecovery, &QPushButton::toggled, recoveryDetails, &QWidget::setVisible);
-    connect(showRecovery, &QPushButton::toggled, this, [showRecovery](bool shown) {
-        showRecovery->setText(shown ? tr("Hide interrupted reviews") : tr("Unfinished reviews"));
-    });
-    auto* recoveryError = new QLabel(recovery);
-    recoveryError->setWordWrap(true);
-    recoveryError->setTextFormat(Qt::PlainText);
-    recoveryLayout->addWidget(recoveryError);
-    auto* controls = new QHBoxLayout;
-    auto* earlier = new QPushButton(tr("Previous interrupted reviews"), recovery);
-    auto* later = new QPushButton(tr("Next interrupted reviews"), recovery);
-    auto* refresh = new QPushButton(tr("Refresh interrupted reviews"), recovery);
-    controls->addWidget(earlier);
-    controls->addWidget(later);
-    controls->addWidget(refresh);
-    detailsLayout->addLayout(controls);
-    qobject_cast<QVBoxLayout*>(home->layout())->insertWidget(home->layout()->count() - 1, recovery);
-    const auto updateRecovery = [this, recovery, recoveryRows, recoveryError, earlier, later,
-                                 refresh, openRecovery, &review] {
-        auto& workspace = review.workspace();
-        const auto* selected = recoveryRows->currentItem();
-        const auto previous = selected ? selected->data(Qt::UserRole) : QVariant{};
-        const QSignalBlocker blocker(recoveryRows);
-        // Retain the items/focus during the initial busy notification.
-        if (!workspace.recoveryBusy()) {
-            recoveryRows->clear();
-            for (const auto& run : workspace.interrupted()) {
-                QString title = tr("Saved game");
-                if (library_) {
-                    const auto& gameRows = library_->rows();
-                    const auto game = std::find_if(
-                        gameRows.begin(), gameRows.end(),
-                        [&run](const auto& candidate) { return candidate.id == run.gameId; });
-                    if (game != gameRows.end()) {
-                        title = tr("%1 vs %2")
-                                    .arg(game->white.isEmpty() ? tr("White") : game->white,
-                                         game->black.isEmpty() ? tr("Black") : game->black);
-                    }
-                }
-                auto* item = new QListWidgetItem(
-                    run.metadataError
-                        ? tr("%1\nSaved review could not be read.").arg(title)
-                        : tr("%1 — %2\n%3")
-                              .arg(title,
-                                   run.selectedSide == chess::Color::White ? tr("White")
-                                                                           : tr("Black"),
-                                   QLocale().toString(run.createdAt.toLocalTime(),
-                                                      QLocale::ShortFormat)),
-                    recoveryRows);
-                item->setData(Qt::UserRole, QVariant::fromValue(static_cast<qint64>(run.id)));
-                item->setData(Qt::UserRole + 1,
-                              QVariant::fromValue(static_cast<qint64>(run.gameId)));
-                item->setData(Qt::UserRole + 2, run.id > 0 && run.gameId > 0);
-                item->setToolTip(
-                    run.metadataError
-                        ? QObject::tr("The saved data is preserved. Open for details, or use "
-                                      "Games to inspect another run or start a new review.")
-                        : item->text());
-                if (item->data(Qt::UserRole) == previous) {
-                    recoveryRows->setCurrentItem(item);
-                }
-            }
-            if (!recoveryRows->currentItem() && recoveryRows->count() > 0) {
-                recoveryRows->setCurrentRow(0);
-            }
-        }
-        const auto* current = recoveryRows->currentItem();
-        openRecovery->setEnabled(current && current->data(Qt::UserRole + 2).toBool());
-        recovery->setVisible(!workspace.interrupted().empty() ||
-                             !workspace.recoveryError().isEmpty());
-        recoveryError->setText(workspace.recoveryError());
-        earlier->setEnabled(!workspace.recoveryBusy() && workspace.recoveryPage() > 0);
-        later->setEnabled(!workspace.recoveryBusy() && workspace.recoveryHasNext());
-        refresh->setEnabled(!workspace.recoveryBusy());
-    };
-    connect(&review.workspace(), &app::ReviewWorkspaceController::recoveryChanged, this,
-            updateRecovery);
-    if (library_) {
-        connect(library_, &app::GameLibraryController::changed, this, updateRecovery);
-    }
-    connect(earlier, &QPushButton::clicked, this, [&review] {
-        auto& w = review.workspace();
-        w.refreshRecovery(w.recoveryPage() - 1);
-    });
-    connect(later, &QPushButton::clicked, this, [&review] {
-        auto& w = review.workspace();
-        w.refreshRecovery(w.recoveryPage() + 1);
-    });
-    connect(refresh, &QPushButton::clicked, this,
-            [&review] { review.workspace().refreshRecovery(); });
-    recovery->hide();
+    home_->installReview(review);
 }
 void MainWindow::showReview() {
     if (closing_ || !reviewPage_) {
@@ -766,6 +652,7 @@ void MainWindow::installEngines(app::EngineSettingsController& engines) {
             navigation_.navigate(app::Destination::Settings);
         }
     });
+    home_->installEngines(engines);
     if (analysis_) {
         auto* button = new QPushButton(tr("Engine Settings…"), analysis_);
         button->setObjectName(QStringLiteral("analysisEngineSettings"));
@@ -813,38 +700,6 @@ void MainWindow::installAnalysis(app::AnalysisController& controller) {
     });
     selectDestination();
 }
-namespace {
-class ImportDropButton final : public QToolButton {
-  public:
-    ImportDropButton(app::ImportController& imports, QWidget* parent)
-        : QToolButton(parent), imports_(imports) {
-        setAcceptDrops(true);
-    }
-
-  protected:
-    void dragEnterEvent(QDragEnterEvent* event) override {
-        if (!imports_.available() || !event->possibleActions().testFlag(Qt::CopyAction) ||
-            !event->mimeData()->hasUrls()) {
-            return;
-        }
-        if (!app::ImportController::acceptsFiles(event->mimeData()->urls())) {
-            return;
-        }
-        event->setDropAction(Qt::CopyAction);
-        event->accept();
-    }
-    void dropEvent(QDropEvent* event) override {
-        if (imports_.available() && event->possibleActions().testFlag(Qt::CopyAction) &&
-            event->mimeData()->hasUrls() && imports_.importFiles(event->mimeData()->urls())) {
-            event->setDropAction(Qt::CopyAction);
-            event->accept();
-        }
-    }
-
-  private:
-    app::ImportController& imports_;
-};
-} // namespace
 void MainWindow::installImports(app::ImportController& imports,
                                 app::GameLibraryController& library) {
     Q_ASSERT(!library_);
@@ -869,8 +724,7 @@ void MainWindow::installImports(app::ImportController& imports,
     games->setVerbose(verbose_);
     pages_->insertWidget(pageIndex, games);
     connect(pages_, &QStackedWidget::currentChanged, this, [this, games, &library] {
-        if (!closing_ &&
-            (pages_->currentWidget() == games || pages_->currentWidget() == pages_->widget(0))) {
+        if (!closing_ && (pages_->currentWidget() == games || pages_->currentWidget() == home_)) {
             library.activate(pages_->currentWidget() == games);
         } else {
             library.deactivate();
@@ -890,103 +744,9 @@ void MainWindow::installImports(app::ImportController& imports,
             analysis_->setEnabled(!library.opening());
         }
     });
-    auto* home =
-        pages_->findChild<QWidget*>(QStringLiteral("homePage"), Qt::FindDirectChildrenOnly);
-    auto* homeLayout = qobject_cast<QVBoxLayout*>(home->layout());
-    auto* fileButton = new ImportDropButton(imports, home);
-    fileButton->setObjectName(QStringLiteral("homeImportButton"));
-    fileButton->setDefaultAction(importFile_);
-    fileButton->setText(tr("Review a game"));
-    connect(importFile_, &QAction::changed, fileButton,
-            [fileButton] { fileButton->setText(tr("Review a game")); });
-    setPrimaryAction(*fileButton);
-    fileButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
-
-    auto* pasteButton = new QToolButton(home);
-    pasteButton->setDefaultAction(pastePgn_);
-    pasteButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    auto* welcome = new QLabel(tr("Import a PGN file or paste a game to get started."), home);
-    welcome->setWordWrap(true);
-    setTextRole(*welcome, "secondary");
-    homeLayout->insertWidget(1, welcome);
-    auto* importActions = new QWidget(home);
-    auto* importButtons = new QHBoxLayout(importActions);
-    importButtons->setContentsMargins(0, 0, 0, 0);
-    importButtons->addWidget(fileButton);
-    importButtons->addWidget(pasteButton);
-    importButtons->addStretch();
-    homeLayout->insertWidget(2, importActions);
-    auto* homeHeading = home->findChild<QLabel*>(QString(), Qt::FindDirectChildrenOnly);
-    if (homeHeading) {
-        homeHeading->setText(tr("Understand your game"));
-    }
-    auto* recentHeading = new QLabel(tr("Recent games"), home);
-    setTextRole(*recentHeading, "heading");
-    homeLayout->insertWidget(3, recentHeading);
-    auto* recent = new QListWidget(home);
-    recent->setObjectName(QStringLiteral("homeRecentGames"));
-    recent->setAccessibleName(tr("Recent games"));
-    recent->setMaximumHeight(240);
-    homeLayout->insertWidget(4, recent);
-    auto* openRecent = new QPushButton(tr("Review selected game"), home);
-    openRecent->setEnabled(false);
-    homeLayout->insertWidget(5, openRecent, 0, Qt::AlignLeft);
-    const auto reviewRecent = [this, recent] {
-        const auto* item = recent->currentItem();
-        if (!closing_ && reviewController_ && item) {
-            reviewController_->selectGame(item->data(Qt::UserRole).toLongLong());
-            showReview();
-        }
-    };
-    connect(openRecent, &QPushButton::clicked, this, reviewRecent);
-    connect(recent, &QListWidget::itemActivated, this,
-            [reviewRecent](QListWidgetItem*) { reviewRecent(); });
-    connect(recent, &QListWidget::currentRowChanged, openRecent,
-            [openRecent](int row) { openRecent->setEnabled(row >= 0); });
-    connect(&library, &app::GameLibraryController::changed, recent,
-            [this, &library, home, recent, recentHeading, openRecent] {
-                if (library.busy() || pages_->currentWidget() != home) {
-                    return;
-                }
-                const auto* selected = recent->currentItem();
-                const auto id = selected ? selected->data(Qt::UserRole) : QVariant{};
-                const QSignalBlocker blocker(recent);
-                recent->clear();
-                for (const auto& game : library.rows()) {
-                    if (recent->count() >= 5) {
-                        break;
-                    }
-                    auto* item = new QListWidgetItem;
-                    // Force plain text: PGN names are untrusted.
-                    item->setText(tr("%1 vs %2\n%3    %4")
-                                      .arg(game.white.isEmpty() ? tr("White") : game.white,
-                                           game.black.isEmpty() ? tr("Black") : game.black,
-                                           game.result == QLatin1String("*")
-                                               ? tr("Result not recorded")
-                                               : game.result,
-                                           game.playedAt));
-                    item->setSizeHint(QSize(0, recent->fontMetrics().height() * 2 + 16));
-                    item->setData(Qt::UserRole, QVariant::fromValue<qlonglong>(game.id));
-                    recent->addItem(item);
-                    if (item->data(Qt::UserRole) == id) {
-                        recent->setCurrentItem(item);
-                    }
-                }
-                if (!recent->currentItem() && recent->count() > 0) {
-                    recent->setCurrentRow(0);
-                }
-                const bool populated = recent->count() > 0;
-                recent->setVisible(populated);
-                recent->setFixedHeight(
-                    std::min(260, recent->count() * (recent->fontMetrics().height() * 2 + 16) + 2));
-                recentHeading->setVisible(populated);
-                openRecent->setVisible(populated);
-                openRecent->setEnabled(recent->currentRow() >= 0);
-            });
-    recentHeading->hide();
-    recent->hide();
-    openRecent->hide();
-    if (pages_->currentWidget() == home) {
+    home_->installImports(imports, *importFile_, *pastePgn_);
+    home_->installLibrary(library);
+    if (pages_->currentWidget() == home_) {
         library.activate(false);
     }
     auto* scroll = qobject_cast<QScrollArea*>(centralWidget());
@@ -996,25 +756,29 @@ void MainWindow::installImports(app::ImportController& imports,
     notice->setWordWrap(true);
     notice->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     qobject_cast<QVBoxLayout*>(scroll->widget()->layout())->insertWidget(2, notice);
-    connect(&imports, &app::ImportController::rejected, notice, &QLabel::setText);
+    notice->hide();
+    const auto setNotice = [notice](const QString& message) {
+        notice->setText(message);
+        notice->setVisible(!message.isEmpty());
+    };
+    connect(&imports, &app::ImportController::rejected, notice, setNotice);
     connect(&library, &app::GameLibraryController::openFailed, this,
-            [this, notice](const QString& message) {
-                notice->setText(message);
+            [this, setNotice](const QString& message) {
+                setNotice(message);
                 if (!closing_) {
                     navigation_.navigate(app::Destination::Games);
                 }
             });
     if (analysis_) {
-        connect(&analysis_->controller(), &app::AnalysisController::failed, notice,
-                &QLabel::setText);
+        connect(&analysis_->controller(), &app::AnalysisController::failed, notice, setNotice);
         connect(&analysis_->controller(), &app::AnalysisController::gameOpened, notice,
-                &QLabel::clear);
+                [setNotice] { setNotice({}); });
     }
-    connect(&imports, &app::ImportController::submitted, this, [this, notice] {
-        notice->clear();
+    connect(&imports, &app::ImportController::submitted, this, [this, setNotice] {
+        setNotice({});
         navigation_.navigate(app::Destination::Games);
     });
-    connect(&imports, &app::ImportController::finished, this, [this, &imports, notice] {
+    connect(&imports, &app::ImportController::finished, this, [this, &imports, setNotice] {
         if (closing_ || !reviewController_ ||
             imports.status() != app::ImportBatchStatus::Completed ||
             navigation_.current() != app::Destination::Games ||
@@ -1039,8 +803,7 @@ void MainWindow::installImports(app::ImportController& imports,
             return;
         }
         if (imports.failures() || imports.warnings()) {
-            notice->setText(
-                tr("Some games have import issues. Open Games → Import report for details."));
+            setNotice(tr("Some games have import issues. Open Games → Import report for details."));
         }
         if (imported.size() == 1) {
             reviewController_->selectGame(*imported.begin());
@@ -1368,6 +1131,7 @@ void MainWindow::showClosing() {
         return;
     }
     closing_ = true;
+    home_->setEnabled(false);
     if (analysis_) {
         analysis_->deactivate();
     }

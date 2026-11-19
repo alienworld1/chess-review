@@ -18,6 +18,9 @@ PuzzleController::PuzzleController(persistence::Database& database,
     reply_.setInterval(300);
     reads_.setSingleShot(true);
     reads_.setInterval(100);
+    summaryRetry_.setSingleShot(true);
+    summaryRetry_.setInterval(100);
+    connect(&summaryRetry_, &QTimer::timeout, this, &PuzzleController::requestSummary);
     connect(&reply_, &QTimer::timeout, this, &PuzzleController::advance);
     connect(&reads_, &QTimer::timeout, this, [this] { refresh(offset_, filter_); });
     connect(&board_, &AnalysisController::changed, this, &PuzzleController::publish);
@@ -46,6 +49,35 @@ PuzzleController::PuzzleController(persistence::Database& database,
         engineClosed_ = true;
         finishClose();
     });
+    connect(&database_, &persistence::Database::puzzlesListed, this,
+            [this](QUuid id, const persistence::ListPuzzlesResult& result) {
+                if (summaryRequest_.isNull() || id != summaryRequest_) {
+                    return;
+                }
+                summaryRequest_ = {};
+                if (closing_) {
+                    finishClose();
+                    return;
+                }
+                if (!ready_ || summaryDirty_) {
+                    requestSummary();
+                    return;
+                }
+                if (const auto* page = std::get_if<persistence::PuzzlePage>(&result)) {
+                    savedSummary_ = {static_cast<int>(page->puzzles.size()), page->hasNext, {}};
+                } else {
+                    const auto& error = std::get<persistence::ReviewError>(result);
+                    if (error.code == persistence::ReviewErrorCode::Busy) {
+                        summaryDirty_ = true;
+                        if (summaryVisible_) {
+                            summaryRetry_.start();
+                        }
+                        return;
+                    }
+                    savedSummary_ = {std::nullopt, false, error.message};
+                }
+                emit savedSummaryChanged();
+            });
     connect(&database_, &persistence::Database::puzzlesListed, this,
             [this](QUuid id, const persistence::ListPuzzlesResult& result) {
                 if (id != reviewList_) {
@@ -97,7 +129,9 @@ PuzzleController::PuzzleController(persistence::Database& database,
                     finishClose();
                     return;
                 }
-                if (const auto* e = std::get_if<persistence::ReviewError>(&result)) {
+                if (listStale_) {
+                    listStale_ = false;
+                } else if (const auto* e = std::get_if<persistence::ReviewError>(&result)) {
                     if (e->code == persistence::ReviewErrorCode::Busy) {
                         reads_.start();
                     } else {
@@ -191,6 +225,7 @@ PuzzleController::PuzzleController(persistence::Database& database,
                         puzzle_.reset();
                         root_.reset();
                     }
+                    invalidateSummary();
                     emit puzzleRemoved(deleted);
                 }
                 refresh(offset_, filter_);
@@ -227,7 +262,7 @@ PuzzleController::PuzzleController(persistence::Database& database,
 }
 PuzzleController::~PuzzleController() {
     Q_ASSERT(!workerBusy_ && search_.isNull() && list_.isNull() && jobs_.isNull() &&
-             load_.isNull() && deletion_.isNull());
+             load_.isNull() && deletion_.isNull() && summaryRequest_.isNull());
 }
 void PuzzleController::inspectReview(review::ReviewId id, bool refresh) {
     if (!ready_ || closing_ || id <= 0 || (reviewSummary_.id == id && !refresh)) {
@@ -242,17 +277,53 @@ void PuzzleController::inspectReview(review::ReviewId id, bool refresh) {
     database_.listPuzzles(reviewList_, 0, 50, id);
     database_.listPuzzleJobs(reviewJobs_, 0, 1, id);
 }
+void PuzzleController::setSummaryVisible(bool visible) {
+    if (visible && !summaryVisible_ && !savedSummary_.error.isEmpty()) {
+        summaryDirty_ = true;
+    }
+    summaryVisible_ = visible;
+    if (visible) {
+        requestSummary();
+    } else {
+        summaryRetry_.stop();
+    }
+}
+void PuzzleController::invalidateSummary() {
+    summaryDirty_ = true;
+    requestSummary();
+}
+void PuzzleController::requestSummary() {
+    if (!ready_ || closing_ || !summaryVisible_ || !summaryDirty_ || !summaryRequest_.isNull() ||
+        summaryRetry_.isActive()) {
+        return;
+    }
+    summaryDirty_ = false;
+    summaryRequest_ = QUuid::createUuid();
+    database_.listPuzzles(summaryRequest_, 0, 50, std::nullopt);
+}
 void PuzzleController::setReady(bool ready) {
     ready_ = ready;
     if (ready) {
         refresh();
+        requestSummary();
+    } else {
+        summaryRetry_.stop();
+        summaryDirty_ = true;
+        savedSummary_ = {};
+        emit savedSummaryChanged();
     }
 }
 void PuzzleController::refresh(std::int64_t offset, std::optional<review::ReviewId> review) {
     if (!ready_ || closing_) {
         return;
     }
-    offset_ = std::max<std::int64_t>(0, offset);
+    offset = std::max<std::int64_t>(0, offset);
+    if (offset != offset_ || review != filter_) {
+        listStale_ = !list_.isNull();
+        state_.library = {};
+        state_.library.offset = offset;
+    }
+    offset_ = offset;
     filter_ = review;
     if (list_.isNull()) {
         list_ = QUuid::createUuid();
@@ -311,7 +382,9 @@ void PuzzleController::remove(persistence::PuzzleId id) {
     database_.deletePuzzle(deletion_, id);
     publish();
 }
-void PuzzleController::showLibrary() {
+void PuzzleController::showLibrary() { returnToLibrary(false); }
+void PuzzleController::showAllPuzzles() { returnToLibrary(true); }
+void PuzzleController::returnToLibrary(bool clearFilter) {
     if (closing_) {
         return;
     }
@@ -326,7 +399,12 @@ void PuzzleController::showLibrary() {
         root_.reset();
     }
     state_.solving = false;
-    refresh(offset_, filter_);
+    if (clearFilter) {
+        state_.error.clear();
+        refresh();
+    } else {
+        refreshCurrent();
+    }
     publish();
 }
 void PuzzleController::resetBoard() {
@@ -710,6 +788,7 @@ void PuzzleController::close() {
     ++epoch_;
     reply_.stop();
     reads_.stop();
+    summaryRetry_.stop();
     cancelAlternative();
     board_.close();
     linked_.close();
@@ -719,7 +798,8 @@ void PuzzleController::close() {
 void PuzzleController::finishClose() {
     if (!closing_ || closed_ || workerBusy_ || !search_.isNull() || !list_.isNull() ||
         !jobs_.isNull() || !load_.isNull() || !deletion_.isNull() || !reviewList_.isNull() ||
-        !reviewJobs_.isNull() || !boardClosed_ || !linkedClosed_ || !engineClosed_) {
+        !reviewJobs_.isNull() || !summaryRequest_.isNull() || !boardClosed_ || !linkedClosed_ ||
+        !engineClosed_) {
         return;
     }
     if (!worker_.waitForDone(0)) {

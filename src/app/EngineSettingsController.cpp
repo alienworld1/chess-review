@@ -156,6 +156,16 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                     if (state_.hasNext) {
                         profiles.pop_back();
                     }
+                    if (requestedOffset_ == 0) {
+                        // Registration assigns the first profile as the default.
+                        const auto preferred = std::ranges::find_if(
+                            profiles, [](const auto& profile) { return profile.isDefault; });
+                        state_.defaultProfileId = preferred == profiles.end()
+                                                      ? std::nullopt
+                                                      : std::optional{preferred->id};
+                        state_.defaultDisplayName =
+                            preferred == profiles.end() ? QString{} : preferred->displayName;
+                    }
                     state_.profiles = std::move(profiles);
                     ++state_.profilesRevision;
                     state_.offset = requestedOffset_;

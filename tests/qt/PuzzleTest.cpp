@@ -13,14 +13,20 @@
 #include <QDir>
 #include <QFile>
 #include <QLabel>
+#include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScopeGuard>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QToolButton>
 #include <algorithm>
+#include <array>
 
 using namespace chess_review;
 namespace {
@@ -255,6 +261,114 @@ class Fixture {
 class PuzzleTest final : public QObject {
     Q_OBJECT
   private slots:
+    void homeShowsOfflineLibraryAndLiveEngineStatus() {
+        Fixture f;
+        QVERIFY(f.readyForWork());
+        f.window.show();
+        auto* count = f.window.findChild<QLabel*>(QStringLiteral("homePuzzleSummary"));
+        auto* engine = f.window.findChild<QLabel*>(QStringLiteral("homeEngineStatus"));
+        auto* recent = f.window.findChild<QListWidget*>(QStringLiteral("homeRecentGames"));
+        auto* import = f.window.findChild<QToolButton*>(QStringLiteral("homeImportButton"));
+        auto* open = f.window.findChild<QPushButton*>(QStringLiteral("homeOpenPuzzles"));
+        auto* settings = f.window.findChild<QPushButton*>(QStringLiteral("homeEngineSettings"));
+        auto* shell = f.window.findChild<QScrollArea*>(QStringLiteral("shellScrollArea"));
+        QVERIFY(count && engine && recent && import && open && settings && shell);
+        QTRY_VERIFY(count->text().startsWith(QStringLiteral("No saved puzzles")));
+        QTRY_VERIFY(engine->text().startsWith(QStringLiteral("Add an engine")));
+        QVERIFY(import->isEnabled());
+        QCOMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnected);
+
+        const auto renderDirectory = qEnvironmentVariable("CHESS_REVIEW_HOME_RENDER_DIR");
+        const auto originalPalette = qApp->palette();
+        const auto restorePalette = qScopeGuard([&] { qApp->setPalette(originalPalette); });
+        const auto render = [&](const QString& state) {
+            if (renderDirectory.isEmpty()) {
+                return;
+            }
+            for (const bool dark : {false, true}) {
+                auto palette = originalPalette;
+                palette.setColor(QPalette::Window, QColor(dark ? "#191f2a" : "#f4f6f8"));
+                qApp->setPalette(palette);
+                for (const auto size : {QSize(1100, 720), QSize(1360, 850), QSize(1800, 1000)}) {
+                    f.window.resize(size);
+                    QTRY_COMPARE(shell->verticalScrollBar()->maximum(), 0);
+                    QTRY_COMPARE(shell->horizontalScrollBar()->maximum(), 0);
+                    const auto filename =
+                        QStringLiteral("%1-%2-%3.png")
+                            .arg(state, dark ? QStringLiteral("dark") : QStringLiteral("light"))
+                            .arg(size.width());
+                    QVERIFY2(f.window.grab().save(QDir(renderDirectory).filePath(filename)),
+                             qPrintable(filename));
+                }
+            }
+        };
+        render(QStringLiteral("empty"));
+
+        auto& puzzles = f.startup.puzzles();
+        const auto id = f.saveOffline();
+        QVERIFY(id > 0);
+        puzzles.invalidateSummary();
+        QTRY_COMPARE(count->text(), QStringLiteral("1 saved puzzle"));
+        puzzles.refresh(0, 999);
+        puzzles.open(id);
+        QTRY_VERIFY(puzzles.state().solving && !puzzles.state().loading);
+        open->setFocus();
+        QTest::keyClick(open, Qt::Key_Space);
+        QCOMPARE(f.navigation.current(), app::Destination::Puzzles);
+        QVERIFY(!puzzles.state().solving);
+        QTRY_COMPARE(puzzles.state().library.puzzles.size(), std::size_t{1});
+        QCOMPARE(puzzles.state().library.puzzles.front().id, id);
+        puzzles.remove(id);
+        QTRY_VERIFY(puzzles.state().library.puzzles.empty());
+        f.navigation.navigate(app::Destination::Home);
+        QTRY_VERIFY(count->text().startsWith(QStringLiteral("No saved puzzles")));
+
+        settings->click();
+        QCOMPARE(f.navigation.current(), app::Destination::Settings);
+        QVERIFY(f.validate());
+        f.startup.engines().refresh();
+        QTRY_VERIFY(!f.startup.engines().state().listing);
+        f.navigation.navigate(app::Destination::Home);
+        QVERIFY(engine->text().contains(QStringLiteral("Default: Puzzle test engine")));
+        QVERIFY(engine->text().contains(QStringLiteral("Disconnected")));
+        QVERIFY(f.connectRuntime({}));
+        QTRY_VERIFY(engine->text().contains(QStringLiteral("Connected and ready")));
+
+        const std::array games{
+            QStringLiteral("[White \"Ada\"]\n[Black \"Bela\"]\n[Date \"2026.11.19\"]\n\n1. e4 *"),
+            QStringLiteral(
+                "[White \"White player with a very long name used to test text elision "
+                "across the width of the recent games list\"]\n[Black \"Owen\"]\n\n1. c4 *"),
+            QStringLiteral("[White \"Sofia\"]\n[Black \"Mina\"]\n\n1. d4 *"),
+            QStringLiteral("[White \"Sam\"]\n[Black \"Eli\"]\n\n1. Nf3 *"),
+            QStringLiteral("[White \"Tara\"]\n[Black \"Zoe\"]\n\n1. g3 *")};
+        for (const auto& game : games) {
+            QVERIFY(f.startup.localImports().importText(game));
+            QTRY_VERIFY(f.startup.reviewGame().state().game.startsWith(game.section(u'"', 1, 1)) &&
+                        !f.startup.reviewGame().state().busy);
+            f.navigation.navigate(app::Destination::Home);
+        }
+        QTRY_COMPARE(recent->count(), 5);
+        render(QStringLiteral("populated"));
+        f.window.resize(1100, 720);
+        QTRY_COMPARE(shell->horizontalScrollBar()->maximum(), 0);
+        QTRY_COMPARE(shell->verticalScrollBar()->maximum(), 0);
+        auto& engines = f.startup.engines();
+        engines.disconnectEngine();
+        QTRY_COMPARE(engines.state().runtime.phase, engine::RuntimePhase::Disconnected);
+        const QJsonArray failingHandshake{
+            engine_test::step(QStringLiteral("uci"),
+                              {QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")}}})};
+        engine::ValidatorTestAccess::configure(
+            f.supervisor(),
+            engine_test::scenario(f.directory.filePath(QStringLiteral("failure.json")),
+                                  failingHandshake),
+            1000);
+        engines.connectEngine(engines.state().profiles.front().id);
+        QTRY_COMPARE(engines.state().runtime.phase, engine::RuntimePhase::Failed);
+        QVERIFY(engine->text().contains(QStringLiteral("Connection failed")));
+        QVERIFY(import->isEnabled());
+    }
     void realEngineCreatesAnOfflinePuzzle() {
         const auto path = qEnvironmentVariable("CHESS_REVIEW_REAL_PUZZLE_ENGINE");
         if (path.isEmpty()) {
@@ -337,6 +451,7 @@ class PuzzleTest final : public QObject {
         QCOMPARE(f.startup.reviewGame().taskState().run->status, review::JobStatus::Complete);
         QTRY_VERIFY_WITH_TIMEOUT(f.startup.puzzleGeneration().state().lastSaved.has_value(), 10000);
         QTRY_VERIFY(!f.startup.puzzleGeneration().state().active);
+        QTRY_COMPARE(f.startup.puzzles().savedSummary().count, std::optional{1});
         const auto id = *f.startup.puzzleGeneration().state().lastSaved;
         f.startup.engines().disconnectEngine();
         auto& puzzles = f.startup.puzzles();

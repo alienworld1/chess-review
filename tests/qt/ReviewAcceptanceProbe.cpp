@@ -463,7 +463,7 @@ void run(ui::MainWindow& window) {
             }
         }
         require(continued, "background choice");
-        activate(window, "reviewTaskStatus");
+        activate(window, "homeResumeReview");
         until([&] { return child<ui::ReviewPage>(window, "reviewPage")->isVisible(); },
               "return to task");
     }

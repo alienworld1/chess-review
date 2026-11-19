@@ -126,6 +126,9 @@ QPushButton[primary="true"], QToolButton[primary="true"] {
     background: %7; color: %8; border-color: %7; font-weight: 600; }
 QPushButton[primary="true"]:disabled, QToolButton[primary="true"]:disabled {
     background: %3; color: %5; border-color: %6; }
+QFrame#homeIntro, QFrame#homeContinue {
+    background: %2; border: 1px solid %6; border-radius: 6px; }
+QWidget#homeLibraryStatus { border-top: 1px solid %6; }
 QWidget#navigationRail { border-right: 1px solid %6; }
 QWidget#navigationRail QToolButton { border: none; text-align: left; padding: 10px 14px; }
 QWidget#navigationRail QToolButton:checked { background: %9; font-weight: 600; }

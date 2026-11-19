@@ -45,6 +45,7 @@ class GameLibraryController final : public QObject {
     bool showingGames() const { return reviewDetails_; }
     bool hasNext() const { return hasNext_; }
     std::int64_t page() const { return offset_ / pageSize; }
+    const QString& listError() const { return error_; }
     const QString& error() const { return openError_.isEmpty() ? error_ : openError_; }
   signals:
     void changed();

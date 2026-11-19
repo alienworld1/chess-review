@@ -390,9 +390,11 @@ void GameLibraryController::requestPage() {
     }
     pending_ = QUuid::createUuid();
     requestedRevision_ = revision_;
+    persistence::GameLibraryQuery recent;
+    recent.sort = persistence::GameSort::RecentActivity;
     database_.listGames(pending_, reviewDetails_ ? offset_ : 0,
                         reviewDetails_ ? pageSize + 1 : recentGamesLimit,
-                        reviewDetails_ ? query_ : persistence::GameLibraryQuery{});
+                        reviewDetails_ ? query_ : recent);
     emit changed();
 }
 void GameLibraryController::requestReviews() {
