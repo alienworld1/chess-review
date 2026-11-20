@@ -270,6 +270,83 @@ std::optional<Capabilities> decodeCapabilities(const QByteArray& bytes) {
     }
     return collector.capabilities();
 }
+bool editableOption(const UciOption& option) {
+    const auto name = option.name.toCaseFolded();
+    static const QRegularExpression separator(QStringLiteral("\\s+value(?:\\s|$)"),
+                                              QRegularExpression::CaseInsensitiveOption);
+    return option.type != OptionType::Button && name != QStringLiteral("multipv") &&
+           name != QStringLiteral("uci_showwdl") && name != QStringLiteral("uci_chess960") &&
+           name != QStringLiteral("uci_variant") && !separator.match(option.name).hasMatch() &&
+           option.name.compare(QStringLiteral("value"), Qt::CaseInsensitive) != 0 &&
+           ((name != QStringLiteral("threads") && name != QStringLiteral("hash")) ||
+            option.type == OptionType::Spin);
+}
+std::optional<QString> normalizedOverride(const UciOption& option, const QString& value) {
+    if (!validOption(option) || !editableOption(option) || !text(value, 1024, true) ||
+        std::any_of(value.begin(), value.end(), [](QChar c) {
+            return c.category() == QChar::Other_Control || c.category() == QChar::Other_Format;
+        })) {
+        return std::nullopt;
+    }
+    switch (option.type) {
+    case OptionType::Check:
+        if (value != QStringLiteral("true") && value != QStringLiteral("false")) {
+            return std::nullopt;
+        }
+        break;
+    case OptionType::Spin: {
+        bool ok = false;
+        const auto number = value.toLongLong(&ok);
+        const auto name = option.name.toCaseFolded();
+        const auto resourceMaximum = name == QStringLiteral("threads") ? maximumEngineThreads
+                                     : name == QStringLiteral("hash")  ? maximumEngineHashMiB
+                                                                       : *option.maximum;
+        const auto minimum = name == QStringLiteral("threads") || name == QStringLiteral("hash")
+                                 ? std::max<qint64>(1, *option.minimum)
+                                 : *option.minimum;
+        if (!ok || number < minimum || number > std::min(*option.maximum, resourceMaximum)) {
+            return std::nullopt;
+        }
+        return QString::number(number);
+    }
+    case OptionType::Combo:
+        if (!option.choices.contains(value)) {
+            return std::nullopt;
+        }
+        break;
+    case OptionType::String:
+        if (value.trimmed() != value || value == QStringLiteral("<empty>")) {
+            return std::nullopt;
+        }
+        break;
+    case OptionType::Button:
+        return std::nullopt;
+    }
+    return value;
+}
+bool validOverrides(const Capabilities& capabilities, const OptionOverrides& overrides) {
+    if (overrides.size() > 32) {
+        return false;
+    }
+    if (overrides.isEmpty()) {
+        return true;
+    }
+    qsizetype bytes = 0;
+    qsizetype matched = 0;
+    for (const auto& option : capabilities.options) {
+        const auto found = overrides.constFind(option.name.toCaseFolded());
+        if (found == overrides.cend()) {
+            continue;
+        }
+        const auto value = normalizedOverride(option, found.value());
+        if (!value || *value != found.value()) {
+            return false;
+        }
+        bytes += option.name.toUtf8().size() + value->toUtf8().size() + 24;
+        ++matched;
+    }
+    return bytes <= 16384 && matched == overrides.size();
+}
 bool validEngine(const ValidatedEngine& engine) {
     if (engine.capabilities.options.size() > 1024) {
         return false;

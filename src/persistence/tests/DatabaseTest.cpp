@@ -219,9 +219,9 @@ void DatabaseTest::freshAndRepeatInitialization() {
     QCOMPARE(QSqlDatabase::connectionNames(), connectionsBefore);
     QVERIFY(!initialize(path, migrations()));
     FixtureConnection fixture(path);
-    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")).toInt(), 14);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")).toInt(), 15);
     QCOMPARE(fixture.scalar(QStringLiteral("SELECT MAX(version) FROM schema_migrations")).toInt(),
-             14);
+             15);
     QCOMPARE(fixture.scalar(QStringLiteral("PRAGMA journal_mode")).toString(),
              QStringLiteral("wal"));
     QCOMPARE(fixture

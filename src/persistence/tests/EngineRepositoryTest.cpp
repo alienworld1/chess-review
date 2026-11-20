@@ -7,6 +7,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QVariant>
+#include <memory>
 using namespace chess_review;
 using namespace chess_review::persistence;
 using namespace chess_review::persistence::detail;
@@ -102,6 +103,60 @@ class EngineRepositoryTest final : public QObject {
         QVERIFY(std::holds_alternative<engine::Error>(reopened.listEngines(0, 201)));
         QCOMPARE(std::get<std::vector<engine::EngineProfile>>(reopened.listEngines(1, 1)).size(),
                  std::size_t(1));
+    }
+    void editArchiveAndReRegister() {
+        QTemporaryDir directory;
+        const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
+        auto session = std::make_unique<StorageSession>();
+        QVERIFY(!session->initialize(path, migrations(), ignore));
+        auto first = candidate(QStringLiteral("/first"));
+        QVERIFY(!engine::appendOption(
+            first.capabilities, std::get<engine::UciOption>(engine::parseOption(QStringLiteral(
+                                    "option name Threads type spin default 1 min 1 max 128")))));
+        const auto second = candidate(QStringLiteral("/second"), QByteArray("second"));
+        const auto initial = std::get<RegisteredEngine>(session->registerEngine(first)).profile;
+        const auto other = std::get<RegisteredEngine>(session->registerEngine(second)).profile;
+        QVERIFY(!session->editEngine(initial.id, RenameEngine{QStringLiteral("My engine")}));
+        QVERIFY(!session->editEngine(
+            initial.id, SetEngineOption{QStringLiteral("Threads"), QStringLiteral("02")}));
+        QVERIFY(session->editEngine(
+            initial.id, SetEngineOption{QStringLiteral("Threads"), QStringLiteral("65")}));
+        QVERIFY(session->editEngine(initial.id, RemoveEngine{}));
+        QVERIFY(!session->editEngine(other.id, MakeDefaultEngine{}));
+        session.reset();
+        session = std::make_unique<StorageSession>();
+        QVERIFY(!session->initialize(path, migrations(), ignore));
+        {
+            const auto profiles =
+                std::get<std::vector<engine::EngineProfile>>(session->listEngines(0, 50));
+            QCOMPARE(profiles.front().id, other.id);
+            QVERIFY(profiles.front().isDefault);
+            QCOMPARE(profiles.back().displayName, QStringLiteral("My engine"));
+            QCOMPARE(profiles.back().engine.reportedName, first.reportedName);
+            QCOMPARE(profiles.back().optionOverrides.value(QStringLiteral("threads")),
+                     QStringLiteral("2"));
+        }
+        Fixture fixture(path);
+        QVERIFY(fixture.exec(QStringLiteral("PRAGMA foreign_keys=ON")));
+        QVERIFY(fixture.exec(
+            QStringLiteral("CREATE TABLE test_history(engine_id INTEGER REFERENCES engines(id))")));
+        QVERIFY(
+            fixture.exec(QStringLiteral("INSERT INTO test_history VALUES(%1)").arg(initial.id)));
+        QVERIFY(!session->editEngine(initial.id, RemoveEngine{}));
+        QCOMPARE(std::get<std::vector<engine::EngineProfile>>(session->listEngines(0, 50)).size(),
+                 1U);
+        QCOMPARE(fixture.scalar(QStringLiteral("SELECT engine_id FROM test_history")).toLongLong(),
+                 initial.id);
+        const auto newer = candidate(first.executablePath, QByteArray("new binary"));
+        const auto replacement = std::get<RegisteredEngine>(session->registerEngine(newer));
+        QVERIFY(replacement.profile.id != initial.id);
+        QVERIFY(std::holds_alternative<engine::Error>(session->registerEngine(first)));
+        first.executablePath = QStringLiteral("/restored");
+        const auto restored = std::get<RegisteredEngine>(session->registerEngine(first));
+        QCOMPARE(restored.profile.id, initial.id);
+        QCOMPARE(restored.profile.engine.executablePath, first.executablePath);
+        QCOMPARE(restored.profile.optionOverrides.value(QStringLiteral("threads")),
+                 QStringLiteral("2"));
     }
     void rollbackAndDamage() {
         QTemporaryDir directory;

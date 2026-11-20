@@ -1966,7 +1966,8 @@ class ReviewRepositoryTest final : public QObject {
         QByteArray settings;
         {
             StorageSession session;
-            QVERIFY(!session.initialize(path, migrations(), ignore));
+            // The downgrade below reconstructs schema 006 from a schema 014 fixture.
+            QVERIFY(!session.initialize(path, std::span(migrations()).first(14), ignore));
             const auto doc = document();
             auto request = seed(session, doc);
             request.configuration =

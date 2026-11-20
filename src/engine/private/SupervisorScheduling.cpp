@@ -43,7 +43,8 @@ void SupervisorCoordinator::scheduleAnalysis(QUuid session, const AnalysisReques
         return;
     }
     // Validate before preemption. All chess replay/serialization stays off the GUI thread.
-    if (const auto error = validateSearchRequest(request, runtime_->discovery->capabilities)) {
+    if (const auto error = validateSearchRequest(request, runtime_->discovery->capabilities,
+                                                 runtime_->optionOverrides)) {
         reject(*error);
         return;
     }

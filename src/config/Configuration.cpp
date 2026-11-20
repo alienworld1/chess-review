@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QLockFile>
 #include <QSaveFile>
 #include <QScopeGuard>
 #include <algorithm>
@@ -27,7 +28,7 @@
 
 namespace chess_review::config {
 namespace {
-constexpr std::size_t maxBytes = 64 * 1024;
+constexpr auto maxBytes = static_cast<std::size_t>(maximumConfigurationBytes);
 class Reader {
   public:
     Diagnostics errors;
@@ -209,7 +210,12 @@ Result parse(std::string_view contents) {
     std::uint64_t version = 1;
     reader.integer(root, "version", "version", version, 1);
     if (const auto* analysis = reader.table(root, "analysis", "analysis")) {
-        reader.keys(*analysis, "analysis", {"fast", "standard", "thorough"});
+        reader.keys(*analysis, "analysis", {"fast", "standard", "thorough", "liveMultiPv"});
+        if (analysis->contains("liveMultiPv")) {
+            std::uint64_t width = 3;
+            reader.integer(*analysis, "liveMultiPv", "analysis.liveMultiPv", width, 256);
+            ui.liveAnalysisLines = static_cast<int>(width);
+        }
         const std::array<std::string_view, 3> names{"fast", "standard", "thorough"};
         for (std::size_t i = 0; i < names.size(); ++i) {
             const auto path = "analysis." + std::string(names[i]);
@@ -373,24 +379,27 @@ Result validate(const review::Configuration& values, std::uint32_t classificatio
                                {},
                                {}});
 }
-static Result loadWithBytes(const QString& filename, QByteArray* original) {
+static std::variant<QByteArray, Diagnostics> readBytes(const QString& filename) {
+    const auto error = [](const char* message) {
+        return Diagnostics{{"configuration", message, {}, {}}};
+    };
     if (!QDir::isAbsolutePath(filename) || filename.contains(QChar::Null) ||
         !filename.isValidUtf16()) {
-        return failure("Configuration location is unavailable");
+        return error("Configuration location is unavailable");
     }
-    const auto missing = [&]() -> Result {
+    const auto missing = [&]() -> std::variant<QByteArray, Diagnostics> {
         QFileInfo ancestor(QFileInfo(filename).absolutePath());
         while (!ancestor.exists() && !ancestor.isSymLink()) {
             const auto parent = ancestor.absolutePath();
             if (parent == ancestor.absoluteFilePath()) {
-                return failure("Configuration location is unavailable");
+                return error("Configuration location is unavailable");
             }
             ancestor.setFile(parent);
         }
         if (!ancestor.isDir() || !ancestor.isReadable()) {
-            return failure("Configuration location is unavailable");
+            return error("Configuration location is unavailable");
         }
-        return parse({});
+        return QByteArray{};
     };
     QFile file;
 #ifdef Q_OS_UNIX
@@ -405,53 +414,56 @@ static Result loadWithBytes(const QString& filename, QByteArray* original) {
             return missing();
         }
         if (errno == EACCES || errno == EPERM) {
-            return failure("Configuration could not be read; check file and directory permissions");
+            return error("Configuration could not be read; check file and directory permissions");
         }
         if (errno == ELOOP) {
-            return failure("Configuration cannot be a symbolic link");
+            return error("Configuration cannot be a symbolic link");
         }
-        return failure("Configuration could not be opened safely");
+        return error("Configuration could not be opened safely");
     }
     auto closeDescriptor = qScopeGuard([descriptor] { ::close(descriptor); });
     struct stat status {};
     if (::fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode)) {
-        return failure("Configuration must be a regular file");
+        return error("Configuration must be a regular file");
     }
     if (status.st_size < 0 || static_cast<std::uint64_t>(status.st_size) > maxBytes) {
-        return failure("Configuration exceeds 64 KiB");
+        return error("Configuration exceeds 64 KiB");
     }
     if (!file.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
-        return failure("Configuration could not be read");
+        return error("Configuration could not be read");
     }
     closeDescriptor.dismiss(); // QFile now owns the descriptor, including error paths below.
 #else
-    std::error_code error;
-    const auto status =
-        std::filesystem::symlink_status(std::filesystem::path(filename.toStdU16String()), error);
-    if (error) {
-        return error == std::errc::no_such_file_or_directory
+    std::error_code pathError;
+    const auto status = std::filesystem::symlink_status(
+        std::filesystem::path(filename.toStdU16String()), pathError);
+    if (pathError) {
+        return pathError == std::errc::no_such_file_or_directory
                    ? missing()
-                   : failure("Configuration could not be inspected");
+                   : error("Configuration could not be inspected");
     }
     if (status.type() == std::filesystem::file_type::not_found) {
         return missing();
     }
     if (QFileInfo(filename).isSymLink() || !std::filesystem::is_regular_file(status)) {
-        return failure("Configuration must be a regular file");
+        return error("Configuration must be a regular file");
     }
     file.setFileName(filename);
     if (!file.open(QIODevice::ReadOnly)) {
-        return failure("Configuration could not be read");
+        return error("Configuration could not be read");
     }
 #endif
     const auto bytes = file.read(static_cast<qint64>(maxBytes + 1));
     if (file.error() != QFileDevice::NoError) {
-        return failure("Configuration could not be read");
+        return error("Configuration could not be read");
     }
-    if (original) {
-        *original = bytes;
+    if (bytes.size() > maximumConfigurationBytes) {
+        return error("Configuration exceeds 64 KiB");
     }
-    return parse(std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())));
+    if (!bytes.isValidUtf8() || bytes.contains('\0')) {
+        return error("Configuration must be UTF-8 text");
+    }
+    return bytes;
 }
 void applyPuzzleLimits(puzzles::Policy& policy, const PuzzleConfiguration& c) {
     policy.maximumPlayerMoves = c.maximumPlayerMoves;
@@ -460,53 +472,118 @@ void applyPuzzleLimits(puzzles::Policy& policy, const PuzzleConfiguration& c) {
     policy.minimumMaterialGain = c.minimumMaterialGain;
     policy.immediateMaterialGain = c.immediateMaterialGain;
 }
-Result load(const QString& filename) { return loadWithBytes(filename, nullptr); }
-Result setAutomaticPuzzles(const QString& filename, bool enabled) {
-    QByteArray original;
-    auto result = loadWithBytes(filename, &original);
-    if (std::holds_alternative<Diagnostics>(result)) {
-        return result;
+Document loadDocument(const QString& filename) {
+    auto read = readBytes(filename);
+    if (auto* errors = std::get_if<Diagnostics>(&read)) {
+        return {std::move(*errors), std::nullopt};
     }
-    auto parsed = toml::parse(
-        std::string_view(original.constData(), static_cast<std::size_t>(original.size())));
-    if (!parsed) {
-        return failure("Configuration could not be parsed for updating");
-    }
-    auto& root = parsed.table();
-    if (!root.contains("puzzles")) {
-        root.insert("puzzles", toml::table{});
-    }
-    auto* table = root.get_as<toml::table>("puzzles");
-    if (!table) {
-        return failure("Puzzle configuration is not a table");
-    }
-    table->insert_or_assign("automatic", enabled);
-    std::ostringstream formatted;
-    formatted << root;
-    const auto text = formatted.str();
-    const auto validated = parse(text);
+    auto contents = std::get<QByteArray>(std::move(read));
+    auto result =
+        parse(std::string_view(contents.constData(), static_cast<std::size_t>(contents.size())));
+    return {std::move(result), std::move(contents)};
+}
+Result load(const QString& filename) { return loadDocument(filename).result; }
+Document saveDocument(const QString& filename, const QByteArray& expected, QByteArray contents) {
+    auto validated =
+        parse(std::string_view(contents.constData(), static_cast<std::size_t>(contents.size())));
     if (std::holds_alternative<Diagnostics>(validated)) {
-        return validated;
+        return {std::move(validated), std::nullopt};
     }
-    QByteArray current;
-    const auto reread = loadWithBytes(filename, &current);
-    if (std::holds_alternative<Diagnostics>(reread) || original != current) {
-        return failure("Configuration changed during the update; try again");
+    if (!QDir::isAbsolutePath(filename) || filename.contains(QChar::Null) ||
+        !filename.isValidUtf16() || !QDir().mkpath(QFileInfo(filename).absolutePath()) ||
+        QFileInfo(filename).isSymLink()) {
+        return {failure("Configuration location is unavailable"), std::nullopt};
     }
-    if (!QDir().mkpath(QFileInfo(filename).absolutePath()) || QFileInfo(filename).isSymLink()) {
-        return failure("Configuration location is unavailable");
+    QLockFile lock(filename + QStringLiteral(".lock"));
+    if (!lock.tryLock(0)) {
+        return {failure("Configuration is being saved elsewhere or cannot be locked"),
+                std::nullopt};
     }
     QSaveFile file(filename);
     file.setDirectWriteFallback(false);
-    if (!file.open(QIODevice::WriteOnly)) {
-        return failure("Configuration could not be opened for saving");
+    if (!file.open(QIODevice::WriteOnly) ||
+        !file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
+        file.write(contents) != contents.size()) {
+        return {failure("Configuration could not be saved atomically"), std::nullopt};
     }
-    if (!file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
-        file.write(text.data(), static_cast<qint64>(text.size())) !=
-            static_cast<qint64>(text.size()) ||
-        !file.commit()) {
-        return failure("Configuration could not be saved atomically");
+    const auto current = readBytes(filename);
+    const auto* bytes = std::get_if<QByteArray>(&current);
+    if (!bytes || *bytes != expected) {
+        return {
+            failure("Configuration changed on disk or could not be read; reload it before saving"),
+            std::nullopt};
     }
-    return validated;
+    if (!file.commit()) {
+        return {failure("Configuration could not be saved atomically"), std::nullopt};
+    }
+    return {std::move(validated), std::move(contents)};
+}
+BasicPreferences basicPreferences(const ValidatedConfiguration& c) {
+    return {c.values.quality,
+            c.values.conversion.preferWdl,
+            c.values.openings.enabled,
+            c.puzzles.automatic,
+            c.ui.verbose,
+            c.values.refinement.multiPv,
+            c.ui.liveAnalysisLines};
+}
+Document saveBasicPreferences(const QString& filename, const QByteArray& expected,
+                              const BasicPreferences& preferences) {
+    const auto original =
+        parse(std::string_view(expected.constData(), static_cast<std::size_t>(expected.size())));
+    const auto* baseline = std::get_if<std::shared_ptr<const ValidatedConfiguration>>(&original);
+    if (!baseline) {
+        return {original, std::nullopt};
+    }
+    if (preferences == basicPreferences(**baseline)) {
+        return {original, expected};
+    }
+    auto parsed = toml::parse(
+        std::string_view(expected.constData(), static_cast<std::size_t>(expected.size())));
+    if (!parsed) {
+        return {failure("Configuration could not be parsed for updating"), std::nullopt};
+    }
+    auto& root = parsed.table();
+    const auto update = [&root](const char* group, const char* key, auto value) {
+        if (!root.contains(group)) {
+            root.insert(group, toml::table{});
+        }
+        root.get_as<toml::table>(group)->insert_or_assign(key, value);
+    };
+    switch (preferences.quality) {
+    case review::Quality::Fast:
+        update("review", "quality", "fast");
+        break;
+    case review::Quality::Standard:
+        update("review", "quality", "standard");
+        break;
+    case review::Quality::Thorough:
+        update("review", "quality", "thorough");
+        break;
+    }
+    update("review", "preferWdl", preferences.preferWdl);
+    update("openings", "enabled", preferences.openingBook);
+    update("puzzles", "automatic", preferences.automaticPuzzles);
+    update("ui", "verbose", preferences.verbose);
+    update("refinement", "multiPv", preferences.reviewLines);
+    if (preferences.liveAnalysisLines) {
+        update("analysis", "liveMultiPv", *preferences.liveAnalysisLines);
+    } else if (auto* analysis = root.get_as<toml::table>("analysis")) {
+        analysis->erase("liveMultiPv");
+    }
+    std::ostringstream formatted;
+    formatted << root << '\n';
+    return saveDocument(filename, expected, QByteArray::fromStdString(formatted.str()));
+}
+Result setAutomaticPuzzles(const QString& filename, bool enabled) {
+    auto document = loadDocument(filename);
+    const auto* baseline =
+        std::get_if<std::shared_ptr<const ValidatedConfiguration>>(&document.result);
+    if (!baseline || !document.source) {
+        return document.result;
+    }
+    auto preferences = basicPreferences(**baseline);
+    preferences.automaticPuzzles = enabled;
+    return saveBasicPreferences(filename, *document.source, preferences).result;
 }
 } // namespace chess_review::config

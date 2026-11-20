@@ -113,6 +113,7 @@ target_link_libraries(chess_review_analysis PUBLIC chess_review_engine chess_rev
 chess_review_apply_options(chess_review_analysis)
 
 add_library(chess_review_persistence STATIC
+    src/persistence/migrations/015_engine_settings.cpp
     src/persistence/migrations/014_game_ids.cpp
     src/persistence/migrations/013_puzzle_ids.cpp
     src/persistence/migrations/012_openings.cpp
@@ -187,6 +188,7 @@ add_library(chess_review_ui STATIC
     src/ui/review/ReviewPage.cpp
     src/ui/chess/MoveTimeline.cpp
     src/ui/EngineText.cpp
+    src/ui/settings/ConfigurationSections.cpp
     src/ui/settings/EngineSettingsPage.cpp
     src/ui/chess/ChessBoardWidget.cpp
     src/ui/chess/BoardAccessibility.cpp
@@ -203,6 +205,11 @@ add_library(chess_review_ui STATIC
     src/ui/shell/DiagnosticsDialog.cpp
 )
 target_link_libraries(chess_review_ui PUBLIC chess_review_startup Qt6::Widgets PRIVATE Qt6::Svg)
+qt_add_resources(chess_review_ui "settings_reference"
+    PREFIX "/settings"
+    BASE "docs"
+    FILES docs/config.example.toml
+)
 qt_add_resources(chess_review_ui "pieces"
     PREFIX "/pieces"
     BASE "assets/pieces/cburnett"

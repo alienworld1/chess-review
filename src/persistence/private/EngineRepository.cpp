@@ -1,16 +1,17 @@
 #include "persistence/private/StorageSession.h"
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStringDecoder>
 #include <QVariant>
+#include <algorithm>
 
 namespace chess_review::persistence::detail {
 namespace {
 engine::Error storage() {
-    return {
-        engine::ErrorCode::Storage,
-        QStringLiteral(
-            "Engine storage failed. No registration was confirmed; retry after checking storage.")};
+    return {engine::ErrorCode::Storage,
+            QStringLiteral("Engine storage failed. Try again after checking storage.")};
 }
 engine::Error invalid() {
     return {engine::ErrorCode::InvalidRecord,
@@ -18,13 +19,12 @@ engine::Error invalid() {
                 "An engine record is invalid or too large. Existing records were preserved.")};
 }
 // Byte-bounded projections precede Qt materialization, including for damaged databases.
-const QString projection = QStringLiteral(
-    "SELECT id, substr(CAST(display_name AS BLOB),1,16385), substr(CAST(executable_path AS "
-    "BLOB),1,16385), "
+const QString profileColumns = QStringLiteral(
+    "SELECT id, substr(CAST(display_name AS BLOB),1,16385), substr(CAST(%1 AS BLOB),1,16385), "
     "substr(executable_sha256,1,33), substr(CAST(reported_name AS BLOB),1,16385), "
     "substr(CAST(reported_author AS BLOB),1,16385), detected_version IS NULL, "
     "substr(CAST(capabilities_json AS BLOB),1,1048577), substr(CAST(option_overrides_json AS "
-    "BLOB),1,3), "
+    "BLOB),1,65537), "
     "is_default, substr(CAST(created_at AS BLOB),1,65), substr(CAST(last_validated_at AS "
     "BLOB),1,65), "
     "typeof(id)='integer' AND typeof(display_name)='text' AND typeof(executable_path)='text' AND "
@@ -32,7 +32,16 @@ const QString projection = QStringLiteral(
     "(reported_author IS NULL OR typeof(reported_author)='text') AND "
     "typeof(capabilities_json)='blob' AND "
     "typeof(option_overrides_json)='blob' AND typeof(is_default)='integer' AND "
-    "typeof(created_at)='text' AND typeof(last_validated_at)='text' FROM engines ");
+    "typeof(created_at)='text' AND typeof(last_validated_at)='text', "
+    "%2 FROM engines ");
+const QString& projection(bool canArchive) {
+    static const auto current =
+        profileColumns.arg(QStringLiteral("coalesce(archived_path, executable_path)"),
+                           QStringLiteral("archived_path IS NOT NULL"));
+    static const auto previous =
+        profileColumns.arg(QStringLiteral("executable_path"), QStringLiteral("0"));
+    return canArchive ? current : previous;
+}
 std::optional<QString> readText(const QSqlQuery& query, int column, qsizetype cap) {
     const auto bytes = query.value(column).toByteArray();
     if (bytes.size() > cap || !bytes.isValidUtf8() || bytes.contains('\0')) {
@@ -40,6 +49,17 @@ std::optional<QString> readText(const QSqlQuery& query, int column, qsizetype ca
     }
     QStringDecoder decoder(QStringDecoder::Utf8, QStringConverter::Flag::ConvertInitialBom);
     return decoder(bytes);
+}
+bool validDisplayName(const QString& name) {
+    return !name.trimmed().isEmpty() && name.size() <= 4096 && name.isValidUtf16() &&
+           !name.contains(u'\n') && !name.contains(u'\r') && !name.contains(QChar::Null);
+}
+QByteArray encodeOverrides(const engine::OptionOverrides& overrides) {
+    QJsonObject object;
+    for (auto it = overrides.cbegin(); it != overrides.cend(); ++it) {
+        object.insert(it.key(), it.value());
+    }
+    return QJsonDocument(object).toJson(QJsonDocument::Compact);
 }
 std::optional<engine::EngineProfile> readProfile(const QSqlQuery& query) {
     const auto display = readText(query, 1, 16384);
@@ -52,7 +72,6 @@ std::optional<engine::EngineProfile> readProfile(const QSqlQuery& query) {
     const auto defaultValue = query.value(9).toLongLong();
     if (!display || !path || !name || !author || !created || !validated || !capabilities ||
         !query.value(6).toBool() || !query.value(12).toBool() ||
-        query.value(8).toByteArray() != QByteArray("{}") ||
         (defaultValue != 0 && defaultValue != 1)) {
         return std::nullopt;
     }
@@ -69,7 +88,21 @@ std::optional<engine::EngineProfile> readProfile(const QSqlQuery& query) {
     profile.engine.lastValidatedAt = QDateTime::fromString(*validated, Qt::ISODateWithMs);
     profile.createdAt = QDateTime::fromString(*created, Qt::ISODateWithMs);
     profile.isDefault = defaultValue == 1;
-    if (profile.id <= 0 || profile.displayName != profile.engine.reportedName ||
+    const auto json = query.value(8).toByteArray();
+    const auto parsed = json.size() <= 65536 && json.isValidUtf8() ? QJsonDocument::fromJson(json)
+                                                                   : QJsonDocument{};
+    if (!parsed.isObject()) {
+        return std::nullopt;
+    }
+    const auto fields = parsed.object();
+    for (auto it = fields.constBegin(); it != fields.constEnd(); ++it) {
+        if (!it.value().isString()) {
+            return std::nullopt;
+        }
+        profile.optionOverrides.insert(it.key(), it.value().toString());
+    }
+    if (profile.id <= 0 || !validDisplayName(profile.displayName) ||
+        !engine::validOverrides(profile.engine.capabilities, profile.optionOverrides) ||
         !created->endsWith(u'Z') || !validated->endsWith(u'Z') || !profile.createdAt.isValid() ||
         !engine::validEngine(profile.engine)) {
         return std::nullopt;
@@ -116,12 +149,14 @@ RegisterEngineResult StorageSession::registerEngine(const engine::ValidatedEngin
         return storage();
     }
     QSqlQuery query(database_);
+    const bool canArchive = schemaVersion_ >= 15;
     // Check the registry invariant before either the duplicate or insertion path.
     // Count valid defaults instead of summing untrusted integer values.
     if (!query.exec(QStringLiteral(
-            "SELECT count(*), count(CASE WHEN is_default=1 THEN 1 END), "
-            "count(CASE WHEN typeof(is_default)!='integer' OR is_default NOT IN (0,1) "
-            "THEN 1 END) FROM engines")) ||
+                        "SELECT count(*), count(CASE WHEN is_default=1 THEN 1 END), "
+                        "count(CASE WHEN typeof(is_default)!='integer' OR is_default NOT IN (0,1) "
+                        "THEN 1 END) FROM engines") +
+                    (canArchive ? QStringLiteral(" WHERE archived_path IS NULL") : QString{})) ||
         !query.next()) {
         return storage();
     }
@@ -132,7 +167,7 @@ RegisterEngineResult StorageSession::registerEngine(const engine::ValidatedEngin
         return invalid();
     }
     query.finish();
-    if (!query.prepare(projection +
+    if (!query.prepare(projection(canArchive) +
                        QStringLiteral("WHERE executable_sha256=? OR executable_path=CAST(? AS "
                                       "TEXT) ORDER BY id LIMIT 2"))) {
         return storage();
@@ -144,6 +179,7 @@ RegisterEngineResult StorageSession::registerEngine(const engine::ValidatedEngin
     }
     std::optional<engine::EngineProfile> duplicate;
     bool replaced = false;
+    bool archivedDuplicate = false;
     while (query.next()) {
         const auto profile = readProfile(query);
         if (!profile) {
@@ -151,8 +187,9 @@ RegisterEngineResult StorageSession::registerEngine(const engine::ValidatedEngin
         }
         if (profile->engine.executableSha256 == engine.executableSha256) {
             duplicate = *profile;
+            archivedDuplicate = query.value(13).toBool();
         }
-        if (profile->engine.executablePath == engine.executablePath &&
+        if (!query.value(13).toBool() && profile->engine.executablePath == engine.executablePath &&
             profile->engine.executableSha256 != engine.executableSha256) {
             replaced = true;
         }
@@ -162,9 +199,35 @@ RegisterEngineResult StorageSession::registerEngine(const engine::ValidatedEngin
     }
     query.finish();
     if (replaced) {
-        return engine::Error{engine::ErrorCode::Replacement,
-                             QStringLiteral("Different executable content is already registered at "
-                                            "this path. Replacement is not supported yet.")};
+        return engine::Error{
+            engine::ErrorCode::Replacement,
+            QStringLiteral("Different executable content is already registered at "
+                           "this path. Remove that profile before adding the new executable.")};
+    }
+    if (archivedDuplicate) {
+        if (!engine::validOverrides(engine.capabilities, duplicate->optionOverrides)) {
+            duplicate->optionOverrides.clear();
+        }
+        if (!query.prepare(QStringLiteral(
+                "UPDATE engines SET archived_path=NULL, executable_path=?, is_default=?, "
+                "reported_name=?, reported_author=?, capabilities_json=?, option_overrides_json=?, "
+                "last_validated_at=? WHERE id=? AND archived_path IS NOT NULL"))) {
+            return storage();
+        }
+        query.addBindValue(engine.executablePath);
+        query.addBindValue(count == 0 ? 1 : 0);
+        query.addBindValue(engine.reportedName);
+        query.addBindValue(engine.reportedAuthor ? QVariant(*engine.reportedAuthor) : QVariant());
+        query.addBindValue(engine::encodeCapabilities(engine.capabilities));
+        query.addBindValue(encodeOverrides(duplicate->optionOverrides));
+        query.addBindValue(engine.lastValidatedAt.toUTC().toString(Qt::ISODateWithMs));
+        query.addBindValue(static_cast<qlonglong>(duplicate->id));
+        if (!query.exec() || query.numRowsAffected() != 1 || !transaction.commit()) {
+            return storage();
+        }
+        duplicate->engine = engine;
+        duplicate->isDefault = count == 0;
+        return RegisteredEngine{*duplicate, false};
     }
     if (duplicate) {
         if (!transaction.commit()) {
@@ -198,7 +261,7 @@ RegisterEngineResult StorageSession::registerEngine(const engine::ValidatedEngin
     const auto id = query.lastInsertId().toLongLong();
     query.finish();
     const engine::EngineProfile expected{id, engine.reportedName, engine, count == 0, now};
-    if (id <= 0 || !query.prepare(projection + QStringLiteral("WHERE id=?"))) {
+    if (id <= 0 || !query.prepare(projection(canArchive) + QStringLiteral("WHERE id=?"))) {
         return storage();
     }
     query.addBindValue(id);
@@ -218,6 +281,109 @@ RegisterEngineResult StorageSession::registerEngine(const engine::ValidatedEngin
     }
     return RegisteredEngine{*stored, false};
 }
+EditEngineResult StorageSession::editEngine(std::int64_t id, const EngineProfileEdit& edit) {
+    EngineTransaction transaction(database_, usable_);
+    if (schemaVersion_ < 15 || !usable_ || !transaction.begin()) {
+        return storage();
+    }
+    QSqlQuery query(database_);
+    if (!query.prepare(projection(true) + QStringLiteral("WHERE id=? AND archived_path IS NULL"))) {
+        return storage();
+    }
+    const auto key = static_cast<qlonglong>(id);
+    query.addBindValue(key);
+    if (!query.exec()) {
+        return storage();
+    }
+    if (!query.next()) {
+        return query.lastError().isValid()
+                   ? storage()
+                   : engine::Error{
+                         engine::ErrorCode::InvalidRequest,
+                         QStringLiteral("This engine is no longer registered. Refresh the list.")};
+    }
+    const auto profile = readProfile(query);
+    query.finish();
+    if (!profile) {
+        return invalid();
+    }
+    QString statement;
+    QVariant parameter;
+    if (const auto* rename = std::get_if<RenameEngine>(&edit)) {
+        const auto name = rename->displayName.trimmed();
+        if (name.size() > 120 || !validDisplayName(name)) {
+            return engine::Error{engine::ErrorCode::InvalidRequest,
+                                 QStringLiteral("Enter a display name of 1 to 120 characters.")};
+        }
+        statement = QStringLiteral("UPDATE engines SET display_name=? WHERE id=?");
+        parameter = name;
+    } else if (std::holds_alternative<MakeDefaultEngine>(edit)) {
+        if (!query.exec(QStringLiteral("UPDATE engines SET is_default=0 WHERE is_default=1"))) {
+            return storage();
+        }
+        statement = QStringLiteral("UPDATE engines SET is_default=1 WHERE id=?");
+    } else if (std::holds_alternative<RemoveEngine>(edit)) {
+        if (profile->isDefault) {
+            if (!query.exec(QStringLiteral("SELECT EXISTS(SELECT 1 FROM engines WHERE "
+                                           "archived_path IS NULL AND is_default=0)")) ||
+                !query.next()) {
+                return storage();
+            }
+            if (query.value(0).toBool()) {
+                return engine::Error{
+                    engine::ErrorCode::InvalidRequest,
+                    QStringLiteral("Set another engine as default before removing this one.")};
+            }
+            query.finish();
+        }
+        // Retain the engine ID for historical reviews. Release the path so a new
+        // binary installed at the same location can be registered.
+        statement = QStringLiteral("UPDATE engines SET archived_path=executable_path, "
+                                   "executable_path='archived:' || id, is_default=0 WHERE id=?");
+    } else {
+        const auto& setting = std::get<SetEngineOption>(edit);
+        const auto& capabilities = profile->engine.capabilities;
+        const auto option =
+            std::ranges::find_if(capabilities.options, [&setting](const auto& value) {
+                return value.name.compare(setting.name, Qt::CaseInsensitive) == 0;
+            });
+        if (option == capabilities.options.end() || !engine::editableOption(*option)) {
+            return engine::Error{engine::ErrorCode::InvalidRequest,
+                                 QStringLiteral("This engine option cannot be edited.")};
+        }
+        auto overrides = profile->optionOverrides;
+        const auto name = option->name.toCaseFolded();
+        if (setting.value) {
+            const auto value = engine::normalizedOverride(*option, *setting.value);
+            if (!value) {
+                return engine::Error{
+                    engine::ErrorCode::InvalidRequest,
+                    QStringLiteral("Enter a supported value within the displayed limits.")};
+            }
+            overrides.insert(name, *value);
+        } else {
+            overrides.remove(name);
+        }
+        if (!engine::validOverrides(capabilities, overrides)) {
+            return engine::Error{
+                engine::ErrorCode::InvalidRequest,
+                QStringLiteral("The saved engine options exceed the allowed size.")};
+        }
+        parameter = encodeOverrides(overrides);
+        statement = QStringLiteral("UPDATE engines SET option_overrides_json=? WHERE id=?");
+    }
+    if (!query.prepare(statement)) {
+        return storage();
+    }
+    if (parameter.isValid()) {
+        query.addBindValue(parameter);
+    }
+    query.addBindValue(key);
+    if (!query.exec() || query.numRowsAffected() != 1 || !transaction.commit()) {
+        return storage();
+    }
+    return {};
+}
 ListEnginesResult StorageSession::listEngines(std::int64_t offset, int limit) {
     if (!usable_) {
         return storage();
@@ -227,7 +393,11 @@ ListEnginesResult StorageSession::listEngines(std::int64_t offset, int limit) {
     }
     QSqlQuery query(database_);
     query.setForwardOnly(true);
-    if (!query.prepare(projection + QStringLiteral("ORDER BY id LIMIT ? OFFSET ?"))) {
+    const bool canArchive = schemaVersion_ >= 15;
+    const auto order =
+        canArchive ? QStringLiteral("WHERE archived_path IS NULL ORDER BY is_default DESC, id")
+                   : QStringLiteral("ORDER BY id");
+    if (!query.prepare(projection(canArchive) + order + QStringLiteral(" LIMIT ? OFFSET ?"))) {
         return storage();
     }
     query.addBindValue(limit);

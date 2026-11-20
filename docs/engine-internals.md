@@ -349,9 +349,10 @@ No profile is created by failed or cancelled validation.
 The first engine becomes default. Further additions preserve that default.
 An identical binary returns the existing entry without changing its path or
 validation time, even if another copy was selected. Changed content at an already
-registered path is rejected. Rename, remove, relocation, replacement, changing the
-default and option editing are later increments. Priority scheduling is available
-through the scheduled analysis API above.
+registered path is rejected until its profile is removed. Settings supports
+renaming, removal, default selection, and per-profile option overrides. Removing
+a profile retains its ID for historical reviews and releases the executable path.
+Priority scheduling is available through the scheduled analysis API above.
 
 Saved profiles live in the application SQLite database, never `ui-state.ini`.
 Opening Settings or restarting the application reads those records without

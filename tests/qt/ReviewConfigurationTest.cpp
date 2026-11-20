@@ -74,6 +74,29 @@ engine::AnalysisResult analysisResult() {
 class ReviewConfigurationTest final : public QObject {
     Q_OBJECT
   private slots:
+    void rejectedDraftsPreserveDiskAndInvalidTomlCanBeRepaired() {
+        QTemporaryDir dir;
+        const auto filename = dir.filePath(QStringLiteral("config.toml"));
+        const QByteArray invalid("[review]\nquality=wrong\n");
+        write(filename, invalid);
+        const auto loaded = config::loadDocument(filename);
+        QCOMPARE(loaded.source, std::optional{invalid});
+        QVERIFY(std::holds_alternative<config::Diagnostics>(loaded.result));
+        const QByteArray repaired("# Keep this note\n[review]\nquality='fast'\n");
+        const auto malformed = config::saveDocument(filename, *loaded.source, invalid);
+        QVERIFY(std::holds_alternative<config::Diagnostics>(malformed.result));
+        QCOMPARE(config::loadDocument(filename).source, loaded.source);
+        const QByteArray external("[review]\nquality='thorough'\n");
+        write(filename, external);
+        const auto stale = config::saveDocument(filename, *loaded.source, repaired);
+        QVERIFY(std::holds_alternative<config::Diagnostics>(stale.result));
+        QCOMPARE(config::loadDocument(filename).source, std::optional{external});
+        write(filename, invalid);
+        const auto saved = config::saveDocument(filename, *loaded.source, repaired);
+        QVERIFY(std::holds_alternative<std::shared_ptr<const config::ValidatedConfiguration>>(
+            saved.result));
+        QCOMPARE(config::loadDocument(filename).source, std::optional{repaired});
+    }
     void puzzleSettingsDoNotChangeReviewIdentities() {
         const auto defaults = valid({});
         const auto custom =

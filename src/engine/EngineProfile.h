@@ -41,13 +41,14 @@ struct ValidatedEngine {
     QDateTime lastValidatedAt;
     bool operator==(const ValidatedEngine&) const = default;
 };
+using OptionOverrides = QMap<QString, QString>;
 struct EngineProfile {
     std::int64_t id = 0;
     QString displayName;
     ValidatedEngine engine;
     bool isDefault = false;
     QDateTime createdAt;
-    QMap<QString, QString> optionOverrides = {}; // Empty until option editing is implemented.
+    OptionOverrides optionOverrides = {};
     bool operator==(const EngineProfile&) const = default;
 };
 enum class ErrorCode {
@@ -96,6 +97,11 @@ std::optional<Error> appendOption(Capabilities& capabilities, UciOption option);
 QByteArray encodeCapabilities(const Capabilities& capabilities);
 std::optional<Capabilities> decodeCapabilities(const QByteArray& bytes);
 bool validEngine(const ValidatedEngine& engine);
+bool editableOption(const UciOption& option);
+std::optional<QString> normalizedOverride(const UciOption& option, const QString& value);
+bool validOverrides(const Capabilities& capabilities, const OptionOverrides& overrides);
+constexpr qint64 maximumEngineThreads = 64;
+constexpr qint64 maximumEngineHashMiB = 4096;
 } // namespace chess_review::engine
 Q_DECLARE_METATYPE(chess_review::engine::ValidationResult)
 Q_DECLARE_METATYPE(chess_review::engine::PathResult)

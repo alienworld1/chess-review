@@ -123,7 +123,8 @@ EngineProcessWorker::EngineProcessWorker(AttemptMode mode, ProcessConfiguration 
 
 void EngineProcessWorker::connectEngine(QUuid session, const EngineProfile& profile) {
     Q_ASSERT(mode_ == AttemptMode::Runtime);
-    runtime_ = RuntimeState{session, profile.id, RuntimePhase::CheckingExecutable, {}, {}};
+    runtime_ = RuntimeState{session, profile.id, RuntimePhase::CheckingExecutable,
+                            {},      {},         profile.optionOverrides};
     expected_ = profile.engine;
     validate(session, profile.engine.executablePath);
 }
@@ -510,7 +511,19 @@ void EngineProcessWorker::handleLine(const QByteArray& bytes, std::uint64_t rece
         if (stage_ != Stage::AwaitingReadyOk) {
             return;
         }
-        send("isready\n");
+        QByteArray commands;
+        if (runtime_ && !runtime_->optionOverrides.isEmpty()) {
+            for (const auto& option : profile_.capabilities.options) {
+                const auto found = runtime_->optionOverrides.constFind(option.name.toCaseFolded());
+                if (found != runtime_->optionOverrides.cend()) {
+                    commands +=
+                        "setoption name " + option.name.toUtf8() + " value " +
+                        (found.value().isEmpty() ? QByteArray("<empty>") : found.value().toUtf8()) +
+                        '\n';
+                }
+            }
+        }
+        send(commands + "isready\n");
         return;
     }
     if (normalized == QStringLiteral("readyok")) {

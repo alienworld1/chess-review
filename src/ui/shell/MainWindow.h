@@ -43,8 +43,9 @@ class MainWindow final : public QMainWindow {
     MainWindow(app::NavigationController& navigation, app::AnalysisController& analysis,
                QWidget* parent = nullptr);
     void installReview(app::ReviewGameController& review);
-    void installPuzzles(app::PuzzleController& puzzles, app::PuzzleGenerationController& generation,
-                        app::ReviewConfiguration& configuration);
+    void installPuzzles(app::PuzzleController& puzzles,
+                        app::PuzzleGenerationController& generation);
+    void installSettings(app::ReviewConfiguration& configuration);
     void installEngineAnalysis(app::EngineAnalysisController& engine);
     void installEngines(app::EngineSettingsController& engines);
     void installImports(app::ImportController& imports, app::GameLibraryController& library);
@@ -72,6 +73,7 @@ class MainWindow final : public QMainWindow {
 
   private:
     void shareAnalysisLineCount(AnalysisPage& page);
+    void openEngineSettings();
     void installAnalysis(app::AnalysisController& controller);
     void selectDestination();
     void showReview();
@@ -92,6 +94,7 @@ class MainWindow final : public QMainWindow {
     app::EngineAnalysisController* liveEngine_ = nullptr;
     bool linkedAnalysisPending_ = false;
     bool verbose_ = false;
+    std::optional<int> configuredAnalysisLines_;
     QAction* importFile_ = nullptr;
     QAction* pastePgn_ = nullptr;
     app::GameLibraryController* library_ = nullptr;

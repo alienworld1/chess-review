@@ -35,8 +35,8 @@ int main(int argc, char* argv[]) {
     window.installEngineAnalysis(startup.engineAnalysis());
     window.installImports(startup.localImports(), startup.library());
     window.installReview(startup.reviewGame());
-    window.installPuzzles(startup.puzzles(), startup.puzzleGeneration(),
-                          startup.reviewConfiguration());
+    window.installPuzzles(startup.puzzles(), startup.puzzleGeneration());
+    window.installSettings(startup.reviewConfiguration());
     window.setDiagnostics(logger);
     startup.requireQuitConfirmation();
     QObject::connect(&startup, &chess_review::app::StartupCoordinator::quitRequested, &window,
@@ -83,6 +83,9 @@ int main(int argc, char* argv[]) {
             if (startup.reviewConfiguration().state() ==
                 chess_review::app::ConfigurationState::Invalid) {
                 window.showConfigurationFailure(startup.reviewConfiguration().safeReport());
+            } else if (startup.reviewConfiguration().state() ==
+                       chess_review::app::ConfigurationState::Valid) {
+                window.showConfigurationFailure({});
             }
         });
     startup.start(paths.databasePath(), paths.uiStateFilePath(), paths.configFilePath());

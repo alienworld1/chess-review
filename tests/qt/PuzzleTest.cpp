@@ -64,8 +64,8 @@ class Fixture {
         window.installEngineAnalysis(startup.engineAnalysis());
         window.installImports(startup.localImports(), startup.library());
         window.installReview(startup.reviewGame());
-        window.installPuzzles(startup.puzzles(), startup.puzzleGeneration(),
-                              startup.reviewConfiguration());
+        window.installPuzzles(startup.puzzles(), startup.puzzleGeneration());
+        window.installSettings(startup.reviewConfiguration());
         QObject::connect(&startup, &app::StartupCoordinator::ready, &window,
                          &ui::MainWindow::showReady);
         startup.start(directory.filePath(QStringLiteral("library.sqlite3")), {}, config);

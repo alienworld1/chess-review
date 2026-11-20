@@ -10,6 +10,9 @@ class QFileDialog;
 class QTableWidget;
 class QComboBox;
 class QTabWidget;
+namespace chess_review::app {
+class ReviewConfiguration;
+}
 namespace chess_review::ui {
 class EnginePageTestAccess;
 class EngineSettingsPage final : public QWidget {
@@ -18,6 +21,8 @@ class EngineSettingsPage final : public QWidget {
     explicit EngineSettingsPage(app::EngineSettingsController& controller,
                                 QWidget* parent = nullptr);
     void setVerbose(bool verbose);
+    void installConfiguration(app::ReviewConfiguration& configuration);
+    void showEngines();
 
   private:
     friend class EnginePageTestAccess;
@@ -25,6 +30,15 @@ class EngineSettingsPage final : public QWidget {
     void updateDetails();
     void updateRuntime();
     void updateOption();
+    void showOptionEditor();
+    QTabWidget* sections_;
+    QPushButton* configure_;
+    QPushButton* rename_;
+    QPushButton* makeDefault_;
+    QPushButton* remove_;
+    QPushButton* test_;
+    QLabel* profileMessage_;
+    QLabel* testMessage_;
     const engine::EngineProfile* selectedProfile() const;
     app::EngineSettingsController& controller_;
     QTableWidget* profiles_;

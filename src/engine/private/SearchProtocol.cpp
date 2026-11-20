@@ -68,7 +68,8 @@ struct SearchSetup {
     chess::PositionContext context;
 };
 std::variant<SearchSetup, Error> prepareSearchSetup(const AnalysisRequest& request,
-                                                    const Capabilities& capabilities) {
+                                                    const Capabilities& capabilities,
+                                                    const OptionOverrides& overrides) {
     if (request.id.isNull() || request.multiPv < 1) {
         return invalidRequest();
     }
@@ -134,7 +135,7 @@ std::variant<SearchSetup, Error> prepareSearchSetup(const AnalysisRequest& reque
         set(*multiPv, QByteArray::number(prepared.effectiveMultiPv));
     }
     if (const auto* threads = option(capabilities, QStringLiteral("Threads"));
-        threads && capabilities.supportsThreads) {
+        threads && capabilities.supportsThreads && !overrides.contains(QStringLiteral("threads"))) {
         if (*threads->minimum > 1 || *threads->maximum < 1) {
             return invalidRequest();
         }
@@ -186,8 +187,9 @@ std::variant<SearchSetup, Error> prepareSearchSetup(const AnalysisRequest& reque
 } // namespace
 
 std::optional<Error> validateSearchRequest(const AnalysisRequest& request,
-                                           const Capabilities& capabilities) {
-    const auto setup = prepareSearchSetup(request, capabilities);
+                                           const Capabilities& capabilities,
+                                           const OptionOverrides& overrides) {
+    const auto setup = prepareSearchSetup(request, capabilities, overrides);
     if (const auto* error = std::get_if<Error>(&setup)) {
         return *error;
     }
@@ -195,8 +197,9 @@ std::optional<Error> validateSearchRequest(const AnalysisRequest& request,
 }
 
 std::variant<PreparedSearch, Error> prepareSearch(const AnalysisRequest& request,
-                                                  const Capabilities& capabilities) {
-    auto setup = prepareSearchSetup(request, capabilities);
+                                                  const Capabilities& capabilities,
+                                                  const OptionOverrides& overrides) {
+    auto setup = prepareSearchSetup(request, capabilities, overrides);
     if (const auto* error = std::get_if<Error>(&setup)) {
         return *error;
     }
@@ -220,7 +223,7 @@ std::variant<PreparedSearch, Error> prepareSearch(const AnalysisRequest& request
     prepared.commands.position += '\n';
     // Admission needs only the commands/guards. Capture the full default configuration
     // once at dispatch, rather than copying large declarations for every queued request.
-    const auto overrides = std::move(prepared.commands.effectiveOptions);
+    const auto searchOptions = std::move(prepared.commands.effectiveOptions);
     auto& effective = prepared.commands.effectiveOptions;
     effective.clear();
     effective.reserve(static_cast<std::size_t>(capabilities.options.size()));
@@ -230,10 +233,13 @@ std::variant<PreparedSearch, Error> prepareSearch(const AnalysisRequest& request
         }
         const auto name = declared.name.toCaseFolded();
         const auto configured =
-            std::find_if(overrides.begin(), overrides.end(),
+            std::find_if(searchOptions.begin(), searchOptions.end(),
                          [&name](const EffectiveOption& value) { return value.name == name; });
-        if (configured != overrides.end()) {
+        if (configured != searchOptions.end()) {
             effective.push_back(*configured);
+        } else if (const auto configuredOverride = overrides.constFind(name);
+                   configuredOverride != overrides.cend()) {
+            effective.push_back({name, declared.type, configuredOverride.value()});
         } else {
             effective.push_back({name, declared.type,
                                  declared.type == OptionType::Spin

@@ -38,6 +38,7 @@ Migration puzzlesMigration();
 Migration openingsMigration();
 Migration puzzleIdsMigration();
 Migration gameIdsMigration();
+Migration engineSettingsMigration();
 Migration reviewWorkspaceMigration();
 Migration refinementMigration();
 Migration classificationsMigration();

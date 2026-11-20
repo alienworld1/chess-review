@@ -5,7 +5,8 @@
 namespace chess_review::engine {
 // CPU-only; call on a worker. Uses actual search preparation, including default options.
 // MultiPV=1, unrestricted root; fingerprint is independent of position and node budget.
-std::variant<EngineFingerprint, Error> quickReviewFingerprint(const ValidatedEngine& engine);
+std::variant<EngineFingerprint, Error>
+quickReviewFingerprint(const ValidatedEngine& engine, const OptionOverrides& overrides = {});
 } // namespace chess_review::engine
 
 namespace chess_review::engine {

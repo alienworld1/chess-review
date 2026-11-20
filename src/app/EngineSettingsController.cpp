@@ -36,6 +36,10 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                     return;
                 }
                 state_.runtime = state;
+                if (!engine::runtimeActive(state.phase)) {
+                    analysis_ = {};
+                    state_.analyzing = false;
+                }
                 if (logger_) {
                     diagnostics::Context context;
                     context.count = static_cast<quint64>(state.phase);
@@ -173,13 +177,89 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                 }
                 emit changed();
             });
+    connect(&database_, &persistence::Database::engineEdited, this,
+            [this](QUuid request, const persistence::EditEngineResult& result) {
+                if (!state_.editing || request != edit_) {
+                    return;
+                }
+                state_.editing = false;
+                state_.profileMessage = result ? result->message : tr("Engine profile updated.");
+                if (!result && !closing_) {
+                    refresh();
+                } else {
+                    emit changed();
+                }
+                finishClose();
+            });
+    connect(&supervisor_, &engine::EngineSupervisor::searchChanged, this,
+            [this](const engine::SearchState& search) {
+                if (!closing_ && search.session == state_.runtime.session) {
+                    analysis_ = search.request;
+                    if (!state_.analyzing) {
+                        state_.analyzing = true;
+                        emit activityChanged();
+                    }
+                }
+            });
+    connect(&supervisor_, &engine::EngineSupervisor::scheduledChanged, this,
+            [this](const engine::ScheduledState& search) {
+                if (!closing_ && search.session == state_.runtime.session && search.attempt) {
+                    analysis_ = *search.attempt;
+                    if (!state_.analyzing) {
+                        state_.analyzing = true;
+                        emit activityChanged();
+                    }
+                }
+            });
+    const auto finishScheduled = [this](const engine::ScheduledState& search) {
+        if (!closing_ && search.session == state_.runtime.session && search.attempt == analysis_) {
+            analysis_ = {};
+            state_.analyzing = false;
+            emit activityChanged();
+        }
+    };
+    connect(&supervisor_, &engine::EngineSupervisor::scheduledInterrupted, this,
+            [finishScheduled](const engine::ScheduledEvidence& evidence) {
+                finishScheduled(evidence.identity);
+            });
+    connect(&supervisor_, &engine::EngineSupervisor::scheduledFinished, this,
+            [finishScheduled](const engine::ScheduledResult& result) {
+                finishScheduled(result.identity);
+            });
+    connect(&supervisor_, &engine::EngineSupervisor::analysisFinished, this,
+            [this](const engine::AnalysisResult& result) {
+                if (closing_ || result.evidence.session != state_.runtime.session) {
+                    return;
+                }
+                const auto request = result.evidence.request;
+                const bool wasAnalyzing = request == analysis_;
+                if (wasAnalyzing) {
+                    analysis_ = {};
+                    state_.analyzing = false;
+                }
+                if (request == test_) {
+                    test_ = {};
+                    state_.testing = false;
+                    if (result.outcome == engine::AnalysisOutcome::Completed &&
+                        result.evidence.bestMove) {
+                        state_.testMessage = tr("Test passed. The engine found a legal move.");
+                    } else {
+                        state_.testMessage = result.error
+                                                 ? result.error->message
+                                                 : tr("Test ended without a legal best move.");
+                    }
+                    emit activityChanged();
+                } else if (wasAnalyzing) {
+                    emit activityChanged();
+                }
+            });
     connect(&supervisor_, &engine::EngineSupervisor::closed, this, [this] {
         supervisorClosed_ = true;
         finishClose();
     });
 }
 void EngineSettingsController::setReady(bool ready) {
-    if (closing_) {
+    if (closing_ || state_.ready == ready) {
         return;
     }
     state_.ready = ready;
@@ -189,7 +269,8 @@ void EngineSettingsController::setReady(bool ready) {
     emit changed();
 }
 void EngineSettingsController::selectExecutable(const QString& path) {
-    if (closing_ || !state_.ready || saving_ || engine::runtimeActive(state_.runtime.phase) ||
+    if (closing_ || !state_.ready || saving_ || state_.editing ||
+        engine::runtimeActive(state_.runtime.phase) ||
         state_.registration == EngineRegistrationState::Validating) {
         return;
     }
@@ -201,7 +282,8 @@ void EngineSettingsController::selectExecutable(const QString& path) {
     emit changed();
 }
 void EngineSettingsController::registerSelected() {
-    if (closing_ || !state_.ready || engine::runtimeActive(state_.runtime.phase) ||
+    if (closing_ || !state_.ready || state_.editing ||
+        engine::runtimeActive(state_.runtime.phase) ||
         state_.registration != EngineRegistrationState::Selected) {
         return;
     }
@@ -241,23 +323,60 @@ void EngineSettingsController::refresh(std::int64_t offset) {
     database_.listEngines(listing_, offset, 51);
     emit changed();
 }
-void EngineSettingsController::connectEngine(std::int64_t profileId) {
-    if (closing_ || !state_.ready || saving_ || engine::runtimeActive(state_.runtime.phase) ||
+bool EngineSettingsController::connectEngine(std::int64_t profileId) {
+    if (closing_ || !state_.ready || saving_ || state_.editing || state_.listing ||
+        engine::runtimeActive(state_.runtime.phase) ||
         state_.registration == EngineRegistrationState::Inspecting ||
         state_.registration == EngineRegistrationState::Validating) {
-        return;
+        return false;
     }
     const auto found = std::find_if(
         state_.profiles.begin(), state_.profiles.end(),
         [profileId](const engine::EngineProfile& profile) { return profile.id == profileId; });
     if (found == state_.profiles.end()) {
-        return;
+        return false;
     }
+    state_.testMessage.clear();
     state_.runtime = {
         QUuid::createUuid(), profileId, engine::RuntimePhase::CheckingExecutable, {}, {}};
     state_.connectedDisplayName = found->displayName;
     supervisor_.connectEngine(state_.runtime.session, *found);
     emit changed();
+    return true;
+}
+bool EngineSettingsController::canEditProfile() const {
+    return !closing_ && state_.ready && !state_.listing && !state_.editing &&
+           !engine::runtimeActive(state_.runtime.phase) &&
+           (state_.registration == EngineRegistrationState::Idle ||
+            state_.registration == EngineRegistrationState::Selected);
+}
+void EngineSettingsController::editProfile(std::int64_t profileId,
+                                           persistence::EngineProfileEdit edit) {
+    if (!canEditProfile() ||
+        std::ranges::none_of(state_.profiles, [profileId](const auto& profile) {
+            return profile.id == profileId;
+        })) {
+        return;
+    }
+    state_.editing = true;
+    state_.profileMessage = tr("Saving engine profile…");
+    edit_ = QUuid::createUuid();
+    database_.editEngine(edit_, profileId, std::move(edit));
+    emit changed();
+}
+void EngineSettingsController::testEngine(std::int64_t profileId) {
+    if (closing_ || state_.runtime.phase != engine::RuntimePhase::Ready ||
+        state_.runtime.profileId != profileId || state_.testing || state_.analyzing) {
+        return;
+    }
+    engine::AnalysisRequest request;
+    request.id = QUuid::createUuid();
+    request.limit = engine::DepthLimit{4};
+    test_ = request.id;
+    state_.testing = true;
+    state_.testMessage = tr("Testing the engine on the starting position…");
+    supervisor_.analyze(state_.runtime.session, request);
+    emit activityChanged();
 }
 void EngineSettingsController::disconnectEngine() {
     if (closing_ || !engine::runtimeActive(state_.runtime.phase) ||
@@ -283,7 +402,7 @@ void EngineSettingsController::close() {
     emit changed();
 }
 void EngineSettingsController::finishClose() {
-    if (!closing_ || !supervisorClosed_ || saving_ || closed_) {
+    if (!closing_ || !supervisorClosed_ || saving_ || state_.editing || closed_) {
         return;
     }
     closed_ = true;

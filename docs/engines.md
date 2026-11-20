@@ -3,34 +3,49 @@
 ## Add an engine
 
 Open **Settings → Engines**, or **Engine Settings…** from Analyze. Choose a local
-executable, check its resolved path, and select **Add engine**. The app runs
+executable, check its resolved path, and select **Validate and add**. The app runs
 it with your normal user permissions, so choose software you trust. It does not
 download or sandbox engines.
 
-The file must be a readable, executable regular file. Validation checks its UCI
-handshake and detects observed changes to the file; it does not test the quality
-of its analysis. Failed or cancelled validation does not create a profile.
-The first engine becomes the default. Adding the same binary again returns its
-existing profile; changing a registered file is rejected. Profile replacement,
-removal, and option editing are not yet available.
+The file must be a readable, executable regular file. **Validate and add** checks the
+UCI handshake and saves the profile after successful validation. The first
+engine becomes the default. The manager shows the reported engine name and author
+when provided.
 
-Protocol options and full saved paths are available through **Technical inspector**
-when `[ui] verbose = true` is set in `config.toml`. Restart after changing it.
+## Manage and test an engine
 
-## Connect an engine
+Select a saved profile. **Rename** changes its local label. **Set as default**
+preselects it for new reviews. **Options** edits advertised UCI settings, including
+CPU threads and hash memory where supported. Each override can be restored
+individually. Disconnect first, then reconnect to apply saved options.
 
-Select a saved engine and choose **Connect**. The executable and its reported
-identity and options must still match the registered profile. **Ready** means the
-handshake succeeded; no search starts until you request one. Settings shows the
-engine's advertised options, but does not change them.
+One engine worker runs at a time. Threads default to one. Hash memory defaults
+to the engine's advertised value. The supported ranges appear in the options
+dialog and are capped at 64 threads and 4,096 MiB. Higher values can consume
+substantial CPU time or memory. Review candidate width and preferred win/draw/loss
+estimates are in **Settings → Review preferences**. The engine and the number of
+legal moves may further limit the width. Changing engine options can make earlier
+analysis incompatible for reuse or for resuming the same saved review.
 
-The connection stays open across pages until you disconnect, the engine fails, or
-the app exits. Only one engine process can be active at a time; disconnect it
-before validating or connecting another. Connections are not restored automatically
-after restart. If an engine fails or times out, reconnect explicitly.
+**Connect** checks the executable and its reported UCI identity and options
+against its registration. **Ready** means the handshake succeeded. Choose
+**Test analysis** to run a short search of the starting position and verify that
+the engine returns a legal move. The manager displays active analysis and reports
+engine failures inline. Reconnect explicitly after a failure.
 
-Linux is verified; Windows release verification remains pending. For protocol
-limits, search APIs, scheduling, and cache rules, see
+**Remove** takes a profile out of the list while keeping its executable, games,
+and review history. Set another engine as default first if removing the default
+while more engines are registered. To replace an executable at its current
+path, remove its profile and add the new executable. Re-registering the original
+binary restores its profile ID with fresh validation and any saved options the engine still supports.
+Adding a binary that is still registered returns its existing profile.
+
+The connection stays open across pages and closes when you disconnect, the
+engine fails, or the app exits. Disconnect before connecting or adding another
+engine. Connections are opened on demand and after explicit requests.
+
+Linux is verified. Windows release verification is pending. For protocol limits,
+search APIs, scheduling, and cache rules, see
 [Engine infrastructure](engine-internals.md).
 
 ## Live Analysis panel

@@ -23,7 +23,7 @@ void SupervisorCoordinator::connectEngine(QUuid session, const EngineProfile& pr
         return;
     }
     if (session.isNull() || profile.id <= 0 || !validEngine(profile.engine) ||
-        !profile.optionOverrides.isEmpty()) {
+        !validOverrides(profile.engine.capabilities, profile.optionOverrides)) {
         emit runtimeChanged(RuntimeState{
             session,
             profile.id,

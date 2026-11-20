@@ -437,10 +437,11 @@ QString ReviewGameController::startBlocker(std::int64_t profileId) const {
         return tr("Select a saved game from Games.");
     }
     if (configuration_.state() != ConfigurationState::Valid) {
-        return tr("Fix the review configuration and restart.");
+        return tr("Fix the review configuration in Settings → Advanced.");
     }
     const auto& settings = settings_.state();
-    if (!settings.ready || settings.registration != EngineRegistrationState::Idle) {
+    if (!settings.ready || settings.editing || settings.listing ||
+        settings.registration != EngineRegistrationState::Idle) {
         return tr("Wait for engine registration or connection setup to finish in Settings.");
     }
     if (std::none_of(settings.profiles.begin(), settings.profiles.end(),
@@ -573,7 +574,11 @@ void ReviewGameController::connectSelected(bool fresh) {
         prepareIdentity();
     } else {
         reconnecting_ = false;
-        settings_.connectEngine(profileId_);
+        if (!settings_.connectEngine(profileId_)) {
+            fail(tr("The engine could not connect. Check the profile in Settings and try again."),
+                 review::JobFailure::Engine);
+            return;
+        }
         session_ = settings_.state().runtime.session;
     }
     publish();
@@ -607,6 +612,7 @@ void ReviewGameController::runtimeChanged() {
 }
 void ReviewGameController::prepareIdentity() {
     const auto discovery = settings_.state().runtime.discovery;
+    const auto overrides = settings_.state().runtime.optionOverrides;
     if (!discovery) {
         fail(tr("Engine discovery is unavailable."), review::JobFailure::Engine);
         return;
@@ -614,12 +620,12 @@ void ReviewGameController::prepareIdentity() {
     workerBusy_ = true;
     state_.phase = ReviewPhase::Preparing;
     const auto generation = generation_;
-    worker_.start([this, discovery, generation] {
+    worker_.start([this, discovery, overrides, generation] {
         std::variant<engine::EngineFingerprint, engine::Error> result =
             engine::Error{engine::ErrorCode::InvalidRequest,
                           tr("Could not prepare the review engine configuration.")};
         try {
-            result = engine::quickReviewFingerprint(*discovery);
+            result = engine::quickReviewFingerprint(*discovery, overrides);
         } catch (const std::exception&) { /* Keep the explicit preparation failure. */
         }
         QMetaObject::invokeMethod(

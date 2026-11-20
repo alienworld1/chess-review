@@ -12,7 +12,7 @@ local UCI engines. Games, review evidence, and preferences stay on your computer
   an engine.
 - **Puzzles:** generate verified lessons from reviews, save analysis positions,
   and solve saved sequences with hints, retry, reveal, and analysis.
-- **Settings:** register trusted local UCI engines and manage connections.
+- **Settings:** manage and test UCI engines, set review and resource preferences, and edit advanced TOML.
 
 ## Requirements
 
@@ -54,7 +54,7 @@ isolated manual runs. Automated tests use temporary storage.
 - [Importing games](docs/import.md) · [Analyze board](docs/analysis-board.md) ·
   [Quick review](docs/quick-review.md) · [Personal puzzles](docs/puzzles.md) ·
   [Reopen and recovery](docs/reopen-recovery.md)
-- [Local UCI engines](docs/engines.md) · [Diagnostics and troubleshooting](docs/diagnostics.md)
+- [Local UCI engines](docs/engines.md) · [Settings and TOML](docs/settings.md) · [Diagnostics and troubleshooting](docs/diagnostics.md)
 
 **Developing**
 

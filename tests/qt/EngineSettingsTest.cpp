@@ -2,16 +2,20 @@
 #include "EngineTestSupport.h"
 #include "TestEnvironment.h"
 #include "app/StartupCoordinator.h"
+#include "engine/EffectiveSearch.h"
 #include "ui/shell/MainWindow.h"
 #include <QApplication>
 #include <QComboBox>
 #include <QEventLoop>
+#include <QFile>
 #include <QItemSelectionModel>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalSpy>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
@@ -247,6 +251,121 @@ class EngineSettingsTest final : public QObject {
         QVERIFY(!controller.state().runtime.discovery);
         QTRY_COMPARE(application.startup.state(), app::Lifecycle::Stopped);
         QVERIFY(!engine::runtimeActive(controller.state().runtime.phase));
+    }
+    void savedThreadsReachTestSearchAndFingerprint() {
+        QTemporaryDir directory;
+        Application application;
+        auto& controller = application.startup.engines();
+        auto& supervisor = app::EngineControllerTestAccess::validator(controller);
+        const auto declarations = QStringLiteral(
+            "id name Engine\noption name Threads type spin default 1 min 1 max 16\nuciok\n");
+        engine::ValidatorTestAccess::configure(
+            supervisor,
+            engine_test::scenario(directory.filePath(QStringLiteral("register.json")),
+                                  engine_test::handshake(declarations)),
+            1000);
+        application.startup.start(directory.filePath(QStringLiteral("library.sqlite3")));
+        QTRY_VERIFY(controller.state().ready);
+        controller.selectExecutable(QString::fromUtf8(FAKE_UCI_ENGINE));
+        QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Selected);
+        controller.registerSelected();
+        QTRY_COMPARE(controller.state().profiles.size(), 1U);
+        auto* table = application.window.findChild<QTableWidget*>(QStringLiteral("engineProfiles"));
+        table->selectRow(0);
+        application.navigation.navigate(app::Destination::Settings);
+        application.window.show();
+        application.window.findChild<QPushButton*>(QStringLiteral("editEngineOptions"))->click();
+        auto* value = application.window.findChild<QLineEdit*>(QStringLiteral("engineOptionValue"));
+        QVERIFY(value);
+        QCOMPARE(value->text(), QStringLiteral("1"));
+        value->setText(QStringLiteral("2"));
+        QTest::keyClick(value, Qt::Key_Return);
+        QTRY_COMPARE(
+            controller.state().profiles.front().optionOverrides.value(QStringLiteral("threads")),
+            QStringLiteral("2"));
+        const auto ready = engine_test::step(QStringLiteral("isready"),
+                                             {engine_test::write(QStringLiteral("readyok\n"))});
+        const QJsonArray steps{
+            engine_test::step(QStringLiteral("uci"), {engine_test::write(declarations)}),
+            engine_test::step(QStringLiteral("setoption name Threads value 2"), {}),
+            ready,
+            engine_test::step(QStringLiteral("ucinewgame"), {}),
+            ready,
+            engine_test::step(QStringLiteral("position startpos"), {}),
+            engine_test::step(QStringLiteral("go depth 4"),
+                              {engine_test::write(QStringLiteral(
+                                  "info depth 4 score cp 10 pv e2e4\nbestmove e2e4\n"))}),
+            ready,
+            engine_test::step(QStringLiteral("quit"),
+                              {QJsonObject{{QStringLiteral("type"), QStringLiteral("exit")}}})};
+        engine::ValidatorTestAccess::configure(
+            supervisor,
+            engine_test::scenario(directory.filePath(QStringLiteral("test.json")), steps), 1000);
+        application.window.findChild<QPushButton*>(QStringLiteral("connectEngine"))->click();
+        QTRY_COMPARE(controller.state().runtime.phase, engine::RuntimePhase::Ready);
+        QSignalSpy finished(&supervisor, &engine::EngineSupervisor::analysisFinished);
+        application.window.findChild<QPushButton*>(QStringLiteral("testEngine"))->click();
+        QTRY_COMPARE(finished.size(), 1);
+        auto* status = application.window.findChild<QLabel*>(QStringLiteral("engineTestMessage"));
+        QTRY_VERIFY(status->text().contains(QStringLiteral("Test passed")));
+        const auto result = qvariant_cast<engine::AnalysisResult>(finished.front().front());
+        QVERIFY(result.evidence.provenance);
+        const auto& profile = controller.state().profiles.front();
+        QCOMPARE(result.evidence.provenance->fingerprint,
+                 std::get<engine::EngineFingerprint>(
+                     engine::quickReviewFingerprint(profile.engine, profile.optionOverrides)));
+    }
+    void editAndRepairTomlFromSettings() {
+        QTemporaryDir directory;
+        const auto filename = directory.filePath(QStringLiteral("config.toml"));
+        Application application;
+        auto& configuration = application.startup.reviewConfiguration();
+        application.window.installSettings(configuration);
+        application.startup.start(directory.filePath(QStringLiteral("library.sqlite3")),
+                                  std::nullopt, filename);
+        QTRY_COMPARE(configuration.state(), app::ConfigurationState::Valid);
+        application.navigation.navigate(app::Destination::Settings);
+        auto* sections =
+            application.window.findChild<QTabWidget*>(QStringLiteral("settingsSections"));
+        QCOMPARE(sections->count(), 3);
+        sections->setCurrentIndex(1);
+        auto* quality = sections->findChild<QComboBox*>(QStringLiteral("defaultReviewQuality"));
+        auto* apply = sections->findChild<QPushButton*>(QStringLiteral("saveReviewPreferences"));
+        quality->setCurrentIndex(0);
+        QVERIFY(apply->isEnabled());
+        apply->click();
+        QTRY_COMPARE(configuration.snapshot()->values.quality, review::Quality::Fast);
+        sections->setCurrentIndex(2);
+        auto* editor = sections->findChild<QPlainTextEdit*>(QStringLiteral("advancedToml"));
+        auto* save = sections->findChild<QPushButton*>(QStringLiteral("saveToml"));
+        auto* validate = sections->findChild<QPushButton*>(QStringLiteral("validateToml"));
+        auto* report = sections->findChild<QPlainTextEdit*>(QStringLiteral("tomlDiagnostics"));
+        editor->selectAll();
+        editor->insertPlainText(QStringLiteral("[review]\nquality=\"unexpected\"\n"));
+        validate->click();
+        QTRY_VERIFY(report->toPlainText().contains(QStringLiteral("review.quality")));
+        QVERIFY(editor->document()->isModified());
+        QCOMPARE(configuration.snapshot()->values.quality, review::Quality::Fast);
+        editor->selectAll();
+        editor->insertPlainText(
+            QStringLiteral("# Keep this note\n[review]\nquality=\"thorough\"\n"));
+        save->click();
+        QTRY_COMPARE(configuration.snapshot()->values.quality, review::Quality::Thorough);
+        QVERIFY(!editor->document()->isModified());
+        QFile file(filename);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QVERIFY(file.readAll().startsWith("# Keep this note"));
+        const auto screenshots = qEnvironmentVariable("CHESS_REVIEW_ENGINE_SCREENSHOTS");
+        if (!screenshots.isEmpty()) {
+            application.window.resize(1100, 720);
+            application.window.show();
+            for (int index = 0; index < sections->count(); ++index) {
+                sections->setCurrentIndex(index);
+                QCoreApplication::processEvents();
+                QVERIFY(application.window.grab().save(
+                    screenshots + QStringLiteral("/settings-tab-%1.png").arg(index)));
+            }
+        }
     }
     void connectUsesSelectedRowInsteadOfKeyboardFocus() {
         QTemporaryDir directory;

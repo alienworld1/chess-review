@@ -155,11 +155,18 @@ void StartupPanel::showClosing() {
 }
 
 void StartupPanel::showConfigurationFailure(const QString& safeDetails) {
-    const auto summary =
-        tr("Review configuration is invalid. Reviews are unavailable. "
-           "Correct config.toml in the application configuration directory and restart. "
-           "Import and manual analysis remain available.");
-    configurationReport_ = summary + u'\n' + safeDetails;
+    if (safeDetails.isEmpty()) {
+        configurationReport_.clear();
+        configurationNotice_->hide();
+        if (status_->isHidden() && !loggingNoticeShown_ && failure_.code.isEmpty()) {
+            hide();
+        }
+        return;
+    }
+    const auto summary = tr("Review configuration is invalid. Reviews are unavailable. "
+                            "Correct config.toml in Settings → Advanced, then save or reload it. "
+                            "Import and manual analysis remain available.");
+    configurationReport_ = summary + u'\n' + safeDetails + u'\n';
     configurationNotice_->setText(summary + u'\n' + safeDetails.section(u'\n', 0, 0) + u'\n' +
                                   tr("See Help → Diagnostics for all configuration details."));
     configurationNotice_->setAccessibleName(configurationNotice_->text());

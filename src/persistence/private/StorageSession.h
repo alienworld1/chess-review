@@ -57,6 +57,7 @@ class StorageSession final {
     std::optional<DatabaseError> interruptReviewJobs(const QString& path);
 
     RegisterEngineResult registerEngine(const engine::ValidatedEngine& engine);
+    EditEngineResult editEngine(std::int64_t id, const EngineProfileEdit& edit);
     ListEnginesResult listEngines(std::int64_t offset, int limit);
 
     InsertGameResult insertGame(const pgn::PgnDocument& document, const GameSource& source);

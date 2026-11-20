@@ -13,7 +13,6 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
-#include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QDialog>
@@ -36,7 +35,6 @@
 #include <QScreen>
 #include <QScrollArea>
 #include <QShowEvent>
-#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QTextEdit>
 #include <QTimer>
@@ -178,7 +176,7 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
         pages_->addWidget(page);
     }
     connect(home_, &HomePage::gamesRequested, destinations_[1], &QAction::trigger);
-    connect(home_, &HomePage::settingsRequested, destinations_[4], &QAction::trigger);
+    connect(home_, &HomePage::settingsRequested, this, &MainWindow::openEngineSettings);
     connect(home_, &HomePage::reviewRequested, this, &MainWindow::showReview);
     connect(home_, &HomePage::recentGameRequested, this, [this](persistence::GameId id) {
         if (!closing_ && reviewController_) {
@@ -265,9 +263,29 @@ void MainWindow::setVerbose(bool verbose) {
         games->setVerbose(verbose);
     }
 }
+void MainWindow::installSettings(app::ReviewConfiguration& configuration) {
+    if (auto* settings = pages_->findChild<EngineSettingsPage*>()) {
+        settings->installConfiguration(configuration);
+        const auto applyAnalysisLines = [this, &configuration] {
+            const auto snapshot = configuration.snapshot();
+            if (!snapshot || snapshot->ui.liveAnalysisLines == configuredAnalysisLines_) {
+                return;
+            }
+            configuredAnalysisLines_ = snapshot->ui.liveAnalysisLines;
+            if (configuredAnalysisLines_) {
+                for (auto* view : {analysis_, linkedAnalysis_, puzzleAnalysis_}) {
+                    if (view) {
+                        view->setAnalysisMultiPv(*configuredAnalysisLines_);
+                    }
+                }
+            }
+        };
+        connect(&configuration, &app::ReviewConfiguration::changed, this, applyAnalysisLines);
+        applyAnalysisLines();
+    }
+}
 void MainWindow::installPuzzles(app::PuzzleController& puzzles,
-                                app::PuzzleGenerationController& generation,
-                                app::ReviewConfiguration& configuration) {
+                                app::PuzzleGenerationController& generation) {
     auto* placeholder =
         pages_->findChild<QWidget*>(QStringLiteral("puzzlesPage"), Qt::FindDirectChildrenOnly);
     Q_ASSERT(placeholder);
@@ -311,7 +329,7 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
         }
     });
     connect(puzzleAnalysis_, &AnalysisPage::manageEnginesRequested, this,
-            [this] { navigation_.navigate(app::Destination::Settings); });
+            &MainWindow::openEngineSettings);
     const auto addSave = [this, &generation](AnalysisPage* analysisPage,
                                              app::EngineAnalysisController* engine) {
         if (!analysisPage) {
@@ -369,30 +387,6 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
                 puzzles.open(*generation.state().lastSaved);
             }
         });
-    }
-    if (auto* settings = pages_->findChild<EngineSettingsPage*>()) {
-        auto* automatic =
-            new QCheckBox(tr("Automatically generate puzzles after completed reviews"), settings);
-        automatic->setObjectName(QStringLiteral("automaticPuzzles"));
-        auto* error = new QLabel(settings);
-        error->setTextFormat(Qt::PlainText);
-        error->setWordWrap(true);
-        auto* layout = qobject_cast<QVBoxLayout*>(settings->layout());
-        layout->insertWidget(1, automatic);
-        layout->insertWidget(2, error);
-        connect(automatic, &QCheckBox::toggled, &configuration,
-                &app::ReviewConfiguration::setAutomaticPuzzles);
-        const auto update = [automatic, error, &configuration] {
-            const QSignalBlocker block(automatic);
-            automatic->setEnabled(configuration.canSavePuzzles());
-            if (const auto c = configuration.snapshot()) {
-                automatic->setChecked(c->puzzles.automatic);
-            }
-            error->setText(configuration.puzzleSettingsError());
-            error->setVisible(!error->text().isEmpty());
-        };
-        connect(&configuration, &app::ReviewConfiguration::changed, settings, update);
-        update();
     }
     if (reviewController_ && reviewPage_) {
         auto* summary = reviewPage_->findChild<QWidget*>(QStringLiteral("reviewOverviewPanel"));
@@ -495,7 +489,7 @@ void MainWindow::installReview(app::ReviewGameController& review) {
         showReview();
     });
     connect(linkedAnalysis_, &AnalysisPage::manageEnginesRequested, this,
-            [this] { navigation_.navigate(app::Destination::Settings); });
+            &MainWindow::openEngineSettings);
     connect(reviewPage_, &ReviewPage::analyzeRequested, this, [this] {
         auto& exploration = reviewController_->exploration();
         const auto requestedOrigin = exploration.analysisOrigin();
@@ -550,8 +544,7 @@ void MainWindow::installReview(app::ReviewGameController& review) {
         navigation_.navigate(app::Destination::Games);
         selectDestination();
     });
-    connect(reviewPage_, &ReviewPage::settingsRequested, this,
-            [this] { navigation_.navigate(app::Destination::Settings); });
+    connect(reviewPage_, &ReviewPage::settingsRequested, this, &MainWindow::openEngineSettings);
     auto* scroll = qobject_cast<QScrollArea*>(centralWidget());
     auto* task = new QPushButton(scroll->widget());
     task->setObjectName(QStringLiteral("reviewTaskStatus"));
@@ -622,11 +615,8 @@ void MainWindow::installEngineAnalysis(app::EngineAnalysisController& engine) {
             analysis_->findChild<QPushButton*>(QStringLiteral("analysisEngineSettings"))) {
         delete duplicate; // The live panel now owns the visible Manage Engines affordance.
     }
-    connect(analysis_, &AnalysisPage::manageEnginesRequested, this, [this] {
-        if (!closing_) {
-            navigation_.navigate(app::Destination::Settings);
-        }
-    });
+    connect(analysis_, &AnalysisPage::manageEnginesRequested, this,
+            &MainWindow::openEngineSettings);
     connect(&navigation_, &app::NavigationController::destinationChanged, this, [this, &engine] {
         // Earlier subscribers may have synchronously redirected this navigation.
         engine.setVisible(!closing_ && pages_->currentWidget() == analysis_);
@@ -636,6 +626,14 @@ void MainWindow::installEngineAnalysis(app::EngineAnalysisController& engine) {
     });
     engine.setVisible(pages_->currentWidget() == analysis_);
 }
+void MainWindow::openEngineSettings() {
+    if (!closing_) {
+        if (auto* settings = pages_->findChild<EngineSettingsPage*>()) {
+            settings->showEngines();
+        }
+        navigation_.navigate(app::Destination::Settings);
+    }
+}
 void MainWindow::installEngines(app::EngineSettingsController& engines) {
     auto* placeholder =
         pages_->findChild<QWidget*>(QStringLiteral("settingsPage"), Qt::FindDirectChildrenOnly);
@@ -643,15 +641,12 @@ void MainWindow::installEngines(app::EngineSettingsController& engines) {
     const int index = pages_->indexOf(placeholder);
     pages_->removeWidget(placeholder);
     delete placeholder;
-    pages_->insertWidget(index, new EngineSettingsPage(engines, pages_));
+    auto* settings = new EngineSettingsPage(engines, pages_);
+    pages_->insertWidget(index, settings);
     auto* action = new QAction(tr("Engine Settings…"), this);
     action->setObjectName(QStringLiteral("engineSettingsAction"));
     findChild<QMenu*>(QStringLiteral("viewMenu"))->addAction(action);
-    connect(action, &QAction::triggered, this, [this] {
-        if (!closing_) {
-            navigation_.navigate(app::Destination::Settings);
-        }
-    });
+    connect(action, &QAction::triggered, this, &MainWindow::openEngineSettings);
     home_->installEngines(engines);
     if (analysis_) {
         auto* button = new QPushButton(tr("Engine Settings…"), analysis_);
@@ -1097,10 +1092,13 @@ void MainWindow::restoreUiState(const app::UiState& state) {
         reviewPage_->setSplitShare(reviewSplit_);
     }
     if (analysis_) {
-        analysis_->setPreferences(state.board);
+        auto preferences = state.board;
+        preferences.analysisMultiPv =
+            configuredAnalysisLines_.value_or(preferences.analysisMultiPv);
+        analysis_->setPreferences(preferences);
         for (auto* view : {linkedAnalysis_, puzzleAnalysis_}) {
             if (view) {
-                view->setAnalysisMultiPv(state.board.analysisMultiPv);
+                view->setAnalysisMultiPv(preferences.analysisMultiPv);
             }
         }
     }

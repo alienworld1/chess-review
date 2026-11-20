@@ -530,13 +530,14 @@ void ReviewExplorationController::grade(chess::Move move) {
     prepared_.reset();
     const auto evidence = evidence_;
     const auto discovery = settings_.state().runtime.discovery;
+    const auto overrides = settings_.state().runtime.optionOverrides;
     const bool matching =
         settings_.state().runtime.phase == engine::RuntimePhase::Ready &&
         settings_.state().runtime.profileId == evidence->run.settings.engineProfileId;
     session_ = settings_.state().runtime.session;
     const auto generation = generation_;
     workerBusy_ = true;
-    worker_.start([this, evidence, discovery, matching, generation, move] {
+    worker_.start([this, evidence, discovery, overrides, matching, generation, move] {
         review::RetryResult grade;
         std::optional<engine::AnalysisRequest> request;
         std::optional<engine::CacheQuery> query;
@@ -557,7 +558,7 @@ void ReviewExplorationController::grade(chess::Move move) {
                     error = tr("Connect the original review engine in Settings, then try this move "
                                "again.");
                 } else {
-                    const auto identity = engine::quickReviewFingerprint(*discovery);
+                    const auto identity = engine::quickReviewFingerprint(*discovery, overrides);
                     if (const auto* fingerprint = std::get_if<engine::EngineFingerprint>(&identity);
                         fingerprint && *fingerprint == evidence->run.settings.fingerprint) {
                         request = engine::AnalysisRequest{};

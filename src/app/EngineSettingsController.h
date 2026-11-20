@@ -15,6 +15,11 @@ struct EngineSettingsState {
     QString selectedPath;
     QString message;
     QString listError;
+    QString profileMessage;
+    QString testMessage;
+    bool editing = false;
+    bool testing = false;
+    bool analyzing = false;
     std::vector<engine::EngineProfile> profiles;
     std::optional<std::int64_t> defaultProfileId;
     QString defaultDisplayName;
@@ -40,12 +45,16 @@ class EngineSettingsController final : public QObject {
     void registerSelected();
     void cancel();
     void refresh(std::int64_t offset = 0);
-    void connectEngine(std::int64_t profileId);
+    bool connectEngine(std::int64_t profileId);
     void disconnectEngine();
+    bool canEditProfile() const;
+    void editProfile(std::int64_t profileId, persistence::EngineProfileEdit edit);
+    void testEngine(std::int64_t profileId);
     // Stops submissions; composition must then close the shared supervisor.
     void close();
   signals:
     void changed();
+    void activityChanged();
     void closed();
 
   private:
@@ -57,6 +66,9 @@ class EngineSettingsController final : public QObject {
     QUuid selection_;
     QUuid registration_;
     QUuid listing_;
+    QUuid edit_;
+    QUuid test_;
+    QUuid analysis_;
     std::int64_t requestedOffset_ = 0;
     bool closing_ = false;
     bool supervisorClosed_ = false;

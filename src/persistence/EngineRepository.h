@@ -9,7 +9,20 @@ struct RegisteredEngine {
     bool duplicate = false;
 };
 using RegisterEngineResult = std::variant<RegisteredEngine, engine::Error>;
+struct RenameEngine {
+    QString displayName;
+};
+struct MakeDefaultEngine {};
+struct RemoveEngine {};
+struct SetEngineOption {
+    QString name;
+    std::optional<QString> value; // Absence restores the engine default.
+};
+using EngineProfileEdit =
+    std::variant<RenameEngine, MakeDefaultEngine, RemoveEngine, SetEngineOption>;
+using EditEngineResult = std::optional<engine::Error>;
 using ListEnginesResult = std::variant<std::vector<engine::EngineProfile>, engine::Error>;
 } // namespace chess_review::persistence
 Q_DECLARE_METATYPE(chess_review::persistence::RegisterEngineResult)
 Q_DECLARE_METATYPE(chess_review::persistence::ListEnginesResult)
+Q_DECLARE_METATYPE(chess_review::persistence::EditEngineResult)

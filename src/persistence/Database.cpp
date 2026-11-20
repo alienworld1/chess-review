@@ -406,6 +406,31 @@ void Database::registerEngine(RequestId request, engine::ValidatedEngine engine)
         },
         Qt::QueuedConnection);
 }
+void Database::editEngine(RequestId request, std::int64_t id, EngineProfileEdit edit) {
+    if (auto error = acceptRequest()) {
+        const engine::Error failure{
+            error->code == GameErrorCode::Busy ? engine::ErrorCode::Busy
+                                               : engine::ErrorCode::Storage,
+            QStringLiteral("Engine storage is unavailable, closing, or busy.")};
+        QTimer::singleShot(0, this,
+                           [this, request, failure] { emit engineEdited(request, failure); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, id, edit = std::move(edit)] {
+            const auto result = impl_->worker->executeEngine<EditEngineResult>(
+                [&](detail::StorageSession& session) { return session.editEngine(id, edit); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit engineEdited(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
 void Database::listEngines(RequestId request, std::int64_t offset, int limit) {
     if (auto error = acceptRequest()) {
         const engine::Error failure{

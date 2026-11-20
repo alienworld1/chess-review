@@ -1022,7 +1022,12 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     });
     connect(cancel_, &QPushButton::clicked, &controller_, &app::ReviewGameController::cancel);
     connect(side_, &QComboBox::currentIndexChanged, this, &ReviewPage::update);
-    connect(engine_, &QComboBox::currentIndexChanged, this, &ReviewPage::update);
+    connect(engine_, &QComboBox::currentIndexChanged, this, [this] {
+        engineOverride_ = engine_->currentData().toLongLong();
+        update();
+    });
+    connect(quality_, &QComboBox::currentIndexChanged, this,
+            [this](int index) { qualityOverride_ = static_cast<review::Quality>(index); });
     connect(&controller_, &app::ReviewGameController::changed, this, &ReviewPage::update);
     connect(&navigation, &app::ReviewNavigationController::changed, this,
             &ReviewPage::updateNavigation);
@@ -1226,18 +1231,26 @@ void ReviewPage::update() {
         setupToggle_->setChecked(!run);
     }
     cancel_->setVisible(state.active);
-    if (gameId_ != state.gameId) {
+    const bool gameChanged = gameId_ != state.gameId;
+    if (gameChanged) {
         gameId_ = state.gameId;
         side_->setCurrentIndex(0);
-        quality_->setCurrentIndex(static_cast<int>(controller_.defaultQuality()));
+        qualityOverride_.reset();
+        engineOverride_.reset();
         bookOverride_.reset();
+    }
+    {
+        const QSignalBlocker blocker(quality_);
+        quality_->setCurrentIndex(
+            static_cast<int>(qualityOverride_.value_or(controller_.defaultQuality())));
     }
     bookEnabled_->setChecked(bookOverride_.value_or(controller_.defaultBookEnabled()));
     const auto& engines = controller_.engines();
-    if (profilesRevision_ != engines.profilesRevision ||
+    if (gameChanged || profilesRevision_ != engines.profilesRevision ||
         (engine_->count() == 0 && !engines.profiles.empty())) {
         profilesRevision_ = engines.profilesRevision;
-        const auto selected = engine_->currentData();
+        const auto selected =
+            engineOverride_ ? QVariant::fromValue<qlonglong>(*engineOverride_) : QVariant{};
         const QSignalBlocker blocker(engine_);
         engine_->clear();
         for (const auto& profile : engines.profiles) {

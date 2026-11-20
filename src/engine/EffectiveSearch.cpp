@@ -5,15 +5,16 @@
 #include <utility>
 
 namespace chess_review::engine {
-std::variant<EngineFingerprint, Error> quickReviewFingerprint(const ValidatedEngine& engine) {
-    if (!validEngine(engine)) {
+std::variant<EngineFingerprint, Error> quickReviewFingerprint(const ValidatedEngine& engine,
+                                                              const OptionOverrides& overrides) {
+    if (!validEngine(engine) || !validOverrides(engine.capabilities, overrides)) {
         return Error{ErrorCode::InvalidRecord,
                      QStringLiteral("Invalid review engine configuration.")};
     }
     AnalysisRequest request;
     request.id = QUuid::createUuid();
     request.wantWdl = true;
-    auto prepared = prepareSearch(request, engine.capabilities);
+    auto prepared = prepareSearch(request, engine.capabilities, overrides);
     if (const auto* error = std::get_if<Error>(&prepared)) {
         return *error;
     }

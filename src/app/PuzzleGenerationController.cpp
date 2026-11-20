@@ -133,13 +133,14 @@ void PuzzleGenerationController::savePosition(std::shared_ptr<const chess::Posit
     state_.active = true;
     state_.message = tr("Preparing the selected position…");
     const auto discovery = *runtime.discovery;
+    const auto overrides = runtime.optionOverrides;
     const auto profile = runtime.profileId;
     engineJob_ = QUuid::createUuid();
     workerBusy_ = true;
     worker_.start(QRunnable::create(
-        [this, position = std::move(position), gameId, config, discovery, profile] {
+        [this, position = std::move(position), gameId, config, discovery, overrides, profile] {
             auto job = std::make_shared<persistence::PuzzleJob>();
-            const auto fingerprint = engine::quickReviewFingerprint(discovery);
+            const auto fingerprint = engine::quickReviewFingerprint(discovery, overrides);
             if (const auto* f = std::get_if<engine::EngineFingerprint>(&fingerprint)) {
                 persistence::PuzzleDocument d;
                 d.definition.position = position->context();
@@ -334,10 +335,11 @@ void PuzzleGenerationController::schedule(puzzles::SearchNeed need) {
         job_->candidates[static_cast<std::size_t>(job_->current)].fingerprint;
     const auto expectedSession = runtime.session;
     const auto discovery = *runtime.discovery;
+    const auto overrides = runtime.optionOverrides;
     workerBusy_ = true;
-    worker_.start(QRunnable::create([this, fingerprintExpected, discovery, expectedSession,
-                                     need = std::move(need)]() mutable {
-        const auto fingerprint = engine::quickReviewFingerprint(discovery);
+    worker_.start(QRunnable::create([this, fingerprintExpected, discovery, overrides,
+                                     expectedSession, need = std::move(need)]() mutable {
+        const auto fingerprint = engine::quickReviewFingerprint(discovery, overrides);
         const bool compatible =
             std::holds_alternative<engine::EngineFingerprint>(fingerprint) &&
             std::get<engine::EngineFingerprint>(fingerprint) == fingerprintExpected;

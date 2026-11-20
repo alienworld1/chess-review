@@ -134,6 +134,8 @@ class ReviewPage final : public QWidget {
     QComboBox* quality_;
     QCheckBox* bookEnabled_;
     std::optional<bool> bookOverride_;
+    std::optional<review::Quality> qualityOverride_;
+    std::optional<std::int64_t> engineOverride_;
     QLabel* game_;
     QLabel* headerOpening_;
     QLabel* status_;

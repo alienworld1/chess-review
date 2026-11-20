@@ -1,12 +1,16 @@
-# Optional advanced product configuration. Copy to your application configuration
-# directory as config.toml and restart to apply. Missing fields use these defaults.
+# Optional advanced product configuration. Paste into Settings → Advanced,
+# then validate and save. Missing fields use these defaults.
 # Budgets and thresholds are provisional tuning values, not calibrated guarantees.
 version = 1
 
-# Show the technical inspector and engine protocol details. Restart to apply.
+# Show technical details in supported views.
 # This only changes presentation; review results and cache reuse are unchanged.
 [ui]
 verbose = false
+
+[analysis]
+# Uncomment to set a default line count for Analyze instead of using its last choice.
+# liveMultiPv = 3
 
 [analysis.fast]
 quickScanNodes = 50000
@@ -62,3 +66,11 @@ sacrificeValue = 2
 enabled = true
 maximumPly = 24
 minimumReferences = 2
+
+[puzzles]
+automatic = true
+maximumPlayerMoves = 4
+maximumPositions = 64
+maximumBudgetUnits = 64
+minimumMaterialGain = 2
+immediateMaterialGain = 5

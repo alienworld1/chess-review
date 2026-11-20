@@ -28,7 +28,7 @@ void EngineProcessWorker::analyze(QUuid session, const AnalysisRequest& request)
              QStringLiteral("Use a fresh search identifier, or reconnect after 65,536 searches.")});
         return;
     }
-    auto prepared = prepareSearch(request, profile_.capabilities);
+    auto prepared = prepareSearch(request, profile_.capabilities, runtime_->optionOverrides);
     if (const auto* error = std::get_if<Error>(&prepared)) {
         reject(*error);
         return;

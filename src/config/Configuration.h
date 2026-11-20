@@ -27,6 +27,7 @@ struct Identities {
 // Presentation preferences do not participate in persisted review/cache identities.
 struct UiConfiguration {
     bool verbose = false;
+    std::optional<int> liveAnalysisLines;
 };
 struct PuzzleConfiguration {
     bool automatic = true;
@@ -49,6 +50,27 @@ using Result = std::variant<std::shared_ptr<const ValidatedConfiguration>, Diagn
 [[nodiscard]] Result validate(const review::Configuration& values,
                               std::uint32_t classificationIdentityVersion = 2);
 [[nodiscard]] Result parse(std::string_view contents);
+constexpr qsizetype maximumConfigurationBytes = 64 * 1024;
+struct Document {
+    Result result;
+    std::optional<QByteArray> source; // Includes readable TOML that failed schema validation.
+};
+struct BasicPreferences {
+    review::Quality quality;
+    bool preferWdl;
+    bool openingBook;
+    bool automaticPuzzles;
+    bool verbose;
+    int reviewLines;
+    std::optional<int> liveAnalysisLines;
+    bool operator==(const BasicPreferences&) const = default;
+};
+BasicPreferences basicPreferences(const ValidatedConfiguration& configuration);
+[[nodiscard]] Document loadDocument(const QString& filename);
+[[nodiscard]] Document saveDocument(const QString& filename, const QByteArray& expected,
+                                    QByteArray contents);
+[[nodiscard]] Document saveBasicPreferences(const QString& filename, const QByteArray& expected,
+                                            const BasicPreferences& preferences);
 // File I/O and parsing must run on a worker. Absence selects defaults; other errors fail closed.
 [[nodiscard]] Result load(const QString& filename);
 // Safe bounded read, validation, and atomic replacement; call only on a worker.

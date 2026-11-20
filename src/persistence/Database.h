@@ -60,6 +60,7 @@ class Database final : public QObject {
     void storeAnalysis(RequestId request, engine::AnalysisResult result);
     void findAnalysis(RequestId request, engine::CacheQuery query);
     void registerEngine(RequestId request, engine::ValidatedEngine engine);
+    void editEngine(RequestId request, std::int64_t id, EngineProfileEdit edit);
     void listEngines(RequestId request, std::int64_t offset = 0, int limit = 50);
     void insertGame(RequestId request, std::shared_ptr<const pgn::PgnDocument> document,
                     GameSource source = {});
@@ -143,6 +144,8 @@ class Database final : public QObject {
                        const chess_review::persistence::FindAnalysisResult& result);
     void engineRegistered(chess_review::persistence::RequestId request,
                           const chess_review::persistence::RegisterEngineResult& result);
+    void engineEdited(chess_review::persistence::RequestId request,
+                      const chess_review::persistence::EditEngineResult& result);
     void enginesListed(chess_review::persistence::RequestId request,
                        const chess_review::persistence::ListEnginesResult& result);
     void progress(const QString& message);

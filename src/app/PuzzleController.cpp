@@ -701,13 +701,14 @@ void PuzzleController::scheduleAlternative(puzzles::SearchNeed need) {
         return;
     }
     const auto discovery = *runtime.discovery;
+    const auto overrides = runtime.optionOverrides;
     const auto expected = runtime.session;
     const auto attempt = alternative_;
     const auto epoch = epoch_;
     workerBusy_ = true;
-    worker_.start(QRunnable::create([this, discovery, expected, attempt, epoch,
+    worker_.start(QRunnable::create([this, discovery, overrides, expected, attempt, epoch,
                                      need = std::move(need)]() mutable {
-        const auto fingerprint = engine::quickReviewFingerprint(discovery);
+        const auto fingerprint = engine::quickReviewFingerprint(discovery, overrides);
         const bool compatible = std::holds_alternative<engine::EngineFingerprint>(fingerprint) &&
                                 std::get<engine::EngineFingerprint>(fingerprint) ==
                                     attempt->puzzle->document.fingerprint;

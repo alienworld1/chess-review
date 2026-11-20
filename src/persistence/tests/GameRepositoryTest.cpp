@@ -228,8 +228,9 @@ void GameRepositoryTest::deleteGameAndDependencies() {
         Fixture sql(path);
         QVERIFY(sql.exec(QStringLiteral("PRAGMA foreign_keys=ON")));
         QVERIFY(sql.exec(QStringLiteral(
-            "INSERT INTO engines VALUES(1,'engine','/test',zeroblob(32),'engine',NULL,NULL,"
-            "X'00',X'00',1,'','')")));
+            "INSERT INTO engines(id,display_name,executable_path,executable_sha256,reported_name,"
+            "capabilities_json,option_overrides_json,is_default,created_at,last_validated_at) "
+            "VALUES(1,'engine','/test',zeroblob(32),'engine',X'00',X'00',1,'','')")));
         QVERIFY(sql.exec(
             QStringLiteral("INSERT INTO reviews SELECT 1,id,1,0,0,X'00',X'00',1,0 FROM games")));
         QVERIFY(sql.exec(QStringLiteral("INSERT INTO review_jobs VALUES(1,1,0,0,4,0,0)")));

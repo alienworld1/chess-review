@@ -17,9 +17,11 @@ struct PreparedSearch {
 // Complete typed-input validation, including exact command bounds, without history replay.
 // Full serialization still replays through the adapter immediately before dispatch.
 std::optional<Error> validateSearchRequest(const AnalysisRequest& request,
-                                           const Capabilities& capabilities);
+                                           const Capabilities& capabilities,
+                                           const OptionOverrides& overrides = {});
 std::variant<PreparedSearch, Error> prepareSearch(const AnalysisRequest& request,
-                                                  const Capabilities& capabilities);
+                                                  const Capabilities& capabilities,
+                                                  const OptionOverrides& overrides = {});
 struct InfoUpdate {
     AnalysisLine line;
     bool hasEvidence = false;
