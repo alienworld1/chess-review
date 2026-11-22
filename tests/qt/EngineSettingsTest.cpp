@@ -15,6 +15,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -383,6 +384,35 @@ class EngineSettingsTest final : public QObject {
                     screenshots + QStringLiteral("/settings-tab-%1.png").arg(index)));
             }
         }
+    }
+    void appearanceOverridesTheSystemPaletteAndRestores() {
+        Application application;
+        auto* appearance =
+            application.window.findChild<QComboBox*>(QStringLiteral("appearanceMode"));
+        QVERIFY(appearance);
+        const auto baseline = qApp->palette();
+        const auto restore = qScopeGuard([&] {
+            appearance->setCurrentIndex(0);
+            qApp->setPalette(baseline);
+        });
+        auto dark = baseline;
+        dark.setColor(QPalette::Window, QColor("#202124"));
+        qApp->setPalette(dark);
+        QCOMPARE(qApp->palette().color(QPalette::Window), QColor("#191f2a"));
+        app::UiState state;
+        state.colorScheme = Qt::ColorScheme::Light;
+        application.window.restoreUiState(state);
+        QCOMPARE(appearance->currentText(), QStringLiteral("Light"));
+        QCOMPARE(qApp->palette().color(QPalette::Window), QColor("#f4f6f8"));
+        dark.setColor(QPalette::Window, QColor("#202125"));
+        qApp->setPalette(dark);
+        QCOMPARE(qApp->palette().color(QPalette::Window), QColor("#f4f6f8"));
+        appearance->setCurrentIndex(2);
+        QCOMPARE(application.window.uiState().colorScheme, Qt::ColorScheme::Dark);
+        QCOMPARE(qApp->palette().color(QPalette::Window), QColor("#191f2a"));
+        appearance->setCurrentIndex(1);
+        appearance->setCurrentIndex(0);
+        QCOMPARE(qApp->palette().color(QPalette::Window), QColor("#191f2a"));
     }
     void connectUsesSelectedRowInsteadOfKeyboardFocus() {
         QTemporaryDir directory;

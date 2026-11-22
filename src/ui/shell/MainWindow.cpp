@@ -741,6 +741,12 @@ void MainWindow::installEngines(app::EngineSettingsController& engines) {
     delete placeholder;
     auto* settings = new EngineSettingsPage(engines, pages_);
     pages_->insertWidget(index, settings);
+    settings->setColorScheme(colorScheme_);
+    connect(settings, &EngineSettingsPage::colorSchemeChanged, this,
+            [this](Qt::ColorScheme scheme) {
+                colorScheme_ = scheme;
+                setThemeMode(scheme);
+            });
     backToReviewAnalysis_ = new QPushButton(tr("Back to Analysis"), settings);
     backToReviewAnalysis_->setObjectName(QStringLiteral("backToReviewAnalysis"));
     backToReviewAnalysis_->hide();
@@ -1209,6 +1215,11 @@ void MainWindow::restoreUiState(const app::UiState& state) {
         return;
     }
     resetWindowGeometry();
+    colorScheme_ = state.colorScheme;
+    setThemeMode(colorScheme_);
+    if (auto* settings = pages_->findChild<EngineSettingsPage*>()) {
+        settings->setColorScheme(colorScheme_);
+    }
     reviewSplit_ = state.reviewSplit;
     if (reviewPage_) {
         reviewPage_->setSplitShare(reviewSplit_);
@@ -1244,7 +1255,8 @@ void MainWindow::restoreUiState(const app::UiState& state) {
 app::UiState MainWindow::uiState() const {
     return {saveGeometry(),        windowState().testFlag(Qt::WindowMaximized),
             navigation_.current(), analysis_ ? analysis_->preferences() : app::BoardPreferences{},
-            std::nullopt,          reviewPage_ ? reviewPage_->splitShare() : reviewSplit_};
+            std::nullopt,          reviewPage_ ? reviewPage_->splitShare() : reviewSplit_,
+            colorScheme_};
 }
 void MainWindow::showClosing() {
     if (closing_) {

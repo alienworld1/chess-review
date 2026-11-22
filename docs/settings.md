@@ -1,5 +1,8 @@
 # Settings
 
+Choose **System**, **Light**, or **Dark** under **Appearance**. Changes take
+effect immediately. The app remembers the choice when you close it normally.
+
 ## Review preferences
 
 Choose the quality to preselect when starting a review. You can change it in

@@ -10,8 +10,8 @@ enum class Classification;
 }
 
 namespace chess_review::ui {
-// One application theme, following the system palette including runtime changes.
 void installTheme();
+void setThemeMode(Qt::ColorScheme scheme);
 QColor classificationColor(std::optional<review::Classification> classification);
 void setTextRole(QWidget& widget, const char* role);
 void setPrimaryAction(QAbstractButton& button);

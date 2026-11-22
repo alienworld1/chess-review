@@ -44,6 +44,21 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     auto* heading = plainLabel(this, tr("Settings"));
     setTextRole(*heading, "title");
     page->addWidget(heading);
+    auto* appearanceRow = new QHBoxLayout;
+    auto* appearanceLabel = new QLabel(tr("&Appearance"), this);
+    appearance_ = new QComboBox(this);
+    appearance_->setObjectName(QStringLiteral("appearanceMode"));
+    appearance_->addItem(tr("System"), static_cast<int>(Qt::ColorScheme::Unknown));
+    appearance_->addItem(tr("Light"), static_cast<int>(Qt::ColorScheme::Light));
+    appearance_->addItem(tr("Dark"), static_cast<int>(Qt::ColorScheme::Dark));
+    appearanceLabel->setBuddy(appearance_);
+    appearanceRow->addWidget(appearanceLabel);
+    appearanceRow->addWidget(appearance_);
+    appearanceRow->addStretch();
+    page->addLayout(appearanceRow);
+    connect(appearance_, &QComboBox::currentIndexChanged, this, [this] {
+        emit colorSchemeChanged(static_cast<Qt::ColorScheme>(appearance_->currentData().toInt()));
+    });
     sections_ = new QTabWidget(this);
     sections_->setObjectName(QStringLiteral("settingsSections"));
     page->addWidget(sections_);
@@ -491,6 +506,10 @@ void EngineSettingsPage::updateRuntime() {
     options_->setEnabled(options_->count() > 0);
     options_->setVisible(options_->count() > 0);
     updateOption();
+}
+void EngineSettingsPage::setColorScheme(Qt::ColorScheme scheme) {
+    const QSignalBlocker blocker(appearance_);
+    appearance_->setCurrentIndex(appearance_->findData(static_cast<int>(scheme)));
 }
 void EngineSettingsPage::showEngines() { sections_->setCurrentIndex(0); }
 void EngineSettingsPage::showOptionEditor() {

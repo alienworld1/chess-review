@@ -8,8 +8,10 @@
 #include <QObject>
 #include <QPainter>
 #include <QPalette>
+#include <QPointer>
 #include <QScopedValueRollback>
 #include <QString>
+#include <QStyleHints>
 #include <QVariant>
 #include <QWidget>
 
@@ -40,15 +42,40 @@ void applyTextFont(QWidget& widget) {
 
 class Theme final : public QObject {
   public:
-    explicit Theme(QObject* parent) : QObject(parent) {
+    Theme()
+        : QObject(qApp), systemDark_(qApp->palette().color(QPalette::Window).lightness() < 128) {
+        QCoreApplication::setAttribute(Qt::AA_UseStyleSheetPropagationInWidgetStyles);
+        auto font = qApp->font();
+        if (font.pointSizeF() > 0 && font.pointSizeF() < 10.0) {
+            font.setPointSizeF(10.0);
+            qApp->setFont(font);
+        }
         qApp->installEventFilter(this);
+        connect(qApp->styleHints(), &QStyleHints::colorSchemeChanged, this,
+                [this](Qt::ColorScheme scheme) {
+                    if (scheme != Qt::ColorScheme::Unknown) {
+                        systemDark_ = scheme == Qt::ColorScheme::Dark;
+                        apply();
+                    }
+                });
         apply();
+    }
+
+    void setMode(Qt::ColorScheme mode) {
+        if (mode_ != mode) {
+            mode_ = mode;
+            apply();
+        }
     }
 
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override {
-        if (event->type() == QEvent::ApplicationPaletteChange && !applying_) {
-            apply();
+        if (watched == qApp && event->type() == QEvent::ApplicationPaletteChange && !applying_) {
+            const auto window = qApp->palette().color(QPalette::Window);
+            if (window != appliedWindow_) {
+                systemDark_ = window.lightness() < 128;
+                apply();
+            }
         }
         if (event->type() == QEvent::FontChange && !applyingFonts_) {
             auto* window = qobject_cast<QWidget*>(watched);
@@ -75,14 +102,13 @@ class Theme final : public QObject {
     void apply() {
         const QScopedValueRollback guard(applying_, true);
         auto palette = qApp->palette();
-        const bool dark = palette.color(QPalette::Window).lightness() < 128;
-        // Applying a style can itself post palette events. Rebuild only when the
-        // color scheme changes, rather than feeding those events back into Qt.
-        if (dark_ == dark) {
+        const bool dark =
+            mode_ == Qt::ColorScheme::Unknown ? systemDark_ : mode_ == Qt::ColorScheme::Dark;
+        const QColor root(dark ? "#191f2a" : "#f4f6f8");
+        if (appliedWindow_ == root && palette.color(QPalette::Window) == root) {
             return;
         }
-        dark_ = dark;
-        const auto root = dark ? "#191f2a" : "#f4f6f8";
+        appliedWindow_ = root;
         const auto panel = dark ? "#222b38" : "#ffffff";
         const auto subtle = dark ? "#293443" : "#edf1f5";
         const auto text = dark ? "#eef2f7" : "#182230";
@@ -92,7 +118,7 @@ class Theme final : public QObject {
         const auto onAccent = dark ? "#101d16" : "#ffffff";
         const auto selected = dark ? "#284635" : "#dfeee4";
         const auto focus = dark ? "#87b8ff" : "#2476ca";
-        palette.setColor(QPalette::Window, QColor(root));
+        palette.setColor(QPalette::Window, root);
         palette.setColor(QPalette::Base, QColor(panel));
         palette.setColor(QPalette::AlternateBase, QColor(subtle));
         palette.setColor(QPalette::WindowText, QColor(text));
@@ -150,10 +176,9 @@ QTabWidget::pane { border: 1px solid %6; }
 QTabBar::tab { padding: 7px 12px; }
 QGroupBox { border: 1px solid %6; border-radius: 5px; margin-top: 12px; padding: 12px; }
 )")
-                .arg(QLatin1String(root), QLatin1String(panel), QLatin1String(subtle),
-                     QLatin1String(text), QLatin1String(secondary), QLatin1String(border),
-                     QLatin1String(accent), QLatin1String(onAccent), QLatin1String(selected),
-                     QLatin1String(focus));
+                .arg(root.name(), QLatin1String(panel), QLatin1String(subtle), QLatin1String(text),
+                     QLatin1String(secondary), QLatin1String(border), QLatin1String(accent),
+                     QLatin1String(onAccent), QLatin1String(selected), QLatin1String(focus));
         for (std::size_t index = 0; index < review::classificationCount; ++index) {
             const auto label = static_cast<review::Classification>(index);
             styleSheet += QStringLiteral("\nQLabel[classification=\"%1\"] { color: %2; }")
@@ -164,8 +189,18 @@ QGroupBox { border: 1px solid %6; border-radius: 5px; margin-top: 12px; padding:
     }
     bool applying_ = false;
     bool applyingFonts_ = false;
-    std::optional<bool> dark_;
+    bool systemDark_;
+    QColor appliedWindow_;
+    Qt::ColorScheme mode_ = Qt::ColorScheme::Unknown;
 };
+
+Theme& applicationTheme() {
+    static QPointer<Theme> theme;
+    if (!theme) {
+        theme = new Theme;
+    }
+    return *theme;
+}
 } // namespace
 QColor classificationColor(std::optional<review::Classification> classification) {
     const auto palette = qApp->palette();
@@ -198,18 +233,8 @@ QColor classificationColor(std::optional<review::Classification> classification)
     return palette.color(QPalette::Mid);
 }
 
-void installTheme() {
-    if (!qApp->property("chessReviewTheme").toBool()) {
-        QCoreApplication::setAttribute(Qt::AA_UseStyleSheetPropagationInWidgetStyles);
-        qApp->setProperty("chessReviewTheme", true);
-        auto font = qApp->font();
-        if (font.pointSizeF() > 0 && font.pointSizeF() < 10.0) {
-            font.setPointSizeF(10.0);
-            qApp->setFont(font);
-        }
-        new Theme(qApp);
-    }
-}
+void installTheme() { applicationTheme(); }
+void setThemeMode(Qt::ColorScheme scheme) { applicationTheme().setMode(scheme); }
 void setTextRole(QWidget& widget, const char* role) {
     widget.setProperty("textRole", QString::fromLatin1(role));
     applyTextFont(widget);

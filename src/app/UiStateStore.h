@@ -24,6 +24,7 @@ struct UiState {
     BoardPreferences board{};
     std::optional<GameResume> game = std::nullopt;
     int reviewSplit = 55;
+    Qt::ColorScheme colorScheme = Qt::ColorScheme::Unknown; // Follow the system.
 };
 
 // Owning thread only. One load, then one saveAndClose; await closed() before destruction.

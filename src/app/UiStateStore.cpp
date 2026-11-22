@@ -14,6 +14,17 @@ namespace chess_review::app {
 namespace {
 // Bounded UI preferences only; no moves, annotations, or product records.
 constexpr qint64 maxFileBytes = 64 * 1024;
+QString colorSchemeId(Qt::ColorScheme scheme) {
+    switch (scheme) {
+    case Qt::ColorScheme::Unknown:
+        return QStringLiteral("system");
+    case Qt::ColorScheme::Light:
+        return QStringLiteral("light");
+    case Qt::ColorScheme::Dark:
+        return QStringLiteral("dark");
+    }
+    return {};
+}
 bool validFile(const QString& filename) {
     if (!QDir::isAbsolutePath(filename) || filename.contains(QChar::Null)) {
         return false;
@@ -127,6 +138,15 @@ UiState readState(const QString& filename, std::optional<UiStateError>& error) {
         error = UiStateError::Invalid;
         state.reviewSplit = 55;
     }
+    const auto scheme =
+        settings.value(QStringLiteral("shell/v1/colorScheme"), QStringLiteral("system")).toString();
+    if (scheme == colorSchemeId(Qt::ColorScheme::Light)) {
+        state.colorScheme = Qt::ColorScheme::Light;
+    } else if (scheme == colorSchemeId(Qt::ColorScheme::Dark)) {
+        state.colorScheme = Qt::ColorScheme::Dark;
+    } else if (scheme != colorSchemeId(Qt::ColorScheme::Unknown)) {
+        error = UiStateError::Invalid;
+    }
     state.board.blackAtBottom = orientation == QStringLiteral("true");
     state.board.inputMode =
         mode == QStringLiteral("click") ? BoardInputMode::Click : BoardInputMode::Drag;
@@ -165,7 +185,8 @@ UiState readState(const QString& filename, std::optional<UiStateError>& error) {
 std::optional<UiStateError> writeState(const QString& filename, const UiState& state) {
     if (state.geometry.size() > 4096 || destinationId(state.destination).isEmpty() ||
         !validFile(filename) || !validBoardPreferences(state.board) || state.reviewSplit < 1 ||
-        state.reviewSplit > 99 || (state.game && state.game->id <= 0)) {
+        state.reviewSplit > 99 || colorSchemeId(state.colorScheme).isEmpty() ||
+        (state.game && state.game->id <= 0)) {
         return UiStateError::Invalid;
     }
     if (!QDir().mkpath(QFileInfo(filename).absolutePath())) {
@@ -225,6 +246,7 @@ std::optional<UiStateError> writeState(const QString& filename, const UiState& s
         settings.setValue(QStringLiteral("shell/v1/geometry"), state.geometry);
         settings.setValue(QStringLiteral("shell/v1/maximized"), state.maximized);
         settings.setValue(QStringLiteral("shell/v1/destination"), destinationId(state.destination));
+        settings.setValue(QStringLiteral("shell/v1/colorScheme"), colorSchemeId(state.colorScheme));
         settings.setValue(QStringLiteral("board/v1/input"),
                           state.board.inputMode == BoardInputMode::Drag ? QStringLiteral("drag")
                                                                         : QStringLiteral("click"));

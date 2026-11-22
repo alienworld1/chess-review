@@ -23,6 +23,10 @@ class EngineSettingsPage final : public QWidget {
     void setVerbose(bool verbose);
     void installConfiguration(app::ReviewConfiguration& configuration);
     void showEngines();
+    void setColorScheme(Qt::ColorScheme scheme);
+
+  signals:
+    void colorSchemeChanged(Qt::ColorScheme scheme);
 
   private:
     friend class EnginePageTestAccess;
@@ -32,6 +36,7 @@ class EngineSettingsPage final : public QWidget {
     void updateOption();
     void showOptionEditor();
     QTabWidget* sections_;
+    QComboBox* appearance_;
     QPushButton* configure_;
     QPushButton* rename_;
     QPushButton* makeDefault_;
