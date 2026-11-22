@@ -39,6 +39,7 @@ class PuzzlesPage final : public QWidget {
     QPushButton* remove_;
     QPushButton* previous_;
     QPushButton* next_;
+    QPushButton* refresh_;
     QPushButton* retry_;
     QPushButton* hint_;
     QPushButton* reveal_;

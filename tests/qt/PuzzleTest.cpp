@@ -581,6 +581,14 @@ class PuzzleTest final : public QObject {
         f.navigation.navigate(app::Destination::Puzzles);
         puzzles.open(id);
         QTRY_VERIFY(puzzles.board().interactive);
+        // A failed background list request must neither disable the active board nor
+        // leave a stale failure after the library can be read again.
+        puzzles.refresh(0, -1);
+        QTRY_VERIFY(!puzzles.state().libraryError.isEmpty());
+        QVERIFY(puzzles.board().interactive);
+        puzzles.refresh();
+        QTRY_VERIFY(puzzles.state().libraryError.isEmpty());
+        QTRY_COMPARE(puzzles.state().library.puzzles.size(), std::size_t{1});
         puzzles.hint();
         puzzles.hint();
         puzzles.hint();

@@ -66,6 +66,7 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
     libraryNotice_ =
         label(libraryPage, tr("Save positions from Analysis or generate puzzles from a completed "
                               "review. Choose any puzzle whenever you wish."));
+    libraryNotice_->setObjectName(QStringLiteral("puzzleLibraryStatus"));
     libraryLayout->addWidget(libraryNotice_);
     library_ = new QTableWidget(0, 3, libraryPage);
     library_->setObjectName(QStringLiteral("puzzleLibrary"));
@@ -92,18 +93,25 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
     connect(remove_, &QPushButton::clicked, this, &PuzzlesPage::removeSelected);
     previous_ = new QPushButton(tr("Previous"), libraryPage);
     next_ = new QPushButton(tr("Next"), libraryPage);
-    auto* refreshButton = new QPushButton(tr("Show all puzzles"), libraryPage);
+    refresh_ = new QPushButton(libraryPage);
+    refresh_->setObjectName(QStringLiteral("refreshPuzzles"));
     connect(previous_, &QPushButton::clicked, this,
             [this] { controller_.refresh(controller_.state().library.offset - 50); });
     connect(next_, &QPushButton::clicked, this,
             [this] { controller_.refresh(controller_.state().library.offset + 50); });
-    connect(refreshButton, &QPushButton::clicked, this, [this] { controller_.refresh(); });
+    connect(refresh_, &QPushButton::clicked, this, [this] {
+        if (!controller_.libraryFiltered() && !controller_.state().libraryError.isEmpty()) {
+            controller_.refreshCurrent();
+        } else {
+            controller_.showAllPuzzles();
+        }
+    });
     actions->addWidget(open_);
     actions->addWidget(remove_);
     actions->addStretch();
     actions->addWidget(previous_);
     actions->addWidget(next_);
-    actions->addWidget(refreshButton);
+    actions->addWidget(refresh_);
     libraryLayout->addLayout(actions);
     pages_->addWidget(libraryPage);
     auto* solvePage = new QWidget(pages_);
@@ -236,9 +244,20 @@ void PuzzlesPage::refresh() {
     }
     open_->setEnabled(library_->currentRow() >= 0);
     remove_->setEnabled(library_->currentRow() >= 0);
-    previous_->setEnabled(state.library.offset > 0);
-    next_->setEnabled(state.library.hasNext);
-    libraryNotice_->setText(!state.error.isEmpty() ? state.error
+    const bool loading = controller_.libraryLoading();
+    const bool ready = controller_.libraryReady();
+    const bool filtered = controller_.libraryFiltered();
+    previous_->setEnabled(ready && !loading && state.library.offset > 0);
+    next_->setEnabled(ready && !loading && state.library.hasNext);
+    refresh_->setEnabled(ready && !loading);
+    refresh_->setText(filtered                        ? tr("Show all puzzles")
+                      : !state.libraryError.isEmpty() ? tr("Retry loading")
+                                                      : tr("Refresh"));
+    libraryNotice_->setText(!ready    ? tr("Waiting for the puzzle library…")
+                            : loading ? tr("Loading saved puzzles…")
+                            : !state.libraryError.isEmpty() ? state.libraryError
+                            : !state.error.isEmpty()        ? state.error
+                            : rows_.empty() && filtered ? tr("No puzzles saved for this review.")
                             : rows_.empty()
                                 ? tr("No puzzles saved yet. Generate puzzles from a completed "
                                      "review, or save a position from Analysis.")

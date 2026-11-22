@@ -478,28 +478,34 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
             const auto& saved = puzzles.reviewSummary();
             const bool ready = run && run->status == review::JobStatus::Complete;
             const bool same = run && saved.id == run->id;
+            const bool loading = !same || puzzles.reviewSummaryLoading();
             count->setVisible(ready);
             generate->setVisible(ready);
-            library->setVisible(ready && same && saved.count > 0);
-            count->setText(same ? tr("%1%2 saved puzzle(s)")
-                                      .arg(saved.count)
-                                      .arg(saved.more ? QStringLiteral("+") : QString{})
-                                : tr("Loading puzzles…"));
+            library->setVisible(ready && !loading && saved.error.isEmpty() && saved.count > 0);
+            count->setText(loading                  ? tr("Loading puzzles…")
+                           : !saved.error.isEmpty() ? saved.error
+                           : saved.more ? tr("More than %L1 saved puzzles").arg(saved.count)
+                                        : tr("%n saved puzzle(s)", nullptr, saved.count));
             const bool resumable =
                 same && saved.generation &&
                 saved.generation->status != persistence::PuzzleJobStatus::Complete;
-            generate->setText(resumable ? tr("Resume puzzle generation") : tr("Generate Puzzles"));
-            generate->setEnabled(ready && !generation.state().active &&
-                                 (!same || !saved.generation || resumable));
+            generate->setText(!loading && !saved.error.isEmpty() ? tr("Retry loading puzzles")
+                              : resumable                        ? tr("Resume puzzle generation")
+                                                                 : tr("Generate Puzzles"));
+            generate->setEnabled(ready && !loading && !generation.state().active &&
+                                 (!saved.error.isEmpty() || !saved.generation || resumable));
         };
-        connect(generate, &QPushButton::clicked, this, [this, &puzzles, &generation] {
+        connect(generate, &QPushButton::clicked, this, [this, &puzzles, &generation, update] {
             const auto& run = reviewController_->state().run;
             if (!run) {
                 return;
             }
             const auto& saved = puzzles.reviewSummary();
-            if (saved.id == run->id && saved.generation &&
-                saved.generation->status != persistence::PuzzleJobStatus::Complete) {
+            if (saved.id == run->id && !saved.error.isEmpty()) {
+                puzzles.inspectReview(run->id, true);
+                update();
+            } else if (saved.id == run->id && saved.generation &&
+                       saved.generation->status != persistence::PuzzleJobStatus::Complete) {
                 generation.resume(saved.generation->id);
             } else {
                 generation.generate(run->id);

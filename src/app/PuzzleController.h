@@ -22,6 +22,7 @@ struct PuzzleState {
     std::optional<persistence::PuzzleId> selected;
     QString message;
     QString error;
+    QString libraryError;
     QStringList hints;
 };
 struct ReviewPuzzleState {
@@ -29,6 +30,7 @@ struct ReviewPuzzleState {
     int count = 0;
     bool more = false;
     std::optional<persistence::PuzzleJobSummary> generation;
+    QString error;
 };
 struct SavedPuzzleSummary {
     std::optional<int> count;
@@ -42,11 +44,17 @@ class PuzzleController final : public QObject {
                      engine::EngineSupervisor& supervisor, QObject* parent = nullptr);
     ~PuzzleController() override;
     const PuzzleState& state() const { return state_; }
+    bool libraryLoading() const { return !list_.isNull() || reads_.isActive(); }
+    bool libraryReady() const { return ready_ && !closing_; }
+    bool libraryFiltered() const { return filter_.has_value(); }
     const BoardViewState& board() const { return displayed_; }
     bool canHint() const;
     bool canStepBack() const;
     bool canStepForward() const;
     const ReviewPuzzleState& reviewSummary() const { return reviewSummary_; }
+    bool reviewSummaryLoading() const {
+        return reviewSummaryDirty_ || !reviewList_.isNull() || !reviewJobs_.isNull();
+    }
     void inspectReview(review::ReviewId id, bool refresh = false);
     const SavedPuzzleSummary& savedSummary() const { return savedSummary_; }
     void setSummaryVisible(bool visible);
@@ -83,6 +91,7 @@ class PuzzleController final : public QObject {
 
   private:
     void requestSummary();
+    void requestReviewSummary();
     void returnToLibrary(bool clearFilter);
     void publish();
     void resetBoard();
@@ -116,10 +125,12 @@ class PuzzleController final : public QObject {
     QTimer reply_;
     QTimer reads_;
     QTimer summaryRetry_;
+    QTimer reviewSummaryRetry_;
     QUuid summaryRequest_;
     QUuid list_;
     QUuid reviewList_;
     QUuid reviewJobs_;
+    review::ReviewId reviewSummaryRequest_ = 0;
     QUuid jobs_;
     QUuid load_;
     QUuid deletion_;
@@ -132,9 +143,14 @@ class PuzzleController final : public QObject {
     std::int64_t offset_ = 0;
     bool summaryVisible_ = false;
     bool summaryDirty_ = true;
+    bool reviewSummaryDirty_ = false;
     bool ready_ = false;
     bool workerBusy_ = false;
-    bool moving_ = false;
+    struct PendingMove {
+        std::size_t next;
+        bool solverMove;
+    };
+    std::optional<PendingMove> pendingMove_;
     bool closing_ = false;
     bool closed_ = false;
     bool boardClosed_ = false;
