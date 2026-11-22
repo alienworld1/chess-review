@@ -558,7 +558,7 @@ void EngineSettingsPage::showOptionEditor() {
     const auto validate = [current, value, save] {
         save->setEnabled(engine::normalizedOverride(current(), value()).has_value());
     };
-    const auto update = [=, this, overrides = profile->optionOverrides] {
+    const auto update = [=, overrides = profile->optionOverrides] {
         const auto& option = current();
         const auto name = option.name.toCaseFolded();
         auto defaultValue = option.defaultValue;
