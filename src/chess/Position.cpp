@@ -52,7 +52,7 @@ Result<FenData> validateFen(std::string_view fen) {
                               "Expected a standard six-field FEN with valid bounded fields."};
     const auto invalid =
         Error{ErrorCode::InvalidPosition, "FEN describes an inconsistent standard chess position."};
-    if (fen.size() > 256 || fen.find('\0') != std::string_view::npos) {
+    if (fen.size() > maximumFenBytes || fen.find('\0') != std::string_view::npos) {
         return syntax;
     }
     FenData data;

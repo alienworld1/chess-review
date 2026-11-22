@@ -66,6 +66,12 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     options->setText(tr("Board Options"));
     options->setPopupMode(QToolButton::InstantPopup);
     auto* menu = new QMenu(options);
+    auto* position = menu->addAction(tr("Set Position from FEN…"));
+    position->setObjectName(QStringLiteral("setAnalysisPosition"));
+    connect(position, &QAction::triggered, this, &AnalysisPage::setPosition);
+    connect(menu, &QMenu::aboutToShow, position,
+            [this, position] { position->setEnabled(!controller_.busy()); });
+    menu->addSeparator();
     coordinates_ = menu->addAction(tr("Show Coordinates"));
     coordinates_->setCheckable(true);
     animation_ = menu->addAction(tr("Animate Moves"));
@@ -539,6 +545,69 @@ void AnalysisPage::refresh() {
     notes_->setVisible(!controller_.positionNotes().isEmpty());
     QAccessibleEvent event(status_, QAccessible::NameChanged);
     QAccessible::updateAccessibility(&event);
+}
+void AnalysisPage::setPosition() {
+    if (controller_.busy()) {
+        return;
+    }
+    requestDiscard([this] {
+        auto* dialog = new QDialog(this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle(tr("Set Analysis Position"));
+        auto* layout = new QVBoxLayout(dialog);
+        auto* label = new QLabel(tr("Edit or paste a standard position in &FEN notation."), dialog);
+        label->setWordWrap(true);
+        layout->addWidget(label);
+        auto* fen = new QLineEdit(dialog);
+        fen->setObjectName(QStringLiteral("analysisFen"));
+        // Keep one extra character so truncation cannot turn oversize input into valid FEN.
+        fen->setMaxLength(static_cast<int>(chess::maximumFenBytes + 1));
+        if (const auto& position = controller_.position()) {
+            fen->setText(QString::fromStdString(position->fen()));
+        }
+        fen->selectAll();
+        label->setBuddy(fen);
+        layout->addWidget(fen);
+        auto* status = new QLabel(dialog);
+        status->setObjectName(QStringLiteral("analysisFenStatus"));
+        status->setTextFormat(Qt::PlainText);
+        status->setWordWrap(true);
+        layout->addWidget(status);
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, dialog);
+        auto* apply = buttons->addButton(tr("Set Position"), QDialogButtonBox::AcceptRole);
+        apply->setObjectName(QStringLiteral("applyAnalysisFen"));
+        apply->setDefault(true);
+        apply->setEnabled(!fen->text().isEmpty());
+        layout->addWidget(buttons);
+        connect(fen, &QLineEdit::textChanged, apply,
+                [apply](const QString& value) { apply->setEnabled(!value.isEmpty()); });
+        connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+        connect(buttons, &QDialogButtonBox::accepted, dialog, [this, fen, status, apply] {
+            if (controller_.busy()) {
+                return;
+            }
+            apply->setEnabled(false);
+            fen->setReadOnly(true);
+            status->setText(tr("Checking position…"));
+            controller_.reset(fen->text().toStdString());
+        });
+        connect(&controller_, &app::AnalysisController::changed, dialog,
+                [this, dialog, fen, status, apply] {
+                    if (!fen->isReadOnly() || controller_.busy()) {
+                        return;
+                    }
+                    if (controller_.error().isEmpty()) {
+                        dialog->accept();
+                        return;
+                    }
+                    status->setText(controller_.error());
+                    fen->setReadOnly(false);
+                    fen->setFocus();
+                    apply->setEnabled(true);
+                });
+        dialog->resize(550, dialog->sizeHint().height());
+        dialog->open();
+    });
 }
 void AnalysisPage::editComment(app::NavigationTarget target) {
     if (!controller_.canEdit(target) || target.node != controller_.currentNode()) {

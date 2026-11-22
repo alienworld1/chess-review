@@ -10,9 +10,11 @@
 #include <QApplication>
 #include <QColor>
 #include <QComboBox>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
@@ -91,6 +93,7 @@ class AnalysisTest final : public QObject {
     void specialMoves_data();
     void specialMoves();
     void failedResetPreservesSession();
+    void setPositionFromFen();
     void geometryAndAccessibility();
     void accessibleMoveDestinations_data();
     void accessibleMoveDestinations();
@@ -607,6 +610,41 @@ void AnalysisTest::failedResetPreservesSession() {
     QCOMPARE(failed.count(), 1);
     QCOMPARE(controller_->currentNode(), node);
     QCOMPARE(controller_->board().annotations.size(), std::size_t{1});
+    QVERIFY(controller_->hasContent());
+}
+void AnalysisTest::setPositionFromFen() {
+    ui::AnalysisPage page(*controller_);
+    page.show();
+    auto* command = page.findChild<QAction*>(QStringLiteral("setAnalysisPosition"));
+    QVERIFY(command);
+    play(move("e2", "e4"));
+    const auto previous = controller_->position()->fen();
+    command->trigger();
+    auto* discard = page.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog"));
+    QVERIFY(discard);
+    discard->button(QMessageBox::Discard)->click();
+    auto* fen = page.findChild<QLineEdit*>(QStringLiteral("analysisFen"));
+    QVERIFY(fen);
+    QCOMPARE(fen->text(), QString::fromStdString(previous));
+    auto* dialog = qobject_cast<QDialog*>(fen->window());
+    QVERIFY(dialog);
+    auto* apply = dialog->findChild<QPushButton*>(QStringLiteral("applyAnalysisFen"));
+    QVERIFY(apply);
+    const QString valid = QStringLiteral("4k3/P7/8/8/8/8/8/4K3 w - - 0 42");
+    fen->setText(valid + QString(300, u' ') + u'x');
+    apply->click();
+    auto* status = dialog->findChild<QLabel*>(QStringLiteral("analysisFenStatus"));
+    QVERIFY(status);
+    QTRY_VERIFY(apply->isEnabled());
+    QVERIFY(status->text().contains(QStringLiteral("FEN")));
+    QCOMPARE(controller_->position()->fen(), previous);
+    QVERIFY(controller_->hasContent());
+    QSignalSpy accepted(dialog, &QDialog::accepted);
+    fen->setText(valid);
+    apply->click();
+    QTRY_COMPARE(accepted.size(), 1);
+    QCOMPARE(controller_->position()->fen(), valid.toStdString());
+    QCOMPARE(controller_->currentNode(), chess::NodeId{0});
     QVERIFY(controller_->hasContent());
 }
 void AnalysisTest::geometryAndAccessibility() {

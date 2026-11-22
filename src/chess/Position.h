@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -70,6 +71,7 @@ struct BoardIdentity {
 
 enum class Variant { Standard };
 enum class RootProvenance { InitialPosition, FenAnalysisRoot };
+inline constexpr std::size_t maximumFenBytes = 256;
 
 // Exact conservative identity, not a hash or a draw/repetition adjudication API.
 // Full history is copied only when this snapshot is requested. No persisted wire format yet.

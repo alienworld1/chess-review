@@ -6,6 +6,11 @@ tree and annotations. Unsaved edits stay in the session when you switch pages.
 New Analysis, replacing the session, and quitting offer to save or discard
 unsaved work.
 
+Use **Board Options → Set Position from FEN…** to start from a custom position.
+The dialog starts with the current board's FEN. Edit it or paste a complete
+six-field FEN. Invalid input leaves the current session intact and the dialog
+open for correction. A custom position can be kept with **Save PGN**.
+
 ## Moves and history
 
 Drag a piece to move, or choose **Click-click** in **Board Options → Move input**. Illegal moves return

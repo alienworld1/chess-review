@@ -405,9 +405,11 @@ void AnalysisController::startReset(ResetRequest reset) {
                 auto result =
                     reset.fen ? chess::GameTree::fromFen(*reset.fen) : chess::GameTree::initial();
                 if (auto* error = std::get_if<chess::GameTreeError>(&result)) {
-                    return QString::fromStdString(error->message);
+                    return QString::fromStdString(
+                        error->positionError ? error->positionError->message : error->message);
                 }
                 replacement.tree = std::move(std::get<chess::GameTree>(result));
+                replacement.treeDirty = reset.fen.has_value();
             }
             replacement.navigation = makeNavigationTree(*replacement.tree);
             session = std::move(replacement);

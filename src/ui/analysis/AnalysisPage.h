@@ -43,6 +43,7 @@ class AnalysisPage final : public QWidget {
     void refresh();
     void refreshBoard();
     void applySplit();
+    void setPosition();
     void editComment(app::NavigationTarget target);
     void confirmDelete(app::NavigationTarget target);
     void savePgn(std::function<void()> onSaved = {});
