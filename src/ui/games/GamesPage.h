@@ -36,6 +36,7 @@ class GamesPage final : public QWidget {
 
   private:
     void updateLibrary();
+    void showStatistics();
     void applyQuery();
     void updatePreview();
     void updatePreviewVisibility();

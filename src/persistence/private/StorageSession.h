@@ -64,6 +64,7 @@ class StorageSession final {
     InsertGameResult insertGame(const pgn::PgnDocument& document, const GameSource& source);
     LoadGameResult loadGame(GameId id, bool includeOpening = false);
     ListGamesResult listGames(std::int64_t offset, int limit, const GameLibraryQuery& filter = {});
+    LibraryStatisticsResult loadLibraryStatistics();
     GamePreviewResult previewGame(GameId id);
     DeleteGameResult deleteGame(GameId id);
     ResolveGameOpeningResult resolveGameOpening(GameId id);

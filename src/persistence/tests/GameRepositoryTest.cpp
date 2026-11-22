@@ -252,6 +252,11 @@ void GameRepositoryTest::deleteGameAndDependencies() {
             sql.exec(QStringLiteral("INSERT INTO puzzles VALUES(1,X'00',X'00',1,1,0,X'00','')")));
         const auto other = std::get<Inserted>(session.insertGame(*document("1. d4 d5 *"), {})).id;
         QVERIFY(other > first);
+        const auto pending = std::get<LibraryStatistics>(session.loadLibraryStatistics());
+        QCOMPARE(pending.games, 2);
+        QCOMPARE(pending.reviewedGames, 0);
+        QCOMPARE(pending.completedReviews, 0);
+        QCOMPARE(pending.puzzles, 1);
         GameLibraryQuery filter;
         filter.review = GameReviewFilter::HasReview;
         const auto rows = std::get<std::vector<GameSummary>>(session.listGames(0, 20, filter));
@@ -264,6 +269,13 @@ void GameRepositoryTest::deleteGameAndDependencies() {
         QVERIFY(sql.exec(QStringLiteral("UPDATE review_jobs SET status=8")));
         QCOMPARE(std::get<GameError>(session.deleteGame(first)).code, GameErrorCode::Busy);
         QVERIFY(sql.exec(QStringLiteral("UPDATE puzzle_jobs SET status=2")));
+        QVERIFY(sql.exec(QStringLiteral("UPDATE review_jobs SET status=5, completed_positions=4")));
+        QVERIFY(sql.exec(QStringLiteral(
+            "INSERT INTO reviews SELECT 2,game_id,1,1,0,X'00',X'00',1,0 FROM reviews WHERE id=1")));
+        QVERIFY(sql.exec(QStringLiteral("INSERT INTO review_jobs VALUES(2,2,5,0,4,4,0)")));
+        const auto complete = std::get<LibraryStatistics>(session.loadLibraryStatistics());
+        QCOMPARE(complete.reviewedGames, 1);
+        QCOMPARE(complete.completedReviews, 2);
         QVERIFY(sql.exec(QStringLiteral("CREATE TRIGGER reject_delete BEFORE DELETE ON games BEGIN "
                                         "SELECT RAISE(ABORT,'fixture'); END")));
         QCOMPARE(std::get<GameError>(session.deleteGame(first)).code, GameErrorCode::Storage);
@@ -274,6 +286,11 @@ void GameRepositoryTest::deleteGameAndDependencies() {
         QCOMPARE(std::get<GameError>(session.loadGame(first)).code, GameErrorCode::Missing);
         QCOMPARE(std::get<GameError>(session.deleteGame(first)).code, GameErrorCode::Missing);
         QVERIFY(std::holds_alternative<StoredGame>(session.loadGame(other)));
+        const auto remaining = std::get<LibraryStatistics>(session.loadLibraryStatistics());
+        QCOMPARE(remaining.games, 1);
+        QCOMPARE(remaining.reviewedGames, 0);
+        QCOMPARE(remaining.completedReviews, 0);
+        QCOMPARE(remaining.puzzles, 1);
         QCOMPARE(sql.scalar(QStringLiteral("SELECT count(*) FROM reviews")).toInt(), 0);
         QCOMPARE(sql.scalar(QStringLiteral("SELECT count(*) FROM puzzle_jobs")).toInt(), 0);
         QVERIFY(sql.scalar(QStringLiteral("SELECT source_review_id FROM puzzles")).isNull());

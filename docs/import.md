@@ -98,6 +98,10 @@ date, or player name. Search and filters apply to the whole library and stay in
 place when you leave Games. **Reset** clears them and restores newest-first
 ordering. A completed import returns to the first page of the current view.
 
+**Library Statistics…** shows totals for the whole library, including saved
+games, games with at least one completed review, completed review runs, and
+saved puzzles. Use **Refresh** to read the current totals again.
+
 Select a row for the final mainline position and copyable game details, including
 event, site, round, time control, source, and review accuracy when available.
 Use **Details** to show the preview on a narrow window. Long metadata fields may

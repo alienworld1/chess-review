@@ -97,6 +97,13 @@ using LoadGameResult = std::variant<StoredGame, GameError>;
 using GamePreviewResult = std::variant<GamePreview, GameError>;
 using DeleteGameResult = std::variant<std::monostate, GameError>;
 using ListGamesResult = std::variant<std::vector<GameSummary>, GameError>;
+struct LibraryStatistics {
+    std::int64_t games;
+    std::int64_t reviewedGames;
+    std::int64_t completedReviews;
+    std::int64_t puzzles;
+};
+using LibraryStatisticsResult = std::variant<LibraryStatistics, GameError>;
 using ResolveGameOpeningResult = std::variant<std::optional<OpeningResolution>, GameError>;
 } // namespace chess_review::persistence
 Q_DECLARE_METATYPE(chess_review::persistence::InsertGameResult)
@@ -104,4 +111,5 @@ Q_DECLARE_METATYPE(chess_review::persistence::LoadGameResult)
 Q_DECLARE_METATYPE(chess_review::persistence::GamePreviewResult)
 Q_DECLARE_METATYPE(chess_review::persistence::DeleteGameResult)
 Q_DECLARE_METATYPE(chess_review::persistence::ListGamesResult)
+Q_DECLARE_METATYPE(chess_review::persistence::LibraryStatisticsResult)
 Q_DECLARE_METATYPE(chess_review::persistence::ResolveGameOpeningResult)

@@ -8,6 +8,14 @@ namespace chess_review::app {
 GameLibraryController::GameLibraryController(persistence::Database& database,
                                              DeleteGuard deleteGuard, QObject* parent)
     : QObject(parent), database_(database), deleteGuard_(std::move(deleteGuard)) {
+    connect(
+        &database_, &persistence::Database::libraryStatisticsLoaded, this,
+        [this](persistence::RequestId request, const persistence::LibraryStatisticsResult& result) {
+            if (!statisticsPending_.isNull() && statisticsPending_ == request) {
+                statisticsPending_ = {};
+                emit statisticsLoaded(result);
+            }
+        });
     connect(&database_, &persistence::Database::gameLoaded, this,
             [this](persistence::RequestId request, const persistence::LoadGameResult& result) {
                 if (pendingOpen_.isNull() || request != pendingOpen_) {
@@ -250,6 +258,15 @@ void GameLibraryController::setReady(bool ready) {
         requestPage();
     }
     emit changed();
+}
+void GameLibraryController::loadStatistics() {
+    if (!ready_) {
+        emit statisticsLoaded(persistence::GameError{persistence::GameErrorCode::Unavailable,
+                                                     tr("The game library is unavailable.")});
+    } else if (statisticsPending_.isNull()) {
+        statisticsPending_ = QUuid::createUuid();
+        database_.loadLibraryStatistics(statisticsPending_);
+    }
 }
 void GameLibraryController::open(persistence::GameId id) {
     if (!ready_ || opening() || (deleting() && deletingGame_ == id) || id <= 0) {

@@ -3,6 +3,7 @@
 #include "persistence/private/GameCodec.h"
 #include "persistence/private/GameRecords.h"
 #include "persistence/private/StorageSession.h"
+#include "review/Review.h"
 #include <QDateTime>
 #include <QDebug>
 #include <QSqlError>
@@ -602,6 +603,27 @@ DeleteGameResult StorageSession::deleteGame(GameId id) {
     }
     validatedGames_.erase(id);
     return std::monostate{};
+}
+
+LibraryStatisticsResult StorageSession::loadLibraryStatistics() {
+    if (!usable_) {
+        return storageError();
+    }
+    QSqlQuery query(database_);
+    query.setForwardOnly(true);
+    if (!query.prepare(QStringLiteral(
+            "SELECT (SELECT count(*) FROM games), count(DISTINCT reviews.game_id), count(*), "
+            "(SELECT count(*) FROM puzzles) FROM review_jobs JOIN reviews "
+            "ON reviews.id=review_jobs.review_id WHERE review_jobs.status=? "
+            "AND review_jobs.completed_positions=review_jobs.total_positions"))) {
+        return storageError();
+    }
+    query.addBindValue(static_cast<int>(review::JobStatus::Complete));
+    if (!query.exec() || !query.next()) {
+        return storageError();
+    }
+    return LibraryStatistics{query.value(0).toLongLong(), query.value(1).toLongLong(),
+                             query.value(2).toLongLong(), query.value(3).toLongLong()};
 }
 
 ListGamesResult StorageSession::listGames(std::int64_t offset, int limit,

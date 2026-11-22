@@ -681,6 +681,16 @@ void ImportTest::desktopPasteAndDrop() {
     QTRY_COMPARE(table->model()->rowCount(), 1);
     QCOMPARE(table->model()->data(table->model()->index(0, 0)).toString(),
              QStringLiteral("<b>Player</b>"));
+    auto* statistics = window.findChild<QPushButton*>(QStringLiteral("libraryStatisticsButton"));
+    QVERIFY(statistics);
+    statistics->click();
+    auto* totals = window.findChild<QLabel*>(QStringLiteral("libraryStatisticsStatus"));
+    QVERIFY(totals);
+    QCOMPARE(totals->text(), QStringLiteral("Loading library statistics…"));
+    QTRY_VERIFY(totals->text().contains(QStringLiteral("Saved games: 1")));
+    QVERIFY(totals->text().contains(QStringLiteral("Completed reviews: 0")));
+    QVERIFY(totals->text().contains(QStringLiteral("Saved puzzles: 0")));
+    totals->window()->close();
     auto* results = window.findChild<QTableView*>(QStringLiteral("importResults"));
     QTRY_VERIFY(results->model()->rowCount() >= 2);
     QAbstractItemModelTester modelChecks(results->model(),

@@ -24,6 +24,7 @@ class GameLibraryController final : public QObject {
     void open(persistence::GameId id);
     bool opening() const { return !pendingOpen_.isNull(); }
     void refresh(bool newest = false);
+    void loadStatistics();
     void importedGame();
     void setQuery(persistence::GameLibraryQuery query);
     const persistence::GameLibraryQuery& query() const { return query_; }
@@ -56,6 +57,7 @@ class GameLibraryController final : public QObject {
     void openingChanged(persistence::GameId id, const persistence::OpeningResolution& opening);
     void openFailed(const QString& message);
     void opened(const chess_review::persistence::StoredGame& game);
+    void statisticsLoaded(const persistence::LibraryStatisticsResult& result);
 
   private:
     static constexpr int pageSize = 50;
@@ -100,6 +102,7 @@ class GameLibraryController final : public QObject {
     std::uint64_t rowsVersion_ = 0;
     persistence::RequestId pending_;
     persistence::RequestId pendingOpen_;
+    persistence::RequestId statisticsPending_;
     std::vector<persistence::GameSummary> rows_;
     QString error_;
     QString openError_;

@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QHeaderView>
@@ -214,6 +215,10 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     refresh_ = new QPushButton(tr("Refresh"), this);
     refresh_->setObjectName(QStringLiteral("refreshGames"));
     toolbar->addWidget(refresh_);
+    auto* statistics = new QPushButton(tr("Library Statistics…"), this);
+    statistics->setObjectName(QStringLiteral("libraryStatisticsButton"));
+    connect(statistics, &QPushButton::clicked, this, &GamesPage::showStatistics);
+    toolbar->addWidget(statistics);
     toolbar->addStretch();
     layout->addLayout(toolbar);
 
@@ -633,6 +638,46 @@ void GamesPage::updatePreview() {
     }
     previewPane_->layout()->activate();
 }
+void GamesPage::showStatistics() {
+    auto* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(tr("Library Statistics"));
+    auto* layout = new QVBoxLayout(dialog);
+    auto* status = new QLabel(dialog);
+    status->setObjectName(QStringLiteral("libraryStatisticsStatus"));
+    status->setTextFormat(Qt::PlainText);
+    status->setWordWrap(true);
+    status->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    layout->addWidget(status);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    auto* refresh = buttons->addButton(tr("Refresh"), QDialogButtonBox::ActionRole);
+    layout->addWidget(buttons);
+    const auto load = [this, status, refresh] {
+        refresh->setEnabled(false);
+        status->setText(tr("Loading library statistics…"));
+        library_.loadStatistics();
+    };
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(refresh, &QPushButton::clicked, dialog, load);
+    connect(&library_, &app::GameLibraryController::statisticsLoaded, dialog,
+            [status, refresh](const persistence::LibraryStatisticsResult& result) {
+                refresh->setEnabled(true);
+                if (const auto* counts = std::get_if<persistence::LibraryStatistics>(&result)) {
+                    status->setText(tr("Saved games: %L1\nGames with a completed review: %L2\n"
+                                       "Completed reviews: %L3\nSaved puzzles: %L4")
+                                        .arg(counts->games)
+                                        .arg(counts->reviewedGames)
+                                        .arg(counts->completedReviews)
+                                        .arg(counts->puzzles));
+                } else {
+                    status->setText(std::get<persistence::GameError>(result).message);
+                }
+            });
+    dialog->resize(360, dialog->sizeHint().height());
+    dialog->open();
+    load();
+}
+
 void GamesPage::confirmDeletion() {
     const auto* game = libraryModel_->summary(games_->currentIndex().row());
     if (!game || !remove_->isEnabled()) {

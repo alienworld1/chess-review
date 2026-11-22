@@ -337,6 +337,29 @@ void Database::listGames(RequestId request, std::int64_t offset, int limit,
         Qt::QueuedConnection);
 }
 
+void Database::loadLibraryStatistics(RequestId request) {
+    if (const auto error = acceptRequest()) {
+        QTimer::singleShot(0, this, [this, request, error = *error] {
+            emit libraryStatisticsLoaded(request, error);
+        });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request] {
+            const auto result = impl_->worker->execute<LibraryStatisticsResult>(
+                [](detail::StorageSession& session) { return session.loadLibraryStatistics(); });
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, result] {
+                    --impl_->pending;
+                    emit libraryStatisticsLoaded(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
 void Database::previewGame(RequestId request, GameId id) {
     if (auto error = acceptRequest()) {
         QTimer::singleShot(0, this,
