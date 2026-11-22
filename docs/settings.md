@@ -24,10 +24,10 @@ Enable **Include key moments from both players** to guide new reviews through
 important decisions from either side. The summary displays accuracy and move
 counts separately by color. The selected player still controls puzzle generation.
 
-Under **Move classifications**, change the expected-score loss at which
-Inaccuracy, Mistake, and Blunder begin. Enter increasing values between 0 and 1.
-**Use standard thresholds** restores 0.05, 0.10, and 0.20. These cutoffs affect
-move classifications. Accuracy continues to use its own calculation.
+Under **Move classifications**, choose **Standard**, **More sensitive**, or
+**Less sensitive**. The presets set the expected-score loss at which Inaccuracy,
+Mistake, and Blunder begin. Standard uses 0.05, 0.10, and 0.20. Edit the three
+values directly to use custom cutoffs. Accuracy uses its own calculation.
 
 The same page controls candidate lines for review, local opening references,
 win/draw/loss preference, automatic puzzle generation, technical details, and

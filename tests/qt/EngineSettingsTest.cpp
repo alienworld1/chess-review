@@ -340,11 +340,22 @@ class EngineSettingsTest final : public QObject {
         QTRY_COMPARE(configuration.snapshot()->values.quality, review::Quality::Fast);
         auto* bothSides = sections->findChild<QCheckBox*>(QStringLiteral("reviewBothSides"));
         auto* threshold = sections->findChild<QLineEdit*>(QStringLiteral("inaccuracyLoss"));
-        QVERIFY(bothSides && threshold);
+        auto* classification =
+            sections->findChild<QComboBox*>(QStringLiteral("classificationPreset"));
+        QVERIFY(bothSides && threshold && classification);
+        QCOMPARE(classification->currentIndex(), 0);
+        QTest::keyClick(classification, Qt::Key_Down);
+        QCOMPARE(classification->currentIndex(), 1);
+        QCOMPARE(threshold->text(), QStringLiteral("0.04"));
+        apply->click();
+        QTRY_COMPARE(configuration.snapshot()->values.classification,
+                     (review::ClassificationConfig{0.04, 0.08, 0.16}));
+        QCOMPARE(classification->currentIndex(), 1);
         bothSides->setChecked(true);
         threshold->setText(QStringLiteral("0.15"));
         QVERIFY(!apply->isEnabled());
         threshold->setText(QStringLiteral("0.06123456789012345"));
+        QCOMPARE(classification->currentIndex(), -1);
         QVERIFY(apply->isEnabled());
         apply->click();
         QTRY_VERIFY(configuration.snapshot()->ui.reviewBothSides);

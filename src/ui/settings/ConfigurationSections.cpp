@@ -15,10 +15,12 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTextDocument>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <array>
 #include <memory>
 
@@ -26,6 +28,12 @@ static void initializeSettingsResources() { Q_INIT_RESOURCE(settings_reference);
 
 namespace chess_review::ui {
 namespace {
+constexpr std::array classificationPresets{
+    review::ClassificationConfig{},
+    review::ClassificationConfig{0.04, 0.08, 0.16},
+    review::ClassificationConfig{0.06, 0.12, 0.24},
+};
+
 QLabel* text(QWidget* parent, const QString& value = {}) {
     auto* label = new QLabel(value, parent);
     label->setTextFormat(Qt::PlainText);
@@ -71,6 +79,11 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     auto* thresholdsForm = new QFormLayout(classification);
     thresholdsForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
     thresholdsForm->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);
+    auto* classificationPreset = new QComboBox(classification);
+    classificationPreset->setObjectName(QStringLiteral("classificationPreset"));
+    classificationPreset->setPlaceholderText(tr("Custom"));
+    classificationPreset->addItems({tr("Standard"), tr("More sensitive"), tr("Less sensitive")});
+    thresholdsForm->addRow(tr("Classification &preset"), classificationPreset);
     thresholdsForm->addRow(
         text(classification, tr("Enter expected-score loss from 0 to 1. For example, 0.05 "
                                 "means a loss of 5 percentage points.")));
@@ -88,8 +101,6 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     thresholdsForm->addRow(tr("&Inaccuracy starts at"), inaccuracy);
     thresholdsForm->addRow(tr("&Mistake starts at"), mistake);
     thresholdsForm->addRow(tr("&Blunder starts at"), blunder);
-    auto* standardThresholds = new QPushButton(tr("Use standard thresholds"), classification);
-    thresholdsForm->addRow(standardThresholds);
     basicLayout->addWidget(classification);
 
     auto* resources = new QGroupBox(tr("Analysis resources"), basic);
@@ -264,6 +275,17 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
         const bool basicDirty = snapshot && draft != config::basicPreferences(*snapshot);
         const bool canEditBasic = writable && snapshot && !dirty;
         const auto& loss = draft.classification;
+        const auto selectedPreset =
+            std::ranges::find_if(classificationPresets, [&loss](auto preset) {
+                return preset.inaccuracyLoss == loss.inaccuracyLoss &&
+                       preset.mistakeLoss == loss.mistakeLoss &&
+                       preset.blunderLoss == loss.blunderLoss;
+            });
+        const QSignalBlocker presetBlock(classificationPreset);
+        classificationPreset->setCurrentIndex(
+            selectedPreset == classificationPresets.end()
+                ? -1
+                : static_cast<int>(selectedPreset - classificationPresets.begin()));
         const bool validThresholds = 0 < loss.inaccuracyLoss &&
                                      loss.inaccuracyLoss < loss.mistakeLoss &&
                                      loss.mistakeLoss < loss.blunderLoss && loss.blunderLoss < 1;
@@ -332,8 +354,9 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     for (auto* field : thresholds) {
         connect(field, &QLineEdit::textChanged, basic, refreshActions);
     }
-    connect(standardThresholds, &QPushButton::clicked, basic,
-            [setThresholds] { setThresholds(review::ClassificationConfig{}); });
+    connect(classificationPreset, &QComboBox::activated, basic, [setThresholds](int index) {
+        setThresholds(classificationPresets.at(static_cast<std::size_t>(index)));
+    });
     connect(editor->document(), &QTextDocument::modificationChanged, advanced, refreshActions);
     connect(editor, &QPlainTextEdit::textChanged, advanced, refreshActions);
     connect(reset, &QPushButton::clicked, basic, resetForm);
