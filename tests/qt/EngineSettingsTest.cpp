@@ -334,6 +334,11 @@ class EngineSettingsTest final : public QObject {
         sections->setCurrentIndex(1);
         auto* quality = sections->findChild<QComboBox*>(QStringLiteral("defaultReviewQuality"));
         auto* apply = sections->findChild<QPushButton*>(QStringLiteral("saveReviewPreferences"));
+        QVERIFY(quality && apply);
+        application.window.resize(1100, 720);
+        application.window.show();
+        QTRY_VERIFY(application.window.rect().contains(
+            QRect(apply->mapTo(&application.window, QPoint{}), apply->size())));
         quality->setCurrentIndex(0);
         QVERIFY(apply->isEnabled());
         apply->click();
@@ -418,13 +423,26 @@ class EngineSettingsTest final : public QObject {
         QVERIFY(file.readAll().startsWith("# Keep this note"));
         const auto screenshots = qEnvironmentVariable("CHESS_REVIEW_ENGINE_SCREENSHOTS");
         if (!screenshots.isEmpty()) {
-            application.window.resize(1100, 720);
-            application.window.show();
-            for (int index = 0; index < sections->count(); ++index) {
-                sections->setCurrentIndex(index);
-                QCoreApplication::processEvents();
-                QVERIFY(application.window.grab().save(
-                    screenshots + QStringLiteral("/settings-tab-%1.png").arg(index)));
+            auto* appearance =
+                application.window.findChild<QComboBox*>(QStringLiteral("appearanceMode"));
+            QVERIFY(appearance);
+            const auto restoreAppearance =
+                qScopeGuard([appearance, initial = appearance->currentIndex()] {
+                    appearance->setCurrentIndex(initial);
+                });
+            for (const bool dark : {false, true}) {
+                const auto scheme = dark ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light;
+                appearance->setCurrentIndex(appearance->findData(static_cast<int>(scheme)));
+                QVERIFY(appearance->currentIndex() >= 0);
+                for (int index = 0; index < sections->count(); ++index) {
+                    sections->setCurrentIndex(index);
+                    QCoreApplication::processEvents();
+                    QVERIFY(application.window.grab().save(
+                        screenshots +
+                        QStringLiteral("/settings-tab-%1-%2.png")
+                            .arg(index)
+                            .arg(dark ? QStringLiteral("dark") : QStringLiteral("light"))));
+                }
             }
         }
     }

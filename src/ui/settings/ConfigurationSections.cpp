@@ -43,13 +43,16 @@ QLabel* text(QWidget* parent, const QString& value = {}) {
 } // namespace
 
 void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configuration) {
-    auto* scroll = new QScrollArea(sections_);
+    auto* preferencesPage = new QWidget(sections_);
+    auto* preferencesPageLayout = new QVBoxLayout(preferencesPage);
+    auto* scroll = new QScrollArea(preferencesPage);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     auto* basic = new QWidget(scroll);
     auto* basicLayout = new QVBoxLayout(basic);
     scroll->setWidget(basic);
-    sections_->addTab(scroll, tr("&Review preferences"));
+    preferencesPageLayout->addWidget(scroll, 1);
+    sections_->addTab(preferencesPage, tr("&Review preferences"));
 
     auto* review = new QGroupBox(tr("New reviews"), basic);
     auto* reviewForm = new QFormLayout(review);
@@ -143,18 +146,18 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     auto* basicHelp = text(basic, tr("Use Advanced to customize preset budgets or classification "
                                      "thresholds. Saving here may reformat config.toml."));
     basicLayout->addWidget(basicHelp);
-    auto* basicStatus = text(basic);
+    basicLayout->addStretch();
+    auto* basicStatus = text(preferencesPage);
     basicStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    basicLayout->addWidget(basicStatus);
+    preferencesPageLayout->addWidget(basicStatus);
     auto* basicActions = new QHBoxLayout;
-    auto* apply = new QPushButton(tr("&Save preferences"), basic);
+    auto* apply = new QPushButton(tr("&Save preferences"), preferencesPage);
     apply->setObjectName(QStringLiteral("saveReviewPreferences"));
-    auto* reset = new QPushButton(tr("Discard changes"), basic);
+    auto* reset = new QPushButton(tr("Discard changes"), preferencesPage);
     basicActions->addWidget(apply);
     basicActions->addWidget(reset);
     basicActions->addStretch();
-    basicLayout->addLayout(basicActions);
-    basicLayout->addStretch();
+    preferencesPageLayout->addLayout(basicActions);
 
     auto* advanced = new QWidget(sections_);
     auto* advancedLayout = new QVBoxLayout(advanced);
