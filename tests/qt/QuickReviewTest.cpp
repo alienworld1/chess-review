@@ -20,6 +20,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileDialog>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
@@ -48,6 +49,7 @@
 #include <QTest>
 #include <QTextCursor>
 #include <QTimer>
+#include <QUrl>
 #include <QWheelEvent>
 #include <algorithm>
 #include <array>
@@ -116,7 +118,8 @@ class Fixture {
             qFatal("Quick review did not close");
         }
     }
-    bool seed(const std::string& text = "1. e4 e5 *", bool multiPv = false) {
+    bool seed(const std::string& text = "1. e4 e5 *", bool multiPv = false,
+              const persistence::GameSource& source = {}) {
         if (!QTest::qWaitFor([this] {
                 return startup.state() == app::Lifecycle::Ready &&
                        startup.engines().state().ready && !startup.engines().state().listing;
@@ -131,7 +134,7 @@ class Fixture {
         document =
             std::make_shared<const pgn::PgnDocument>(std::get<pgn::PgnDocument>(std::move(parsed)));
         QSignalSpy inserted(&startup.gameRepository(), &persistence::Database::gameInserted);
-        startup.gameRepository().insertGame(QUuid::createUuid(), document);
+        startup.gameRepository().insertGame(QUuid::createUuid(), document, source);
         if (!inserted.wait()) {
             return false;
         }
@@ -440,6 +443,96 @@ class Fixture {
 class QuickReviewTest final : public QObject {
     Q_OBJECT
   private slots:
+    void exportsSelectedReviewAsAnnotatedPgn() {
+        Fixture f;
+        const QByteArray original = "[White \"Ada\"]\n[Black \"Béla\"]\n[Result \"1-0\"]\n\n"
+                                    "1. e4 $1 {My annotation [%cal Ge2e4]} (1. d4 d5) "
+                                    "e5 (1... e5 2. Nf3 Nc6) 1-0";
+        QFile source(f.directory.filePath(QStringLiteral("source.pgn")));
+        QVERIFY(source.open(QIODevice::WriteOnly));
+        QCOMPARE(source.write(original), original.size());
+        source.close();
+        QVERIFY(
+            f.seed(original.toStdString(), false,
+                   {QStringLiteral("file"), QUrl::fromLocalFile(source.fileName()).toString()}));
+        f.window.show();
+        f.startup.reviewGame().workspace().showRequested();
+        auto* button = f.window.findChild<QPushButton*>(QStringLiteral("reviewExportPgn"));
+        QVERIFY(button && button->isVisible());
+        QVERIFY(!button->isEnabled());
+        f.script(0, -1, 100, false, false, QStringLiteral("cp 200"));
+        f.run();
+        QVERIFY(!button->isEnabled());
+        QVERIFY(f.done());
+        auto& workspace = f.startup.reviewGame().workspace();
+        QVERIFY(workspace.state().run);
+        const auto run = *workspace.state().run;
+        QCOMPARE(run.status, review::JobStatus::Complete);
+        QVERIFY(button->isEnabled());
+
+        QSignalSpy exported(&workspace, &app::ReviewWorkspaceController::exportFinished);
+        workspace.exportPgn(source.fileName(), run.id, run.revision);
+        QTRY_COMPARE(exported.size(), 1);
+        QVERIFY(!exported.takeFirst().at(1).toString().isEmpty());
+        QVERIFY(source.open(QIODevice::ReadOnly));
+        QCOMPARE(source.readAll(), original);
+        source.close();
+
+        const auto path = f.directory.filePath(QStringLiteral("annotated.pgn"));
+        workspace.exportPgn(f.directory.filePath(QStringLiteral("missing/annotated.pgn")), run.id,
+                            run.revision);
+        QTRY_COMPARE(exported.size(), 1);
+        QVERIFY(!exported.takeFirst().at(1).toString().isEmpty());
+        QVERIFY(button->isEnabled());
+
+        button->click();
+        auto* chooser = f.window.findChild<QFileDialog*>();
+        QVERIFY(chooser);
+        QCOMPARE(chooser->defaultSuffix(), QStringLiteral("pgn"));
+        chooser->selectFile(path);
+        QVERIFY(QMetaObject::invokeMethod(chooser, "accept"));
+        QTRY_COMPARE(exported.size(), 1);
+        const auto saved = exported.takeFirst();
+        QCOMPARE(saved.at(0).toString(), path);
+        QVERIFY2(saved.at(1).toString().isEmpty(), qPrintable(saved.at(1).toString()));
+        const auto* status = f.window.findChild<QLabel*>(QStringLiteral("reviewExportStatus"));
+        QVERIFY(status && status->isVisible());
+        QVERIFY(status->text().contains(QStringLiteral("annotated.pgn")));
+        QFile output(path);
+        QVERIFY(output.open(QIODevice::ReadOnly));
+        const auto bytes = output.readAll();
+        output.close();
+        QVERIFY(bytes.contains("[ECO \"C20\"]"));
+        QVERIFY(bytes.contains("[%eval -2.00]"));
+        QVERIFY(bytes.contains("[%eval 2.00]"));
+        QVERIFY(bytes.contains("Suggested line"));
+        const auto text = bytes.toStdString();
+        pgn::PgnReader reader(text);
+        const auto parsed = reader.next();
+        const auto* copy = std::get_if<pgn::PgnDocument>(&parsed);
+        QVERIFY(copy);
+        QCOMPARE(copy->result, f.document->result);
+        QVERIFY(std::ranges::equal(copy->originalMainline(), f.document->originalMainline()));
+        QCOMPARE(copy->tree.size(), f.document->tree.size());
+        const auto e4 = copy->tree.node(copy->tree.node(copy->tree.rootId())->children.front());
+        QCOMPARE(e4->annotations.nags, std::vector<std::uint8_t>{1});
+        QVERIFY(e4->annotations.commentAfter.starts_with("My annotation [%cal Ge2e4]\n"));
+        QVERIFY(std::holds_alternative<pgn::EndOfInput>(reader.next()));
+
+        workspace.exportPgn(path, run.id, run.revision - 1);
+        QCOMPARE(exported.size(), 1);
+        QVERIFY(!exported.takeFirst().at(1).toString().isEmpty());
+        workspace.exportPgn(path, run.id, run.revision);
+        QVERIFY(workspace.exportingPgn());
+        // A save already accepted by the workspace drains during orderly shutdown.
+        f.shutdown();
+        QTRY_COMPARE(exported.size(), 1);
+        QVERIFY(exported.takeFirst().at(1).toString().isEmpty());
+        QVERIFY(output.open(QIODevice::ReadOnly));
+        QCOMPARE(output.readAll(), bytes);
+        QCOMPARE(workspace.state().run->revision, run.revision);
+    }
+
     void multiGameImportOffersNamedDistinctGames() {
         Fixture f;
         f.window.show();
@@ -3932,6 +4025,26 @@ class QuickReviewTest final : public QObject {
             return moves.state().page && moves.state().page->offset == 0 && !moves.state().loading;
         }));
         QVERIFY(moves.state().page->moves.front().classification);
+        auto& workspace = f.startup.reviewGame().workspace();
+        const auto& run = *workspace.state().run;
+        QVERIFY(workspace.canExportPgn());
+        QSignalSpy exported(&workspace, &app::ReviewWorkspaceController::exportFinished);
+        const auto path = f.directory.filePath(QStringLiteral("partial.pgn"));
+        workspace.exportPgn(path, run.id, run.revision);
+        QTRY_COMPARE(exported.size(), 1);
+        QVERIFY2(exported.front().at(1).toString().isEmpty(),
+                 qPrintable(exported.front().at(1).toString()));
+        QFile output(path);
+        QVERIFY(output.open(QIODevice::ReadOnly));
+        const auto bytes = output.readAll();
+        QVERIFY(bytes.contains("Partial review (2 of 121 positions analyzed)"));
+        QCOMPARE(bytes.count("[%eval "), 1);
+        const auto pgnText = bytes.toStdString();
+        pgn::PgnReader reader(pgnText);
+        const auto parsed = reader.next();
+        const auto* copy = std::get_if<pgn::PgnDocument>(&parsed);
+        QVERIFY(copy);
+        QCOMPARE(copy->originalMainline().size(), std::size_t{120});
     }
     void cancelResumeAndRerun() {
         Fixture f;

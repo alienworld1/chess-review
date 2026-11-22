@@ -51,6 +51,8 @@ class ReviewPage final : public QWidget {
     void keyPressEvent(QKeyEvent* event) override;
 
   private:
+    void savePgn();
+    void updateExportAction();
     void update();
     void updateNavigation();
     void updateExploration();
@@ -148,6 +150,8 @@ class ReviewPage final : public QWidget {
     QLabel* game_;
     QLabel* headerOpening_;
     QLabel* status_;
+    QLabel* exportStatus_;
+    QPushButton* exportPgn_;
     QLabel* error_;
     QLabel* reason_;
     QProgressBar* progress_;

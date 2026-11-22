@@ -8,8 +8,8 @@ local UCI engines. Games, review evidence, and preferences stay on your computer
 - **Analyze:** play legal moves, explore variations, add annotations, and follow
   live engine analysis.
 - **Review:** scan a saved game, inspect classifications and evidence, explore
-  alternatives, and resume interrupted work. Saved reviews can be inspected without
-  an engine.
+  alternatives, resume interrupted work, and export annotated PGN. Saved reviews
+  can be inspected and exported without an engine.
 - **Puzzles:** generate verified lessons from reviews, save analysis positions,
   and solve saved sequences with hints, retry, reveal, and analysis.
 - **Settings:** manage and test UCI engines, set review and resource preferences, and edit advanced TOML.

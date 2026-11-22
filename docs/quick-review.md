@@ -116,6 +116,23 @@ Leaving an active review offers background continuation, staying, or cancelling.
 **Cancel review** keeps completed, saved analysis. Home offers recent games,
 resume, and unfinished reviews when available. See [Reopen and recovery](reopen-recovery.md).
 
+## Export an annotated PGN
+
+Open the review run you want to share and select **Export PGN…** in the Review
+header. Choose where to save the file. You can export a completed review or an
+unfinished run with at least two saved positions. An unfinished export includes
+the full game and marks its review coverage in the opening comment.
+
+The file includes the recorded result, existing variations and annotations,
+review labels, and short suggested lines at selected moves. Evaluations use
+White’s perspective, so a positive value favors White. The export labels
+preliminary classifications and keeps your original move-quality glyphs.
+Opening tags from the game take precedence over recognized opening information.
+
+Open the PGN in another chess application or import it through Games. Exporting
+keeps the saved game and review intact. To include working variations you added
+in Analyze, use **Save PGN** there.
+
 ## Technical inspection
 
 Optional verbose mode reveals the technical inspector and engine protocol details:

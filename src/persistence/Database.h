@@ -94,6 +94,7 @@ class Database final : public QObject {
     void continueReview(RequestId requestId, ContinueReview continuation);
     void deriveReviewMoves(RequestId requestId, ReviewId id, std::int64_t expectedRevision,
                            int offset, int limit = 50);
+    void loadReviewExport(RequestId requestId, ReviewId id, std::int64_t revision);
     void loadReviewOverview(RequestId requestId, ReviewId id, std::int64_t expectedRevision,
                             int keyOffset = 0);
     void loadReviewExploration(RequestId requestId, ReviewId id, std::int64_t revision, int index);
@@ -132,6 +133,8 @@ class Database final : public QObject {
                          const chess_review::persistence::ContinueReviewResult& result);
     void reviewMovesLoaded(chess_review::persistence::RequestId requestId,
                            const chess_review::persistence::LoadReviewMovesResult& result);
+    void reviewExportLoaded(chess_review::persistence::RequestId requestId,
+                            const chess_review::persistence::LoadReviewExportResult& result);
     void reviewEvidenceLoaded(chess_review::persistence::RequestId requestId,
                               const chess_review::persistence::LoadReviewEvidenceResult& result);
     void

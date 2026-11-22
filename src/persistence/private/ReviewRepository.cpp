@@ -46,9 +46,9 @@ class ReviewTransaction {
             usable_ = false;
         }
     }
-    bool begin() {
+    bool begin(bool immediate = true) {
         QSqlQuery q(database_);
-        active_ = q.exec(QStringLiteral("BEGIN IMMEDIATE"));
+        active_ = q.exec(immediate ? QStringLiteral("BEGIN IMMEDIATE") : QStringLiteral("BEGIN"));
         return active_;
     }
     bool commit() {
@@ -531,7 +531,8 @@ std::optional<ReviewError> retainClassification(QSqlDatabase& db, const StoredRe
                                                 const chess::Position& position,
                                                 const review::MoveEvidence& pair, int index,
                                                 std::int64_t beforeId, std::int64_t afterId,
-                                                bool replace, review::ClassificationResult& out) {
+                                                bool replace, review::ClassificationResult& out,
+                                                bool storeIfMissing = true) {
     QSqlQuery q(db);
     if (!exec(q,
               QStringLiteral("SELECT CASE WHEN typeof(before_id)='integer' THEN before_id END, "
@@ -570,6 +571,9 @@ std::optional<ReviewError> retainClassification(QSqlDatabase& db, const StoredRe
     q.finish();
     out = review::classify(position, pair, run.settings.configuration.values.classification,
                            run.settings.configuration.values.conversion, modelVersion);
+    if (!present && !storeIfMissing) {
+        return std::nullopt;
+    }
     // Legacy settings retain their released identity; interpretation explicitly includes the new
     // default.
     const auto validated = config::validate(run.settings.configuration.values);
@@ -1394,10 +1398,34 @@ ContinueReviewResult StorageSession::continueReview(const ContinueReview& reques
     return run.summary;
 }
 namespace {
+std::optional<QString> continuationSan(chess::Position position,
+                                       std::span<const chess::Move> line) {
+    QStringList sans;
+    for (const auto move : line) {
+        const auto san = position.san(move);
+        const auto* text = std::get_if<std::string>(&san);
+        if (!text) {
+            return std::nullopt;
+        }
+        const bool white = position.sideToMove() == chess::Color::White;
+        if (white || sans.isEmpty()) {
+            sans << QStringLiteral("%1%2")
+                        .arg(position.fullmoveNumber())
+                        .arg(white ? QStringLiteral(".") : QStringLiteral("..."));
+        }
+        sans << QString::fromStdString(*text);
+        if (std::holds_alternative<chess::Error>(position.play(move))) {
+            return std::nullopt;
+        }
+    }
+    return sans.join(QLatin1Char(' '));
+}
+
 LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                                    const StoredGame& game, chess::Position& cursor, int offset,
                                    int limit, const review::ScanAssessment* precedingScan = nullptr,
-                                   bool scanOnly = false) {
+                                   bool scanOnly = false,
+                                   std::vector<ReviewExportMove>* exportMoves = nullptr) {
     const auto stabilityModel = review::stabilityModelForPipeline(run.settings.pipelineVersion);
     if (!stabilityModel) {
         return error(ReviewErrorCode::UnsupportedVersion);
@@ -1504,9 +1532,9 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                 return *e;
             }
             review::ClassificationResult result;
-            if (const auto e =
-                    retainClassification(db, run, *position, std::get<review::MoveEvidence>(pair),
-                                         ply + 1, b->evidenceId, a->evidenceId, false, result)) {
+            if (const auto e = retainClassification(
+                    db, run, *position, std::get<review::MoveEvidence>(pair), ply + 1,
+                    b->evidenceId, a->evidenceId, false, result, exportMoves == nullptr)) {
                 return *e;
             }
             const auto& quickPair = std::get<review::MoveEvidence>(pair);
@@ -1822,6 +1850,48 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     return invalid();
                 }
             }
+            if (exportMoves) {
+                const auto& classification = *row.classification;
+                ReviewExportMove note{row.positionIndex,
+                                      classification.label,
+                                      classification.stable,
+                                      std::nullopt,
+                                      {}};
+                const auto& raw = row.rawAfter;
+                if (raw.score && raw.score->bound == review::Bound::Exact && a->evidence.complete &&
+                    !a->evidence.restricted &&
+                    raw.score->value != std::numeric_limits<std::int64_t>::min() &&
+                    (!classification.after.issue ||
+                     (classification.after.issue == review::EvidenceIssue::MateClaim &&
+                      row.stability.persistentMate && raw.score->value != 0))) {
+                    note.whiteScore = raw.score;
+                    if (raw.perspective == chess::Color::Black) {
+                        note.whiteScore->value = -note.whiteScore->value;
+                    }
+                }
+                if (note.label &&
+                    (review::isError(*note.label) || review::isKeyLabel(*note.label)) &&
+                    !classification.issue && classification.bestMove &&
+                    *classification.bestMove != move) {
+                    const auto& candidates = b->evidence.candidates;
+                    const auto candidate = std::ranges::find_if(candidates, [&](const auto& entry) {
+                        return !entry.continuation.empty() &&
+                               entry.continuation.front() == *classification.bestMove;
+                    });
+                    if (candidate != candidates.end()) {
+                        const std::span<const chess::Move> line = candidate->continuation;
+                        auto variation = continuationSan(
+                            *position, line.first(std::min<std::size_t>(line.size(), 6)));
+                        if (!variation) {
+                            return invalid();
+                        }
+                        note.suggestedLine = std::move(*variation);
+                    }
+                }
+                if (note.label || note.whiteScore) {
+                    exportMoves->push_back(std::move(note));
+                }
+            }
         } else {
             QSqlQuery q(db);
             if (!exec(q,
@@ -2055,6 +2125,44 @@ LoadReviewMovesResult StorageSession::deriveReviewMoves(ReviewId id, std::int64_
     }
     return result;
 }
+LoadReviewExportResult StorageSession::loadReviewExport(ReviewId id, std::int64_t revision) {
+    ReviewTransaction tx(database_, usable_);
+    if (!usable_ || !tx.begin(false)) {
+        return storage();
+    }
+    StoredGame game;
+    const auto loaded = loadReviewRecord(id, &game);
+    if (const auto* issue = std::get_if<ReviewError>(&loaded)) {
+        return *issue;
+    }
+    const auto& run = std::get<StoredReview>(loaded);
+    if (run.summary.revision != revision) {
+        return error(ReviewErrorCode::Conflict);
+    }
+    if (!reviewCanExport(run.summary)) {
+        return error(ReviewErrorCode::InvalidInput);
+    }
+    auto restored = gamePosition(game, 0);
+    auto* position = std::get_if<chess::Position>(&restored);
+    if (!position) {
+        return invalid();
+    }
+    ReviewExportSnapshot snapshot{std::move(game), run.summary, run.settings.opening, {}};
+    review::ScanAssessment preceding;
+    constexpr int pageSize = 50;
+    for (int offset = 0; offset < run.summary.totalPositions - 1; offset += pageSize) {
+        const auto page = readMovePage(database_, run, snapshot.game, *position, offset, pageSize,
+                                       &preceding, false, &snapshot.moves);
+        if (const auto* issue = std::get_if<ReviewError>(&page)) {
+            return *issue;
+        }
+        preceding = std::get<ReviewMovePage>(page).moves.back().quickScan;
+    }
+    if (!tx.commit()) {
+        return storage();
+    }
+    return snapshot;
+}
 LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::int64_t revision,
                                                             int keyOffset) {
     if (keyOffset < 0 || keyOffset % 50 != 0) {
@@ -2284,27 +2392,11 @@ StorageSession::loadReviewExploration(ReviewId id, std::int64_t revision, int in
         return error(ReviewErrorCode::Missing);
     }
     for (const auto& c : out->evidence.candidates) {
-        auto position = *root;
-        QStringList sans;
-        for (const auto& move : c.continuation) {
-            auto san = position.san(move);
-            const auto* text = std::get_if<std::string>(&san);
-            if (!text) {
-                return invalid();
-            }
-            if (position.sideToMove() == chess::Color::White || sans.isEmpty()) {
-                sans << QStringLiteral("%1%2")
-                            .arg(position.fullmoveNumber())
-                            .arg(position.sideToMove() == chess::Color::White
-                                     ? QStringLiteral(".")
-                                     : QStringLiteral("..."));
-            }
-            sans << QString::fromStdString(*text);
-            if (std::holds_alternative<chess::Error>(position.play(move))) {
-                return invalid();
-            }
+        auto san = continuationSan(*root, c.continuation);
+        if (!san) {
+            return invalid();
         }
-        out->candidateSans.push_back(sans.join(QLatin1Char(' ')));
+        out->candidateSans.push_back(std::move(*san));
     }
     const auto played = game.document->originalMainline()[static_cast<std::size_t>(index - 1)];
     if (std::none_of(out->evidence.candidates.begin(), out->evidence.candidates.end(),

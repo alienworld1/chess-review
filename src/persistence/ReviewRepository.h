@@ -71,6 +71,19 @@ struct StoredReview {
     std::uint32_t expectedScoreModelVersion = review::expectedScoreModelVersion;
     // Classification metadata is stored separately; legacy settings remain unchanged.
 };
+inline bool reviewCanExport(const ReviewSummary& run) {
+    switch (run.status) {
+    case review::JobStatus::Complete:
+        return true;
+    case review::JobStatus::Partial:
+    case review::JobStatus::Cancelled:
+    case review::JobStatus::Interrupted:
+    case review::JobStatus::Failed:
+        return run.completedPositions >= 2;
+    default:
+        return false;
+    }
+}
 struct ReviewCheckpoint {
     ReviewId reviewId = 0;
     std::int64_t expectedRevision = 0;
@@ -151,6 +164,20 @@ struct ReviewMovePage {
     int totalMoves = 0;
     std::vector<ReviewMove> moves;
 };
+struct ReviewExportMove {
+    int positionIndex;
+    std::optional<review::Classification> label;
+    bool stable;
+    std::optional<review::RawScore> whiteScore;
+    QString suggestedLine;
+};
+struct ReviewExportSnapshot {
+    StoredGame game;
+    ReviewSummary run;
+    std::optional<OpeningResolution> opening;
+    std::vector<ReviewExportMove> moves;
+};
+using LoadReviewExportResult = std::variant<ReviewExportSnapshot, ReviewError>;
 struct ReviewOverview {
     ReviewId reviewId = 0;
     std::int64_t revision = 0;
@@ -237,6 +264,7 @@ Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewEvidenceResult)
 Q_DECLARE_METATYPE(chess_review::persistence::ListReviewTransitionsResult)
 
 Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewMovesResult)
+Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewExportResult)
 
 Q_DECLARE_METATYPE(chess_review::persistence::LoadReviewOverviewResult)
 

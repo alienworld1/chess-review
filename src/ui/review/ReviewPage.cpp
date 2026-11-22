@@ -1,5 +1,6 @@
 #include "ui/review/ReviewPage.h"
 #include "app/ReviewMovePresentation.h"
+#include "app/ReviewWorkspaceController.h"
 #include "ui/EngineText.h"
 #include "ui/OpeningText.h"
 #include "ui/Theme.h"
@@ -17,6 +18,8 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QEvent>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
@@ -31,6 +34,7 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -316,6 +320,10 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
         guiding_ = false;
         updateSummary();
     });
+    exportPgn_ = new QPushButton(tr("Export PGN…"), this);
+    exportPgn_->setObjectName(QStringLiteral("reviewExportPgn"));
+    header->addWidget(exportPgn_);
+    connect(exportPgn_, &QPushButton::clicked, this, &ReviewPage::savePgn);
     auto* options = new QToolButton(this);
     options->setObjectName(QStringLiteral("reviewOptions"));
     options->setText(tr("Review options"));
@@ -845,6 +853,31 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     error_->setWordWrap(true);
     error_->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     layout->addWidget(error_);
+    exportStatus_ = new QLabel(this);
+    exportStatus_->setObjectName(QStringLiteral("reviewExportStatus"));
+    exportStatus_->setAccessibleName(tr("PGN export status"));
+    exportStatus_->setTextFormat(Qt::PlainText);
+    exportStatus_->setWordWrap(true);
+    exportStatus_->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                           Qt::TextSelectableByKeyboard);
+    exportStatus_->hide();
+    layout->addWidget(exportStatus_);
+    auto& workspace = controller_.workspace();
+    connect(&workspace, &app::ReviewWorkspaceController::exportChanged, this,
+            &ReviewPage::updateExportAction);
+    connect(&workspace, &app::ReviewWorkspaceController::exportFinished, this,
+            [this](const QString& filename, const QString& error) {
+                const auto status =
+                    error.isEmpty()
+                        ? tr("Saved annotated PGN as %1.").arg(QFileInfo(filename).fileName())
+                        : error;
+                exportStatus_->setText(status);
+                exportStatus_->show();
+                if (isVisible()) {
+                    QAccessibleAnnouncementEvent announcement(exportStatus_, status);
+                    QAccessible::updateAccessibility(&announcement);
+                }
+            });
     auto* keySection = section(tr("Chronological key moments"), false).second;
     auto* keyLayout = new QVBoxLayout(keySection);
     moments_ = new QTableView(keySection);
@@ -1230,7 +1263,11 @@ void ReviewPage::update() {
         guiding_ = false;
         lastPosition_ = controller_.navigation().selected();
         setupToggle_->setChecked(!run);
+        if (!controller_.workspace().exportingPgn()) {
+            exportStatus_->hide();
+        }
     }
+    updateExportAction();
     cancel_->setVisible(state.active);
     const bool gameChanged = gameId_ != state.gameId;
     if (gameChanged) {
@@ -1408,6 +1445,53 @@ void ReviewPage::update() {
                                                    .arg(total ? moveState.offset + 1 : 0)
                                                    .arg(std::min(moveState.offset + 50, total)));
 }
+void ReviewPage::savePgn() {
+    auto& workspace = controller_.workspace();
+    if (!workspace.canExportPgn()) {
+        return;
+    }
+    const auto& state = workspace.state();
+    const auto run = state.run->id;
+    const auto revision = state.run->revision;
+    static const QRegularExpression invalid(QStringLiteral(R"([\p{C}<>:"/\\|?*]+)"));
+    auto name = state.game.left(72);
+    if (!name.isEmpty() && name.back().isHighSurrogate()) {
+        name.chop(1);
+    }
+    name = name.replace(invalid, QStringLiteral(" ")).simplified();
+    auto* dialog =
+        new QFileDialog(this, tr("Save Annotated PGN"), QString{}, tr("PGN files (*.pgn)"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setAcceptMode(QFileDialog::AcceptSave);
+    dialog->setDefaultSuffix(QStringLiteral("pgn"));
+    dialog->selectFile(name.isEmpty() || name.startsWith(QLatin1Char('.'))
+                           ? QStringLiteral("review.pgn")
+                           : QStringLiteral("%1 - review.pgn").arg(name));
+    connect(dialog, &QFileDialog::fileSelected, &workspace,
+            [&workspace, run, revision](const QString& path) {
+                workspace.exportPgn(path, run, revision);
+            });
+    dialog->open();
+}
+
+void ReviewPage::updateExportAction() {
+    const auto& workspace = controller_.workspace();
+    const bool saving = workspace.exportingPgn();
+    exportPgn_->setText(saving ? tr("Exporting PGN…") : tr("Export PGN…"));
+    const bool available = workspace.canExportPgn();
+    exportPgn_->setEnabled(available);
+    exportPgn_->setToolTip(
+        saving       ? tr("Saving annotated PGN.")
+        : !available ? tr("Available after a review has saved results.")
+        : workspace.state().run->status == review::JobStatus::Complete
+            ? tr("Save the game and its review annotations to a PGN file.")
+            : tr("Save the full game with the review annotations available so far."));
+    if (saving && exportStatus_->text() != tr("Preparing annotated PGN…")) {
+        exportStatus_->setText(tr("Preparing annotated PGN…"));
+        exportStatus_->show();
+    }
+}
+
 void ReviewPage::updateNavigation() {
     auto& nav = controller_.navigation();
     const auto& state = controller_.state();

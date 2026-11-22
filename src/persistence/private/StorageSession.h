@@ -46,6 +46,7 @@ class StorageSession final {
     ContinueReviewResult continueReview(const ContinueReview& request);
     LoadReviewMovesResult deriveReviewMoves(ReviewId id, std::int64_t expectedRevision, int offset,
                                             int limit);
+    LoadReviewExportResult loadReviewExport(ReviewId id, std::int64_t revision);
     LoadReviewOverviewResult loadReviewOverview(ReviewId id, std::int64_t expectedRevision,
                                                 int keyOffset = 0);
     LoadReviewExplorationResult loadReviewExploration(ReviewId id, std::int64_t revision,

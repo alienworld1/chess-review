@@ -131,8 +131,8 @@ navigation, and engine scheduling belong to consumers, not the tree.
   NULs. The tree does not validate Unicode, interpret markup, or normalize PGN.
   NAGs are ordered 8-bit numbers; duplicates and all values are preserved.
   Rendering must present comments as plain text or escape markup explicitly.
-  Future PGN export must handle delimiters/control bytes according to its format;
-  these opaque bytes are not already validated export text.
+  The PGN writer handles comment delimiters and validates the serialized game
+  before saving.
 
 Fallible tree operations return `GameTreeResult<T>` or `GameTreeStatus`
 (`std::monostate` on success). `GameTreeError` carries a stable code and bounded

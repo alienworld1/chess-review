@@ -1,7 +1,10 @@
 #include "app/ReviewWorkspaceController.h"
+#include "app/GamePgn.h"
 #include "app/ReviewGameController.h"
+#include <QFileInfo>
 #include <QScopedValueRollback>
 #include <algorithm>
+#include <exception>
 #include <utility>
 namespace chess_review::app {
 using namespace persistence;
@@ -16,6 +19,31 @@ ReviewWorkspaceController::ReviewWorkspaceController(Database& database,
     saveTimer_.setSingleShot(true);
     saveTimer_.setInterval(250);
     recoveryRetry_.setSingleShot(true);
+    exportWorker_.setMaxThreadCount(1);
+    connect(&database_, &Database::reviewExportLoaded, this,
+            [this](QUuid request, const LoadReviewExportResult& result) {
+                if (exportRequest_.isNull() || request != exportRequest_) {
+                    return;
+                }
+                exportRequest_ = {};
+                if (const auto* issue = std::get_if<ReviewError>(&result)) {
+                    finishExport(issue->code == ReviewErrorCode::Conflict
+                                     ? tr("The review changed. Select Export PGN to try again.")
+                                     : issue->message);
+                    return;
+                }
+                exportWorker_.start([this, filename = exportPath_,
+                                     snapshot = std::get<ReviewExportSnapshot>(result)] {
+                    QString error;
+                    try {
+                        error = writeReviewPgn(filename, snapshot);
+                    } catch (const std::exception&) {
+                        error = tr("Could not prepare the annotated PGN.");
+                    }
+                    QMetaObject::invokeMethod(
+                        this, [this, error] { finishExport(error); }, Qt::QueuedConnection);
+                });
+            });
     liveTimer_.setSingleShot(true);
     liveTimer_.setInterval(250);
     connect(&liveTimer_, &QTimer::timeout, this, [this] {
@@ -501,6 +529,38 @@ void ReviewWorkspaceController::setReady(bool ready) {
     state_.ready = ready;
     publish();
 }
+bool ReviewWorkspaceController::canExportPgn() const {
+    return !closing_ && game_ && !contextLoading_ && !exportingPgn() && !state_.active &&
+           state_.run && !state_.run->metadataError && reviewCanExport(*state_.run);
+}
+void ReviewWorkspaceController::exportPgn(const QString& filename, review::ReviewId run,
+                                          std::int64_t revision) {
+    if (filename.isEmpty() || closing_ || exportingPgn()) {
+        return;
+    }
+    const QScopedValueRollback notification(notifying_, true);
+    if (!canExportPgn() || state_.run->id != run || state_.run->revision != revision) {
+        emit exportFinished(filename, tr("The review changed. Select Export PGN to try again."));
+        return;
+    }
+    if (QFileInfo(filename).suffix().compare(QStringLiteral("pgn"), Qt::CaseInsensitive) != 0) {
+        emit exportFinished(filename, tr("Choose a filename ending in .pgn."));
+        return;
+    }
+    exportPath_ = filename;
+    exportRequest_ = QUuid::createUuid();
+    database_.loadReviewExport(exportRequest_, run, revision);
+    emit exportChanged();
+}
+void ReviewWorkspaceController::finishExport(const QString& error) {
+    const auto filename = std::exchange(exportPath_, {});
+    {
+        const QScopedValueRollback notification(notifying_, true);
+        emit exportFinished(filename, error);
+        emit exportChanged();
+    }
+    finishClose();
+}
 void ReviewWorkspaceController::selectGame(GameId id, std::optional<review::ReviewId> run) {
     if (closing_ || !state_.ready || id <= 0) {
         return;
@@ -826,10 +886,10 @@ void ReviewWorkspaceController::finishClose() {
     if (!closing_ || closed_ || !navigationClosed_ || !explorationClosed_ || !moves_.drained() ||
         !pending_.isNull() || liveRead_.has_value() || !restoreRequest_.isNull() ||
         !recoveryPending_.isNull() || !write_.isNull() || !writes_.empty() ||
-        saveTimer_.isActive()) {
+        saveTimer_.isActive() || exportingPgn()) {
         return;
     }
-    if (notifying_) {
+    if (notifying_ || !exportWorker_.waitForDone(0)) {
         QTimer::singleShot(5, this, &ReviewWorkspaceController::finishClose);
         return;
     }

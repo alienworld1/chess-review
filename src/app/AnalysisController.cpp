@@ -1,5 +1,5 @@
 #include "app/AnalysisController.h"
-#include "app/AnalysisPgn.h"
+#include "app/GamePgn.h"
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QThread>

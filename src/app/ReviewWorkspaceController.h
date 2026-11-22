@@ -4,6 +4,7 @@
 #include "app/ReviewGameState.h"
 #include "app/ReviewNavigationController.h"
 #include <QObject>
+#include <QThreadPool>
 #include <QTimer>
 #include <QUuid>
 #include <deque>
@@ -30,6 +31,9 @@ class ReviewWorkspaceController final : public QObject {
     void refreshRuns(std::int64_t page = 0);
     void refreshOverview(int offset = 0);
     void selectMoment(int index);
+    bool canExportPgn() const;
+    bool exportingPgn() const { return !exportPath_.isEmpty(); }
+    void exportPgn(const QString& filename, review::ReviewId run, std::int64_t revision);
     void start(chess::Color side, std::int64_t profile, review::Quality quality,
                std::optional<bool> bookEnabled);
     void resume(review::ReviewId id);
@@ -54,6 +58,8 @@ class ReviewWorkspaceController final : public QObject {
     void recoveryFinished(bool restored);
     void recoveryChanged();
     void contextCommitted();
+    void exportChanged();
+    void exportFinished(const QString& filename, const QString& error);
 
   private:
     friend class ReviewGameController;
@@ -70,6 +76,7 @@ class ReviewWorkspaceController final : public QObject {
     void remember();
     void flush();
     void finishClose();
+    void finishExport(const QString& error);
     persistence::Database& database_;
     ReviewConfiguration& configuration_;
     ReviewGameController& task_;
@@ -114,6 +121,9 @@ class ReviewWorkspaceController final : public QObject {
     QTimer saveTimer_;
     QTimer liveTimer_;
     QTimer recoveryRetry_;
+    QThreadPool exportWorker_;
+    QString exportPath_;
+    QUuid exportRequest_;
     std::deque<persistence::ReviewContext> writes_;
     std::optional<persistence::ReviewContext> saving_;
     std::optional<persistence::ReviewContext> remembered_;

@@ -1,5 +1,5 @@
 #include "app/MoveNavigationState.h"
-#include "app/AnalysisPgn.h"
+#include "app/GamePgn.h"
 #include <QCoreApplication>
 #include <algorithm>
 #include <string>
