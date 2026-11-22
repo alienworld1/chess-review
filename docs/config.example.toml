@@ -11,6 +11,10 @@ verbose = false
 [analysis]
 # Uncomment to set a default line count for Analyze instead of using its last choice.
 # liveMultiPv = 3
+# Worker and CPU budget changes apply on the next engine connection.
+workers = 1
+# Omit cpuThreads for the automatic budget. Each worker uses its profile's Threads.
+# cpuThreads = 4
 
 [analysis.fast]
 quickScanNodes = 50000

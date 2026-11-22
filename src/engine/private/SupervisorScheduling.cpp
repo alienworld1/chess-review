@@ -22,8 +22,7 @@ void SupervisorCoordinator::scheduleAnalysis(QUuid session, const AnalysisReques
     const auto reject = [this, &state](Error error) {
         emit scheduledFinished({state, ScheduledOutcome::Rejected, {}, std::move(error)});
     };
-    if (closing_ || !worker_ || retiring_ || schedulingStopped_ || !runtime_ ||
-        runtime_->session != session) {
+    if (closing_ || schedulingStopped_ || !runtime_ || runtime_->session != session) {
         reject(unavailable());
         return;
     }
@@ -51,43 +50,69 @@ void SupervisorCoordinator::scheduleAnalysis(QUuid session, const AnalysisReques
     scheduledIds_.insert(request.id);
     pending_.push_back({request, priority, state, submissionOrder_++, false, false, {}});
     emit scheduledChanged(state);
-    considerPreemption();
     dispatchScheduled();
 }
 
 void SupervisorCoordinator::considerPreemption() {
-    if (!active_ || active_->cancelled || active_->preempted ||
-        active_->state.phase == ScheduledPhase::Synchronizing ||
-        active_->priority < AnalysisPriority::ReviewBackgroundDeepening) {
-        return;
-    }
-    const bool interactive = std::any_of(pending_.begin(), pending_.end(), [](const auto& request) {
+    const auto urgent = std::ranges::count_if(pending_, [](const auto& request) {
         return request.priority <= AnalysisPriority::RetryMove;
     });
-    if (interactive) {
-        active_->preempted = true;
-        worker_->stopAnalysis(active_->state.session, *active_->state.attempt);
+    if (urgent == 0) {
+        return;
+    }
+    const auto releasing = std::ranges::count_if(workers_, [](const Worker& worker) {
+        return worker.active && (worker.active->cancelled || worker.active->preempted ||
+                                 worker.active->state.phase == ScheduledPhase::Synchronizing);
+    });
+    for (auto needed = urgent - releasing; needed > 0; --needed) {
+        Worker* victim = nullptr;
+        for (auto& worker : workers_) {
+            const auto& active = worker.active;
+            if (active && !worker.retiring && !active->cancelled && !active->preempted &&
+                active->state.phase != ScheduledPhase::Synchronizing &&
+                active->priority >= AnalysisPriority::ReviewBackgroundDeepening &&
+                (!victim || active->priority > victim->active->priority)) {
+                victim = &worker;
+            }
+        }
+        if (!victim) {
+            break;
+        }
+        auto& active = *victim->active;
+        active.preempted = true;
+        victim->process->stopAnalysis(active.state.session, *active.state.attempt);
     }
 }
 
 void SupervisorCoordinator::dispatchScheduled() {
-    if (closing_ || schedulingStopped_ || !worker_ || retiring_ || active_ || directSearch_ ||
-        pending_.empty()) {
+    if (closing_ || schedulingStopped_ || directSearch_ || pending_.empty()) {
         return;
     }
-    const auto next =
-        std::min_element(pending_.begin(), pending_.end(), [](const auto& a, const auto& b) {
-            return std::tie(a.priority, a.order) < std::tie(b.priority, b.order);
-        });
-    active_ = std::move(*next);
-    pending_.erase(next);
-    active_->cancelled = false;
-    active_->preempted = false;
-    active_->state.attempt = QUuid::createUuid();
-    active_->state.phase = ScheduledPhase::Configuring;
-    auto attempt = active_->request;
-    attempt.id = *active_->state.attempt;
-    worker_->analyze(active_->state.session, attempt);
+    for (auto& worker : workers_) {
+        if (schedulingStopped_ || pending_.empty()) {
+            break;
+        }
+        if (!worker.ready || worker.retiring || worker.active) {
+            continue;
+        }
+        const auto next =
+            std::min_element(pending_.begin(), pending_.end(), [](const auto& a, const auto& b) {
+                return std::tie(a.priority, a.order) < std::tie(b.priority, b.order);
+            });
+        worker.active = std::move(*next);
+        pending_.erase(next);
+        auto& active = *worker.active;
+        active.cancelled = false;
+        active.preempted = false;
+        active.state.attempt = QUuid::createUuid();
+        active.state.phase = ScheduledPhase::Configuring;
+        auto attempt = active.request;
+        attempt.id = *active.state.attempt;
+        worker.process->analyze(active.state.session, attempt);
+    }
+    if (!schedulingStopped_) {
+        considerPreemption();
+    }
 }
 
 void SupervisorCoordinator::cancelScheduledAnalysis(QUuid session, QUuid requestId) {
@@ -102,10 +127,16 @@ void SupervisorCoordinator::cancelScheduledAnalysis(QUuid session, QUuid request
         pending_.erase(found);
         emit scheduledFinished(
             {cancelled.state, ScheduledOutcome::Cancelled, std::move(cancelled.evidence), {}});
-    } else if (active_ && active_->request.id == requestId && !active_->cancelled &&
-               (active_->state.phase != ScheduledPhase::Synchronizing || active_->preempted)) {
-        active_->cancelled = true;
-        worker_->stopAnalysis(session, *active_->state.attempt);
+        return;
+    }
+    for (auto& worker : workers_) {
+        auto& active = worker.active;
+        if (active && active->request.id == requestId && !active->cancelled &&
+            (active->state.phase != ScheduledPhase::Synchronizing || active->preempted)) {
+            active->cancelled = true;
+            worker.process->stopAnalysis(session, *active->state.attempt);
+            return;
+        }
     }
 }
 
@@ -123,24 +154,26 @@ void SupervisorCoordinator::cancelAnalysisJob(QUuid session, QUuid jobId) {
             requests.push_back(value.request.id);
         }
     }
-    if (active_ && active_->state.job == jobId) {
-        requests.push_back(active_->request.id);
+    for (const auto& worker : workers_) {
+        if (worker.active && worker.active->state.job == jobId) {
+            requests.push_back(worker.active->request.id);
+        }
     }
     for (const auto request : requests) {
         cancelScheduledAnalysis(session, request);
     }
 }
 
-void SupervisorCoordinator::finishSearch(const AnalysisResult& result) {
-    if (!active_ || active_->state.attempt != result.evidence.request) {
+void SupervisorCoordinator::finishSearch(Worker& worker, const AnalysisResult& result) {
+    if (!worker.active || worker.active->state.attempt != result.evidence.request) {
         if (result.outcome != AnalysisOutcome::Rejected &&
             directSearch_ == result.evidence.request) {
             directSearch_.reset();
         }
         emit analysisFinished(result);
     } else {
-        auto finished = std::move(*active_);
-        active_.reset();
+        auto finished = std::move(*worker.active);
+        worker.active.reset();
         const bool completed = result.outcome == AnalysisOutcome::Completed ||
                                (result.outcome == AnalysisOutcome::Stopped &&
                                 finished.state.phase == ScheduledPhase::Synchronizing &&
@@ -181,15 +214,14 @@ void SupervisorCoordinator::cancelPending(ScheduledOutcome outcome, std::optiona
 void SupervisorCoordinator::stopScheduling() {
     // A worker already retiring after failure owns the queued work's failure outcome.
     // Later close/disconnect must not downgrade that first failure to cancellation.
-    const bool alreadyRetiring =
-        schedulingStopped_ && runtime_ &&
-        (runtime_->phase == RuntimePhase::Disconnecting || runtime_->phase == RuntimePhase::Failed);
     schedulingStopped_ = true;
-    if (!alreadyRetiring) {
+    if (!runtimeFailure_ && runtime_->phase != RuntimePhase::Disconnecting) {
         cancelPending(ScheduledOutcome::Cancelled);
     }
-    if (active_ && active_->state.phase != ScheduledPhase::Synchronizing) {
-        active_->cancelled = true;
+    for (auto& worker : workers_) {
+        if (worker.active && worker.active->state.phase != ScheduledPhase::Synchronizing) {
+            worker.active->cancelled = true;
+        }
     }
 }
 } // namespace chess_review::engine

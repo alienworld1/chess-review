@@ -37,7 +37,7 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                 }
                 state_.runtime = state;
                 if (!engine::runtimeActive(state.phase)) {
-                    analysis_ = {};
+                    analysisAttempts_.clear();
                     state_.analyzing = false;
                 }
                 if (logger_) {
@@ -194,7 +194,7 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
     connect(&supervisor_, &engine::EngineSupervisor::searchChanged, this,
             [this](const engine::SearchState& search) {
                 if (!closing_ && search.session == state_.runtime.session) {
-                    analysis_ = search.request;
+                    analysisAttempts_.insert(search.request);
                     if (!state_.analyzing) {
                         state_.analyzing = true;
                         emit activityChanged();
@@ -204,7 +204,7 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
     connect(&supervisor_, &engine::EngineSupervisor::scheduledChanged, this,
             [this](const engine::ScheduledState& search) {
                 if (!closing_ && search.session == state_.runtime.session && search.attempt) {
-                    analysis_ = *search.attempt;
+                    analysisAttempts_.insert(*search.attempt);
                     if (!state_.analyzing) {
                         state_.analyzing = true;
                         emit activityChanged();
@@ -212,8 +212,8 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                 }
             });
     const auto finishScheduled = [this](const engine::ScheduledState& search) {
-        if (!closing_ && search.session == state_.runtime.session && search.attempt == analysis_) {
-            analysis_ = {};
+        if (!closing_ && search.session == state_.runtime.session && search.attempt &&
+            analysisAttempts_.erase(*search.attempt) != 0 && analysisAttempts_.empty()) {
             state_.analyzing = false;
             emit activityChanged();
         }
@@ -232,9 +232,10 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                     return;
                 }
                 const auto request = result.evidence.request;
-                const bool wasAnalyzing = request == analysis_;
+                const bool wasAnalyzing = result.outcome != engine::AnalysisOutcome::Rejected &&
+                                          analysisAttempts_.erase(request) != 0 &&
+                                          analysisAttempts_.empty();
                 if (wasAnalyzing) {
-                    analysis_ = {};
                     state_.analyzing = false;
                 }
                 if (request == test_) {
@@ -340,7 +341,7 @@ bool EngineSettingsController::connectEngine(std::int64_t profileId) {
     state_.runtime = {
         QUuid::createUuid(), profileId, engine::RuntimePhase::CheckingExecutable, {}, {}};
     state_.connectedDisplayName = found->displayName;
-    supervisor_.connectEngine(state_.runtime.session, *found);
+    supervisor_.connectEngine(state_.runtime.session, *found, poolLimits_);
     emit changed();
     return true;
 }

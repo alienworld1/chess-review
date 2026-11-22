@@ -1,5 +1,6 @@
 #pragma once
 #include "engine/private/EngineProcessWorker.h"
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <set>
@@ -12,7 +13,7 @@ class SupervisorCoordinator final : public QObject {
   public:
     void inspect(QUuid request, const QString& path);
     void validate(QUuid request, const QString& path);
-    void connectEngine(QUuid session, const EngineProfile& profile);
+    void connectEngine(QUuid session, const EngineProfile& profile, EnginePoolLimits limits);
     void disconnectEngine(QUuid session);
     void analyze(QUuid session, const AnalysisRequest& request);
     void stopAnalysis(QUuid session, QUuid requestId);
@@ -48,9 +49,16 @@ class SupervisorCoordinator final : public QObject {
         bool preempted = false;
         std::optional<ScheduledEvidence> evidence;
     };
+    struct Worker {
+        EngineProcessWorker* process = nullptr; // QObject-owned, including while retiring.
+        std::optional<ScheduledRequest> active;
+        std::optional<AnalysisResult> failedSearch;
+        bool ready = false;
+        bool retiring = false;
+    };
     void dispatchScheduled();
     void considerPreemption();
-    void finishSearch(const AnalysisResult& result);
+    void finishSearch(Worker& worker, const AnalysisResult& result);
     void cancelPending(ScheduledOutcome outcome, std::optional<Error> error = std::nullopt);
     void stopScheduling();
     Error unavailable() const;
@@ -58,16 +66,22 @@ class SupervisorCoordinator final : public QObject {
     bool schedulingStopped_ = true;
     std::optional<QUuid> directSearch_;
     std::vector<ScheduledRequest> pending_;
-    std::optional<ScheduledRequest> active_;
     std::set<QUuid> scheduledIds_;
     std::set<QUuid> cancelledJobs_;
     std::uint64_t submissionOrder_ = 0;
-    void createWorker(AttemptMode mode, QUuid request);
-    EngineProcessWorker* worker_ = nullptr; // QObject-owned, including while retiring.
+    void createWorker(Worker& worker, AttemptMode mode, QUuid request);
+    bool workersRunning() const;
+    void startRuntimeWorker();
+    void onRuntimeChanged(Worker& worker, const RuntimeState& state);
+    void drainRuntime(std::optional<Error> error = std::nullopt);
+    void workerDestroyed(Worker& worker, QUuid request);
+    std::array<Worker, maximumEngineWorkers> workers_;
     ProcessConfiguration configuration_;
-    std::variant<std::monostate, ValidationResult, RuntimeState> result_;
-    std::optional<AnalysisResult> failedSearch_;
-    bool retiring_ = false;
+    std::optional<ValidationResult> registrationResult_;
+    std::optional<Error> runtimeFailure_;
+    std::optional<EngineProfile> connectingProfile_;
+    std::size_t startedWorkers_ = 0;
+    bool draining_ = false;
     bool closing_ = false;
 };
 } // namespace chess_review::engine

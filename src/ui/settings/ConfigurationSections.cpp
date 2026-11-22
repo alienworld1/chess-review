@@ -92,6 +92,24 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     thresholdsForm->addRow(standardThresholds);
     basicLayout->addWidget(classification);
 
+    auto* resources = new QGroupBox(tr("Analysis resources"), basic);
+    auto* resourceForm = new QFormLayout(resources);
+    resourceForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    resourceForm->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);
+    auto* workers = new QSpinBox(resources);
+    workers->setObjectName(QStringLiteral("analysisWorkerCount"));
+    workers->setRange(1, engine::maximumEngineWorkers);
+    auto* cpuThreads = new QSpinBox(resources);
+    cpuThreads->setObjectName(QStringLiteral("analysisCpuThreads"));
+    cpuThreads->setRange(0, engine::maximumPoolThreads);
+    cpuThreads->setSpecialValueText(tr("Automatic"));
+    resourceForm->addRow(tr("Engine &workers"), workers);
+    resourceForm->addRow(tr("Total CPU &threads"), cpuThreads);
+    resourceForm->addRow(
+        text(resources, tr("Each worker uses the selected engine’s Threads and "
+                           "Hash settings. Reconnect the engine to apply changes.")));
+    basicLayout->addWidget(resources);
+
     auto* preferences = new QGroupBox(tr("Application"), basic);
     auto* preferencesLayout = new QVBoxLayout(preferences);
     auto* liveLines = new QSpinBox(preferences);
@@ -200,17 +218,19 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
         const auto snapshot = configuration.snapshot();
         const auto excellent = snapshot ? snapshot->values.classification.excellentLoss
                                         : review::ClassificationConfig{}.excellentLoss;
-        return config::BasicPreferences{static_cast<review::Quality>(quality->currentIndex()),
-                                        wdl->isChecked(),
-                                        book->isChecked(),
-                                        puzzles->isChecked(),
-                                        verbose->isChecked(),
-                                        lines->value(),
-                                        liveLines->value() ? std::optional{liveLines->value()}
-                                                           : std::nullopt,
-                                        bothSides->isChecked(),
-                                        {inaccuracy->text().toDouble(), mistake->text().toDouble(),
-                                         blunder->text().toDouble(), excellent}};
+        return config::BasicPreferences{
+            static_cast<review::Quality>(quality->currentIndex()),
+            wdl->isChecked(),
+            book->isChecked(),
+            puzzles->isChecked(),
+            verbose->isChecked(),
+            lines->value(),
+            liveLines->value() ? std::optional{liveLines->value()} : std::nullopt,
+            bothSides->isChecked(),
+            {inaccuracy->text().toDouble(), mistake->text().toDouble(), blunder->text().toDouble(),
+             excellent},
+            {workers->value(),
+             cpuThreads->value() ? std::optional{cpuThreads->value()} : std::nullopt}};
     };
     const auto setThresholds = [=](const review::ClassificationConfig& value) {
         const auto display = [](double loss) {
@@ -232,6 +252,8 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
             liveLines->setValue(value.liveAnalysisLines.value_or(0));
             bothSides->setChecked(value.reviewBothSides);
             setThresholds(value.classification);
+            workers->setValue(value.enginePool.workers);
+            cpuThreads->setValue(value.enginePool.cpuThreads.value_or(0));
         }
     };
     const auto refreshActions = [=, &configuration] {
@@ -245,18 +267,22 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
         const bool validThresholds = 0 < loss.inaccuracyLoss &&
                                      loss.inaccuracyLoss < loss.mistakeLoss &&
                                      loss.mistakeLoss < loss.blunderLoss && loss.blunderLoss < 1;
+        const bool validResources = !draft.enginePool.cpuThreads ||
+                                    *draft.enginePool.cpuThreads >= draft.enginePool.workers;
         review->setEnabled(canEditBasic);
         classification->setEnabled(canEditBasic);
+        resources->setEnabled(canEditBasic);
         preferences->setEnabled(canEditBasic);
         reset->setEnabled(canEditBasic && basicDirty);
-        apply->setEnabled(canEditBasic && basicDirty && validThresholds);
+        apply->setEnabled(canEditBasic && basicDirty && validThresholds && validResources);
         basicStatus->setText(
             dirty ? tr("Save or discard the Advanced draft before editing these preferences.")
             : configuration.state() == app::ConfigurationState::Invalid
                 ? tr("Correct the TOML in Advanced to edit these preferences.")
             : snapshot && !validThresholds
                 ? tr("Enter three increasing loss thresholds, each greater than 0 and less than 1.")
-                : configuration.operationReport());
+            : snapshot && !validResources ? tr("Allow at least one CPU thread per worker.")
+                                          : configuration.operationReport());
         const bool withinLimit =
             editor->document()->characterCount() <= config::maximumConfigurationBytes + 1;
         editor->setReadOnly(!writable || basicDirty);
@@ -298,6 +324,8 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     connect(quality, &QComboBox::currentIndexChanged, basic, refreshActions);
     connect(lines, &QSpinBox::valueChanged, basic, refreshActions);
     connect(liveLines, &QSpinBox::valueChanged, basic, refreshActions);
+    connect(workers, &QSpinBox::valueChanged, basic, refreshActions);
+    connect(cpuThreads, &QSpinBox::valueChanged, basic, refreshActions);
     for (auto* box : {wdl, book, puzzles, verbose, bothSides}) {
         connect(box, &QCheckBox::toggled, basic, refreshActions);
     }

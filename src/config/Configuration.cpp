@@ -167,6 +167,7 @@ Result parse(std::string_view contents) {
                  "special", "ui", "puzzles", "openings"});
     UiConfiguration ui;
     PuzzleConfiguration puzzles;
+    engine::EnginePoolLimits enginePool;
     if (const auto* table = reader.table(root, "puzzles", "puzzles")) {
         reader.keys(*table, "puzzles",
                     {"automatic", "maximumPlayerMoves", "maximumPositions", "maximumBudgetUnits",
@@ -210,11 +211,26 @@ Result parse(std::string_view contents) {
     std::uint64_t version = 1;
     reader.integer(root, "version", "version", version, 1);
     if (const auto* analysis = reader.table(root, "analysis", "analysis")) {
-        reader.keys(*analysis, "analysis", {"fast", "standard", "thorough", "liveMultiPv"});
+        reader.keys(*analysis, "analysis",
+                    {"fast", "standard", "thorough", "liveMultiPv", "workers", "cpuThreads"});
         if (analysis->contains("liveMultiPv")) {
             std::uint64_t width = 3;
             reader.integer(*analysis, "liveMultiPv", "analysis.liveMultiPv", width, 256);
             ui.liveAnalysisLines = static_cast<int>(width);
+        }
+        auto workers = static_cast<std::uint64_t>(enginePool.workers);
+        reader.integer(*analysis, "workers", "analysis.workers", workers,
+                       engine::maximumEngineWorkers);
+        enginePool.workers = static_cast<int>(workers);
+        if (analysis->contains("cpuThreads")) {
+            std::uint64_t threads = 0;
+            reader.integer(*analysis, "cpuThreads", "analysis.cpuThreads", threads,
+                           engine::maximumPoolThreads);
+            if (threads != 0 && threads < workers) {
+                reader.error("analysis.cpuThreads", "Allow at least one CPU thread per worker",
+                             analysis->get("cpuThreads"));
+            }
+            enginePool.cpuThreads = static_cast<int>(threads);
         }
         const std::array<std::string_view, 3> names{"fast", "standard", "thorough"};
         for (std::size_t i = 0; i < names.size(); ++i) {
@@ -342,6 +358,7 @@ Result parse(std::string_view contents) {
         auto withUi = **valid;
         withUi.ui = ui;
         withUi.puzzles = puzzles;
+        withUi.enginePool = enginePool;
         return std::make_shared<const ValidatedConfiguration>(std::move(withUi));
     }
     return result;
@@ -534,7 +551,8 @@ BasicPreferences basicPreferences(const ValidatedConfiguration& c) {
             c.values.refinement.multiPv,
             c.ui.liveAnalysisLines,
             c.ui.reviewBothSides,
-            c.values.classification};
+            c.values.classification,
+            c.enginePool};
 }
 Document saveBasicPreferences(const QString& filename, const QByteArray& expected,
                               const BasicPreferences& preferences) {
@@ -589,6 +607,14 @@ Document saveBasicPreferences(const QString& filename, const QByteArray& expecte
         update("analysis", "liveMultiPv", *preferences.liveAnalysisLines);
     } else if (auto* analysis = root.get_as<toml::table>("analysis")) {
         analysis->erase("liveMultiPv");
+    }
+    if (preferences.enginePool != (*baseline)->enginePool) {
+        update("analysis", "workers", preferences.enginePool.workers);
+        if (preferences.enginePool.cpuThreads) {
+            update("analysis", "cpuThreads", *preferences.enginePool.cpuThreads);
+        } else {
+            root.get_as<toml::table>("analysis")->erase("cpuThreads");
+        }
     }
     std::ostringstream formatted;
     formatted << root << '\n';

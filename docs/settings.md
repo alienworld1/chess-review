@@ -36,6 +36,12 @@ Choose **Save preferences** to apply edits, or **Discard changes** to restore th
 last loaded values. Saving basic preferences may reformat the TOML file.
 For per-engine CPU threads and hash memory, see [Local UCI engines](engines.md).
 
+Under **Analysis resources**, choose **Engine workers** and **Total CPU threads**.
+The default is one worker. The total must cover the worker count multiplied by
+the selected engine profile's thread count. In **Automatic**, the budget is
+half the available logical CPUs, with room for one worker at the profile's
+selected thread count. Changes apply the next time you connect an engine.
+
 ## Advanced TOML
 
 **Settings → Advanced** shows the location and contents of your local

@@ -2,6 +2,7 @@
 #include "engine/private/SupervisorCoordinator.h"
 #include <QThread>
 #include <QTimer>
+#include <map>
 #include <mutex>
 #include <utility>
 
@@ -15,9 +16,7 @@ struct EngineSupervisor::Impl {
     std::optional<AnalysisSnapshot> pendingProgress;
     bool progressQueued = false;
     std::uint64_t progressEpoch = 0;
-    std::optional<ScheduledEvidence> scheduledProgress;
-    bool scheduledProgressQueued = false;
-    std::uint64_t scheduledEpoch = 0;
+    std::map<QUuid, ScheduledEvidence> scheduledProgress;
 };
 EngineSupervisor::EngineSupervisor(QObject* parent)
     : QObject(parent), impl_(std::make_unique<Impl>()) {
@@ -97,13 +96,9 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
     // Invalidate only the attempt that actually ended. Unrelated queued/rejected
     // requests must not erase the active search's latest provisional evidence.
     const auto invalidateScheduled = [this](const ScheduledState& state) {
-        const std::lock_guard lock(impl_->progressMutex);
-        const auto& pending = impl_->scheduledProgress;
-        if (pending && pending->identity.session == state.session &&
-            pending->identity.request == state.request &&
-            pending->identity.attempt == state.attempt) {
-            impl_->scheduledProgress.reset();
-            ++impl_->scheduledEpoch;
+        if (state.attempt) {
+            const std::lock_guard lock(impl_->progressMutex);
+            impl_->scheduledProgress.erase(*state.attempt);
         }
     };
     connect(
@@ -129,20 +124,20 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
     connect(
         impl_->coordinator, &SupervisorCoordinator::scheduledUpdated, this,
         [this](const ScheduledEvidence& evidence) {
-            auto next = evidence;
-            bool post = false;
-            std::uint64_t epoch = 0;
-            {
-                const std::lock_guard lock(impl_->progressMutex);
-                impl_->scheduledProgress = std::move(next);
-                epoch = impl_->scheduledEpoch;
-                post = !std::exchange(impl_->scheduledProgressQueued, true);
-            }
-            if (!post) {
+            if (!evidence.identity.attempt) {
                 return;
             }
-            QMetaObject::invokeMethod(
-                this, [this, epoch] { deliverScheduledProgress(epoch); }, Qt::QueuedConnection);
+            const auto attempt = *evidence.identity.attempt;
+            bool first;
+            {
+                const std::lock_guard lock(impl_->progressMutex);
+                first = impl_->scheduledProgress.insert_or_assign(attempt, evidence).second;
+            }
+            if (first) {
+                QMetaObject::invokeMethod(
+                    this, [this, attempt] { deliverScheduledProgress(attempt); },
+                    Qt::QueuedConnection);
+            }
         },
         Qt::DirectConnection);
     // QThread::finished owns deletion on the engine thread.
@@ -173,27 +168,14 @@ void EngineSupervisor::deliverProgress(std::uint64_t epoch) {
         emit analysisUpdated(*pending);
     }
 }
-void EngineSupervisor::deliverScheduledProgress(std::uint64_t epoch) {
-    std::optional<ScheduledEvidence> pending;
-    bool repost = false;
-    std::uint64_t nextEpoch = 0;
+void EngineSupervisor::deliverScheduledProgress(QUuid attempt) {
+    decltype(impl_->scheduledProgress)::node_type pending;
     {
         const std::lock_guard lock(impl_->progressMutex);
-        if (epoch != impl_->scheduledEpoch && impl_->scheduledProgress) {
-            // This notification predates a new attempt. Preserve its latest value,
-            // and deliver behind that attempt's already-posted state notifications.
-            repost = true;
-            nextEpoch = impl_->scheduledEpoch;
-        } else {
-            pending = std::exchange(impl_->scheduledProgress, std::nullopt);
-            impl_->scheduledProgressQueued = false;
-        }
+        pending = impl_->scheduledProgress.extract(attempt);
     }
-    if (repost) {
-        QMetaObject::invokeMethod(
-            this, [this, nextEpoch] { deliverScheduledProgress(nextEpoch); }, Qt::QueuedConnection);
-    } else if (pending) {
-        emit scheduledUpdated(*pending);
+    if (!pending.empty()) {
+        emit scheduledUpdated(pending.mapped());
     }
 }
 void EngineSupervisor::inspect(QUuid request, const QString& path) {
@@ -232,7 +214,8 @@ void EngineSupervisor::cancel() {
     QMetaObject::invokeMethod(impl_->coordinator, &SupervisorCoordinator::cancel,
                               Qt::QueuedConnection);
 }
-void EngineSupervisor::connectEngine(QUuid session, const EngineProfile& profile) {
+void EngineSupervisor::connectEngine(QUuid session, const EngineProfile& profile,
+                                     EnginePoolLimits limits) {
     Q_ASSERT(QThread::currentThread() == thread());
     if (impl_->closing) {
         QTimer::singleShot(0, this, [this, session, id = profile.id] {
@@ -247,8 +230,8 @@ void EngineSupervisor::connectEngine(QUuid session, const EngineProfile& profile
     }
     QMetaObject::invokeMethod(
         impl_->coordinator,
-        [coordinator = impl_->coordinator, session, profile] {
-            coordinator->connectEngine(session, profile);
+        [coordinator = impl_->coordinator, session, profile, limits] {
+            coordinator->connectEngine(session, profile, limits);
         },
         Qt::QueuedConnection);
 }

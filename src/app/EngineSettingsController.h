@@ -3,6 +3,7 @@
 #include "persistence/Database.h"
 #include <QObject>
 #include <cstdint>
+#include <set>
 #include <vector>
 
 namespace chess_review::diagnostics {
@@ -45,6 +46,7 @@ class EngineSettingsController final : public QObject {
     void registerSelected();
     void cancel();
     void refresh(std::int64_t offset = 0);
+    void setPoolLimits(engine::EnginePoolLimits limits) { poolLimits_ = limits; }
     bool connectEngine(std::int64_t profileId);
     void disconnectEngine();
     bool canEditProfile() const;
@@ -63,12 +65,13 @@ class EngineSettingsController final : public QObject {
     diagnostics::Logger* logger_;          // Outlives closed().
     engine::EngineSupervisor& supervisor_; // Outlives closed().
     EngineSettingsState state_;
+    engine::EnginePoolLimits poolLimits_;
     QUuid selection_;
     QUuid registration_;
     QUuid listing_;
     QUuid edit_;
     QUuid test_;
-    QUuid analysis_;
+    std::set<QUuid> analysisAttempts_;
     std::int64_t requestedOffset_ = 0;
     bool closing_ = false;
     bool supervisorClosed_ = false;

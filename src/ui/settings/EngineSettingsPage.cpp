@@ -480,6 +480,9 @@ void EngineSettingsPage::updateRuntime() {
     if (state.runtime.error) {
         status += QStringLiteral("\n") + state.runtime.error->message;
     }
+    if (state.runtime.phase == engine::RuntimePhase::Ready && state.runtime.workers > 1) {
+        status += tr("\n%1 engine workers connected").arg(state.runtime.workers);
+    }
     if (verbose_ && state.runtime.discovery) {
         const auto& value = *state.runtime.discovery;
         const auto yesNo = [](bool supported) { return supported ? tr("Yes") : tr("No"); };

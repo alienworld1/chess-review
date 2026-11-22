@@ -17,6 +17,7 @@
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -353,6 +354,37 @@ class EngineSettingsTest final : public QObject {
             std::get<std::shared_ptr<const config::ValidatedConfiguration>>(config::load(filename));
         QCOMPARE(disk->values.classification, configuration.snapshot()->values.classification);
         QVERIFY(disk->ui.reviewBothSides);
+        auto* workers = sections->findChild<QSpinBox*>(QStringLiteral("analysisWorkerCount"));
+        auto* cpu = sections->findChild<QSpinBox*>(QStringLiteral("analysisCpuThreads"));
+        QVERIFY(workers && cpu);
+        workers->setValue(2);
+        cpu->setValue(1);
+        QVERIFY(!apply->isEnabled());
+        cpu->setValue(4);
+        QVERIFY(apply->isEnabled());
+        apply->click();
+        QTRY_COMPARE(configuration.snapshot()->enginePool, (engine::EnginePoolLimits{2, 4}));
+        const auto resources =
+            std::get<std::shared_ptr<const config::ValidatedConfiguration>>(config::load(filename));
+        QCOMPARE(resources->enginePool, (engine::EnginePoolLimits{2, 4}));
+        auto& engineControl = application.startup.engines();
+        auto& supervisor = app::EngineControllerTestAccess::validator(engineControl);
+        engine::ValidatorTestAccess::configure(
+            supervisor,
+            engine_test::scenario(directory.filePath(QStringLiteral("pool.json")),
+                                  engine_test::handshake()),
+            1000);
+        QTRY_VERIFY(engineControl.state().ready && !engineControl.state().listing);
+        engineControl.selectExecutable(QString::fromUtf8(FAKE_UCI_ENGINE));
+        QTRY_COMPARE(engineControl.state().registration, app::EngineRegistrationState::Selected);
+        engineControl.registerSelected();
+        QTRY_COMPARE(engineControl.state().profiles.size(), std::size_t{1});
+        QTRY_VERIFY(!engineControl.state().listing);
+        QVERIFY(engineControl.connectEngine(engineControl.state().profiles.front().id));
+        QTRY_COMPARE(engineControl.state().runtime.phase, engine::RuntimePhase::Ready);
+        QCOMPARE(engineControl.state().runtime.workers, 2);
+        engineControl.disconnectEngine();
+        QTRY_COMPARE(engineControl.state().runtime.phase, engine::RuntimePhase::Disconnected);
         sections->setCurrentIndex(2);
         auto* editor = sections->findChild<QPlainTextEdit*>(QStringLiteral("advancedToml"));
         auto* save = sections->findChild<QPushButton*>(QStringLiteral("saveToml"));

@@ -168,9 +168,9 @@ completed.
 
 `EngineSupervisor::scheduleAnalysis(session, request, priority, optionalJobId)` queues
 an immutable copy of a request on the established runtime connection. It launches
-nothing without an explicit connection and submission. The scheduler shares the
-existing engine thread and single process; no live analysis UI or persisted queue
-is provided yet.
+nothing without an explicit connection and submission. One scheduler on the
+engine thread dispatches searches to the connected processes. The queue is
+session-local.
 
 Priority order is `InteractiveAnalysis`, `RetryMove`, `VisibleReviewDeepening`,
 `ReviewQuickScan`, `ReviewBackgroundDeepening`, `PuzzleVerification`, then
@@ -178,7 +178,8 @@ Priority order is `InteractiveAnalysis`, `RetryMove`, `VisibleReviewDeepening`,
 may stop the three lowest classes; other priorities only select the next search.
 Strict priority permits sustained interactive work to delay background work.
 
-There is room for 256 pending requests and one active request. Overflow rejects
+There is room for 256 pending requests and one active request per worker.
+An idle worker takes the highest priority queued request. Overflow rejects
 with Busy. A review producer should submit batches as capacity becomes available.
 Malformed requests reject before they can interrupt a healthy search. Admission
 validates limits, capabilities, root restrictions and exact command bounds against
@@ -197,9 +198,9 @@ The existing 65,536 worker search-ID limit also counts restarted attempts. If th
 worker cannot admit a fresh attempt, that logical request fails explicitly.
 
 `scheduledChanged` exposes Queued, Configuring, Analyzing, Stopping, and Synchronizing.
-`scheduledUpdated` is provisional and latest-only: callers must tolerate missing
-updates. Unrelated queue changes and rejected submissions preserve the active
-attempt's latest value. Across restarts, progress follows the new attempt's state
+`scheduledUpdated` coalesces provisional updates independently for each attempt.
+Unrelated queue changes and rejected submissions preserve each active attempt's
+latest value. Across restarts, progress follows the new attempt's state
 notifications. State, interruption and terminal events are lossless queued
 deliveries on the supervisor's owning thread. `scheduledFinished` reports Rejected, Completed,
 Cancelled or Failed, with optional contextual error and available evidence.
@@ -216,6 +217,11 @@ Do not treat retained partial evidence as a completed search. Every Completed
 result carries evidence from its completing attempt, including terminal positions
 with no legal bestmove or candidate lines. A Rejected submission with a reused ID
 does not terminate the previously admitted request carrying that ID.
+
+The connection publishes Ready after all configured workers agree on the engine
+and its options. A worker failure stops new admission, retires the whole pool,
+and reports the terminal failure after cleanup. Completed results retain their
+attempt identity and remain available through the existing cache rules.
 
 `cancelScheduledAnalysis(session, requestId)` removes a pending request or stops its
 active attempt. Repeated or stale cancellation is harmless. A natural bestmove

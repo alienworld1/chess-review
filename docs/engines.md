@@ -19,16 +19,18 @@ preselects it for new reviews. **Options** edits advertised UCI settings, includ
 CPU threads and hash memory where supported. Each override can be restored
 individually. Disconnect first, then reconnect to apply saved options.
 
-One engine worker runs at a time. Threads default to one. Hash memory defaults
-to the engine's advertised value. The supported ranges appear in the options
-dialog and are capped at 64 threads and 4,096 MiB. Higher values can consume
-substantial CPU time or memory. Review candidate width and preferred win/draw/loss
+The app starts one engine worker by default. **Analysis resources** lets you
+use up to four workers within a shared CPU thread budget. Each worker uses the
+profile's thread and hash settings. Threads default to one and hash memory
+defaults to the engine's advertised value. The options dialog caps per-worker
+settings at 64 threads and 4,096 MiB. Review candidate width and preferred win/draw/loss
 estimates are in **Settings → Review preferences**. The engine and the number of
 legal moves may further limit the width. Changing engine options can make earlier
 analysis incompatible for reuse or for resuming the same saved review.
 
 **Connect** checks the executable and its reported UCI identity and options
-against its registration. **Ready** means the handshake succeeded. Choose
+against its registration. **Ready** means all requested workers passed the
+handshake. Choose
 **Test analysis** to run a short search of the starting position and verify that
 the engine returns a legal move. The manager displays active analysis and reports
 engine failures inline. Reconnect explicitly after a failure.

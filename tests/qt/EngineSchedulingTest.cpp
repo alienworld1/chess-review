@@ -10,6 +10,7 @@
 #include <QThread>
 #include <QTimer>
 #include <algorithm>
+#include <set>
 
 using namespace chess_review::engine;
 namespace {
@@ -78,7 +79,7 @@ class Conversation {
         profile.engine = std::get<ValidatedEngine>(registered);
         ValidatorTestAccess::configureSearch(fixture.service, 10000, 500);
     }
-    void connect(QJsonArray steps, int quitDelay = 0) {
+    void connect(QJsonArray steps, int quitDelay = 0, EnginePoolLimits limits = {}) {
         QJsonArray all{engine_test::step(QStringLiteral("uci"),
                                          {engine_test::write(QStringLiteral(
                                              "id name Test engine\nid author Tests\nuciok\n"))}),
@@ -93,7 +94,7 @@ class Conversation {
             fixture.service,
             engine_test::scenario(directory.filePath(QStringLiteral("runtime.json")), all), 1000);
         QSignalSpy states(&fixture.service, &EngineSupervisor::runtimeChanged);
-        fixture.service.connectEngine(session, profile);
+        fixture.service.connectEngine(session, profile, limits);
         QElapsedTimer timer;
         timer.start();
         while (states.empty() ||
@@ -116,6 +117,139 @@ class EngineSchedulingTest final : public QObject {
     Q_OBJECT
   private slots:
     void init() { QTest::failOnWarning(); }
+    void parallelWorkersPreserveEvidenceAndQueuePriority() {
+        Conversation c;
+        QJsonArray steps;
+        for (int run = 0; run < 2; ++run) {
+            search(
+                steps, QStringLiteral("go nodes 200"),
+                {engine_test::write(QStringLiteral("info depth 1 nodes 50 score cp 10 pv e2e4\n")),
+                 engine_test::write(
+                     QStringLiteral("info depth 2 nodes 200 score cp 20 pv e2e4\nbestmove e2e4\n"),
+                     750)});
+            steps.append(ready());
+        }
+        c.connect(steps, 0, {2, 2});
+        auto& service = c.service();
+        QSignalSpy states(&service, &EngineSupervisor::scheduledChanged);
+        QSignalSpy progress(&service, &EngineSupervisor::scheduledUpdated);
+        QSignalSpy done(&service, &EngineSupervisor::scheduledFinished);
+        const auto first = request();
+        const auto second = request();
+        const auto background = request();
+        const auto foreground = request();
+        service.scheduleAnalysis(c.session, first, AnalysisPriority::ReviewQuickScan);
+        service.scheduleAnalysis(c.session, second, AnalysisPriority::ReviewQuickScan);
+        QTRY_VERIFY(phase(states, first.id, ScheduledPhase::Analyzing) &&
+                    phase(states, second.id, ScheduledPhase::Analyzing));
+        QVERIFY(done.isEmpty());
+        const auto observed = [&progress](QUuid id) {
+            return std::ranges::any_of(progress, [id](const auto& args) {
+                return qvariant_cast<ScheduledEvidence>(args[0]).identity.request == id;
+            });
+        };
+        QTRY_VERIFY(observed(first.id) && observed(second.id));
+        service.scheduleAnalysis(c.session, background, AnalysisPriority::ReviewQuickScan);
+        service.scheduleAnalysis(c.session, foreground, AnalysisPriority::InteractiveAnalysis);
+        QTRY_COMPARE(done.size(), 4);
+        const auto dispatched = [&states](QUuid id) {
+            return std::ranges::find_if(states, [id](const auto& args) {
+                const auto state = qvariant_cast<ScheduledState>(args[0]);
+                return state.request == id && state.phase == ScheduledPhase::Configuring;
+            });
+        };
+        const auto backgroundDispatch = dispatched(background.id);
+        QVERIFY(backgroundDispatch != states.cend());
+        QVERIFY(dispatched(foreground.id) < backgroundDispatch);
+        std::set<QUuid> completed;
+        for (qsizetype index = 0; index < done.size(); ++index) {
+            const auto ended = result(done, index);
+            QCOMPARE(ended.outcome, ScheduledOutcome::Completed);
+            QVERIFY(ended.evidence && ended.identity.attempt);
+            QCOMPARE(ended.evidence->evidence.request, *ended.identity.attempt);
+            completed.insert(ended.identity.request);
+        }
+        QCOMPARE(completed, (std::set{first.id, second.id, background.id, foreground.id}));
+    }
+    void cancelJobStopsEveryWorkerAndQueuedRequest() {
+        Conversation c;
+        QJsonArray steps;
+        stoppedSearch(steps);
+        c.connect(steps, 0, {2, 2});
+        auto& service = c.service();
+        QSignalSpy states(&service, &EngineSupervisor::scheduledChanged);
+        QSignalSpy done(&service, &EngineSupervisor::scheduledFinished);
+        const auto job = QUuid::createUuid();
+        const auto first = request(InfiniteLimit{});
+        const auto second = request(InfiniteLimit{});
+        const auto queued = request(InfiniteLimit{});
+        for (const auto* value : {&first, &second, &queued}) {
+            service.scheduleAnalysis(c.session, *value, AnalysisPriority::PuzzleVerification, job);
+        }
+        QTRY_VERIFY(phase(states, first.id, ScheduledPhase::Analyzing) &&
+                    phase(states, second.id, ScheduledPhase::Analyzing));
+        service.cancelAnalysisJob(c.session, job);
+        QTRY_COMPARE(done.size(), 3);
+        QCOMPARE(result(done, 0).identity.request, queued.id);
+        QVERIFY(!result(done, 0).identity.attempt);
+        for (qsizetype index = 0; index < done.size(); ++index) {
+            QCOMPARE(result(done, index).outcome, ScheduledOutcome::Cancelled);
+        }
+        QVERIFY(!phase(states, queued.id, ScheduledPhase::Analyzing));
+    }
+    void oversizedPoolFailsBeforeLaunchingWorkers() {
+        Conversation c;
+        auto& service = c.service();
+        QSignalSpy states(&service, &EngineSupervisor::runtimeChanged);
+        service.connectEngine(c.session, c.profile, {2, 1});
+        QTRY_COMPARE(states.size(), 1);
+        const auto state = qvariant_cast<RuntimeState>(states[0][0]);
+        QCOMPARE(state.phase, RuntimePhase::Failed);
+        QVERIFY(state.error);
+        QCOMPARE(state.error->code, ErrorCode::InvalidRequest);
+        c.session = QUuid::createUuid();
+        c.connect({}, 0, {2, 2});
+        QCOMPARE(qvariant_cast<RuntimeState>(states.back()[0]).workers, 2);
+    }
+    void workerFailureDrainsPoolAndReconnects() {
+        Conversation c;
+        QJsonArray steps;
+        search(steps, QStringLiteral("go infinite"),
+               {engine_test::write(QStringLiteral("info depth 1 nodes 10 score cp 5 pv d2d4\n")),
+                QJsonObject{{QStringLiteral("type"), QStringLiteral("crash")},
+                            {QStringLiteral("afterMs"), 1750}}});
+        steps.append(engine_test::step(QStringLiteral("stop"),
+                                       {engine_test::write(QStringLiteral("bestmove d2d4\n"))}));
+        steps.append(ready());
+        c.connect(steps, 0, {2, 2});
+        auto& service = c.service();
+        QSignalSpy states(&service, &EngineSupervisor::scheduledChanged);
+        QSignalSpy done(&service, &EngineSupervisor::scheduledFinished);
+        QSignalSpy runtime(&service, &EngineSupervisor::runtimeChanged);
+        const auto failing = request(InfiniteLimit{});
+        const auto peer = request(InfiniteLimit{});
+        const auto waiting = request(InfiniteLimit{});
+        service.scheduleAnalysis(c.session, failing, AnalysisPriority::ReviewQuickScan);
+        QTRY_VERIFY(phase(states, failing.id, ScheduledPhase::Analyzing));
+        QTest::qWait(600);
+        service.scheduleAnalysis(c.session, peer, AnalysisPriority::ReviewQuickScan);
+        service.scheduleAnalysis(c.session, waiting, AnalysisPriority::PuzzleVerification);
+        QTRY_VERIFY(phase(states, peer.id, ScheduledPhase::Analyzing));
+        QTRY_VERIFY(!runtime.isEmpty() &&
+                    qvariant_cast<RuntimeState>(runtime.back()[0]).phase == RuntimePhase::Failed);
+        QCOMPARE(done.size(), 3);
+        QMap<QUuid, ScheduledOutcome> outcomes;
+        for (qsizetype index = 0; index < done.size(); ++index) {
+            const auto ended = result(done, index);
+            outcomes.insert(ended.identity.request, ended.outcome);
+        }
+        QCOMPARE(outcomes.value(failing.id), ScheduledOutcome::Failed);
+        QCOMPARE(outcomes.value(peer.id), ScheduledOutcome::Cancelled);
+        QCOMPARE(outcomes.value(waiting.id), ScheduledOutcome::Failed);
+        QVERIFY(!phase(states, waiting.id, ScheduledPhase::Analyzing));
+        c.session = QUuid::createUuid();
+        c.connect({}, 0, {2, 2});
+    }
     void priorityFifoAndLegacyAdmission() {
         Conversation c;
         QJsonArray steps;

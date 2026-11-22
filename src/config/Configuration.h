@@ -1,4 +1,5 @@
 #pragma once
+#include "engine/EnginePoolLimits.h"
 #include "review/Configuration.h"
 #include <QByteArray>
 #include <QString>
@@ -46,6 +47,7 @@ struct ValidatedConfiguration {
     std::uint32_t classificationIdentityVersion = 2;
     UiConfiguration ui;
     PuzzleConfiguration puzzles;
+    engine::EnginePoolLimits enginePool{};
 };
 using Result = std::variant<std::shared_ptr<const ValidatedConfiguration>, Diagnostics>;
 [[nodiscard]] Result validate(const review::Configuration& values,
@@ -66,6 +68,7 @@ struct BasicPreferences {
     std::optional<int> liveAnalysisLines;
     bool reviewBothSides;
     review::ClassificationConfig classification;
+    engine::EnginePoolLimits enginePool{};
     bool operator==(const BasicPreferences&) const = default;
 };
 BasicPreferences basicPreferences(const ValidatedConfiguration& configuration);

@@ -61,6 +61,9 @@ void StartupCoordinator::connectServices() {
                 }
             });
     connect(&configuration_, &ReviewConfiguration::changed, this, [this] {
+        if (const auto config = configuration_.snapshot()) {
+            engines_.setPoolLimits(config->enginePool);
+        }
         if (state_ == Lifecycle::Ready) {
             engines_.setReady(true);
         }
