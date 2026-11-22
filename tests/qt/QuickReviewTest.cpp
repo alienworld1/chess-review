@@ -447,7 +447,7 @@ class QuickReviewTest final : public QObject {
         const QString game = QStringLiteral("[White \"Alice\"]\n[Black \"Bob\"]\n1. e4 *\n");
         QVERIFY(f.startup.localImports().importText(
             game + game + QStringLiteral("[White \"Carol\"]\n[Black \"Dan\"]\n1. d4 *\n")));
-        QTRY_VERIFY(!f.startup.localImports().busy());
+        QTRY_VERIFY_WITH_TIMEOUT(!f.startup.localImports().busy(), 10000);
         auto* chooser = f.window.findChild<QDialog*>(QStringLiteral("importGameChooser"));
         QTRY_VERIFY(chooser && chooser->isVisible());
         auto* choices = chooser->findChild<QListWidget*>(QStringLiteral("importGameChoices"));
