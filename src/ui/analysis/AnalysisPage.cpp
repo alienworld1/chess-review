@@ -89,8 +89,10 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     });
     menu->addSeparator();
     coordinates_ = menu->addAction(tr("Show Coordinates"));
+    coordinates_->setObjectName(QStringLiteral("analysisCoordinatesAction"));
     coordinates_->setCheckable(true);
     animation_ = menu->addAction(tr("Animate Moves"));
+    animation_->setObjectName(QStringLiteral("analysisAnimationAction"));
     animation_->setCheckable(true);
     auto* clear = menu->addAction(tr("Clear Current Annotations"));
     connect(clear, &QAction::triggered, this, [this] {
@@ -355,14 +357,12 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
         board_->setPreferences(preferences_);
     });
     connect(color_, &QComboBox::currentIndexChanged, board_, &ChessBoardWidget::setAnnotationColor);
-    connect(coordinates_, &QAction::toggled, this, [this](bool enabled) {
-        preferences_.coordinates = enabled;
-        board_->setPreferences(preferences_);
-    });
-    connect(animation_, &QAction::toggled, this, [this](bool enabled) {
-        preferences_.animation = enabled;
-        board_->setPreferences(preferences_);
-    });
+    const auto changeDisplayOptions = [this] {
+        setBoardDisplayOptions(coordinates_->isChecked(), animation_->isChecked());
+        emit boardDisplayOptionsChanged(preferences_.coordinates, preferences_.animation);
+    };
+    connect(coordinates_, &QAction::toggled, this, changeDisplayOptions);
+    connect(animation_, &QAction::toggled, this, changeDisplayOptions);
     preferences_.blackAtBottom = controller_.board().blackAtBottom;
     setPreferences(preferences_);
     refresh();
@@ -422,12 +422,9 @@ void AnalysisPage::installEngineAnalysis(app::EngineAnalysisController& engine) 
 }
 void AnalysisPage::setPreferences(const app::BoardPreferences& preferences) {
     const QSignalBlocker inputBlock(input_);
-    const QSignalBlocker coordinatesBlock(coordinates_);
-    const QSignalBlocker animationBlock(animation_);
     preferences_ = preferences;
     input_->setCurrentIndex(preferences.inputMode == app::BoardInputMode::Drag ? 0 : 1);
-    coordinates_->setChecked(preferences.coordinates);
-    animation_->setChecked(preferences.animation);
+    setBoardDisplayOptions(preferences.coordinates, preferences.animation);
     for (std::size_t i = 0; i < preferences.annotationColors.size(); ++i) {
         const auto index = static_cast<int>(i);
         QPixmap swatch(16, 16);
@@ -439,6 +436,15 @@ void AnalysisPage::setPreferences(const app::BoardPreferences& preferences) {
     setAnalysisMultiPv(preferences.analysisMultiPv);
     controller_.setOrientation(preferences.blackAtBottom);
     applySplit();
+}
+void AnalysisPage::setBoardDisplayOptions(bool coordinates, bool animation) {
+    const QSignalBlocker coordinatesBlock(coordinates_);
+    const QSignalBlocker animationBlock(animation_);
+    preferences_.coordinates = coordinates;
+    preferences_.animation = animation;
+    coordinates_->setChecked(coordinates);
+    animation_->setChecked(animation);
+    board_->setDisplayOptions(coordinates, animation);
 }
 app::BoardPreferences AnalysisPage::preferences() const {
     auto result = preferences_;

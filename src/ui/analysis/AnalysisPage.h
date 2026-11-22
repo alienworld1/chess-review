@@ -24,6 +24,7 @@ class AnalysisPage final : public QWidget {
     explicit AnalysisPage(app::AnalysisController& controller, QWidget* parent = nullptr);
     app::BoardPreferences preferences() const;
     void setPreferences(const app::BoardPreferences& preferences);
+    void setBoardDisplayOptions(bool coordinates, bool animation);
     void installReviewNavigation();
     void setReviewContext(const QString& game, const QString& position);
     void requestDiscard(std::function<void()> onDiscard);
@@ -37,6 +38,7 @@ class AnalysisPage final : public QWidget {
   signals:
     void manageEnginesRequested();
     void analysisMultiPvChanged(int count);
+    void boardDisplayOptionsChanged(bool coordinates, bool animation);
     void backToReviewRequested();
 
   protected:

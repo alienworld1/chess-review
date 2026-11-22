@@ -121,6 +121,18 @@ void ChessBoardWidget::setPreferences(const app::BoardPreferences& preferences) 
     rebuildPieces();
     update();
 }
+void ChessBoardWidget::setDisplayOptions(bool coordinates, bool animation) {
+    if (preferences_.coordinates == coordinates && preferences_.animation == animation) {
+        return;
+    }
+    preferences_.coordinates = coordinates;
+    preferences_.animation = animation;
+    if (!animation) {
+        animation_.stop();
+        animatedMove_.reset();
+    }
+    update();
+}
 void ChessBoardWidget::setAnnotationColor(int color) {
     if (color >= 0 && color < 4) {
         annotationColor_ = color;

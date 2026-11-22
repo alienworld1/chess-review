@@ -192,8 +192,8 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
     refresh();
     refreshGeneration();
 }
-void PuzzlesPage::setPreferences(const app::BoardPreferences& preferences) {
-    board_->setPreferences(preferences);
+void PuzzlesPage::setBoardDisplayOptions(bool coordinates, bool animation) {
+    board_->setDisplayOptions(coordinates, animation);
 }
 void PuzzlesPage::refresh() {
     const auto& state = controller_.state();

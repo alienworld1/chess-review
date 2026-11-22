@@ -24,6 +24,7 @@ class GamesPage final : public QWidget {
               QAction& fileAction, QAction& pasteAction, QAction& linkAction,
               QWidget* parent = nullptr);
     void setVerbose(bool verbose);
+    void setBoardDisplayOptions(bool coordinates, bool animation);
 
   signals:
     void reviewRequested(chess_review::persistence::GameId id);

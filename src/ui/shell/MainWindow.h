@@ -66,6 +66,7 @@ class MainWindow final : public QMainWindow {
   signals:
     void closeRequested();
     void invalidUiState();
+    void boardDisplayOptionsChanged(bool coordinates, bool animation);
 
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -73,6 +74,8 @@ class MainWindow final : public QMainWindow {
     void showEvent(QShowEvent* event) override;
 
   private:
+    void shareBoardDisplayOptions(AnalysisPage& page);
+    void setBoardDisplayOptions(bool coordinates, bool animation);
     void shareAnalysisLineCount(AnalysisPage& page);
     void openEngineSettings();
     void installAnalysis(app::AnalysisController& controller);
@@ -111,6 +114,8 @@ class MainWindow final : public QMainWindow {
     QLabel* preferencesNotice_;
     std::array<QAction*, 5> destinations_{};
     QAction* reset_;
+    QAction* boardCoordinates_;
+    QAction* boardAnimation_;
     bool closing_ = false;
     bool shutdownComplete_ = false;
     bool stateNoticeShown_ = false;

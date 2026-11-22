@@ -17,7 +17,7 @@ class PuzzlesPage final : public QWidget {
   public:
     PuzzlesPage(app::PuzzleController& controller, app::PuzzleGenerationController& generation,
                 QWidget* parent = nullptr);
-    void setPreferences(const app::BoardPreferences& preferences);
+    void setBoardDisplayOptions(bool coordinates, bool animation);
 
   protected:
     void resizeEvent(QResizeEvent* event) override;

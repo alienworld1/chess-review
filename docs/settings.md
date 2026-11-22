@@ -2,6 +2,8 @@
 
 Choose **System**, **Light**, or **Dark** under **Appearance**. Changes take
 effect immediately. The app remembers the choice when you close it normally.
+Use **View → Show Board Coordinates** and **View → Animate Board Moves** to
+control all boards. These choices also persist across sessions.
 
 ## Review preferences
 

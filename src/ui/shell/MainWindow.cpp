@@ -36,6 +36,7 @@
 #include <QScreen>
 #include <QScrollArea>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QTextEdit>
 #include <QTimer>
@@ -169,6 +170,18 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     connect(quit, &QAction::triggered, this, &QWidget::close);
     auto* view = menuBar()->addMenu(tr("&View"));
     view->setObjectName(QStringLiteral("viewMenu"));
+    boardCoordinates_ = view->addAction(tr("Show Board Coordinates"));
+    boardCoordinates_->setObjectName(QStringLiteral("boardCoordinatesAction"));
+    boardAnimation_ = view->addAction(tr("Animate Board Moves"));
+    boardAnimation_->setObjectName(QStringLiteral("boardAnimationAction"));
+    for (auto* action : {boardCoordinates_, boardAnimation_}) {
+        action->setCheckable(true);
+        action->setChecked(true);
+        connect(action, &QAction::toggled, this, [this] {
+            emit boardDisplayOptionsChanged(boardCoordinates_->isChecked(),
+                                            boardAnimation_->isChecked());
+        });
+    }
     auto* central = new QWidget(this);
     auto* column = new QVBoxLayout(central);
     column->setContentsMargins(12, 12, 12, 12);
@@ -355,13 +368,14 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
     pages_->removeWidget(placeholder);
     delete placeholder;
     auto* page = new PuzzlesPage(puzzles, generation, pages_);
-    if (analysis_) {
-        page->setPreferences(analysis_->preferences());
-    }
+    connect(this, &MainWindow::boardDisplayOptionsChanged, page,
+            &PuzzlesPage::setBoardDisplayOptions);
+    page->setBoardDisplayOptions(boardCoordinates_->isChecked(), boardAnimation_->isChecked());
     pages_->insertWidget(index, page);
     puzzleAnalysis_ = new AnalysisPage(puzzles.linkedAnalysis(), pages_);
     puzzleAnalysis_->setObjectName(QStringLiteral("puzzleAnalysisPage"));
     puzzleAnalysis_->installEngineAnalysis(puzzles.linkedEngine());
+    shareBoardDisplayOptions(*puzzleAnalysis_);
     shareAnalysisLineCount(*puzzleAnalysis_);
     pages_->addWidget(puzzleAnalysis_);
     auto* back = new QPushButton(tr("Back to puzzle"), puzzleAnalysis_);
@@ -545,6 +559,10 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
 void MainWindow::installReview(app::ReviewGameController& review) {
     reviewController_ = &review;
     reviewPage_ = new ReviewPage(review, pages_);
+    connect(this, &MainWindow::boardDisplayOptionsChanged, reviewPage_,
+            &ReviewPage::setBoardDisplayOptions);
+    reviewPage_->setBoardDisplayOptions(boardCoordinates_->isChecked(),
+                                        boardAnimation_->isChecked());
     reviewPage_->setVerbose(verbose_);
     pages_->addWidget(reviewPage_);
     reviewPage_->setSplitShare(reviewSplit_);
@@ -553,6 +571,7 @@ void MainWindow::installReview(app::ReviewGameController& review) {
     linkedAnalysis_->setObjectName(QStringLiteral("reviewLinkedAnalysisPage"));
     linkedAnalysis_->installReviewNavigation();
     linkedAnalysis_->installEngineAnalysis(linkedExplorer.linkedEngine());
+    shareBoardDisplayOptions(*linkedAnalysis_);
     shareAnalysisLineCount(*linkedAnalysis_);
     pages_->addWidget(linkedAnalysis_);
     const auto returnToOrigin = [this] {
@@ -786,6 +805,7 @@ void MainWindow::installAnalysis(app::AnalysisController& controller) {
     pages_->removeWidget(placeholder);
     delete placeholder;
     analysis_ = new AnalysisPage(controller, pages_);
+    shareBoardDisplayOptions(*analysis_);
     pages_->insertWidget(pageIndex, analysis_);
     auto* file = findChild<QMenu*>(QStringLiteral("fileMenu"));
     auto* quit = findChild<QAction*>(QStringLiteral("quitAction"));
@@ -821,6 +841,22 @@ void MainWindow::installAnalysis(app::AnalysisController& controller) {
     });
     selectDestination();
 }
+
+void MainWindow::shareBoardDisplayOptions(AnalysisPage& page) {
+    connect(this, &MainWindow::boardDisplayOptionsChanged, &page,
+            &AnalysisPage::setBoardDisplayOptions);
+    connect(&page, &AnalysisPage::boardDisplayOptionsChanged, this,
+            &MainWindow::setBoardDisplayOptions);
+    page.setBoardDisplayOptions(boardCoordinates_->isChecked(), boardAnimation_->isChecked());
+}
+
+void MainWindow::setBoardDisplayOptions(bool coordinates, bool animation) {
+    const QSignalBlocker coordinatesBlock(boardCoordinates_);
+    const QSignalBlocker animationBlock(boardAnimation_);
+    boardCoordinates_->setChecked(coordinates);
+    boardAnimation_->setChecked(animation);
+    emit boardDisplayOptionsChanged(coordinates, animation);
+}
 void MainWindow::installImports(app::ImportController& imports,
                                 app::GameLibraryController& library) {
     Q_ASSERT(!library_);
@@ -845,6 +881,9 @@ void MainWindow::installImports(app::ImportController& imports,
     pages_->removeWidget(placeholder);
     delete placeholder;
     auto* games = new GamesPage(imports, library, *importFile_, *pastePgn_, *importLink_, pages_);
+    connect(this, &MainWindow::boardDisplayOptionsChanged, games,
+            &GamesPage::setBoardDisplayOptions);
+    games->setBoardDisplayOptions(boardCoordinates_->isChecked(), boardAnimation_->isChecked());
     games->setVerbose(verbose_);
     pages_->insertWidget(pageIndex, games);
     connect(pages_, &QStackedWidget::currentChanged, this, [this, games, &library] {
@@ -1243,6 +1282,7 @@ void MainWindow::restoreUiState(const app::UiState& state) {
             }
         }
     }
+    setBoardDisplayOptions(state.board.coordinates, state.board.animation);
     if (!state.geometry.isEmpty() && !restoreGeometry(state.geometry)) {
         showUiStateFailure();
         emit invalidUiState();
@@ -1261,8 +1301,11 @@ void MainWindow::restoreUiState(const app::UiState& state) {
     });
 }
 app::UiState MainWindow::uiState() const {
+    auto board = analysis_ ? analysis_->preferences() : app::BoardPreferences{};
+    board.coordinates = boardCoordinates_->isChecked();
+    board.animation = boardAnimation_->isChecked();
     return {saveGeometry(),        windowState().testFlag(Qt::WindowMaximized),
-            navigation_.current(), analysis_ ? analysis_->preferences() : app::BoardPreferences{},
+            navigation_.current(), board,
             std::nullopt,          reviewPage_ ? reviewPage_->splitShare() : reviewSplit_,
             colorScheme_};
 }

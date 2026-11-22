@@ -1516,6 +1516,10 @@ void ReviewPage::updateExportAction() {
     }
 }
 
+void ReviewPage::setBoardDisplayOptions(bool coordinates, bool animation) {
+    board_->setDisplayOptions(coordinates, animation);
+}
+
 void ReviewPage::updateNavigation() {
     auto& nav = controller_.navigation();
     const auto& state = controller_.state();
@@ -1524,14 +1528,7 @@ void ReviewPage::updateNavigation() {
         moves_->setCurrentIndex({});
         moves_->clearSelection();
     }
-    const auto& displayedBoard = controller_.exploration().board();
-    const bool orientationChanged = board_->state().blackAtBottom != displayedBoard.blackAtBottom;
-    board_->setState(displayedBoard);
-    if (orientationChanged) {
-        app::BoardPreferences preferences;
-        preferences.blackAtBottom = displayedBoard.blackAtBottom;
-        board_->setPreferences(preferences);
-    }
+    board_->setState(controller_.exploration().board());
     const bool black = nav.board().blackAtBottom;
     const auto white = nav.whitePlayer().isEmpty() ? tr("White") : nav.whitePlayer();
     const auto blackPlayer = nav.blackPlayer().isEmpty() ? tr("Black") : nav.blackPlayer();

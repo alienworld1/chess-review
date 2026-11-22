@@ -16,6 +16,7 @@ class ChessBoardWidget final : public QWidget {
     explicit ChessBoardWidget(QWidget* parent = nullptr);
     void setState(const app::BoardViewState& state);
     void setPreferences(const app::BoardPreferences& preferences);
+    void setDisplayOptions(bool coordinates, bool animation);
     void setAnnotationColor(int color);
     void animateMove(chess::Move move);
     void flashMove(chess::Move move, bool success);

@@ -3,6 +3,8 @@
 #include "app/StartupCoordinator.h"
 #include "app/UiStateStore.h"
 #include "diagnostics/Logger.h"
+#include "ui/analysis/AnalysisPage.h"
+#include "ui/chess/ChessBoardWidget.h"
 #include "ui/shell/MainWindow.h"
 #include "ui/shell/StartupPanel.h"
 #include <QAction>
@@ -77,6 +79,7 @@ class ShellTest final : public QObject {
     void geometry_data();
     void geometry();
     void restoreAndReset();
+    void boardDisplayPreferencesAreShared();
     void preferencesRoundTrip();
     void preferencesSaveFailure();
     void preferencesFailure_data();
@@ -459,6 +462,67 @@ void ShellTest::restoreAndReset() {
     invalid.restoreUiState({QByteArray("bad geometry"), false, app::Destination::Home});
     QCOMPARE(invalidState.count(), 1);
     QVERIFY(!invalid.findChild<QLabel*>(QStringLiteral("uiStateNotice"))->isHidden());
+}
+void ShellTest::boardDisplayPreferencesAreShared() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    diagnostics::Logger logger(root.filePath(QStringLiteral("logs")));
+    app::StartupCoordinator startup(logger);
+    app::NavigationController navigation;
+    ui::MainWindow window(navigation, startup.analysis());
+    const auto cleanup = qScopeGuard([&] {
+        QEventLoop loop;
+        connect(&startup, &app::StartupCoordinator::finished, &loop, &QEventLoop::quit);
+        QTimer::singleShot(5000, &loop, &QEventLoop::quit);
+        startup.shutdown();
+        if (startup.state() != app::Lifecycle::Stopped) {
+            loop.exec();
+        }
+        if (startup.state() != app::Lifecycle::Stopped) {
+            qFatal("Startup failed to close");
+        }
+    });
+    window.installImports(startup.localImports(), startup.library());
+    window.installReview(startup.reviewGame());
+    window.installPuzzles(startup.puzzles(), startup.puzzleGeneration());
+    app::UiState preferences;
+    preferences.board.coordinates = false;
+    preferences.board.animation = false;
+    window.restoreUiState(preferences);
+
+    auto* coordinates = window.findChild<QAction*>(QStringLiteral("boardCoordinatesAction"));
+    auto* animation = window.findChild<QAction*>(QStringLiteral("boardAnimationAction"));
+    QVERIFY(coordinates && animation);
+    QVERIFY(!coordinates->isChecked());
+    QVERIFY(!animation->isChecked());
+
+    const auto pages = window.findChildren<ui::AnalysisPage*>();
+    QCOMPARE(pages.size(), 3);
+    for (auto* page : pages) {
+        QVERIFY(!page->preferences().coordinates);
+        QVERIFY(!page->preferences().animation);
+    }
+    const auto boards = window.findChildren<ui::ChessBoardWidget*>();
+    QCOMPARE(boards.size(), 6);
+    for (auto* board : boards) {
+        board->resize(320, 320);
+        const auto hiddenCoordinates = board->grab().toImage();
+        coordinates->trigger();
+        QVERIFY(board->grab().toImage() != hiddenCoordinates);
+        coordinates->trigger();
+        QCOMPARE(board->grab().toImage(), hiddenCoordinates);
+    }
+
+    auto* linked = window.findChild<ui::AnalysisPage*>(QStringLiteral("puzzleAnalysisPage"));
+    QVERIFY(linked);
+    auto* linkedAnimation = linked->findChild<QAction*>(QStringLiteral("analysisAnimationAction"));
+    QVERIFY(linkedAnimation);
+    linkedAnimation->trigger();
+    QVERIFY(animation->isChecked());
+    QVERIFY(window.uiState().board.animation);
+    for (auto* page : pages) {
+        QVERIFY(page->preferences().animation);
+    }
 }
 void ShellTest::preferencesRoundTrip() {
     QTemporaryDir root;

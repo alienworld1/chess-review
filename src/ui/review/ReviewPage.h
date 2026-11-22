@@ -35,6 +35,7 @@ class ReviewPage final : public QWidget {
     int splitShare() const;
     void setSplitShare(int share);
     void setVerbose(bool verbose);
+    void setBoardDisplayOptions(bool coordinates, bool animation);
     QString analysisDescription() const;
     void rememberAnalysisReadingState();
     void restoreAnalysisReadingState(bool returnedToOrigin);

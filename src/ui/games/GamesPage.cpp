@@ -773,6 +773,10 @@ void GamesPage::updateImport() {
     importStatus_->setText(status);
 }
 void GamesPage::setVerbose(bool verbose) { reportDialog_->setVerbose(verbose); }
+
+void GamesPage::setBoardDisplayOptions(bool coordinates, bool animation) {
+    board_->setDisplayOptions(coordinates, animation);
+}
 void GamesPage::dragEnterEvent(QDragEnterEvent* event) {
     if (imports_.available() && event->possibleActions().testFlag(Qt::CopyAction) &&
         supportedDrop(*event->mimeData())) {
