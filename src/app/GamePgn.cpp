@@ -249,7 +249,8 @@ QString writePgn(const QString& filename, const chess::GameTree& tree,
     const auto limitError = [] {
         return message("The game and its annotations are too large to save as a reopenable PGN.");
     };
-    bool original = source && &source->tree == &tree;
+    const bool sourceTree = source && &source->tree == &tree;
+    bool original = sourceTree;
     if (source && !original) {
         std::vector<chess::Move> mainline;
         const auto ids = std::get<std::vector<chess::NodeId>>(tree.mainLine(tree.rootId()));
@@ -314,14 +315,17 @@ QString writePgn(const QString& filename, const chess::GameTree& tree,
     auto rootNode = *tree.node(tree.rootId());
     const auto rootNotes = text.annotations(rootNode.id, std::move(rootNode.annotations));
     const auto rootExtra = notes.find(rootNode.id);
-    const auto recordedPlies = source && &source->tree == &tree
-                                   ? std::optional(source->originalMainline().size())
-                                   : std::nullopt;
     if (!text.comment(rootNotes.commentBefore, pgn::rootCommentPrefix) ||
         !text.comment(rootNotes.commentAfter, pgn::rootCommentPrefix) ||
         (rootExtra != notes.end() &&
-         !text.comment(std::string_view(rootExtra->second.comment), pgn::rootCommentPrefix)) ||
-        !text.line(rootNode.children, root.fullmoveNumber(), root.sideToMove(), 0, recordedPlies)) {
+         !text.comment(std::string_view(rootExtra->second.comment), pgn::rootCommentPrefix))) {
+        return limitError();
+    }
+    const bool complete =
+        sourceTree ? text.line(rootNode.children, root.fullmoveNumber(), root.sideToMove(), 0,
+                               source->originalMainline().size())
+                   : text.line(rootNode.children, root.fullmoveNumber(), root.sideToMove(), 0);
+    if (!complete) {
         return limitError();
     }
     text.token(termination);
@@ -336,7 +340,7 @@ QString writePgn(const QString& filename, const chess::GameTree& tree,
     const auto parsed = reader.next();
     const auto* reopened = std::get_if<pgn::PgnDocument>(&parsed);
     if (!reopened || reopened->result != result || reopened->tree.size() != tree.size() ||
-        (recordedPlies &&
+        (sourceTree &&
          !std::ranges::equal(reopened->originalMainline(), source->originalMainline()))) {
         return message(
             "The game and its annotations could not be represented as a reopenable PGN.");
