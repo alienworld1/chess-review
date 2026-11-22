@@ -120,6 +120,7 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
     connect(back, &QPushButton::clicked, &controller_, &app::PuzzleController::showLibrary);
     solveLayout->addWidget(back, 0, Qt::AlignLeft);
     splitter_ = new QSplitter(Qt::Horizontal, solvePage);
+    splitter_->setChildrenCollapsible(false);
     board_ = new ChessBoardWidget(splitter_);
     board_->setObjectName(QStringLiteral("puzzleBoard"));
     board_->setMinimumSize(240, 240);
@@ -314,6 +315,11 @@ void PuzzlesPage::removeSelected() {
 }
 void PuzzlesPage::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
-    splitter_->setOrientation(width() < 760 ? Qt::Vertical : Qt::Horizontal);
+    const auto outer = layout()->contentsMargins();
+    const auto inner = splitter_->parentWidget()->layout()->contentsMargins();
+    const int available = width() - outer.left() - outer.right() - inner.left() - inner.right();
+    const int required = std::max(320, board_->minimumWidth()) +
+                         splitter_->widget(1)->minimumSizeHint().width() + splitter_->handleWidth();
+    splitter_->setOrientation(available < required ? Qt::Vertical : Qt::Horizontal);
 }
 } // namespace chess_review::ui

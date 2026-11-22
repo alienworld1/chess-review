@@ -639,6 +639,12 @@ class PuzzleTest final : public QObject {
         QVERIFY(puzzles.state().revealed);
         f.window.resize(1100, 760);
         f.window.show();
+        if (f.window.width() >= 760 && f.window.height() >= 710) {
+            auto* analyze = f.window.findChild<QPushButton*>(QStringLiteral("analyzePuzzle"));
+            QVERIFY(analyze);
+            QTRY_VERIFY(f.window.rect().contains(
+                QRect(analyze->mapTo(&f.window, QPoint{}), analyze->size())));
+        }
         const auto render = qEnvironmentVariable("CHESS_REVIEW_PUZZLE_RENDER_DIR");
         if (!render.isEmpty()) {
             QVERIFY(QDir().mkpath(render));
