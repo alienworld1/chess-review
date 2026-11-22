@@ -200,12 +200,14 @@ struct SummaryFacts {
 // Stream original-mainline facts in chronological order. No engine, UI or storage dependencies.
 class SummaryBuilder {
   public:
-    explicit SummaryBuilder(chess::Color selectedSide) : selectedSide_(selectedSide) {}
+    explicit SummaryBuilder(chess::Color selectedSide, bool bothSides = false)
+        : selectedSide_(selectedSide), bothSides_(bothSides) {}
     [[nodiscard]] KeyMomentSelection add(const SummaryMoveFacts& move);
     [[nodiscard]] SummaryFacts finish() const;
 
   private:
     chess::Color selectedSide_;
+    bool bothSides_;
     SummaryFacts facts_;
     std::array<std::vector<double>, 2> accuracies_;
     bool previousOpponentError_ = false;

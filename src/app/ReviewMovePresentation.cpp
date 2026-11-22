@@ -567,7 +567,9 @@ QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::C
                     .arg(side.stable < side.total ? QObject::tr("\nprovisional summary")
                                                   : QString{});
     }
-    text << QObject::tr("%1 chronological key moments for the selected player.")
+    text << (overview.reviewBothSides
+                 ? QObject::tr("%1 chronological key moments across both players.")
+                 : QObject::tr("%1 chronological key moments for the selected player."))
                 .arg(overview.totalKeyMoments);
     if (overview.largestLoss) {
         text << QObject::tr("Largest measured loss: %1 percentage points at position %2.")

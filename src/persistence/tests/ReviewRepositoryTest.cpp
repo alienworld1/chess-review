@@ -263,6 +263,7 @@ class ReviewRepositoryTest final : public QObject {
         QVERIFY(!bytes.isEmpty());
         const auto decoded = decodeReviewSettings(bytes);
         QVERIFY(decoded);
+        QVERIFY(!decoded->configuration.ui.reviewBothSides);
         QCOMPARE(decoded->configuration.values.special, configuration.special);
         QCOMPARE(encodeReviewSettings(*decoded), bytes);
         for (const auto key :
@@ -273,6 +274,14 @@ class ReviewRepositoryTest final : public QObject {
         }
         request.pipelineVersion = 9;
         QVERIFY(encodeReviewSettings(request).isEmpty());
+        request.pipelineVersion = 10;
+        request.configuration.ui.reviewBothSides = true;
+        const auto captured = encodeReviewSettings(request);
+        const auto restored = decodeReviewSettings(captured);
+        QVERIFY(restored && restored->configuration.ui.reviewBothSides);
+        auto invalidScope = *readReviewDocument(captured, maxReviewSettingsBytes);
+        invalidScope["reviewBothSides"] = 1;
+        QVERIFY(!decodeReviewSettings(reviewDocument(invalidScope)));
     }
     void intelligencePoliciesRejectMixedModelMetadata() {
         Fixture f;

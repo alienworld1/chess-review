@@ -176,6 +176,9 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
         {"motifModelVersion", QJsonValue()},
         {"explanationModelVersion", QJsonValue()},
         {"openingDatasetVersion", QJsonValue()}};
+    if (settings.configuration.ui.reviewBothSides) {
+        document["reviewBothSides"] = true;
+    }
     if (settings.opening) {
         const auto& version = settings.opening->datasetVersion;
         const auto& match = settings.opening->match;
@@ -259,6 +262,7 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
     out.gameId = o["gameId"].toString().toLongLong();
     out.engineProfileId = o["engineProfileId"].toString().toLongLong();
     out.selectedSide = static_cast<chess::Color>(o["selectedSide"].toInt(-1));
+    out.configuration.ui.reviewBothSides = o["reviewBothSides"].toBool();
     const auto fp =
         decodeFingerprint(QByteArray::fromBase64(o["fingerprint"].toString().toLatin1()));
     if (!fp) {

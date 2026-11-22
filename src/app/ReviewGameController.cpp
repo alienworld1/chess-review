@@ -473,6 +473,7 @@ void ReviewGameController::startJob(chess::Color side, std::int64_t profileId,
         return;
     }
     runConfiguration_ = **result;
+    runConfiguration_.ui.reviewBothSides = configuration_.snapshot()->ui.reviewBothSides;
     side_ = side;
     profileId_ = profileId;
     refinementEnabled_ = true;

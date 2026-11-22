@@ -5,6 +5,7 @@
 #include "engine/EffectiveSearch.h"
 #include "ui/shell/MainWindow.h"
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QEventLoop>
 #include <QFile>
@@ -335,6 +336,22 @@ class EngineSettingsTest final : public QObject {
         QVERIFY(apply->isEnabled());
         apply->click();
         QTRY_COMPARE(configuration.snapshot()->values.quality, review::Quality::Fast);
+        auto* bothSides = sections->findChild<QCheckBox*>(QStringLiteral("reviewBothSides"));
+        auto* threshold = sections->findChild<QLineEdit*>(QStringLiteral("inaccuracyLoss"));
+        QVERIFY(bothSides && threshold);
+        bothSides->setChecked(true);
+        threshold->setText(QStringLiteral("0.15"));
+        QVERIFY(!apply->isEnabled());
+        threshold->setText(QStringLiteral("0.06123456789012345"));
+        QVERIFY(apply->isEnabled());
+        apply->click();
+        QTRY_VERIFY(configuration.snapshot()->ui.reviewBothSides);
+        QCOMPARE(configuration.snapshot()->values.classification.inaccuracyLoss,
+                 0.06123456789012345);
+        const auto disk =
+            std::get<std::shared_ptr<const config::ValidatedConfiguration>>(config::load(filename));
+        QCOMPARE(disk->values.classification, configuration.snapshot()->values.classification);
+        QVERIFY(disk->ui.reviewBothSides);
         sections->setCurrentIndex(2);
         auto* editor = sections->findChild<QPlainTextEdit*>(QStringLiteral("advancedToml"));
         auto* save = sections->findChild<QPushButton*>(QStringLiteral("saveToml"));

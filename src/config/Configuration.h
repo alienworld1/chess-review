@@ -28,6 +28,7 @@ struct Identities {
 struct UiConfiguration {
     bool verbose = false;
     std::optional<int> liveAnalysisLines;
+    bool reviewBothSides = false;
 };
 struct PuzzleConfiguration {
     bool automatic = true;
@@ -63,6 +64,8 @@ struct BasicPreferences {
     bool verbose;
     int reviewLines;
     std::optional<int> liveAnalysisLines;
+    bool reviewBothSides;
+    review::ClassificationConfig classification;
     bool operator==(const BasicPreferences&) const = default;
 };
 BasicPreferences basicPreferences(const ValidatedConfiguration& configuration);

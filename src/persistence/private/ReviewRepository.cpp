@@ -2186,7 +2186,8 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
     out.revision = revision;
     out.keyOffset = keyOffset;
     out.result = game.summary.result.left(32);
-    review::SummaryBuilder summaryBuilder(run.summary.selectedSide);
+    out.reviewBothSides = run.settings.configuration.ui.reviewBothSides;
+    review::SummaryBuilder summaryBuilder(run.summary.selectedSide, out.reviewBothSides);
     std::vector<review::RefinementCandidate> candidates;
     std::array<std::vector<review::RefinementCandidate>, 2> escalationCandidates;
     int keyMoments = 0;

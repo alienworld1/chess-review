@@ -151,6 +151,12 @@ TEST_CASE("Summary facts select chronological errors and actual mate transitions
     CHECK(facts.sides[1].counts[static_cast<std::size_t>(Classification::Blunder)] == 1);
     CHECK(facts.largestLossPosition == 2);
     CHECK(facts.sides[1].accuracy == moveAccuracy(.25));
+    SummaryBuilder both(Color::Black, true);
+    CHECK(both.add(opponent).selected);
+    const auto next = both.add(player);
+    CHECK(next.selected);
+    CHECK_FALSE(next.opponentContext);
+    CHECK(both.finish().keyMoments == 2);
     SummaryBuilder mates(Color::White);
     SummaryMoveFacts move;
     move.mover = Color::White;

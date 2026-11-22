@@ -539,6 +539,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
         return value;
     };
     accuracyValue_ = metric(tr("Accuracy"), "reviewAccuracyValue", 0);
+    accuracyValue_->setWordWrap(true);
     momentsValue_ = metric(tr("Key moments"), "reviewMomentsValue", 1);
     coverageValue_ = new QLabel(summaryPanel_);
     coverageValue_->setWordWrap(true);
@@ -1139,18 +1140,37 @@ void ReviewPage::updateSummary() {
                     {tr("Quick scan awaiting"), QString::number(scan.awaiting)},
                     {tr("Invalid scan evidence"), QString::number(scan.invalid)}});
     }
-    resultValue_->setText(tr("Reviewing %2 (%1)\nResult: %3")
-                              .arg(sideText(state.run->selectedSide),
-                                   state.run->selectedSide == chess::Color::White
-                                       ? controller_.navigation().whitePlayer()
-                                       : controller_.navigation().blackPlayer(),
-                                   overview.result));
-    accuracyValue_->setText(side.accuracy ? tr("%1%").arg(*side.accuracy, 0, 'f', 0)
-                                          : QStringLiteral("—"));
+    const auto& white = overview.sides[static_cast<std::size_t>(chess::Color::White)];
+    const auto& black = overview.sides[static_cast<std::size_t>(chess::Color::Black)];
+    const auto accuracy = [this](const review::SideSummary& summary) {
+        return summary.accuracy ? tr("%L1%").arg(*summary.accuracy, 0, 'f', 0)
+                                : QStringLiteral("—");
+    };
+    const bool both = overview.reviewBothSides;
+    resultValue_->setText(both ? tr("Reviewing both players\nResult: %1").arg(overview.result)
+                               : tr("Reviewing %2 (%1)\nResult: %3")
+                                     .arg(sideText(state.run->selectedSide),
+                                          state.run->selectedSide == chess::Color::White
+                                              ? controller_.navigation().whitePlayer()
+                                              : controller_.navigation().blackPlayer(),
+                                          overview.result));
+    accuracyValue_->setText(both ? tr("White %1 · Black %2").arg(accuracy(white), accuracy(black))
+                                 : accuracy(side));
     momentsValue_->setText(QString::number(overview.totalKeyMoments));
-    coverageValue_->setText(tr("%1 of %2 moves analyzed").arg(side.evaluated).arg(side.total));
+    const int evaluated = both ? white.evaluated + black.evaluated : side.evaluated;
+    const int total = both ? white.total + black.total : side.total;
+    const int stable = both ? white.stable + black.stable : side.stable;
+    coverageValue_->setText(tr("%1 of %2 moves analyzed").arg(evaluated).arg(total));
+    classificationCounts_->setColumnCount(both ? 3 : 2);
+    classificationCounts_->setHorizontalHeaderLabels(
+        both ? QStringList{tr("Move quality"), tr("White"), tr("Black")}
+             : QStringList{tr("Move quality"), tr("Moves")});
+    if (both) {
+        classificationCounts_->horizontalHeader()->setSectionResizeMode(
+            2, QHeaderView::ResizeToContents);
+    }
     for (std::size_t i = 0; i < side.counts.size(); ++i) {
-        if (side.counts[i] == 0) {
+        if ((both ? white.counts[i] + black.counts[i] : side.counts[i]) == 0) {
             continue;
         }
         const auto label = static_cast<review::Classification>(i);
@@ -1162,8 +1182,12 @@ void ReviewPage::updateSummary() {
                                        new QTableWidgetItem(app::classificationSymbol(label) +
                                                             QLatin1Char(' ') +
                                                             app::classificationText(result)));
-        classificationCounts_->setItem(row, 1,
-                                       new QTableWidgetItem(QString::number(side.counts[i])));
+        classificationCounts_->setItem(
+            row, 1, new QTableWidgetItem(QString::number(both ? white.counts[i] : side.counts[i])));
+        if (both) {
+            classificationCounts_->setItem(row, 2,
+                                           new QTableWidgetItem(QString::number(black.counts[i])));
+        }
     }
     classificationCounts_->setVisible(classificationCounts_->rowCount() > 0);
     classificationCounts_->setFixedHeight(
@@ -1177,10 +1201,10 @@ void ReviewPage::updateSummary() {
         : state.active ? tr("Analysis continues. You can start reviewing now.")
         : state.run->status != review::JobStatus::Complete
             ? tr("Review incomplete. Your progress is saved.")
-        : side.evaluated < side.total
+        : evaluated < total
             ? tr("Some moves could not be assessed. Accuracy covers analyzed moves only.")
-        : side.stable < side.evaluated ? tr("Some move assessments are preliminary.")
-                                       : QString{});
+        : stable < evaluated ? tr("Some move assessments are preliminary.")
+                             : QString{});
 }
 void ReviewPage::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);

@@ -195,6 +195,7 @@ struct ReviewOverview {
     std::vector<int> opponentContexts; // Key positions with an attached preceding opponent error.
     std::optional<int> largestLossPosition;
     std::optional<double> largestLoss;
+    bool reviewBothSides = false;
 };
 // One selected moment only. Shared immutable worker-created values never enter timeline pages.
 struct ReviewExploration {

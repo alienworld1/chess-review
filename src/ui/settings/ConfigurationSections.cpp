@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
@@ -18,6 +19,7 @@
 #include <QTabWidget>
 #include <QTextDocument>
 #include <QVBoxLayout>
+#include <array>
 #include <memory>
 
 static void initializeSettingsResources() { Q_INIT_RESOURCE(settings_reference); }
@@ -58,9 +60,37 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     reviewForm->addRow(tr("Candidate &lines"), lines);
     auto* book = new QCheckBox(tr("Use local opening references"), review);
     auto* wdl = new QCheckBox(tr("Prefer engine win/draw/loss estimates when available"), review);
+    auto* bothSides = new QCheckBox(tr("Include key moments from both players"), review);
+    bothSides->setObjectName(QStringLiteral("reviewBothSides"));
+    reviewForm->addRow(bothSides);
     reviewForm->addRow(book);
     reviewForm->addRow(wdl);
     basicLayout->addWidget(review);
+
+    auto* classification = new QGroupBox(tr("Move classifications"), basic);
+    auto* thresholdsForm = new QFormLayout(classification);
+    thresholdsForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    thresholdsForm->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);
+    thresholdsForm->addRow(
+        text(classification, tr("Enter expected-score loss from 0 to 1. For example, 0.05 "
+                                "means a loss of 5 percentage points.")));
+    auto* inaccuracy = new QLineEdit(classification);
+    auto* mistake = new QLineEdit(classification);
+    auto* blunder = new QLineEdit(classification);
+    const std::array thresholds{inaccuracy, mistake, blunder};
+    for (auto* field : thresholds) {
+        field->setMaxLength(32);
+        field->setMaximumWidth(180);
+    }
+    inaccuracy->setObjectName(QStringLiteral("inaccuracyLoss"));
+    mistake->setObjectName(QStringLiteral("mistakeLoss"));
+    blunder->setObjectName(QStringLiteral("blunderLoss"));
+    thresholdsForm->addRow(tr("&Inaccuracy starts at"), inaccuracy);
+    thresholdsForm->addRow(tr("&Mistake starts at"), mistake);
+    thresholdsForm->addRow(tr("&Blunder starts at"), blunder);
+    auto* standardThresholds = new QPushButton(tr("Use standard thresholds"), classification);
+    thresholdsForm->addRow(standardThresholds);
+    basicLayout->addWidget(classification);
 
     auto* preferences = new QGroupBox(tr("Application"), basic);
     auto* preferencesLayout = new QVBoxLayout(preferences);
@@ -166,7 +196,10 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
         dialog->open();
     });
 
-    const auto formValues = [quality, wdl, book, puzzles, verbose, lines, liveLines] {
+    const auto formValues = [=, &configuration] {
+        const auto snapshot = configuration.snapshot();
+        const auto excellent = snapshot ? snapshot->values.classification.excellentLoss
+                                        : review::ClassificationConfig{}.excellentLoss;
         return config::BasicPreferences{static_cast<review::Quality>(quality->currentIndex()),
                                         wdl->isChecked(),
                                         book->isChecked(),
@@ -174,10 +207,20 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
                                         verbose->isChecked(),
                                         lines->value(),
                                         liveLines->value() ? std::optional{liveLines->value()}
-                                                           : std::nullopt};
+                                                           : std::nullopt,
+                                        bothSides->isChecked(),
+                                        {inaccuracy->text().toDouble(), mistake->text().toDouble(),
+                                         blunder->text().toDouble(), excellent}};
     };
-    const auto resetForm = [&configuration, quality, wdl, book, puzzles, verbose, lines,
-                            liveLines] {
+    const auto setThresholds = [=](const review::ClassificationConfig& value) {
+        const auto display = [](double loss) {
+            return QLocale::c().toString(loss, 'g', QLocale::FloatingPointShortest);
+        };
+        inaccuracy->setText(display(value.inaccuracyLoss));
+        mistake->setText(display(value.mistakeLoss));
+        blunder->setText(display(value.blunderLoss));
+    };
+    const auto resetForm = [=, &configuration] {
         if (const auto snapshot = configuration.snapshot()) {
             const auto value = config::basicPreferences(*snapshot);
             quality->setCurrentIndex(static_cast<int>(value.quality));
@@ -187,22 +230,32 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
             verbose->setChecked(value.verbose);
             lines->setValue(value.reviewLines);
             liveLines->setValue(value.liveAnalysisLines.value_or(0));
+            bothSides->setChecked(value.reviewBothSides);
+            setThresholds(value.classification);
         }
     };
     const auto refreshActions = [=, &configuration] {
         const bool dirty = editor->document()->isModified();
         const bool writable = configuration.canEdit() && configuration.source().has_value();
         const auto snapshot = configuration.snapshot();
-        const bool basicDirty = snapshot && formValues() != config::basicPreferences(*snapshot);
+        const auto draft = formValues();
+        const bool basicDirty = snapshot && draft != config::basicPreferences(*snapshot);
         const bool canEditBasic = writable && snapshot && !dirty;
+        const auto& loss = draft.classification;
+        const bool validThresholds = 0 < loss.inaccuracyLoss &&
+                                     loss.inaccuracyLoss < loss.mistakeLoss &&
+                                     loss.mistakeLoss < loss.blunderLoss && loss.blunderLoss < 1;
         review->setEnabled(canEditBasic);
+        classification->setEnabled(canEditBasic);
         preferences->setEnabled(canEditBasic);
         reset->setEnabled(canEditBasic && basicDirty);
-        apply->setEnabled(canEditBasic && basicDirty);
+        apply->setEnabled(canEditBasic && basicDirty && validThresholds);
         basicStatus->setText(
             dirty ? tr("Save or discard the Advanced draft before editing these preferences.")
             : configuration.state() == app::ConfigurationState::Invalid
                 ? tr("Correct the TOML in Advanced to edit these preferences.")
+            : snapshot && !validThresholds
+                ? tr("Enter three increasing loss thresholds, each greater than 0 and less than 1.")
                 : configuration.operationReport());
         const bool withinLimit =
             editor->document()->characterCount() <= config::maximumConfigurationBytes + 1;
@@ -245,9 +298,14 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     connect(quality, &QComboBox::currentIndexChanged, basic, refreshActions);
     connect(lines, &QSpinBox::valueChanged, basic, refreshActions);
     connect(liveLines, &QSpinBox::valueChanged, basic, refreshActions);
-    for (auto* box : {wdl, book, puzzles, verbose}) {
+    for (auto* box : {wdl, book, puzzles, verbose, bothSides}) {
         connect(box, &QCheckBox::toggled, basic, refreshActions);
     }
+    for (auto* field : thresholds) {
+        connect(field, &QLineEdit::textChanged, basic, refreshActions);
+    }
+    connect(standardThresholds, &QPushButton::clicked, basic,
+            [setThresholds] { setThresholds(review::ClassificationConfig{}); });
     connect(editor->document(), &QTextDocument::modificationChanged, advanced, refreshActions);
     connect(editor, &QPlainTextEdit::textChanged, advanced, refreshActions);
     connect(reset, &QPushButton::clicked, basic, resetForm);

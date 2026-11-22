@@ -714,7 +714,7 @@ KeyMomentSelection SummaryBuilder::add(const SummaryMoveFacts& move) {
     const bool major = move.label && isKeyLabel(*move.label);
     const bool mateTransition = mateWinner(move.before) != mateWinner(move.after);
     KeyMomentSelection selection;
-    if (move.mover == selectedSide_) {
+    if (bothSides_ || move.mover == selectedSide_) {
         if (move.loss && moveAccuracy(move.loss) &&
             (!facts_.largestLoss || *move.loss > *facts_.largestLoss)) {
             facts_.largestLoss = move.loss;
@@ -724,7 +724,7 @@ KeyMomentSelection SummaryBuilder::add(const SummaryMoveFacts& move) {
         if (major || mateTransition || instructiveDeparture) {
             selection.selected = true;
             ++facts_.keyMoments;
-            if (previousOpponentError_) {
+            if (!bothSides_ && previousOpponentError_) {
                 selection.opponentContext = move.positionIndex - 1;
             }
         }

@@ -306,7 +306,7 @@ Result parse(std::string_view contents) {
                       config.conversion.fallbackScaleCp, 1, 10000);
     }
     if (const auto* table = reader.table(root, "review", "review")) {
-        reader.keys(*table, "review", {"quality", "preferWdl"});
+        reader.keys(*table, "review", {"quality", "preferWdl", "bothSides"});
         if (const auto* node = table->get("quality")) {
             const auto quality = node->value<std::string>();
             if (quality == "fast") {
@@ -324,6 +324,13 @@ Result parse(std::string_view contents) {
                 config.conversion.preferWdl = boolean->get();
             } else {
                 reader.error("review.preferWdl", "Expected a boolean", node);
+            }
+        }
+        if (const auto* node = table->get("bothSides")) {
+            if (const auto* boolean = node->as_boolean()) {
+                ui.reviewBothSides = boolean->get();
+            } else {
+                reader.error("review.bothSides", "Expected a boolean", node);
             }
         }
     }
@@ -525,7 +532,9 @@ BasicPreferences basicPreferences(const ValidatedConfiguration& c) {
             c.puzzles.automatic,
             c.ui.verbose,
             c.values.refinement.multiPv,
-            c.ui.liveAnalysisLines};
+            c.ui.liveAnalysisLines,
+            c.ui.reviewBothSides,
+            c.values.classification};
 }
 Document saveBasicPreferences(const QString& filename, const QByteArray& expected,
                               const BasicPreferences& preferences) {
@@ -562,6 +571,16 @@ Document saveBasicPreferences(const QString& filename, const QByteArray& expecte
         break;
     }
     update("review", "preferWdl", preferences.preferWdl);
+    if (preferences.reviewBothSides != (*baseline)->ui.reviewBothSides) {
+        update("review", "bothSides", preferences.reviewBothSides);
+    }
+    if (preferences.classification != (*baseline)->values.classification) {
+        const auto& thresholds = preferences.classification;
+        update("classification", "inaccuracyLoss", thresholds.inaccuracyLoss);
+        update("classification", "mistakeLoss", thresholds.mistakeLoss);
+        update("classification", "blunderLoss", thresholds.blunderLoss);
+        update("classification", "excellentLoss", thresholds.excellentLoss);
+    }
     update("openings", "enabled", preferences.openingBook);
     update("puzzles", "automatic", preferences.automaticPuzzles);
     update("ui", "verbose", preferences.verbose);

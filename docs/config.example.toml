@@ -36,6 +36,7 @@ blunderLoss = 0.20
 [review]
 quality = "standard"
 preferWdl = true
+bothSides = false # Include guided moments from both players in new reviews.
 
 [expectedScore]
 fallbackScaleCp = 300
