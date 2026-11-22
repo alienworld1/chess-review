@@ -23,6 +23,8 @@ class AnalysisPage final : public QWidget {
     explicit AnalysisPage(app::AnalysisController& controller, QWidget* parent = nullptr);
     app::BoardPreferences preferences() const;
     void setPreferences(const app::BoardPreferences& preferences);
+    void installReviewNavigation();
+    void setReviewContext(const QString& game, const QString& position);
     void requestDiscard(std::function<void()> onDiscard);
     app::AnalysisController& controller() { return controller_; }
     void deactivate();
@@ -31,6 +33,7 @@ class AnalysisPage final : public QWidget {
   signals:
     void manageEnginesRequested();
     void analysisMultiPvChanged(int count);
+    void backToReviewRequested();
 
   protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -49,6 +52,9 @@ class AnalysisPage final : public QWidget {
     ChessBoardWidget* board_;
     QLabel* status_;
     QLabel* notice_;
+    QLabel* reviewPosition_ = nullptr;
+    QLabel* unsavedReviewEdits_ = nullptr;
+    QString reviewGame_;
     QPlainTextEdit* notes_;
     QLabel* topPlayer_;
     QLabel* bottomPlayer_;

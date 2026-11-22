@@ -62,7 +62,8 @@ class EngineAnalysisController final : public QObject {
     const std::optional<BoardViewState>& previewBoard() const { return previewBoard_; }
     const std::optional<EngineLinePresentation>& preview() const { return preview_; }
     int previewPly() const { return previewPly_; }
-    void setVisible(bool visible);
+    enum class HiddenSearch { Stop, Suspend };
+    void setVisible(bool visible, HiddenSearch hiddenSearch = HiddenSearch::Stop);
     void close();
   signals:
     void changed();
@@ -105,6 +106,7 @@ class EngineAnalysisController final : public QObject {
     bool admitted_ = false;
     bool cancelling_ = false;
     bool formattingBusy_ = false;
+    bool receivedLiveEvidence_ = false;
     bool closing_ = false;
     bool closed_ = false;
 };

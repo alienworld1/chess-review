@@ -76,8 +76,13 @@ stronger alternative when available.
   first. Press it again to cancel practice or return from a line preview.
 - **Show Line** replays an analyzed continuation. Use the board navigation
   controls to step through it, then **Return to Game**.
-- **Analyze Position** opens free analysis. **Back to Review** returns to the
-  same move or continuation without losing your place.
+- **Analyze Position** opens the selected position or continuation step with its
+  move history and any matching saved evaluation. Review can keep refining the
+  game while you explore. Use **Back to Review** or **Alt+Left** to restore the
+  same board orientation, step, expanded details, scroll position, and keyboard
+  focus. Open **Analyze Position** again from that spot to resume your variations
+  and any live search you started there. If you open engine settings from this
+  workspace, **Back to Analysis** brings you back to the same analysis session.
 - **More about this move** reveals expected-score impact and alternative moves.
 
 Use the numbered White/Black timeline or **Start**, **Previous**, **Next**, and

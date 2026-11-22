@@ -282,6 +282,27 @@ class LiveAnalysisTest final : public QObject {
         QCOMPARE(a.navigation.current(), app::Destination::Home);
         QVERIFY(!a.startup.engineAnalysis().state().canStart);
     }
+    void suspendedWorkspaceResumesItsSearchAndKeepsEvaluation() {
+        Application a;
+        QJsonArray steps;
+        search(steps, QStringLiteral("position startpos"), QStringLiteral("e2e4"));
+        stop(steps, QStringLiteral("e2e4"));
+        search(steps, QStringLiteral("position startpos"), QStringLiteral("d2d4"), 34);
+        stop(steps, QStringLiteral("d2d4"));
+        QVERIFY(a.prepare(steps));
+        auto& live = a.startup.engineAnalysis();
+        QSignalSpy finished(&a.supervisor(), &engine::EngineSupervisor::scheduledFinished);
+        live.start();
+        QTRY_COMPARE(live.state().line.evaluation, QStringLiteral("+0.42"));
+        live.setVisible(false, app::EngineAnalysisController::HiddenSearch::Suspend);
+        QTRY_COMPARE(finished.size(), 1);
+        QCOMPARE(live.state().line.evaluation, QStringLiteral("+0.42"));
+        QVERIFY(!live.state().canStart);
+        live.setVisible(true, app::EngineAnalysisController::HiddenSearch::Suspend);
+        QTRY_COMPARE(live.state().line.evaluation, QStringLiteral("+0.34"));
+        live.stop();
+        QTRY_COMPARE(finished.size(), 2);
+    }
     void reentrantCloseAllowsDeletionAfterClosed() {
         Application a;
         QVERIFY(a.prepare({}));

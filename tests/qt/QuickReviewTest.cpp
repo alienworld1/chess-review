@@ -1827,7 +1827,8 @@ class QuickReviewTest final : public QObject {
         review.selectMoment(1);
         QTRY_VERIFY(exploration.state().canAnalyze && !review.navigation().pending());
         exploration.openAnalysis();
-        QVERIFY(!exploration.sameAnalysisOrigin());
+        QVERIFY(linked.busy());
+        QVERIFY(exploration.sameAnalysisOrigin());
         linked.reset(std::string("invalid FEN"));
         QTRY_VERIFY(!linked.busy() && !linked.error().isEmpty());
         QVERIFY(!exploration.sameAnalysisOrigin());
@@ -1891,6 +1892,8 @@ class QuickReviewTest final : public QObject {
         QTRY_VERIFY(exploration.state().canAnalyze);
         exploration.openAnalysis();
         QTRY_VERIFY(!exploration.linkedAnalysis().busy() && exploration.sameAnalysisOrigin());
+        exploration.next();
+        QTRY_VERIFY(exploration.state().step == 1 && exploration.state().canAnalyze);
         bool redirected = false;
         QObject observer;
         connect(&exploration, &app::ReviewExplorationController::changed, &observer, [&] {
@@ -2256,6 +2259,72 @@ class QuickReviewTest final : public QObject {
         QVERIFY(linked.hasContent());
         QCOMPARE(linked.board().pieces, edited);
     }
+    void linkedAnalysisSwitchesDirectlyWhileReviewContinues() {
+        Fixture f;
+        QVERIFY(f.seed());
+        f.script(0, -1, 400);
+        f.run();
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        QTRY_VERIFY(review.state().active && review.navigation().ready() &&
+                    exploration.state().canAnalyze);
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        f.window.show();
+        f.window.findChild<QPushButton*>(QStringLiteral("startGuidedReview"))->click();
+        auto* pages = f.window.findChild<QStackedWidget*>(QStringLiteral("destinationPages"));
+        auto* analyze = f.window.findChild<QPushButton*>(QStringLiteral("reviewAnalyzePosition"));
+        auto* back = f.window.findChild<QPushButton*>(QStringLiteral("backToReview"));
+        auto* linkedPage = f.window.findChild<QWidget*>(QStringLiteral("reviewLinkedAnalysisPage"));
+        auto* reviewPage = f.window.findChild<QWidget*>(QStringLiteral("reviewPage"));
+        QTRY_VERIFY(analyze->isVisible() && analyze->isEnabled());
+        const auto original = review.navigation().position()->context();
+        const auto task = review.taskToken();
+        QSignalSpy routeChanges(pages, &QStackedWidget::currentChanged);
+        QSignalSpy committed(&review.navigation(),
+                             &app::ReviewNavigationController::selectionCommitted);
+        analyze->click();
+        QCOMPARE(pages->currentWidget(), linkedPage);
+        QCOMPARE(routeChanges.size(), 1);
+        QVERIFY(review.state().active);
+        QVERIFY(!f.window.findChild<QMessageBox*>(QStringLiteral("leaveReviewDialog")));
+        QVERIFY(!f.startup.analysis().busy() && !f.startup.analysis().position());
+        QVERIFY(exploration.linkedAnalysis().busy());
+        back->click();
+        QCOMPARE(pages->currentWidget(), reviewPage);
+        QCOMPARE(routeChanges.size(), 2);
+        QCOMPARE(committed.size(), 0);
+        QCOMPARE(review.taskToken(), task);
+        QCOMPARE(review.navigation().position()->context(), original);
+        analyze->click();
+        QCOMPARE(pages->currentWidget(), linkedPage);
+        QVERIFY(!f.window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog")));
+        QTRY_VERIFY(!exploration.linkedAnalysis().busy());
+        QCOMPARE(exploration.linkedAnalysis().position()->context(), original);
+        back->click();
+        QVERIFY(f.done());
+    }
+    void linkedAnalysisReusesSavedEvaluationAtThePlayedPosition() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true);
+        f.run();
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(1);
+        QTRY_VERIFY(exploration.state().canAnalyze && !exploration.state().loading);
+        QSignalSpy scheduled(&f.supervisor(), &engine::EngineSupervisor::scheduledChanged);
+        QVERIFY(exploration.openAnalysis());
+        QTRY_VERIFY(exploration.linkedEngine().state().savedEvidence);
+        QCOMPARE(exploration.linkedAnalysis().position()->context(),
+                 review.navigation().position()->context());
+        const auto& line = exploration.linkedEngine().state().line;
+        QVERIFY(!line.moves.empty());
+        const auto& legal = exploration.linkedAnalysis().board().legalMoves;
+        QVERIFY(std::find(legal.begin(), legal.end(), line.moves.front()) != legal.end());
+        QCOMPARE(scheduled.size(), 0);
+    }
     void explorationLinesRetriesAndLinkedAnalysisAreIsolated() {
         Fixture f;
         QVERIFY(f.seed("1. e4 e5 *", true));
@@ -2299,7 +2368,22 @@ class QuickReviewTest final : public QObject {
         QTRY_VERIFY(!ordinary.busy() && ordinary.hasContent());
         const auto ordinaryBoard = ordinary.board().pieces;
         const auto expectedContext = nav.position()->context();
-        f.window.findChild<QPushButton*>(QStringLiteral("reviewAnalyzePosition"))->click();
+        f.window.resize(1050, 720);
+        f.window.activateWindow();
+        QTRY_VERIFY(f.window.isActiveWindow());
+        auto* analyzePosition =
+            f.window.findChild<QPushButton*>(QStringLiteral("reviewAnalyzePosition"));
+        auto* detailsToggle =
+            f.window.findChild<QPushButton*>(QStringLiteral("reviewChessDetailsToggle"));
+        auto* readingScroll =
+            f.window.findChild<QScrollArea*>(QStringLiteral("reviewExplanationScroll"))
+                ->verticalScrollBar();
+        detailsToggle->setChecked(true);
+        QTRY_VERIFY(readingScroll->maximum() > 0);
+        analyzePosition->setFocus();
+        readingScroll->setValue(readingScroll->maximum() / 2);
+        const auto readingPosition = readingScroll->value();
+        analyzePosition->click();
         QTRY_VERIFY(!exploration.linkedAnalysis().busy() &&
                     exploration.linkedAnalysis().position());
         QCOMPARE(exploration.linkedAnalysis().board().pieces, candidateBoard);
@@ -2320,14 +2404,29 @@ class QuickReviewTest final : public QObject {
         linked.attemptMove(linked.board().legalMoves.front(), linked.board().revision);
         QTRY_VERIFY(!linked.busy() && linked.hasContent());
         const auto linkedEdited = linked.board().pieces;
+        auto* linkedPage = f.window.findChild<QWidget*>(QStringLiteral("reviewLinkedAnalysisPage"));
+        linkedPage->findChild<QPushButton*>(QStringLiteral("manageAnalysisEngines"))->click();
+        auto* backFromSettings =
+            f.window.findChild<QPushButton*>(QStringLiteral("backToReviewAnalysis"));
+        QVERIFY(backFromSettings->isVisible());
+        backFromSettings->click();
+        QTRY_VERIFY(linkedPage->isVisible());
+        QCOMPARE(linked.board().pieces, linkedEdited);
         review.selectMoment(1);
         QTRY_COMPARE(nav.displayed(), 1);
+        detailsToggle->setChecked(false);
+        readingScroll->setValue(0);
         f.window.findChild<QPushButton*>(QStringLiteral("backToReview"))->click();
         QTRY_VERIFY(exploration.state().canAnalyze);
-        f.window.findChild<QPushButton*>(QStringLiteral("reviewAnalyzePosition"))->click();
+        QVERIFY(detailsToggle->isChecked());
+        QTRY_VERIFY(analyzePosition->hasFocus());
+        QTRY_COMPARE(readingScroll->value(), readingPosition);
+        analyzePosition->click();
         QCOMPARE(linked.board().pieces, linkedEdited);
         QVERIFY(!f.window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog")));
-        f.window.findChild<QPushButton*>(QStringLiteral("backToReview"))->click();
+        auto* backToReview = f.window.findChild<QPushButton*>(QStringLiteral("backToReview"));
+        QTest::keyClick(backToReview, Qt::Key_Left, Qt::AltModifier);
+        QTRY_VERIFY(analyzePosition->isVisible());
         QTRY_VERIFY(!exploration.state().pendingBoard);
         QCOMPARE(exploration.state().mode, app::ExplorationMode::Line);
         QCOMPARE(exploration.state().step, 1);

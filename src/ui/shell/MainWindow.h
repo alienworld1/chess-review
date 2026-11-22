@@ -9,6 +9,7 @@
 
 class QAction;
 class QLabel;
+class QPushButton;
 class QScreen;
 class QStackedWidget;
 namespace chess_review::app {
@@ -76,6 +77,7 @@ class MainWindow final : public QMainWindow {
     void openEngineSettings();
     void installAnalysis(app::AnalysisController& controller);
     void selectDestination();
+    void showContextPage(app::Destination destination, QWidget* page);
     void showReview();
     void resetWindowGeometry();
     void fitToScreen();
@@ -90,9 +92,12 @@ class MainWindow final : public QMainWindow {
     AnalysisPage* analysis_ = nullptr;
     AnalysisPage* linkedAnalysis_ = nullptr;
     AnalysisPage* puzzleAnalysis_ = nullptr;
+    AnalysisPage* puzzleSavePage_ = nullptr;
+    QPushButton* backToReviewAnalysis_ = nullptr;
     std::uint64_t puzzleNavigationEpoch_ = 0;
     app::EngineAnalysisController* liveEngine_ = nullptr;
-    bool linkedAnalysisPending_ = false;
+    QWidget* contextPage_ = nullptr;
+    std::uint64_t reviewNavigationEpoch_ = 0;
     bool verbose_ = false;
     std::optional<int> configuredAnalysisLines_;
     QAction* importFile_ = nullptr;

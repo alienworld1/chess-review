@@ -590,6 +590,11 @@ void run(ui::MainWindow& window) {
             "linked analysis ready");
         require(exploration.linkedAnalysis().board().pieces == lineBoard,
                 "analysis starts at line");
+        auto* linkedPage = child<QWidget>(window, "reviewLinkedAnalysisPage");
+        require(!child<QLabel>(*linkedPage, "manualPuzzleStatus")->isVisible(),
+                "review puzzle notices stay out of linked analysis");
+        require(!child<QPushButton>(window, "reviewTaskStatus")->isVisible(),
+                "completed origin has one return action");
         render(window, QStringLiteral("analysis"), "backToReview");
         activate(window, "backToReview");
         require(navigation.selected() == moment && exploration.state().step == 1 &&

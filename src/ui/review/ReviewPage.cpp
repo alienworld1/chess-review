@@ -1170,6 +1170,7 @@ void ReviewPage::setSplitShare(int share) {
     applyingSplit_ = false;
 }
 void ReviewPage::hideEvent(QHideEvent* event) {
+    analysisReadingGeneration_.reset();
     controller_.navigation().clearPreview();
     if (controller_.exploration().hidesSolution()) {
         controller_.exploration().returnToGame();
@@ -1302,10 +1303,11 @@ void ReviewPage::update() {
         state.cancelling ? tr("Stopping review…")
         : state.active && state.run && state.run->status == review::JobStatus::Deriving
             ? tr("Updating summary…")
-        : state.active && state.refinementTotal > 0 ? tr("Checking key moments · %1/%2 positions")
-                                                          .arg(state.refinementDone)
-                                                          .arg(state.refinementTotal)
-        : state.active && state.run ? tr("Scanning game · %1/%2 positions")
+        : state.active && state.refinementTotal > 0
+            ? tr("Checking key moments (%1 of %2 positions)")
+                  .arg(state.refinementDone)
+                  .arg(state.refinementTotal)
+        : state.active && state.run ? tr("Scanning game (%1 of %2 positions)")
                                           .arg(state.run->completedPositions)
                                           .arg(state.run->totalPositions)
         : state.active ? tr("Preparing game review…")
@@ -1672,6 +1674,7 @@ void ReviewPage::updateExploration() {
         restoreRetryReadingState();
     }
     restoreRetryFocus();
+    finishAnalysisReturn();
     if (line) {
         firstMove_->setEnabled(state.step > 0);
         previousMove_->setEnabled(state.step > 0);
@@ -1692,17 +1695,31 @@ void ReviewPage::fitRetryFeedback() {
         explorationStatus_->setMinimumHeight(height);
     }
 }
-void ReviewPage::captureRetryReadingState() {
+QString ReviewPage::analysisDescription() const {
+    const auto& exploration = controller_.exploration().state();
+    const auto move = headline_->text();
+    if (controller_.navigation().selected() == 0) {
+        return tr("Starting position from Review");
+    }
+    if (exploration.mode == app::ExplorationMode::Line) {
+        return tr("Continuation for %1 (step %2 of %3)")
+            .arg(move)
+            .arg(exploration.step)
+            .arg(exploration.length);
+    }
+    return tr("Review position after %1").arg(move);
+}
+std::optional<ReviewPage::ReadingState> ReviewPage::captureReadingState() const {
     const auto& state = controller_.state();
     if (!state.run) {
-        return;
+        return {};
     }
-    RetryReadingState saved{state.gameId,
-                            state.run->id,
-                            controller_.navigation().selected(),
-                            chessDetailsToggle_->isChecked(),
-                            {},
-                            {}};
+    ReadingState saved{state.gameId,
+                       state.run->id,
+                       controller_.navigation().selected(),
+                       chessDetailsToggle_->isChecked(),
+                       {},
+                       {}};
     for (const auto& [toggle, content] : sections_) {
         saved.sections.push_back(toggle->isChecked());
     }
@@ -1723,32 +1740,84 @@ void ReviewPage::captureRetryReadingState() {
             capture(area);
         }
     }
-    ++readingRestoreGeneration_;
-    retryFocusPending_ = true;
-    retryFocusGeneration_ = readingRestoreGeneration_;
-    retryBoardFocused_ = false;
-    retryReadingState_.emplace(std::move(saved));
+    return saved;
 }
-void ReviewPage::restoreRetryReadingState() {
-    auto saved = std::move(*retryReadingState_);
-    retryReadingState_.reset();
+bool ReviewPage::matchesReadingState(const ReadingState& saved) const {
     const auto& state = controller_.state();
-    if (!state.run || state.gameId != saved.game || state.run->id != saved.run ||
-        controller_.navigation().selected() != saved.position) {
-        ++readingRestoreGeneration_;
-        return;
-    }
+    return state.run && state.gameId == saved.game && state.run->id == saved.run &&
+           controller_.navigation().selected() == saved.position;
+}
+void ReviewPage::restoreReadingSections(const ReadingState& saved) {
     chessDetailsToggle_->setChecked(saved.details);
     for (std::size_t i = 0; i < saved.sections.size(); ++i) {
         sections_[i].first->setChecked(saved.sections[i]);
     }
+}
+void ReviewPage::rememberAnalysisReadingState() { analysisReadingState_ = captureReadingState(); }
+void ReviewPage::restoreAnalysisReadingState(bool returnedToOrigin) {
+    analysisReadingGeneration_.reset();
+    if (!returnedToOrigin) {
+        analysisReadingState_.reset();
+        return;
+    }
+    analysisReadingGeneration_ = readingRestoreGeneration_;
+    finishAnalysisReturn();
+}
+void ReviewPage::finishAnalysisReturn() {
+    if (!analysisReadingGeneration_ || !analysisReadingState_) {
+        return;
+    }
+    const auto generation = *analysisReadingGeneration_;
+    if (generation != readingRestoreGeneration_ || !matchesReadingState(*analysisReadingState_)) {
+        analysisReadingGeneration_.reset();
+        analysisReadingState_.reset();
+        return;
+    }
+    if (!isVisible() || !analyze_->isEnabled()) {
+        return;
+    }
+    auto saved = std::move(*analysisReadingState_);
+    analysisReadingState_.reset();
+    analysisReadingGeneration_.reset();
+    if (!controller_.exploration().sameAnalysisOrigin()) {
+        return;
+    }
+    restoreReadingSections(saved);
+    analyze_->setFocus(Qt::OtherFocusReason);
+    QTimer::singleShot(0, this, [this, saved = std::move(saved), generation] {
+        if (!isVisible() || generation != readingRestoreGeneration_ ||
+            !matchesReadingState(saved) || !controller_.exploration().sameAnalysisOrigin()) {
+            return;
+        }
+        for (const auto& [bar, value] : saved.scrollBars) {
+            bar->setValue(value);
+        }
+    });
+}
+void ReviewPage::captureRetryReadingState() {
+    auto saved = captureReadingState();
+    if (!saved) {
+        return;
+    }
+    ++readingRestoreGeneration_;
+    retryFocusPending_ = true;
+    retryFocusGeneration_ = readingRestoreGeneration_;
+    retryBoardFocused_ = false;
+    retryReadingState_ = std::move(saved);
+}
+void ReviewPage::restoreRetryReadingState() {
+    auto saved = std::move(*retryReadingState_);
+    retryReadingState_.reset();
+    if (!matchesReadingState(saved)) {
+        ++readingRestoreGeneration_;
+        return;
+    }
+    restoreReadingSections(saved);
     // Wait for the restored content's layout before applying its scroll positions.
     const auto generation = readingRestoreGeneration_;
     QTimer::singleShot(0, this, [this, saved = std::move(saved), generation] {
-        const auto& current = controller_.state();
         if (generation != readingRestoreGeneration_ || controller_.exploration().active() ||
-            !current.run || current.gameId != saved.game || current.run->id != saved.run ||
-            controller_.navigation().selected() != saved.position) {
+            !matchesReadingState(saved)) {
             return;
         }
         for (const auto& [bar, value] : saved.scrollBars) {

@@ -131,6 +131,7 @@ void PuzzleGenerationController::savePosition(std::shared_ptr<const chess::Posit
     }
     state_ = {};
     state_.active = true;
+    state_.savingPosition = true;
     state_.message = tr("Preparing the selected position…");
     const auto discovery = *runtime.discovery;
     const auto overrides = runtime.optionOverrides;

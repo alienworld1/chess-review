@@ -12,6 +12,7 @@ namespace chess_review::app {
 struct PuzzleGenerationState {
     bool active = false;
     bool cancelling = false;
+    bool savingPosition = false;
     QString message;
     QString error;
     std::optional<persistence::PuzzleJobSummary> job;

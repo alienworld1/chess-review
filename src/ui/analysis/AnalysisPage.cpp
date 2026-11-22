@@ -455,6 +455,40 @@ void AnalysisPage::setAnalysisMultiPv(int count) {
         engine_->setMultiPv(count);
     }
 }
+void AnalysisPage::installReviewNavigation() {
+    auto* page = qobject_cast<QVBoxLayout*>(layout());
+    page->removeWidget(notice_);
+    auto* header = new QHBoxLayout;
+    header->setSpacing(14);
+    auto* back = new QPushButton(tr("Back to Review"), this);
+    back->setObjectName(QStringLiteral("backToReview"));
+    back->setToolTip(tr("Return to the review position (Alt+Left)."));
+    header->addWidget(back, 0, Qt::AlignVCenter);
+    auto* context = new QVBoxLayout;
+    context->setSpacing(2);
+    setTextRole(*notice_, "heading");
+    context->addWidget(notice_);
+    reviewPosition_ = new QLabel(this);
+    reviewPosition_->setTextFormat(Qt::PlainText);
+    reviewPosition_->setWordWrap(true);
+    setTextRole(*reviewPosition_, "secondary");
+    context->addWidget(reviewPosition_);
+    header->addLayout(context, 1);
+    unsavedReviewEdits_ = new QLabel(tr("Unsaved edits"), this);
+    setTextRole(*unsavedReviewEdits_, "secondary");
+    header->addWidget(unsavedReviewEdits_, 0, Qt::AlignVCenter);
+    page->insertLayout(0, header);
+
+    auto* shortcut = new QShortcut(QKeySequence(Qt::ALT | Qt::Key_Left), this);
+    shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(shortcut, &QShortcut::activated, back, &QPushButton::click);
+    connect(back, &QPushButton::clicked, this, &AnalysisPage::backToReviewRequested);
+}
+void AnalysisPage::setReviewContext(const QString& game, const QString& position) {
+    reviewGame_ = game;
+    reviewPosition_->setText(position);
+    refresh();
+}
 void AnalysisPage::refreshBoard() {
     displayingPreview_ = engine_ && engine_->preview();
     if (displayingPreview_) {
@@ -462,7 +496,7 @@ void AnalysisPage::refreshBoard() {
         state.interactive = false;
         state.selection.reset();
         state.annotations.clear();
-        state.positionDescription = tr("Engine preview · %1").arg(state.positionDescription);
+        state.positionDescription = tr("Engine preview (%1)").arg(state.positionDescription);
         board_->setState(state);
         status_->setText(state.positionDescription);
         return;
@@ -489,8 +523,13 @@ void AnalysisPage::refresh() {
     edit_->setEnabled(!displayingPreview_ && controller_.canEdit(target));
     variations_->setEnabled(!displayingPreview_ && controller_.canDelete(target));
     save_->setEnabled(controller_.canEdit(target));
-    const auto game = controller_.gameId() ? controller_.gameDescription() : tr("Analysis");
-    notice_->setText(controller_.hasContent() ? tr("%1 · Unsaved edits").arg(game) : game);
+    if (reviewPosition_) {
+        notice_->setText(reviewGame_.isEmpty() ? tr("Review analysis") : reviewGame_);
+        unsavedReviewEdits_->setVisible(controller_.hasContent());
+    } else {
+        const auto game = controller_.gameId() ? controller_.gameDescription() : tr("Analysis");
+        notice_->setText(controller_.hasContent() ? tr("%1 (unsaved edits)").arg(game) : game);
+    }
     if (controller_.hasContent()) {
         operationNotice_->hide();
     }

@@ -52,7 +52,14 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
                 linkedOrigin_.reset();
                 linkedEvidence_.reset();
                 linkedState_ = {};
-            } else if (linkedEvidence_) {
+            } else if (linkedOrigin_->candidate < 0) {
+                const auto stage =
+                    linkedEvidence_ ? linkedEvidence_->move.stage : review::EvidenceStage::Quick;
+                queuedLinkedEvidence_ =
+                    LinkedEvidenceLookup{linkedOrigin_->run, linkedOrigin_->target.position, stage,
+                                         linked_.board().revision};
+                loadLinkedEvidence();
+            } else if (linkedOrigin_->step == 0 && linkedEvidence_) {
                 linkedEngine_.showSavedReviewEvidence(linkedEvidence_->evidence);
             }
             publish();
@@ -66,6 +73,25 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
         engineClosed_ = true;
         finishClose();
     });
+    connect(
+        &database_, &persistence::Database::reviewEvidenceLoaded, this,
+        [this](QUuid id, const persistence::LoadReviewEvidenceResult& result) {
+            if (id != linkedRead_) {
+                return;
+            }
+            const QScopedValueRollback notification(notifying_, true);
+            linkedRead_ = {};
+            if (closing_) {
+                finishClose();
+                return;
+            }
+            if (!linked_.positionChanging() && linked_.board().revision == linkedReadRevision_) {
+                if (const auto* saved = std::get_if<persistence::StoredReviewEvidence>(&result)) {
+                    linkedEngine_.showSavedReviewEvidence(saved->evidence);
+                }
+            }
+            loadLinkedEvidence();
+        });
     connect(
         &database_, &persistence::Database::reviewExplorationLoaded, this,
         [this](QUuid id, const persistence::LoadReviewExplorationResult& result) {
@@ -730,46 +756,76 @@ std::optional<ReviewReturnOrigin> ReviewExplorationController::analysisOrigin() 
     if (!state_.canAnalyze || !run_ || hidesSolution()) {
         return {};
     }
+    const bool line = state_.mode == ExplorationMode::Line;
+    const auto* continuation =
+        line && evidence_ ? evidence_->continuation(state_.candidate) : nullptr;
+    if (line && !continuation) {
+        return {};
+    }
     return ReviewReturnOrigin{run_->gameId,
                               run_->id,
                               navigation_.target(navigation_.selected()),
-                              state_.mode == ExplorationMode::Line ? state_.candidate : -1,
-                              state_.mode == ExplorationMode::Line ? state_.step : 0,
-                              board().blackAtBottom};
+                              line ? state_.candidate : -1,
+                              line ? state_.step : 0,
+                              board().blackAtBottom,
+                              continuation ? *continuation : std::vector<chess::Move>{}};
 }
 bool ReviewExplorationController::sameAnalysisOrigin() const {
-    return !openingLinked_ && linkedOrigin_ && analysisOrigin() == linkedOrigin_;
+    return linkedOrigin_ && analysisOrigin() == linkedOrigin_;
 }
-void ReviewExplorationController::openAnalysis() {
+bool ReviewExplorationController::openAnalysis() {
     const QScopedValueRollback notification(notifying_, true);
     const auto origin = analysisOrigin();
     if (!origin || closing_) {
-        return;
+        return false;
     }
     if (sameAnalysisOrigin()) {
-        return;
+        return true;
     }
     const auto position =
         state_.mode == ExplorationMode::Line ? sandbox_.position() : navigation_.position();
     if (!position) {
-        return;
+        return false;
     }
     const auto generation = generation_;
+    linkedEngine_.stop();
+    if (closing_ || generation != generation_ || analysisOrigin() != origin) {
+        return false;
+    }
     linked_.setOrientation(board().blackAtBottom);
     if (closing_ || generation != generation_ || analysisOrigin() != origin) {
-        return;
+        return false;
     }
     linkedOrigin_ = origin;
     linkedEvidence_ = evidence_;
     linkedState_ = state_;
+    queuedLinkedEvidence_.reset();
     openingLinked_ = true;
     linked_.openPosition(position);
+    return !closing_ && generation == generation_ && analysisOrigin() == origin;
 }
-void ReviewExplorationController::restoreReviewOrigin() {
-    const QScopedValueRollback notification(notifying_, true);
-    if (closing_ || openingLinked_ || !linkedOrigin_ || !run_ || run_->id != linkedOrigin_->run ||
-        navigation_.target(0).session != linkedOrigin_->target.session) {
+void ReviewExplorationController::loadLinkedEvidence() {
+    if (closing_ || !linkedRead_.isNull() || !queuedLinkedEvidence_) {
         return;
+    }
+    const auto lookup = *queuedLinkedEvidence_;
+    queuedLinkedEvidence_.reset();
+    if (linked_.positionChanging() || linked_.board().revision != lookup.boardRevision) {
+        return;
+    }
+    linkedRead_ = QUuid::createUuid();
+    linkedReadRevision_ = lookup.boardRevision;
+    database_.loadReviewEvidence(linkedRead_, lookup.run, lookup.position, lookup.stage);
+}
+bool ReviewExplorationController::restoreReviewOrigin() {
+    const QScopedValueRollback notification(notifying_, true);
+    if (closing_ || !linkedOrigin_ || !run_ || run_->gameId != linkedOrigin_->game ||
+        run_->id != linkedOrigin_->run ||
+        navigation_.target(0).session != linkedOrigin_->target.session) {
+        return false;
+    }
+    if (analysisOrigin() == linkedOrigin_) {
+        return true;
     }
     const auto origin = *linkedOrigin_;
     const auto evidence = linkedEvidence_;
@@ -777,36 +833,41 @@ void ReviewExplorationController::restoreReviewOrigin() {
     auto generation = generation_ + 1;
     returnToGame();
     if (closing_ || generation != generation_) {
-        return;
+        return false;
     }
     // Selecting a different moment retires the preceding exploration once.
     if (target_ != origin.target) {
         ++generation;
     }
-    navigation_.select(origin.target);
+    if (navigation_.selected() != origin.target.position) {
+        navigation_.select(origin.target);
+    } else {
+        navigation_.clearPreview();
+    }
     if (closing_ || generation != generation_ || !run_ || run_->id != origin.run ||
         navigation_.target(navigation_.selected()) != origin.target) {
-        return;
+        return false;
     }
     if (origin.candidate < 0 && navigation_.board().blackAtBottom != origin.blackAtBottom) {
         navigation_.flip();
     }
-    if (origin.candidate >= 0 && evidence && !evidenceReadFailed_) {
-        const auto* continuation = evidence->continuation(origin.candidate);
-        if (!continuation) {
-            return;
+    if (origin.candidate >= 0) {
+        if (!evidence || evidenceReadFailed_) {
+            return false;
         }
         sandbox_.setOrientation(origin.blackAtBottom);
         if (closing_ || generation != generation_) {
-            return;
+            return false;
         }
         evidence_ = evidence;
         state_ = linkedState;
         state_.pendingBoard = true;
         displayedBoard_.interactive = false;
-        sandbox_.openLine(evidence_->before, *continuation, origin.step);
+        sandbox_.openLine(evidence_->before, origin.continuation, origin.step);
     }
     publish();
+    return !closing_ && generation == generation_ && run_ && run_->id == origin.run &&
+           navigation_.target(navigation_.selected()) == origin.target;
 }
 void ReviewExplorationController::close() {
     if (closing_) {
@@ -821,8 +882,8 @@ void ReviewExplorationController::close() {
 }
 void ReviewExplorationController::finishClose() {
     if (!closing_ || closed_ || closeQueued_ || workerBusy_ || !search_.isNull() ||
-        !pending_.isNull() || !cacheRead_.isNull() || !sandboxClosed_ || !linkedClosed_ ||
-        !engineClosed_) {
+        !pending_.isNull() || !cacheRead_.isNull() || !linkedRead_.isNull() || !sandboxClosed_ ||
+        !linkedClosed_ || !engineClosed_) {
         return;
     }
     if (!worker_.waitForDone(0)) {

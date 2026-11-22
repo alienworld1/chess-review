@@ -369,14 +369,20 @@ void EngineAnalysisController::setMultiPv(int count) {
     }
     reconcile();
 }
-void EngineAnalysisController::setVisible(bool visible) {
+void EngineAnalysisController::setVisible(bool visible, HiddenSearch hiddenSearch) {
+    if (visible_ == visible) {
+        return;
+    }
     visible_ = visible;
     if (!visible) {
         clearPreview();
-        stop();
-        return;
+        if (hiddenSearch == HiddenSearch::Stop) {
+            stop();
+            return;
+        }
+        cancel();
     }
-    updateControls();
+    reconcile();
 }
 void EngineAnalysisController::acceptEvidence(const engine::ScheduledEvidence& evidence) {
     if (closing_ || request_.isNull() || !attempt_ || evidence.identity.session != session_ ||
@@ -385,6 +391,7 @@ void EngineAnalysisController::acceptEvidence(const engine::ScheduledEvidence& e
         revision_ == 0 || revision_ != board_.board().revision || board_.positionChanging()) {
         return;
     }
+    receivedLiveEvidence_ = true;
     pending_ = evidence.evidence;
     formatNext();
 }
@@ -453,7 +460,8 @@ void EngineAnalysisController::formatNext() {
 }
 void EngineAnalysisController::showSavedReviewEvidence(const review::PositionEvidence& evidence) {
     if (closing_ || !request_.isNull() || !board_.position() || board_.busy() ||
-        !evidence.complete || evidence.restricted || evidence.candidates.empty()) {
+        receivedLiveEvidence_ || !evidence.complete || evidence.restricted ||
+        evidence.candidates.empty()) {
         return;
     }
     engine::AnalysisSnapshot snapshot;
@@ -488,6 +496,7 @@ void EngineAnalysisController::showSavedReviewEvidence(const review::PositionEvi
     formatNext();
 }
 void EngineAnalysisController::clearEvidence() {
+    receivedLiveEvidence_ = false;
     state_.line = {};
     state_.candidates.clear();
     state_.statistics = {};

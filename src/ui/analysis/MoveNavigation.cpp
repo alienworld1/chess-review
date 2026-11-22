@@ -172,7 +172,7 @@ QVarLengthArray<MoveToken, 8> tokens(const VariationModel& model, const QModelIn
             const auto note =
                 metrics.elidedText(entry.inlineNote, Qt::ElideRight, std::max(0, rect.width() / 3));
             if (!note.isEmpty()) {
-                text += QStringLiteral("  ·  ") + note;
+                text += QStringLiteral(" {%1}").arg(note);
             }
         }
         const int width = metrics.horizontalAdvance(text) + 16;

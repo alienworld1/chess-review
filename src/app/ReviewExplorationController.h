@@ -19,6 +19,7 @@ struct ReviewReturnOrigin {
     int candidate = -1;
     int step = 0;
     bool blackAtBottom = false;
+    std::vector<chess::Move> continuation;
     bool operator==(const ReviewReturnOrigin&) const = default;
 };
 struct ExplorationState {
@@ -72,8 +73,8 @@ class ReviewExplorationController final : public QObject {
     void flip();
     std::optional<ReviewReturnOrigin> analysisOrigin() const;
     bool sameAnalysisOrigin() const;
-    void restoreReviewOrigin();
-    void openAnalysis(); // Caller resolves discard confirmation for a different edited origin.
+    bool restoreReviewOrigin();
+    bool openAnalysis(); // Caller resolves discard confirmation for a different edited origin.
     AnalysisController& linkedAnalysis() { return linked_; }
     EngineAnalysisController& linkedEngine() { return linkedEngine_; }
     void close();
@@ -92,6 +93,7 @@ class ReviewExplorationController final : public QObject {
     void scheduleChild();
     void evaluateChild(engine::AnalysisResult result, bool cached = false);
     void showGrade(review::RetryResult result);
+    void loadLinkedEvidence();
     void finishClose();
     void deliverClose();
     persistence::Database& database_;
@@ -108,6 +110,15 @@ class ReviewExplorationController final : public QObject {
     std::optional<ReviewReturnOrigin> linkedOrigin_;
     std::shared_ptr<const persistence::ReviewExploration> linkedEvidence_;
     ExplorationState linkedState_;
+    struct LinkedEvidenceLookup {
+        review::ReviewId run;
+        int position;
+        review::EvidenceStage stage;
+        std::uint64_t boardRevision;
+    };
+    std::optional<LinkedEvidenceLookup> queuedLinkedEvidence_;
+    QUuid linkedRead_;
+    std::uint64_t linkedReadRevision_ = 0;
     std::optional<engine::AnalysisRequest> prepared_;
     std::optional<review::PositionEvidence> deepChild_;
     std::optional<chess::Move> attempted_;

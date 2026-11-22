@@ -202,23 +202,25 @@ void EngineAnalysisPanel::refresh() {
     const auto depth = state.line.depth ? tr("Depth %1").arg(*state.line.depth) : QString{};
     const auto target =
         state.targetDepth ? tr("Target depth %1").arg(*state.targetDepth) : QString{};
-    QStringList status{state.status};
+    QStringList detail;
     if (state.savedEvidence) {
-        status.append(tr("Saved review analysis"));
-    }
-    if (!depth.isEmpty()) {
-        status.append(depth);
+        detail.append(state.line.depth
+                          ? tr("Saved review analysis at depth %1").arg(*state.line.depth)
+                          : tr("Saved review analysis"));
+    } else if (!depth.isEmpty()) {
+        detail.append(depth);
     }
     if (!target.isEmpty() && state.status != tr("Deepening to depth %1").arg(*state.targetDepth)) {
-        status.append(target);
+        detail.append(target);
     }
-    status_->setText(status.join(QStringLiteral(" · ")));
+    const QLocale locale;
+    status_->setText(detail.isEmpty() ? state.status
+                                      : state.status + u'\n' + locale.createSeparatedList(detail));
     evaluation_->setText(
         tr("White\n%1")
             .arg(state.line.evaluation.isEmpty() ? tr("Unavailable") : state.line.evaluation));
     evaluation_->setToolTip(tr("Evaluation from White's perspective"));
     QStringList metrics;
-    const QLocale locale;
     if (state.statistics.nodes) {
         metrics.append(
             tr("%1 nodes").arg(locale.toString(static_cast<qulonglong>(*state.statistics.nodes))));
@@ -232,7 +234,7 @@ void EngineAnalysisPanel::refresh() {
             tr("%1 ms").arg(locale.toString(static_cast<qulonglong>(*state.statistics.timeMs))));
     }
     depth_->setText(metrics.empty() ? tr("No search metrics available")
-                                    : metrics.join(QStringLiteral(" · ")));
+                                    : locale.createSeparatedList(metrics));
 
     if (renderedCandidates_ != state.candidatesRevision) {
         renderedCandidates_ = state.candidatesRevision;
@@ -297,7 +299,7 @@ void EngineAnalysisPanel::refresh() {
         const auto ply = controller_.previewPly();
         const auto size = static_cast<int>(preview->moves.size());
         const auto previewText =
-            tr("Preview · %1 of %2 plies · %3").arg(ply).arg(size).arg(preview->pv.left(4096));
+            tr("Preview at ply %1 of %2 (%3)").arg(ply).arg(size).arg(preview->pv.left(4096));
         previewStatus_->setText(
             QFontMetrics(previewStatus_->font())
                 .elidedText(previewText, Qt::ElideRight, std::max(pv_->width(), 160)));

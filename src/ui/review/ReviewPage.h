@@ -35,6 +35,9 @@ class ReviewPage final : public QWidget {
     int splitShare() const;
     void setSplitShare(int share);
     void setVerbose(bool verbose);
+    QString analysisDescription() const;
+    void rememberAnalysisReadingState();
+    void restoreAnalysisReadingState(bool returnedToOrigin);
   signals:
     void backRequested();
     void settingsRequested();
@@ -56,7 +59,7 @@ class ReviewPage final : public QWidget {
     void captureRetryReadingState();
     void restoreRetryReadingState();
     void restoreRetryFocus();
-    struct RetryReadingState {
+    struct ReadingState {
         persistence::GameId game;
         review::ReviewId run;
         int position;
@@ -65,7 +68,13 @@ class ReviewPage final : public QWidget {
         // These fixed widgets are owned by this page or its containing scroll area.
         std::vector<std::pair<QScrollBar*, int>> scrollBars;
     };
-    std::optional<RetryReadingState> retryReadingState_;
+    std::optional<ReadingState> captureReadingState() const;
+    bool matchesReadingState(const ReadingState& state) const;
+    void restoreReadingSections(const ReadingState& state);
+    void finishAnalysisReturn();
+    std::optional<ReadingState> retryReadingState_;
+    std::optional<ReadingState> analysisReadingState_;
+    std::optional<std::uint64_t> analysisReadingGeneration_;
     std::uint64_t readingRestoreGeneration_ = 0;
     bool retryBoardFocused_ = false;
     bool retryFocusPending_ = false;

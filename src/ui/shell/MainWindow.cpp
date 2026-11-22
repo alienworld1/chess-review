@@ -32,6 +32,7 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScopedValueRollback>
 #include <QScreen>
 #include <QScrollArea>
 #include <QShowEvent>
@@ -347,14 +348,16 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
         auto* openSaved = new QPushButton(tr("Open saved puzzle"), analysisPage);
         openSaved->setObjectName(QStringLiteral("openManualPuzzle"));
         commands->addWidget(openSaved);
-        const auto update = [save, notice, openSaved, analysisPage, engine, &generation] {
+        const auto update = [this, save, notice, openSaved, analysisPage, engine, &generation] {
             save->setEnabled(generation.canSavePosition() && (!engine || !engine->preview()) &&
                              !analysisPage->controller().busy() &&
                              analysisPage->controller().position());
             const auto& state = generation.state();
-            notice->setText(state.error.isEmpty() ? state.message : state.error);
+            const bool ownSave = state.savingPosition && puzzleSavePage_ == analysisPage;
+            notice->setText(ownSave ? (state.error.isEmpty() ? state.message : state.error)
+                                    : QString{});
             notice->setVisible(!notice->text().isEmpty());
-            openSaved->setVisible(state.lastSaved.has_value());
+            openSaved->setVisible(ownSave && state.lastSaved.has_value());
         };
         connect(&generation, &app::PuzzleGenerationController::changed, analysisPage, update);
         connect(&analysisPage->controller(), &app::AnalysisController::changed, analysisPage,
@@ -362,13 +365,18 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
         if (engine) {
             connect(engine, &app::EngineAnalysisController::changed, analysisPage, update);
         }
-        connect(save, &QPushButton::clicked, analysisPage, [analysisPage, engine, &generation] {
-            if (engine) {
-                engine->stop();
-            }
-            generation.savePosition(analysisPage->controller().position(),
-                                    analysisPage->controller().gameId());
-        });
+        connect(save, &QPushButton::clicked, analysisPage,
+                [this, analysisPage, engine, &generation] {
+                    if (!generation.canSavePosition() || !analysisPage->controller().position()) {
+                        return;
+                    }
+                    if (engine) {
+                        engine->stop();
+                    }
+                    puzzleSavePage_ = analysisPage;
+                    generation.savePosition(analysisPage->controller().position(),
+                                            analysisPage->controller().gameId());
+                });
         connect(openSaved, &QPushButton::clicked, this, [this, &generation] {
             if (generation.state().lastSaved) {
                 navigation_.navigate(app::Destination::Puzzles);
@@ -476,18 +484,19 @@ void MainWindow::installReview(app::ReviewGameController& review) {
     auto& linkedExplorer = review.exploration();
     linkedAnalysis_ = new AnalysisPage(linkedExplorer.linkedAnalysis(), pages_);
     linkedAnalysis_->setObjectName(QStringLiteral("reviewLinkedAnalysisPage"));
+    linkedAnalysis_->installReviewNavigation();
     linkedAnalysis_->installEngineAnalysis(linkedExplorer.linkedEngine());
     shareAnalysisLineCount(*linkedAnalysis_);
     pages_->addWidget(linkedAnalysis_);
-    auto* linkedCommands =
-        linkedAnalysis_->findChild<QHBoxLayout*>(QStringLiteral("analysisCommands"));
-    auto* backToReview = new QPushButton(tr("Back to Review"), linkedAnalysis_);
-    backToReview->setObjectName(QStringLiteral("backToReview"));
-    linkedCommands->addWidget(backToReview);
-    connect(backToReview, &QPushButton::clicked, this, [this] {
-        reviewController_->exploration().restoreReviewOrigin();
+    const auto returnToOrigin = [this] {
+        if (closing_ || pages_->currentWidget() != linkedAnalysis_) {
+            return;
+        }
+        const bool restored = reviewController_->exploration().restoreReviewOrigin();
         showReview();
-    });
+        reviewPage_->restoreAnalysisReadingState(restored);
+    };
+    connect(linkedAnalysis_, &AnalysisPage::backToReviewRequested, this, returnToOrigin);
     connect(linkedAnalysis_, &AnalysisPage::manageEnginesRequested, this,
             &MainWindow::openEngineSettings);
     connect(reviewPage_, &ReviewPage::analyzeRequested, this, [this] {
@@ -496,8 +505,10 @@ void MainWindow::installReview(app::ReviewGameController& review) {
         if (!requestedOrigin) {
             return;
         }
-        const auto open = [this, requestedOrigin] {
-            if (closing_) {
+        const auto epoch = reviewNavigationEpoch_;
+        const auto open = [this, requestedOrigin, epoch] {
+            if (closing_ || reviewLeavePending_ || pages_->currentWidget() != reviewPage_ ||
+                epoch != reviewNavigationEpoch_) {
                 return;
             }
             auto& currentExplorer = reviewController_->exploration();
@@ -505,19 +516,19 @@ void MainWindow::installReview(app::ReviewGameController& review) {
                 return;
             }
             const bool resume = currentExplorer.sameAnalysisOrigin();
-            const auto origin = currentExplorer.analysisOrigin();
-            currentExplorer.openAnalysis();
-            if (analysis_ && !resume && origin) {
+            if (!currentExplorer.openAnalysis() || pages_->currentWidget() != reviewPage_ ||
+                epoch != reviewNavigationEpoch_) {
+                return;
+            }
+            reviewPage_->rememberAnalysisReadingState();
+            linkedAnalysis_->setReviewContext(reviewController_->state().game,
+                                              reviewPage_->analysisDescription());
+            if (analysis_ && !resume) {
                 auto preferences = analysis_->preferences();
-                preferences.blackAtBottom = origin->blackAtBottom;
+                preferences.blackAtBottom = requestedOrigin->blackAtBottom;
                 linkedAnalysis_->setPreferences(preferences);
             }
-            linkedAnalysisPending_ = true;
-            if (navigation_.current() == app::Destination::Analyze) {
-                selectDestination();
-            } else {
-                navigation_.navigate(app::Destination::Analyze);
-            }
+            showContextPage(app::Destination::Analyze, linkedAnalysis_);
         };
         if (!exploration.sameAnalysisOrigin()) {
             linkedAnalysis_->requestDiscard(open);
@@ -526,10 +537,10 @@ void MainWindow::installReview(app::ReviewGameController& review) {
         }
     });
     connect(pages_, &QStackedWidget::currentChanged, this, [this] {
-        if (reviewController_) {
-            reviewController_->exploration().linkedEngine().setVisible(
-                !closing_ && pages_->currentWidget() == linkedAnalysis_);
-        }
+        ++reviewNavigationEpoch_;
+        reviewController_->exploration().linkedEngine().setVisible(
+            !closing_ && pages_->currentWidget() == linkedAnalysis_,
+            app::EngineAnalysisController::HiddenSearch::Suspend);
     });
     auto* games = pages_->findChild<GamesPage*>();
     Q_ASSERT(games);
@@ -551,8 +562,17 @@ void MainWindow::installReview(app::ReviewGameController& review) {
     task->setAccessibleName(tr("Background review status; return to review"));
     qobject_cast<QVBoxLayout*>(scroll->widget()->layout())->insertWidget(2, task);
     task->hide();
-    connect(task, &QPushButton::clicked, &review.workspace(),
-            &app::ReviewWorkspaceController::returnToTask);
+    const auto sameReviewAsTask = [&review] {
+        return review.state().run && review.taskState().run &&
+               review.state().run->id == review.taskState().run->id;
+    };
+    connect(task, &QPushButton::clicked, this, [this, &review, returnToOrigin, sameReviewAsTask] {
+        if (pages_->currentWidget() == linkedAnalysis_ && sameReviewAsTask()) {
+            returnToOrigin();
+        } else {
+            review.workspace().returnToTask();
+        }
+    });
     connect(&review.workspace(), &app::ReviewWorkspaceController::showRequested, this,
             &MainWindow::showReview);
     connect(&review.workspace(), &app::ReviewWorkspaceController::restoreFailed, this, [this] {
@@ -565,17 +585,18 @@ void MainWindow::installReview(app::ReviewGameController& review) {
         navigation_.navigate(app::Destination::Games);
         selectDestination();
     });
-    const auto updateTask = [this, task, &review] {
+    const auto updateTask = [this, task, &review, sameReviewAsTask] {
         const auto& state = review.taskState();
         if (state.active && !reviewWasActive_) {
             reviewLeaveAllowed_ = false;
         }
         reviewWasActive_ = state.active;
-        const bool viewingTask = pages_->currentWidget() == reviewPage_ && review.state().run &&
-                                 state.run && review.state().run->id == state.run->id;
+        const bool viewingTask =
+            sameReviewAsTask() && (pages_->currentWidget() == reviewPage_ ||
+                                   (pages_->currentWidget() == linkedAnalysis_ && !state.active));
         task->setVisible(!viewingTask && pages_->currentWidget() != home_ &&
                          (state.active || state.run.has_value() || !state.error.isEmpty()));
-        task->setText(state.active ? tr("Review in progress — Return to review")
+        task->setText(state.active ? tr("Return to review in progress")
                                    : tr("Open your saved review"));
     };
     connect(&review, &app::ReviewGameController::changed, this, updateTask);
@@ -591,8 +612,15 @@ void MainWindow::showReview() {
     if (closing_ || !reviewPage_) {
         return;
     }
-    navigation_.navigate(app::Destination::Games);
-    pages_->setCurrentWidget(reviewPage_);
+    showContextPage(app::Destination::Games, reviewPage_);
+}
+void MainWindow::showContextPage(app::Destination destination, QWidget* page) {
+    const QScopedValueRollback context(contextPage_, page);
+    if (navigation_.current() == destination) {
+        selectDestination();
+    } else {
+        navigation_.navigate(destination);
+    }
 }
 void MainWindow::shareAnalysisLineCount(AnalysisPage& page) {
     if (analysis_) {
@@ -630,6 +658,9 @@ void MainWindow::openEngineSettings() {
     if (!closing_) {
         if (auto* settings = pages_->findChild<EngineSettingsPage*>()) {
             settings->showEngines();
+            if (backToReviewAnalysis_ && pages_->currentWidget() != settings) {
+                backToReviewAnalysis_->setVisible(pages_->currentWidget() == linkedAnalysis_);
+            }
         }
         navigation_.navigate(app::Destination::Settings);
     }
@@ -643,6 +674,21 @@ void MainWindow::installEngines(app::EngineSettingsController& engines) {
     delete placeholder;
     auto* settings = new EngineSettingsPage(engines, pages_);
     pages_->insertWidget(index, settings);
+    backToReviewAnalysis_ = new QPushButton(tr("Back to Analysis"), settings);
+    backToReviewAnalysis_->setObjectName(QStringLiteral("backToReviewAnalysis"));
+    backToReviewAnalysis_->hide();
+    qobject_cast<QVBoxLayout*>(settings->layout())
+        ->insertWidget(0, backToReviewAnalysis_, 0, Qt::AlignLeft);
+    connect(backToReviewAnalysis_, &QPushButton::clicked, this, [this] {
+        if (!closing_ && linkedAnalysis_) {
+            showContextPage(app::Destination::Analyze, linkedAnalysis_);
+        }
+    });
+    connect(pages_, &QStackedWidget::currentChanged, this, [this, settings] {
+        if (pages_->currentWidget() != settings) {
+            backToReviewAnalysis_->hide();
+        }
+    });
     auto* action = new QAction(tr("Engine Settings…"), this);
     action->setObjectName(QStringLiteral("engineSettingsAction"));
     findChild<QMenu*>(QStringLiteral("viewMenu"))->addAction(action);
@@ -930,15 +976,21 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     return QMainWindow::eventFilter(watched, event);
 }
 void MainWindow::selectDestination() {
+    const auto destination = navigation_.current();
+    auto* context =
+        (destination == app::Destination::Games && contextPage_ == reviewPage_) ||
+                (destination == app::Destination::Analyze && contextPage_ == linkedAnalysis_)
+            ? contextPage_
+            : nullptr;
     if (!closing_ && reviewPage_ && pages_->currentWidget() == reviewPage_ &&
-        reviewController_->state().active && !reviewLeaveAllowed_) {
+        reviewController_->state().active && !reviewLeaveAllowed_ && !context) {
         if (reviewLeavePending_) {
             return;
         }
         reviewLeavePending_ = true;
         auto* dialog =
             new QMessageBox(QMessageBox::Question, tr("Leave active review?"),
-                            tr("The quick scan is still running."), QMessageBox::NoButton, this);
+                            tr("This game is still being reviewed."), QMessageBox::NoButton, this);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->setObjectName(QStringLiteral("leaveReviewDialog"));
         auto* background = dialog->addButton(tr("Continue in background"), QMessageBox::AcceptRole);
@@ -966,20 +1018,13 @@ void MainWindow::selectDestination() {
         dialog->open();
         return;
     }
-    if (navigation_.current() != app::Destination::Analyze) {
-        linkedAnalysisPending_ = false;
-    }
     // A previous signal subscriber may have synchronously redirected navigation.
     for (std::size_t i = 0; i < destinations_.size(); ++i) {
         auto* action = destinations_[i];
-        if (action->data().value<app::Destination>() == navigation_.current()) {
+        if (action->data().value<app::Destination>() == destination) {
             action->setChecked(true);
-            pages_->setCurrentIndex(static_cast<int>(i));
-            if (navigation_.current() == app::Destination::Analyze && linkedAnalysisPending_) {
-                linkedAnalysisPending_ = false;
-                pages_->setCurrentWidget(linkedAnalysis_);
-            }
-            if (analysis_ && navigation_.current() == app::Destination::Analyze && !closing_) {
+            pages_->setCurrentWidget(context ? context : pages_->widget(static_cast<int>(i)));
+            if (analysis_ && pages_->currentWidget() == analysis_ && !closing_) {
                 analysis_->controller().start();
             }
             return;
