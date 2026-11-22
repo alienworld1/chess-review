@@ -1142,7 +1142,7 @@ void ReviewPage::updateSummary() {
     }
     const auto& white = overview.sides[static_cast<std::size_t>(chess::Color::White)];
     const auto& black = overview.sides[static_cast<std::size_t>(chess::Color::Black)];
-    const auto accuracy = [this](const review::SideSummary& summary) {
+    const auto accuracy = [](const review::SideSummary& summary) {
         return summary.accuracy ? tr("%L1%").arg(*summary.accuracy, 0, 'f', 0)
                                 : QStringLiteral("—");
     };
