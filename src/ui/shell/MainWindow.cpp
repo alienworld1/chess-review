@@ -787,6 +787,13 @@ void MainWindow::installAnalysis(app::AnalysisController& controller) {
     delete placeholder;
     analysis_ = new AnalysisPage(controller, pages_);
     pages_->insertWidget(pageIndex, analysis_);
+    auto* file = findChild<QMenu*>(QStringLiteral("fileMenu"));
+    auto* quit = findChild<QAction*>(QStringLiteral("quitAction"));
+    auto* closeTab = new QAction(tr("Close Game Tab"), analysis_);
+    closeTab->setObjectName(QStringLiteral("closeGameTabAction"));
+    closeTab->setShortcut(QKeySequence::Close);
+    file->insertAction(quit, closeTab);
+    analysis_->installGameTabs(*closeTab);
     auto* flip = new QAction(tr("Flip Board"), this);
     flip->setObjectName(QStringLiteral("flipBoardAction"));
     flip->setShortcut(QKeySequence(QStringLiteral("Ctrl+F")));
@@ -809,7 +816,7 @@ void MainWindow::installAnalysis(app::AnalysisController& controller) {
     flip->setEnabled(navigation_.current() == app::Destination::Analyze);
     connect(&controller, &app::AnalysisController::gameOpened, this, [this] {
         if (!closing_) {
-            navigation_.navigate(app::Destination::Analyze);
+            showContextPage(app::Destination::Analyze, nullptr);
         }
     });
     selectDestination();
@@ -849,11 +856,12 @@ void MainWindow::installImports(app::ImportController& imports,
     });
     connect(games, &GamesPage::openRequested, this, [this, &library](persistence::GameId id) {
         if (!closing_ && analysis_ && !library.opening()) {
-            analysis_->requestDiscard([this, &library, id] {
-                if (!closing_) {
-                    library.open(id);
-                }
-            });
+            if (analysis_->controller().hasGameTab(id)) {
+                analysis_->selectGameTab(id);
+                showContextPage(app::Destination::Analyze, nullptr);
+            } else {
+                library.open(id);
+            }
         }
     });
     connect(&library, &app::GameLibraryController::changed, this, [this, &library] {
@@ -1289,7 +1297,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     event->ignore();
     if (!closing_) {
         if (analysis_) {
-            analysis_->requestDiscard([this] {
+            analysis_->requestDiscardTabs([this] {
                 if (linkedAnalysis_) {
                     linkedAnalysis_->requestDiscard([this] {
                         if (puzzleAnalysis_) {

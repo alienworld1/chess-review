@@ -121,14 +121,22 @@ move appear below the tree and in move descriptions. The excerpt is limited to
 4,096 characters for responsive display. Game result metadata
 and current-board check/mate/stalemate status are displayed separately.
 
-Playing an existing continuation reuses that move. The imported snapshot and its
-associated Review remain available in Games. Edits are made in the Analyze
-session and saved through **Save PGN**.
+Playing an existing continuation reuses that move. Analyze keeps a Scratch tab
+and up to eight saved games open. Opening a game already in the tab strip
+returns to its current position. **Ctrl+Tab** cycles through tabs. Each tab
+keeps its own variations, annotations, and board orientation as you switch.
+Use **Scratch Analysis** to go back to the scratch board from a saved game.
 
-After orderly exit, the last opened saved game and selected stored node resume
+Use the close button or **Ctrl+W** to close a game tab. When a tab contains
+unsaved edits, closing it or quitting offers **Save PGN**, **Discard**, and
+**Cancel**. Saving writes a separate copy. The library snapshot and any
+associated review remain available in Games.
+
+After orderly exit, the selected saved game and stored node resume
 from SQLite, even if its source PGN has been moved or deleted. A temporary branch
-resumes at the saved game's starting position. New Analysis clears the saved-game
-resume pointer on the next orderly exit. Damaged or missing games show a load
+resumes at the saved game's starting position. Other open tabs are kept during
+the session. Leaving Scratch selected clears the saved-game resume pointer on
+the next orderly exit. Damaged or missing games show a load
 error and leave the previous workspace intact; select another game to continue.
 
 

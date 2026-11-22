@@ -103,7 +103,7 @@ class GameOpeningTest final : public QObject {
     void resumeFallbacks();
     void recoveryPreservesNewWork();
     void failedAndStaleLoads();
-    void replacementAndDiscard();
+    void closingTabKeepsOriginalSnapshot();
 };
 void GameOpeningTest::openingNamesFillAcrossPagesAndOpenWithoutAnEngine() {
     QTemporaryDir directory;
@@ -378,7 +378,7 @@ void GameOpeningTest::failedAndStaleLoads() {
     QCOMPARE(opened.size(), 0);
     QVERIFY(!library.opening());
 }
-void GameOpeningTest::replacementAndDiscard() {
+void GameOpeningTest::closingTabKeepsOriginalSnapshot() {
     QTemporaryDir directory;
     Fixture fixture(directory.filePath(QStringLiteral("games.sqlite3")),
                     directory.filePath(QStringLiteral("ui.ini")));
@@ -397,33 +397,42 @@ void GameOpeningTest::replacementAndDiscard() {
     QTRY_VERIFY(!fixture.startup.library().opening() && !analysis.busy());
     const auto oldTarget = analysis.target(chess::NodeId{1});
     analysis.end();
-    // Queue replacement behind an active navigation; retire old node intents.
+    QTRY_VERIFY(!analysis.busy());
+    // A navigation target belongs only to its tab activation.
     QSignalSpy loaded(&fixture.startup.gameRepository(), &persistence::Database::gameLoaded);
     fixture.startup.gameRepository().loadGame(QUuid::createUuid(), *analysis.gameId());
     QTRY_COMPARE(loaded.size(), 1);
     const auto result = qvariant_cast<persistence::LoadGameResult>(loaded[0][1]);
     const auto game = std::get<persistence::StoredGame>(result);
-    analysis.beginning();
-    analysis.openGame(game);
+    analysis.selectTab(0);
+    QTRY_VERIFY(!analysis.busy() && analysis.activeTab() == 0);
     analysis.navigate(oldTarget);
-    QTRY_VERIFY(!analysis.busy());
     QCOMPARE(analysis.currentNode(), chess::NodeId{0});
+    analysis.selectTab(game.summary.id);
+    QTRY_VERIFY(!analysis.busy() && analysis.activeTab() == game.summary.id);
+    analysis.beginning();
+    QTRY_VERIFY(!analysis.busy() && analysis.currentNode() == chess::NodeId{0});
     analysis.attemptMove({*chess::Square::fromName("d2"), *chess::Square::fromName("d4"), {}},
                          analysis.board().revision);
     QTRY_VERIFY(!analysis.busy());
     QVERIFY(analysis.hasContent());
-    fixture.navigation.navigate(app::Destination::Games);
-    open->click();
+    auto* close = fixture.window.findChild<QAction*>(QStringLiteral("closeGameTabAction"));
+    QVERIFY(close && close->isEnabled());
+    close->trigger();
     auto* dialog = fixture.window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog"));
     QVERIFY(dialog);
     dialog->button(QMessageBox::Cancel)->click();
     QVERIFY(analysis.hasContent());
     QVERIFY(!fixture.startup.library().opening());
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-    open->click();
+    close->trigger();
     dialog = fixture.window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog"));
     QVERIFY(dialog);
     dialog->button(QMessageBox::Discard)->click();
+    QTRY_VERIFY(!analysis.busy() && !analysis.hasGameTab(game.summary.id));
+    fixture.navigation.navigate(app::Destination::Games);
+    QTRY_VERIFY(open->isEnabled());
+    open->click();
     QTRY_VERIFY(!fixture.startup.library().opening() && !analysis.busy());
     QVERIFY(!analysis.hasContent());
     QCOMPARE(analysis.navigationTree()->nodes.size(), game.document->tree.size());

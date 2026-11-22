@@ -14,6 +14,7 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QDialog>
+#include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QElapsedTimer>
@@ -28,6 +29,7 @@
 #include <QRegularExpression>
 #include <QScrollBar>
 #include <QSignalSpy>
+#include <QTabBar>
 #include <QTableView>
 #include <QTemporaryDir>
 #include <QTest>
@@ -113,6 +115,7 @@ class ImportTest final : public QObject {
     void sharedBudgets();
     void reducedServiceBudgets();
     void paginationAndStaleResults();
+    void analysisTabsKeepEditsAndGuardClose();
     void desktopPasteAndDrop();
     void startupFailure();
     void metadataPresentation();
@@ -799,6 +802,123 @@ void ImportTest::metadataPresentation() {
     disconnect(connection);
     window.completeShutdown();
 }
+void ImportTest::analysisTabsKeepEditsAndGuardClose() {
+    Fixture fixture;
+    app::NavigationController navigation;
+    auto& analysis = fixture.startup.analysis();
+    auto& library = fixture.startup.library();
+    ui::MainWindow window(navigation, analysis);
+    window.installImports(fixture.startup.localImports(), library);
+    connect(&fixture.startup, &app::StartupCoordinator::ready, &window, &ui::MainWindow::showReady);
+    window.show();
+    navigation.navigate(app::Destination::Analyze);
+    QTRY_VERIFY(analysis.canNavigate() && !analysis.busy());
+    analysis.attemptMove(std::get<chess::Move>(analysis.position()->parseUci("g1f3")),
+                         analysis.board().revision);
+    QTRY_VERIFY(analysis.hasContent() && !analysis.busy());
+    const auto scratch = analysis.position()->context();
+
+    auto& imports = fixture.startup.localImports();
+    QTRY_VERIFY(imports.available());
+    QVERIFY(imports.importText(
+        QStringLiteral("[White \"Ada & Bob\"]\n[Black \"<Cora>\"]\n\n1. d4 d5 (1... Nf6) *\n\n"
+                       "[White \"Devi\"]\n\n1. e4 e5 *")));
+    QTRY_VERIFY(!imports.busy() && !library.busy());
+    QCOMPARE(library.rows().size(), std::size_t{2});
+    auto* table = window.findChild<QTableView*>(QStringLiteral("gamesTable"));
+    auto* open = window.findChild<QPushButton*>(QStringLiteral("openGameButton"));
+    auto* tabs = window.findChild<QTabBar*>(QStringLiteral("analysisGameTabs"));
+    auto* close = window.findChild<QAction*>(QStringLiteral("closeGameTabAction"));
+    QVERIFY(table && open && tabs && close);
+    const auto openNamed = [&](const QString& white) {
+        navigation.navigate(app::Destination::Games);
+        QTRY_COMPARE(table->model()->rowCount(), 2);
+        auto row = 0;
+        if (table->model()->index(row, 0).data().toString() != white) {
+            ++row;
+        }
+        QCOMPARE(table->model()->index(row, 0).data().toString(), white);
+        table->setCurrentIndex(table->model()->index(row, 0));
+        QTRY_VERIFY(open->isEnabled());
+        open->click();
+        QTRY_COMPARE(navigation.current(), app::Destination::Analyze);
+        QTRY_VERIFY(!analysis.busy() && analysis.whitePlayer() == white);
+    };
+    openNamed(QStringLiteral("Ada & Bob"));
+    QVERIFY(analysis.gameId());
+    const auto first = *analysis.gameId();
+    QCOMPARE(tabs->count(), 2);
+    QCOMPARE(tabs->tabText(1), QStringLiteral("Ada && Bob vs <Cora>"));
+    QVERIFY(tabs->tabToolTip(1).contains(QStringLiteral("&lt;Cora&gt;")));
+    analysis.next();
+    QTRY_COMPARE(analysis.continuations().size(), std::size_t{2});
+    const auto branch = analysis.continuations().back().id;
+    analysis.navigate(branch);
+    QTRY_COMPARE(analysis.currentNode(), branch);
+    analysis.setNotes(analysis.target(branch), {{}, QStringLiteral("A saved-tab note"), {5}});
+    QTRY_VERIFY(!analysis.busy());
+    const auto square = *chess::Square::fromName("f6");
+    analysis.toggleAnnotation({square, square, 0});
+    analysis.flip();
+    QVERIFY(analysis.board().blackAtBottom && analysis.canUndoAnnotation());
+    QVERIFY(tabs->tabText(1).endsWith(u'*'));
+
+    openNamed(QStringLiteral("Devi"));
+    QVERIFY(analysis.gameId());
+    const auto second = *analysis.gameId();
+    QCOMPARE(tabs->count(), 3);
+    QVERIFY(!analysis.hasContent());
+    QVERIFY(!window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog")));
+    QSignalSpy blocked(&library, &app::GameLibraryController::deletionFailed);
+    library.remove(first);
+    QCOMPARE(blocked.count(), 1);
+    tabs->setFocus();
+    QTest::keyPress(tabs, Qt::Key_Tab, Qt::ControlModifier);
+    QTest::keyRelease(tabs, Qt::Key_Tab, Qt::ControlModifier);
+    QTRY_VERIFY(analysis.activeTab() == 0 && !analysis.busy());
+    QCOMPARE(analysis.position()->context(), scratch);
+
+    openNamed(QStringLiteral("Ada & Bob"));
+    QCOMPARE(tabs->count(), 3);
+    QCOMPARE(analysis.activeTab(), first);
+    QCOMPARE(analysis.currentNode(), branch);
+    QCOMPARE(analysis.notes().after, QStringLiteral("A saved-tab note"));
+    QVERIFY(analysis.board().blackAtBottom && analysis.canUndoAnnotation());
+    QCOMPARE(analysis.board().annotations.size(), std::size_t{1});
+    if (const auto render = qEnvironmentVariable("CHESS_REVIEW_GAME_TABS_RENDER_DIR");
+        !render.isEmpty()) {
+        QVERIFY(QDir().mkpath(render));
+        window.resize(1100, 720);
+        QTest::qWait(50);
+        QVERIFY(window.grab().save(QDir(render).filePath(QStringLiteral("game-tabs.png"))));
+    }
+    QVERIFY(close->isEnabled());
+    close->trigger();
+    auto* confirmation = window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog"));
+    QVERIFY(confirmation);
+    confirmation->button(QMessageBox::Cancel)->click();
+    QTRY_VERIFY(!window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog")));
+    QCOMPARE(analysis.activeTab(), first);
+    QVERIFY(analysis.hasContent() && analysis.hasGameTab(second));
+
+    tabs->setCurrentIndex(2);
+    QTRY_VERIFY(analysis.activeTab() == second && !analysis.busy());
+    QSignalSpy quit(&window, &ui::MainWindow::closeRequested);
+    window.close();
+    QTRY_VERIFY(window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog")));
+    confirmation = window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog"));
+    QCOMPARE(analysis.activeTab(), first);
+    confirmation->button(QMessageBox::Discard)->click();
+    QTRY_VERIFY(window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog")) &&
+                analysis.activeTab() == 0);
+    confirmation = window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog"));
+    confirmation->button(QMessageBox::Discard)->click();
+    QTRY_COMPARE(quit.count(), 1);
+    QCOMPARE(analysis.activeTab(), second);
+    QVERIFY(analysis.hasGameTab(first) && analysis.hasGameTab(second));
+    window.completeShutdown();
+}
+
 void ImportTest::librarySearchPreviewAndDeletion() {
     Fixture fixture;
     app::NavigationController navigation;
@@ -863,8 +983,9 @@ void ImportTest::librarySearchPreviewAndDeletion() {
     library.remove(game);
     QCOMPARE(blocked.count(), 1);
     QVERIFY(!library.deleting());
-    analysis.reset();
-    QTRY_VERIFY(!analysis.gameId() && !analysis.positionChanging());
+    analysis.closeActiveGameTab();
+    QTRY_VERIFY(!analysis.gameId() && !analysis.positionChanging() && !analysis.hasGameTab(game));
+    navigation.navigate(app::Destination::Games);
 
     QTRY_VERIFY(remove->isEnabled());
     remove->click();

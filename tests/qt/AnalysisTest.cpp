@@ -93,6 +93,7 @@ class AnalysisTest final : public QObject {
     void specialMoves_data();
     void specialMoves();
     void failedResetPreservesSession();
+    void gameTabsDeferOpeningAndEnforceLimit();
     void setPositionFromFen();
     void geometryAndAccessibility();
     void accessibleMoveDestinations_data();
@@ -611,6 +612,40 @@ void AnalysisTest::failedResetPreservesSession() {
     QCOMPARE(controller_->currentNode(), node);
     QCOMPARE(controller_->board().annotations.size(), std::size_t{1});
     QVERIFY(controller_->hasContent());
+}
+void AnalysisTest::gameTabsDeferOpeningAndEnforceLimit() {
+    pgn::PgnReader reader("1. d4 d5 *");
+    const auto document =
+        std::make_shared<const pgn::PgnDocument>(std::get<pgn::PgnDocument>(reader.next()));
+    const auto game = [&document](persistence::GameId id) {
+        return persistence::StoredGame{
+            {id, QStringLiteral("White"), QStringLiteral("Black"), QStringLiteral("*"), {}, {}, {}},
+            {},
+            document};
+    };
+    controller_->attemptMove(move("e2", "e4"), controller_->board().revision);
+    QVERIFY(controller_->busy());
+    controller_->openGameTab(game(1));
+    QTRY_VERIFY(controller_->activeTab() == 1 && !controller_->busy());
+    controller_->selectTab(0);
+    QTRY_VERIFY(controller_->activeTab() == 0 && !controller_->busy());
+    QCOMPARE(controller_->board().lastMove, std::optional{move("e2", "e4")});
+    QVERIFY(controller_->hasContent());
+    for (persistence::GameId id = 2; id <= 8; ++id) {
+        controller_->openGameTab(game(id));
+        QTRY_VERIFY(controller_->activeTab() == id && !controller_->busy());
+    }
+    const auto full = controller_->tabs();
+    QSignalSpy failed(controller_.get(), &app::AnalysisController::failed);
+    controller_->openGameTab(game(9));
+    QCOMPARE(failed.size(), 1);
+    QCOMPARE(controller_->tabs(), full);
+    QCOMPARE(controller_->activeTab(), 8);
+    controller_->closeActiveGameTab();
+    QTRY_VERIFY(!controller_->hasGameTab(8) && !controller_->busy());
+    controller_->openGameTab(game(9));
+    QTRY_VERIFY(controller_->activeTab() == 9 && !controller_->busy());
+    QCOMPARE(controller_->tabs().size(), full.size());
 }
 void AnalysisTest::setPositionFromFen() {
     ui::AnalysisPage page(*controller_);

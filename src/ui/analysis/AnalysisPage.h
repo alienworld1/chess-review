@@ -8,6 +8,7 @@ class QLabel;
 class QMenu;
 class QPushButton;
 class QSplitter;
+class QTabBar;
 class QPlainTextEdit;
 class QVBoxLayout;
 namespace chess_review::app {
@@ -26,6 +27,9 @@ class AnalysisPage final : public QWidget {
     void installReviewNavigation();
     void setReviewContext(const QString& game, const QString& position);
     void requestDiscard(std::function<void()> onDiscard);
+    void requestDiscardTabs(std::function<void()> onDiscard);
+    void installGameTabs(QAction& closeTab);
+    void selectGameTab(persistence::GameId id);
     app::AnalysisController& controller() { return controller_; }
     void deactivate();
     void installEngineAnalysis(app::EngineAnalysisController& engine);
@@ -38,12 +42,20 @@ class AnalysisPage final : public QWidget {
   protected:
     void resizeEvent(QResizeEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
 
   private:
     void refresh();
     void refreshBoard();
+    void refreshTabs();
+    void closeTab(persistence::GameId id);
+    void useTab(persistence::GameId id, std::function<void()> action);
+    void finishTabAction();
+    void confirmTabs(std::vector<persistence::GameId> remaining, persistence::GameId original,
+                     std::function<void()> onDiscard);
     void applySplit();
     void setPosition();
+    void editPosition(const QString& initialFen);
     void editComment(app::NavigationTarget target);
     void confirmDelete(app::NavigationTarget target);
     void savePgn(std::function<void()> onSaved = {});
@@ -74,6 +86,15 @@ class AnalysisPage final : public QWidget {
     QPushButton* edit_;
     QPushButton* variations_;
     QPushButton* save_;
+    QTabBar* tabs_ = nullptr;
+    QAction* closeTab_ = nullptr;
+    std::vector<app::AnalysisTab> displayedTabs_;
+    struct TabAction {
+        persistence::GameId id;
+        std::function<void()> action;
+        bool selecting = false;
+    };
+    std::optional<TabAction> tabAction_;
     QLabel* operationNotice_;
     app::BoardPreferences preferences_;
     bool confirming_ = false;

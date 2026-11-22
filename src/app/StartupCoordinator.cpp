@@ -19,8 +19,11 @@ StartupCoordinator::StartupCoordinator(diagnostics::Logger& logger, QObject* par
     });
 }
 QString StartupCoordinator::gameDeletionBlocker(persistence::GameId id) const {
+    if (analysis_.hasGameTab(id)) {
+        return tr("Close this game's tab in Analyze before deleting it.");
+    }
     if (analysis_.gameId() == id || analysis_.positionChanging()) {
-        return tr("Open another game or start a new board in Analyze before deleting this game.");
+        return tr("Wait for Analyze to finish updating before deleting this game.");
     }
     const auto& task = reviewGame_.taskState();
     if (task.gameId == id && (task.busy || task.active)) {
@@ -108,7 +111,8 @@ void StartupCoordinator::connectServices() {
                     lastRevision = run->revision;
                 }
             });
-    connect(&library_, &GameLibraryController::opened, &analysis_, &AnalysisController::openGame);
+    connect(&library_, &GameLibraryController::opened, &analysis_,
+            &AnalysisController::openGameTab);
     connect(&library_, &GameLibraryController::openFailed, this, [this] { resume_.reset(); });
     connect(&library_, &GameLibraryController::removed, this, [this](persistence::GameId id) {
         if (resume_ && resume_->id == id) {

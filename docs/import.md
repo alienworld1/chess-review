@@ -135,5 +135,5 @@ See [Analyze board](analysis-board.md#imported-games) for exploration and recove
 Select a row and choose **Delete game…**. Confirm to permanently remove the local
 snapshot, opening lookup, saved reviews, and review recovery state. Your original
 PGN file and already saved puzzles are kept. Finish or stop an active review or
-puzzle generation for that game first. If the game is open in Analyze, export any
-edits you want to keep and open another game or start a new board before deleting.
+puzzle generation for that game first. If the game is open in Analyze, close its
+tab before deleting. The close dialog offers to save a PGN copy of any edits.

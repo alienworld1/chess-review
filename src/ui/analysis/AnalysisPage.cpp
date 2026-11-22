@@ -12,6 +12,7 @@
 #include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QHBoxLayout>
+#include <QHideEvent>
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
@@ -27,6 +28,7 @@
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QTextBrowser>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidgetAction>
@@ -48,11 +50,22 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     commands->setObjectName(QStringLiteral("analysisCommands"));
     auto* reset = new QPushButton(tr("New Analysis"), this);
     reset->setObjectName(QStringLiteral("newAnalysisButton"));
-    reset->setToolTip(tr("Start over after the current position update finishes."));
-    connect(&controller_, &app::AnalysisController::changed, reset,
-            [this, reset] { reset->setEnabled(!controller_.busy()); });
+    const auto updateReset = [this, reset] {
+        const bool game = controller_.activeTab() > 0;
+        reset->setText(game ? tr("Scratch Analysis") : tr("New Analysis"));
+        reset->setToolTip(game ? tr("Open the scratch board and keep this game open.")
+                               : tr("Start over after the current position update finishes."));
+        reset->setEnabled(!controller_.busy());
+    };
+    connect(&controller_, &app::AnalysisController::changed, reset, updateReset);
+    updateReset();
     connect(reset, &QPushButton::clicked, this, [this] {
-        if (!controller_.busy()) {
+        if (controller_.busy()) {
+            return;
+        }
+        if (controller_.activeTab() > 0) {
+            selectGameTab(0);
+        } else {
             requestDiscard([this] { controller_.reset(); });
         }
     });
@@ -69,8 +82,11 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     auto* position = menu->addAction(tr("Set Position from FEN…"));
     position->setObjectName(QStringLiteral("setAnalysisPosition"));
     connect(position, &QAction::triggered, this, &AnalysisPage::setPosition);
-    connect(menu, &QMenu::aboutToShow, position,
-            [this, position] { position->setEnabled(!controller_.busy()); });
+    connect(menu, &QMenu::aboutToShow, position, [this, position] {
+        position->setText(controller_.activeTab() > 0 ? tr("Set Scratch Position from FEN…")
+                                                      : tr("Set Position from FEN…"));
+        position->setEnabled(!controller_.busy());
+    });
     menu->addSeparator();
     coordinates_ = menu->addAction(tr("Show Coordinates"));
     coordinates_->setCheckable(true);
@@ -441,6 +457,13 @@ void AnalysisPage::resizeEvent(QResizeEvent* event) {
 void AnalysisPage::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
     applySplit();
+    refreshTabs();
+}
+void AnalysisPage::hideEvent(QHideEvent* event) {
+    QWidget::hideEvent(event);
+    if (closeTab_) {
+        closeTab_->setEnabled(false);
+    }
 }
 void AnalysisPage::applySplit() {
     const QSignalBlocker block(splitter_);
@@ -545,69 +568,74 @@ void AnalysisPage::refresh() {
     notes_->setVisible(!controller_.positionNotes().isEmpty());
     QAccessibleEvent event(status_, QAccessible::NameChanged);
     QAccessible::updateAccessibility(&event);
+    refreshTabs();
+    if (tabAction_ && !controller_.busy()) {
+        QTimer::singleShot(0, this, &AnalysisPage::finishTabAction);
+    }
 }
 void AnalysisPage::setPosition() {
     if (controller_.busy()) {
         return;
     }
-    requestDiscard([this] {
-        auto* dialog = new QDialog(this);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->setWindowTitle(tr("Set Analysis Position"));
-        auto* layout = new QVBoxLayout(dialog);
-        auto* label = new QLabel(tr("Edit or paste a standard position in &FEN notation."), dialog);
-        label->setWordWrap(true);
-        layout->addWidget(label);
-        auto* fen = new QLineEdit(dialog);
-        fen->setObjectName(QStringLiteral("analysisFen"));
-        // Keep one extra character so truncation cannot turn oversize input into valid FEN.
-        fen->setMaxLength(static_cast<int>(chess::maximumFenBytes + 1));
-        if (const auto& position = controller_.position()) {
-            fen->setText(QString::fromStdString(position->fen()));
+    const auto& current = controller_.position();
+    const auto initial = current ? QString::fromStdString(current->fen()) : QString{};
+    useTab(0, [this, initial] { requestDiscard([this, initial] { editPosition(initial); }); });
+}
+void AnalysisPage::editPosition(const QString& initialFen) {
+    auto* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(tr("Set Analysis Position"));
+    auto* layout = new QVBoxLayout(dialog);
+    auto* label = new QLabel(tr("Edit or paste a standard position in &FEN notation."), dialog);
+    label->setWordWrap(true);
+    layout->addWidget(label);
+    auto* fen = new QLineEdit(dialog);
+    fen->setObjectName(QStringLiteral("analysisFen"));
+    // Keep one extra character so truncation cannot turn oversize input into valid FEN.
+    fen->setMaxLength(static_cast<int>(chess::maximumFenBytes + 1));
+    fen->setText(initialFen);
+    fen->selectAll();
+    label->setBuddy(fen);
+    layout->addWidget(fen);
+    auto* status = new QLabel(dialog);
+    status->setObjectName(QStringLiteral("analysisFenStatus"));
+    status->setTextFormat(Qt::PlainText);
+    status->setWordWrap(true);
+    layout->addWidget(status);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, dialog);
+    auto* apply = buttons->addButton(tr("Set Position"), QDialogButtonBox::AcceptRole);
+    apply->setObjectName(QStringLiteral("applyAnalysisFen"));
+    apply->setDefault(true);
+    apply->setEnabled(!fen->text().isEmpty());
+    layout->addWidget(buttons);
+    connect(fen, &QLineEdit::textChanged, apply,
+            [apply](const QString& value) { apply->setEnabled(!value.isEmpty()); });
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, [this, fen, status, apply] {
+        if (controller_.busy()) {
+            return;
         }
-        fen->selectAll();
-        label->setBuddy(fen);
-        layout->addWidget(fen);
-        auto* status = new QLabel(dialog);
-        status->setObjectName(QStringLiteral("analysisFenStatus"));
-        status->setTextFormat(Qt::PlainText);
-        status->setWordWrap(true);
-        layout->addWidget(status);
-        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, dialog);
-        auto* apply = buttons->addButton(tr("Set Position"), QDialogButtonBox::AcceptRole);
-        apply->setObjectName(QStringLiteral("applyAnalysisFen"));
-        apply->setDefault(true);
-        apply->setEnabled(!fen->text().isEmpty());
-        layout->addWidget(buttons);
-        connect(fen, &QLineEdit::textChanged, apply,
-                [apply](const QString& value) { apply->setEnabled(!value.isEmpty()); });
-        connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
-        connect(buttons, &QDialogButtonBox::accepted, dialog, [this, fen, status, apply] {
-            if (controller_.busy()) {
-                return;
-            }
-            apply->setEnabled(false);
-            fen->setReadOnly(true);
-            status->setText(tr("Checking position…"));
-            controller_.reset(fen->text().toStdString());
-        });
-        connect(&controller_, &app::AnalysisController::changed, dialog,
-                [this, dialog, fen, status, apply] {
-                    if (!fen->isReadOnly() || controller_.busy()) {
-                        return;
-                    }
-                    if (controller_.error().isEmpty()) {
-                        dialog->accept();
-                        return;
-                    }
-                    status->setText(controller_.error());
-                    fen->setReadOnly(false);
-                    fen->setFocus();
-                    apply->setEnabled(true);
-                });
-        dialog->resize(550, dialog->sizeHint().height());
-        dialog->open();
+        apply->setEnabled(false);
+        fen->setReadOnly(true);
+        status->setText(tr("Checking position…"));
+        controller_.reset(fen->text().toStdString());
     });
+    connect(&controller_, &app::AnalysisController::changed, dialog,
+            [this, dialog, fen, status, apply] {
+                if (!fen->isReadOnly() || controller_.busy()) {
+                    return;
+                }
+                if (controller_.error().isEmpty()) {
+                    dialog->accept();
+                    return;
+                }
+                status->setText(controller_.error());
+                fen->setReadOnly(false);
+                fen->setFocus();
+                apply->setEnabled(true);
+            });
+    dialog->resize(550, dialog->sizeHint().height());
+    dialog->open();
 }
 void AnalysisPage::editComment(app::NavigationTarget target) {
     if (!controller_.canEdit(target) || target.node != controller_.currentNode()) {
@@ -761,10 +789,14 @@ void AnalysisPage::requestDiscard(std::function<void()> onDiscard) {
         return;
     }
     confirming_ = true;
-    auto* dialog =
-        new QMessageBox(QMessageBox::Question, tr("Discard analysis?"),
-                        tr("Save a PGN copy of your variations and annotations before leaving?"),
-                        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
+    auto* dialog = new QMessageBox(
+        QMessageBox::Question, tr("Discard analysis?"),
+        controller_.activeTab() > 0
+            ? tr("Save a PGN copy of your edits to %1 before leaving?")
+                  .arg(controller_.gameDescription())
+            : tr("Save a PGN copy of your variations and annotations before leaving?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
+    dialog->setTextFormat(Qt::PlainText);
     dialog->button(QMessageBox::Save)->setText(tr("Save PGN…"));
     auto* saveBeforeDiscard = dialog->button(QMessageBox::Save);
     const auto updateSave = [this, saveBeforeDiscard] {
@@ -791,6 +823,10 @@ void AnalysisPage::deactivate() {
     auto state = controller_.board();
     state.interactive = false;
     board_->setState(state);
+    tabAction_.reset();
+    if (closeTab_) {
+        closeTab_->setEnabled(false);
+    }
     setEnabled(false);
 }
 } // namespace chess_review::ui

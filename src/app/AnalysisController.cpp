@@ -7,9 +7,13 @@
 #include <QUrl>
 #include <algorithm>
 #include <exception>
+#include <iterator>
 #include <utility>
 
 namespace chess_review::app {
+namespace {
+constexpr std::size_t maximumGameTabs = 8;
+}
 BoardViewState makeAnalysisBoard(const chess::Position& position,
                                  std::optional<chess::Move> lastMove, bool allowMoves) {
     BoardViewState board;
@@ -60,6 +64,7 @@ BoardViewState makeAnalysisBoard(const chess::Position& position,
     return board;
 }
 struct AnalysisController::Session {
+    persistence::GameId tab = 0;
     std::optional<chess::GameTree> tree;
     chess::NodeId current{0};
     std::shared_ptr<const NavigationTree> navigation;
@@ -82,6 +87,8 @@ struct AnalysisController::Snapshot {
     AnalysisNotes editableNotes;
     std::vector<BoardAnnotation> originalAnnotations;
     bool sessionReset = false;
+    persistence::GameId tab = 0;
+    bool previousTabClosed = false;
     QString error;
     QString notes;
     std::optional<persistence::GameId> gameId;
@@ -102,7 +109,8 @@ void AnalysisController::start() {
     }
 }
 void AnalysisController::submit(std::function<QString(Session&)> operation, bool resetSession,
-                                std::optional<chess::Move> animatedMove, bool changesPosition) {
+                                std::optional<chess::Move> animatedMove, bool changesPosition,
+                                bool announceGame) {
     Q_ASSERT(QThread::currentThread() == thread());
     if (closing_ || busy_) {
         return;
@@ -112,8 +120,10 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
     board_.interactive = false;
     board_.selection.reset();
     const auto request = ++request_;
-    pool_.start([this, operation = std::move(operation), request, resetSession, animatedMove] {
+    pool_.start([this, operation = std::move(operation), request, resetSession, animatedMove,
+                 announceGame] {
         Snapshot snapshot;
+        const auto previousTab = session_->tab;
         try {
             snapshot.error = operation(*session_);
             snapshot.sessionReset = resetSession && snapshot.error.isEmpty();
@@ -165,10 +175,14 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
             snapshot.board.interactive = false;
             snapshot.position.reset();
         }
+        snapshot.tab = session_->tab;
+        snapshot.previousTabClosed =
+            previousTab != snapshot.tab && !suspendedSessions_.contains(previousTab);
+        const bool opened = announceGame && snapshot.sessionReset && snapshot.gameId.has_value();
         QMetaObject::invokeMethod(
             this,
-            [this, snapshot = std::move(snapshot), request, animatedMove]() mutable {
-                publish(std::move(snapshot), request, animatedMove);
+            [this, snapshot = std::move(snapshot), request, animatedMove, opened]() mutable {
+                publish(std::move(snapshot), request, animatedMove, opened);
             },
             Qt::QueuedConnection);
     });
@@ -176,7 +190,7 @@ void AnalysisController::submit(std::function<QString(Session&)> operation, bool
     emit changed();
 }
 void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
-                                 std::optional<chess::Move> animatedMove) {
+                                 std::optional<chess::Move> animatedMove, bool opened) {
     if (closing_ || request != request_) {
         return;
     }
@@ -194,7 +208,16 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
     busy_ = false;
     navigating_ = false;
     resetting_ = false;
-    if (snapshot.sessionReset) {
+    switchingTabs_ = false;
+    const bool tabChanged = snapshot.tab != activeTab_;
+    if (tabChanged || snapshot.sessionReset) {
+        if (tabChanged && !snapshot.previousTabClosed) {
+            const bool dirty = hasContent();
+            suspendedViews_.insert_or_assign(
+                activeTab_, TabView{tabTitle(), dirty, board_.blackAtBottom, std::move(chosen_),
+                                    std::move(annotations_), std::move(exportedAnnotations_),
+                                    std::move(annotationHistory_)});
+        }
         chosen_.clear();
         navigationTree_.reset();
         chosenLine_.clear();
@@ -202,6 +225,9 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
         annotations_.clear();
         exportedAnnotations_.clear();
         annotationHistory_.clear();
+        if (tabChanged) {
+            restoreTabView(snapshot);
+        }
     }
     if (pendingReset_) {
         treeDirty_ = snapshot.treeDirty;
@@ -252,7 +278,7 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
     }
     requested_ = snapshot.current;
     if (navigationTree_) {
-        if (changedPosition) {
+        if (changedPosition && !tabChanged) {
             rememberPath(requested_);
         }
         updateChosenLine();
@@ -295,8 +321,7 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
     // deletion cancels the callback; close or another request invalidates it.
     QMetaObject::invokeMethod(
         this,
-        [this, request, error = std::move(snapshot.error), animatedMove, navigationMove,
-         opened = snapshot.sessionReset && snapshot.gameId.has_value()] {
+        [this, request, error = std::move(snapshot.error), animatedMove, navigationMove, opened] {
             if (closing_ || request != request_) {
                 return;
             }
@@ -311,7 +336,105 @@ void AnalysisController::publish(Snapshot snapshot, std::uint64_t request,
             }
         },
         Qt::QueuedConnection);
+    if (deferredGame_) {
+        QTimer::singleShot(0, this, [this] {
+            if (!closing_ && !busy_ && deferredGame_) {
+                openGameTab(*std::exchange(deferredGame_, std::nullopt));
+            }
+        });
+    }
     emit changed();
+}
+QString AnalysisController::tabTitle() const {
+    if (activeTab_ == 0) {
+        return tr("Scratch");
+    }
+    const auto white = whitePlayer_.simplified();
+    const auto black = blackPlayer_.simplified();
+    return tr("%1 vs %2")
+        .arg(white.isEmpty() ? tr("White") : white, black.isEmpty() ? tr("Black") : black);
+}
+std::vector<AnalysisTab> AnalysisController::tabs() const {
+    std::vector<AnalysisTab> result;
+    result.reserve(gameTabs_.size() + 1);
+    const auto append = [this, &result](persistence::GameId id) {
+        if (id == activeTab_) {
+            result.push_back({id, tabTitle(), hasContent()});
+        } else {
+            const auto& view = suspendedViews_.at(id);
+            result.push_back({id, view.title, view.dirty});
+        }
+    };
+    append(0);
+    for (const auto id : gameTabs_) {
+        append(id);
+    }
+    return result;
+}
+void AnalysisController::restoreTabView(const Snapshot& snapshot) {
+    if (snapshot.previousTabClosed) {
+        std::erase(gameTabs_, activeTab_);
+    }
+    activeTab_ = snapshot.tab;
+    if (auto cached = suspendedViews_.extract(activeTab_); !cached.empty()) {
+        auto& view = cached.mapped();
+        board_.blackAtBottom = view.blackAtBottom;
+        chosen_ = std::move(view.chosen);
+        annotations_ = std::move(view.annotations);
+        exportedAnnotations_ = std::move(view.exportedAnnotations);
+        annotationHistory_ = std::move(view.annotationHistory);
+    }
+    if (activeTab_ > 0 && !hasGameTab(activeTab_)) {
+        gameTabs_.push_back(activeTab_);
+    }
+}
+bool AnalysisController::hasGameTab(persistence::GameId id) const {
+    return std::ranges::find(gameTabs_, id) != gameTabs_.end();
+}
+void AnalysisController::openGameTab(const persistence::StoredGame& game) {
+    if (closing_) {
+        return;
+    }
+    const auto id = game.summary.id;
+    if (!game.document || id <= 0) {
+        emit failed(tr("The stored game is unavailable."));
+        return;
+    }
+    if (busy_) {
+        deferredGame_ = game;
+        return;
+    }
+    if (activeTab_ == id) {
+        emit gameOpened();
+        return;
+    }
+    if (gameTabs_.size() >= maximumGameTabs && !hasGameTab(id)) {
+        emit failed(tr("Close a game tab before opening another. Up to %1 can be open.")
+                        .arg(maximumGameTabs));
+        return;
+    }
+    ResetRequest reset{std::nullopt, game};
+    reset.tab = id;
+    requestReset(std::move(reset));
+}
+void AnalysisController::selectTab(persistence::GameId id) {
+    if (busy_ || closing_ || activeTab_ == id || (id != 0 && !hasGameTab(id))) {
+        return;
+    }
+    ResetRequest reset{std::nullopt, std::nullopt};
+    reset.tab = id;
+    requestReset(std::move(reset));
+}
+void AnalysisController::closeActiveGameTab() {
+    if (busy_ || closing_ || activeTab_ == 0) {
+        return;
+    }
+    const auto current = std::ranges::find(gameTabs_, activeTab_);
+    Q_ASSERT(current != gameTabs_.end());
+    ResetRequest reset{std::nullopt, std::nullopt};
+    reset.tab = current != gameTabs_.begin() ? *std::prev(current) : 0;
+    reset.closePreviousTab = true;
+    requestReset(std::move(reset));
 }
 void AnalysisController::openGame(const persistence::StoredGame& game) {
     if (!game.document || game.summary.id <= 0) {
@@ -338,6 +461,10 @@ void AnalysisController::requestReset(ResetRequest reset) {
     if (closing_) {
         return;
     }
+    if (activeTab_ > 0 && !reset.tab) {
+        emit failed(tr("Open the scratch tab to set a new analysis position."));
+        return;
+    }
     ++sessionGeneration_;
     pendingNavigation_.reset();
     pendingMoveChoice_.reset();
@@ -354,10 +481,31 @@ void AnalysisController::requestReset(ResetRequest reset) {
 }
 void AnalysisController::startReset(ResetRequest reset) {
     resetting_ = true;
+    switchingTabs_ = reset.tab.has_value();
+    const bool announceGame = reset.game.has_value();
     submit(
-        [reset = std::move(reset)](Session& session) {
+        [this, reset = std::move(reset)](Session& session) {
+            if (reset.tab) {
+                const auto target = suspendedSessions_.find(*reset.tab);
+                if (target != suspendedSessions_.end()) {
+                    if (reset.closePreviousTab) {
+                        session = std::move(*target->second);
+                        suspendedSessions_.erase(target);
+                    } else {
+                        auto stored = suspendedSessions_.extract(target);
+                        std::swap(session, *stored.mapped());
+                        stored.key() = stored.mapped()->tab;
+                        suspendedSessions_.insert(std::move(stored));
+                    }
+                    return QString{};
+                }
+                if (!reset.game) {
+                    return tr("This analysis tab is unavailable.");
+                }
+            }
             // Build the replacement fully on the worker before retiring the old session.
             Session replacement;
+            replacement.tab = reset.tab.value_or(session.tab);
             if (reset.game) {
                 const auto& game = *reset.game;
                 replacement.tree = game.document->tree;
@@ -412,10 +560,19 @@ void AnalysisController::startReset(ResetRequest reset) {
                 replacement.treeDirty = reset.fen.has_value();
             }
             replacement.navigation = makeNavigationTree(*replacement.tree);
+            if (reset.tab) {
+                if (!session.tree) {
+                    session.tree = std::get<chess::GameTree>(chess::GameTree::initial());
+                }
+                auto previous = std::make_unique<Session>();
+                const auto slot = suspendedSessions_.try_emplace(session.tab, std::move(previous));
+                Q_ASSERT(slot.second);
+                *slot.first->second = std::move(session);
+            }
             session = std::move(replacement);
             return QString{};
         },
-        true);
+        true, std::nullopt, true, announceGame);
 }
 void AnalysisController::selectSquare(chess::Square square) {
     if (!board_.interactive || closing_ || board_.legalMoves.empty()) {
@@ -751,9 +908,14 @@ void AnalysisController::close() {
     pendingNavigation_.reset();
     pendingMoveChoice_.reset();
     pendingReset_.reset();
+    deferredGame_.reset();
     ++sessionGeneration_;
     ++request_;
     board_.interactive = false;
+    pool_.start([this] {
+        suspendedSessions_.clear();
+        session_.reset();
+    });
     QTimer::singleShot(0, this, &AnalysisController::finishClose);
     emit changed();
 }

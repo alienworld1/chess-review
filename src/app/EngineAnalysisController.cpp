@@ -257,7 +257,8 @@ void EngineAnalysisController::runtimeChanged() {
     updateControls();
 }
 void EngineAnalysisController::boardChanged() {
-    if (!board_.canNavigate() || (!board_.busy() && !board_.board().interactive)) {
+    if ((!board_.canNavigate() && !board_.switchingTabs()) ||
+        (!board_.busy() && !board_.board().interactive)) {
         if (mode_ != Mode::Stopped && request_.isNull()) {
             state_.status = tr("Stopped");
         }

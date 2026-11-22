@@ -21,6 +21,12 @@ struct AnalysisNotes {
     std::vector<std::uint8_t> nags;
     bool operator==(const AnalysisNotes&) const = default;
 };
+struct AnalysisTab {
+    persistence::GameId id; // Zero is the scratch board.
+    QString title;
+    bool dirty;
+    bool operator==(const AnalysisTab&) const = default;
+};
 
 class AnalysisController final : public QObject {
     Q_OBJECT
@@ -57,6 +63,13 @@ class AnalysisController final : public QObject {
     const std::shared_ptr<const chess::Position>& position() const { return position_; }
     void start();
     void openGame(const persistence::StoredGame& game);
+    void openGameTab(const persistence::StoredGame& game);
+    void selectTab(persistence::GameId id);
+    void closeActiveGameTab();
+    bool hasGameTab(persistence::GameId id) const;
+    persistence::GameId activeTab() const { return activeTab_; }
+    bool switchingTabs() const { return switchingTabs_ && !closing_; }
+    std::vector<AnalysisTab> tabs() const;
     std::optional<persistence::GameId> gameId() const { return gameId_; }
     const QString& whitePlayer() const { return whitePlayer_; }
     const QString& blackPlayer() const { return blackPlayer_; }
@@ -102,17 +115,31 @@ class AnalysisController final : public QObject {
         std::shared_ptr<const chess::Position> position = {};
         std::vector<chess::Move> continuation = {};
         int step = 0;
+        std::optional<persistence::GameId> tab = std::nullopt;
+        bool closePreviousTab = false;
     };
     struct AnnotationHistory {
         std::vector<std::vector<BoardAnnotation>> undo;
         std::vector<std::vector<BoardAnnotation>> redo;
     };
+    struct TabView {
+        QString title;
+        bool dirty;
+        bool blackAtBottom;
+        std::map<chess::NodeId, chess::NodeId> chosen;
+        std::map<chess::NodeId, std::vector<BoardAnnotation>> annotations;
+        std::map<chess::NodeId, std::vector<BoardAnnotation>> exportedAnnotations;
+        std::map<chess::NodeId, AnnotationHistory> annotationHistory;
+    };
     void submit(std::function<QString(Session&)> operation, bool resetSession = false,
-                std::optional<chess::Move> animatedMove = std::nullopt,
-                bool changesPosition = true);
-    void publish(Snapshot snapshot, std::uint64_t request, std::optional<chess::Move> animatedMove);
+                std::optional<chess::Move> animatedMove = std::nullopt, bool changesPosition = true,
+                bool announceGame = false);
+    void publish(Snapshot snapshot, std::uint64_t request, std::optional<chess::Move> animatedMove,
+                 bool opened);
     void startReset(ResetRequest reset);
     void requestReset(ResetRequest reset);
+    void restoreTabView(const Snapshot& snapshot);
+    QString tabTitle() const;
     void dispatchNavigation();
     void rememberPath(chess::NodeId node);
     void updateChosenLine();
@@ -120,6 +147,12 @@ class AnalysisController final : public QObject {
     void finishClose();
     QThreadPool pool_;
     std::unique_ptr<Session> session_;
+    // Only the serial worker touches the suspended trees. The GUI stores drawings
+    // and chosen branches separately, so those edits stay immediate.
+    std::map<persistence::GameId, std::unique_ptr<Session>> suspendedSessions_;
+    std::map<persistence::GameId, TabView> suspendedViews_;
+    std::vector<persistence::GameId> gameTabs_;
+    persistence::GameId activeTab_ = 0;
     BoardViewState board_;
     std::shared_ptr<const chess::Position> position_;
     std::vector<HistoryEntry> history_;
@@ -131,8 +164,10 @@ class AnalysisController final : public QObject {
     std::optional<chess::NodeId> pendingNavigation_;
     std::optional<chess::NodeId> pendingMoveChoice_;
     std::optional<ResetRequest> pendingReset_;
+    std::optional<persistence::StoredGame> deferredGame_;
     std::uint64_t sessionGeneration_ = 0;
     bool resetting_ = false;
+    bool switchingTabs_ = false;
     bool navigating_ = false;
     chess::NodeId current_{0};
     std::map<chess::NodeId, std::vector<BoardAnnotation>> annotations_;
