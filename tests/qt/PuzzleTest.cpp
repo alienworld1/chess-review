@@ -581,6 +581,19 @@ class PuzzleTest final : public QObject {
         f.navigation.navigate(app::Destination::Puzzles);
         puzzles.open(id);
         QTRY_VERIFY(puzzles.board().interactive);
+        const auto render = qEnvironmentVariable("CHESS_REVIEW_PUZZLE_RENDER_DIR");
+        if (!render.isEmpty()) {
+            QVERIFY(QDir().mkpath(render));
+            f.window.resize(1100, 760);
+            f.window.show();
+        }
+        const auto renderState = [&f, &render](const QString& filename) {
+            if (!render.isEmpty()) {
+                QCoreApplication::processEvents();
+                QVERIFY(f.window.grab().save(QDir(render).filePath(filename)));
+            }
+        };
+        renderState(QStringLiteral("puzzle-first-move.png"));
         // A failed background list request must neither disable the active board nor
         // leave a stale failure after the library can be read again.
         puzzles.refresh(0, -1);
@@ -594,12 +607,14 @@ class PuzzleTest final : public QObject {
         puzzles.hint();
         QCOMPARE(puzzles.state().hints.size(), 3);
         QVERIFY(!f.window.findChild<QPushButton*>(QStringLiteral("hintPuzzle"))->isEnabled());
+        renderState(QStringLiteral("puzzle-hints.png"));
         const auto stored = puzzle_test::complete();
         const auto knownWeak = stored.passes.front().evidence.lines[1].pv.front();
         puzzles.attemptMove(knownWeak, puzzles.board().revision);
         QTRY_VERIFY(!puzzles.state().grading);
         QCOMPARE(puzzles.state().message, QStringLiteral("Try again."));
         QCOMPARE(puzzles.state().hints.size(), 3);
+        renderState(QStringLiteral("puzzle-incorrect.png"));
         const auto legal = puzzle_test::root().legalMoves();
         const auto unknown = std::find_if(legal.begin(), legal.end(), [&](const auto& move) {
             return std::none_of(stored.passes.front().evidence.lines.begin(),
@@ -615,6 +630,7 @@ class PuzzleTest final : public QObject {
         puzzles.attemptMove(mate, puzzles.board().revision);
         QTRY_VERIFY(puzzles.state().complete);
         QCOMPARE(puzzles.board().status, app::BoardStatus::Checkmate);
+        renderState(QStringLiteral("puzzle-complete.png"));
         puzzles.retry();
         QTRY_VERIFY(puzzles.board().interactive);
         QVERIFY(puzzles.state().hints.empty());
@@ -645,13 +661,7 @@ class PuzzleTest final : public QObject {
             QTRY_VERIFY(f.window.rect().contains(
                 QRect(analyze->mapTo(&f.window, QPoint{}), analyze->size())));
         }
-        const auto render = qEnvironmentVariable("CHESS_REVIEW_PUZZLE_RENDER_DIR");
-        if (!render.isEmpty()) {
-            QVERIFY(QDir().mkpath(render));
-            QTest::qWait(50);
-            QVERIFY(
-                f.window.grab().save(QDir(render).filePath(QStringLiteral("puzzle-revealed.png"))));
-        }
+        renderState(QStringLiteral("puzzle-revealed.png"));
         puzzles.remove(id);
         QTRY_VERIFY(!puzzles.state().selected);
         QTRY_VERIFY(puzzles.state().library.puzzles.empty());

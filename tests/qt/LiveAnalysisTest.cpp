@@ -3,6 +3,7 @@
 #include "TestEnvironment.h"
 #include "app/StartupCoordinator.h"
 #include "review/Evidence.h"
+#include "ui/Theme.h"
 #include "ui/analysis/EngineAnalysisPanel.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include "ui/shell/MainWindow.h"
@@ -11,10 +12,10 @@
 #include <QDir>
 #include <QLabel>
 #include <QListWidget>
-#include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QSpinBox>
 #include <QTemporaryDir>
@@ -25,6 +26,16 @@
 
 using namespace chess_review;
 namespace {
+void renderState(ui::MainWindow& window, const QString& filename) {
+    const auto directory = qEnvironmentVariable("CHESS_REVIEW_SCREENSHOT_DIR");
+    if (!directory.isEmpty()) {
+        window.resize(1100, 720);
+        window.show();
+        QCoreApplication::processEvents();
+        QVERIFY(window.grab().save(QDir(directory).filePath(filename)));
+    }
+}
+
 QJsonObject ready(int delay = 0) {
     return engine_test::step(QStringLiteral("isready"),
                              {engine_test::write(QStringLiteral("readyok\n"), delay)});
@@ -221,6 +232,7 @@ class LiveAnalysisTest final : public QObject {
         QVERIFY(start);
         QVERIFY(!start->isEnabled());
         QVERIFY(a.startup.engineAnalysis().state().line.evaluation.isEmpty());
+        renderState(a.window, QStringLiteral("no-engine.png"));
         a.window.findChild<QPushButton*>(QStringLiteral("manageAnalysisEngines"))->click();
         QCOMPARE(a.navigation.current(), app::Destination::Settings);
     }
@@ -740,6 +752,7 @@ class LiveAnalysisTest final : public QObject {
         QVERIFY(!live.state().error.isEmpty());
         QCOMPARE(live.state().line.pv, QStringLiteral("1. e4"));
         QVERIFY(!live.state().canStart);
+        renderState(a.window, QStringLiteral("engine-failed.png"));
         QVERIFY(a.reconnect({}));
         QVERIFY(live.state().canStart);
         QVERIFY(!live.state().canStop);
@@ -764,16 +777,8 @@ class LiveAnalysisTest final : public QObject {
         search(steps, QStringLiteral("position startpos"), QStringLiteral("e2e4 e7e5 g1f3"));
         stop(steps, QStringLiteral("e2e4"));
         QVERIFY(a.prepare(steps));
-        if (dark) {
-            auto palette = a.window.palette();
-            palette.setColor(QPalette::Window, QColor("#202831"));
-            palette.setColor(QPalette::WindowText, QColor("#eef0f2"));
-            palette.setColor(QPalette::Base, QColor("#161e27"));
-            palette.setColor(QPalette::Text, QColor("#eef0f2"));
-            palette.setColor(QPalette::Button, QColor("#303c48"));
-            palette.setColor(QPalette::ButtonText, QColor("#eef0f2"));
-            a.window.setPalette(palette);
-        }
+        ui::setThemeMode(dark ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light);
+        const auto restoreTheme = qScopeGuard([] { ui::setThemeMode(Qt::ColorScheme::Unknown); });
         if (largeFont) {
             auto font = a.window.font();
             font.setPointSizeF(font.pointSizeF() * 1.5);
