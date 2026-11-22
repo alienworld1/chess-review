@@ -457,6 +457,13 @@ class Parser {
             }
             token = lexer_.next();
         }
+        if (limits_.requireTermination && !termination_) {
+            return PgnFailure{ordinal_,
+                              {start_.offset, lexer_.location().offset},
+                              diagnostic(DiagnosticCode::MissingTermination,
+                                         "Missing game termination marker.", token.at),
+                              false};
+        }
         if (!board_) {
             if (auto failure = initialize()) {
                 return recover(*failure, token);

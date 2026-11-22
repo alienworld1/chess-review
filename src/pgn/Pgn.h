@@ -66,6 +66,7 @@ struct PgnLimits {
     std::size_t maxTagValueBytes{64 * 1024};
     std::size_t maxDiagnostics{100};
     chess::GameTreeLimits tree;
+    bool requireTermination = false;
 };
 
 class PgnDocument {

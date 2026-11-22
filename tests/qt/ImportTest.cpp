@@ -306,8 +306,9 @@ void ImportTest::progressPreservesReading() {
     Fixture fixture;
     QAction fileAction(QStringLiteral("Import"));
     QAction pasteAction(QStringLiteral("Paste"));
+    QAction linkAction(QStringLiteral("Import game link"));
     ui::GamesPage page(fixture.startup.localImports(), fixture.startup.library(), fileAction,
-                       pasteAction);
+                       pasteAction, linkAction);
     page.resize(1100, 720);
     page.show();
     QTRY_VERIFY(fixture.startup.localImports().available());
@@ -353,8 +354,9 @@ void ImportTest::visibleReportStress() {
     Fixture fixture;
     QAction fileAction(QStringLiteral("Import"));
     QAction pasteAction(QStringLiteral("Paste"));
+    QAction linkAction(QStringLiteral("Import game link"));
     ui::GamesPage page(fixture.startup.localImports(), fixture.startup.library(), fileAction,
-                       pasteAction);
+                       pasteAction, linkAction);
     page.resize(1100, 720);
     page.show();
     QTRY_VERIFY(fixture.startup.localImports().available());
@@ -895,8 +897,9 @@ void ImportTest::layouts() {
     Fixture fixture;
     QAction fileAction(QStringLiteral("Import PGN"));
     QAction pasteAction(QStringLiteral("Paste PGN"));
+    QAction linkAction(QStringLiteral("Import game link"));
     ui::GamesPage page(fixture.startup.localImports(), fixture.startup.library(), fileAction,
-                       pasteAction);
+                       pasteAction, linkAction);
     page.resize(size);
     page.show();
     QTRY_VERIFY(fixture.startup.localImports().available());

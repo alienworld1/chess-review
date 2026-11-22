@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(cmake/ProjectOptions.cmake)
 
-find_package(Qt6 6.12 REQUIRED COMPONENTS Widgets Sql Svg)
+find_package(Qt6 6.12 REQUIRED COMPONENTS Network Widgets Sql Svg)
 qt_standard_project_setup(REQUIRES 6.12)
 
 add_library(chess_review_chess STATIC src/chess/Position.cpp src/chess/GameTree.cpp)
@@ -174,12 +174,13 @@ add_library(chess_review_startup STATIC
     src/app/ImportController.cpp
     src/app/GameLibraryController.cpp
     src/import/LocalPgnInput.cpp
+    src/import/RemotePgnInput.cpp
     src/app/Diagnostic.cpp
     src/app/StartupCoordinator.cpp
     src/app/NavigationController.cpp
     src/app/UiStateStore.cpp
 )
-target_link_libraries(chess_review_startup PUBLIC chess_review_persistence chess_review_diagnostics chess_review_config Qt6::Core)
+target_link_libraries(chess_review_startup PUBLIC chess_review_persistence chess_review_diagnostics chess_review_config Qt6::Core PRIVATE Qt6::Network)
 chess_review_apply_options(chess_review_startup)
 
 add_library(chess_review_ui STATIC

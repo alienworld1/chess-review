@@ -4,7 +4,7 @@ A local-first desktop chess review app built with C++20 and Qt Widgets.
 Import PGN games, explore moves on an interactive board, and review games using
 local UCI engines. Games, review evidence, and preferences stay on your computer.
 
-- **Games:** import PGN files or pasted text, browse saved games, and reopen them.
+- **Games:** import PGN files, pasted text, or public Chess.com and Lichess game links. Browse and reopen saved games offline.
 - **Analyze:** play legal moves, explore variations, add annotations, and follow
   live engine analysis.
 - **Review:** scan a saved game, inspect classifications and evidence, explore
@@ -17,7 +17,8 @@ local UCI engines. Games, review evidence, and preferences stay on your computer
 ## Requirements
 
 - C++20 compiler (GCC or Clang on Linux)
-- Qt **6.12+**, including Widgets, SVG, SQL, and the QSQLITE driver
+- Qt **6.12+**, including Widgets, Network, SVG, SQL, and the QSQLITE driver
+- A working Qt TLS backend for optional game-link imports
 - CMake **3.24+**, Ninja, and GNU Make
 - Network access on initial configuration for pinned toml++ and, when testing,
   Catch2, unless local source overrides are supplied

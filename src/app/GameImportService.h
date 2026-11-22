@@ -9,6 +9,7 @@
 namespace chess_review::app {
 inline constexpr std::size_t maxImportReportWarnings = 1000;
 enum class ImportStatus { Completed, Cancelled, Failed };
+enum class ImportMode { Batch, OneCompletedGame };
 using ImportOutcome = std::variant<persistence::Inserted, persistence::Duplicate, pgn::PgnFailure,
                                    persistence::GameError>;
 struct ImportItem {
@@ -39,7 +40,8 @@ class GameImportService final : public QObject {
     explicit GameImportService(persistence::Database& database, QObject* parent = nullptr);
     ~GameImportService() override;
     void importText(persistence::RequestId request, std::string bytes,
-                    persistence::GameSource source = {}, ImportBudget budget = {});
+                    persistence::GameSource source = {}, ImportBudget budget = {},
+                    ImportMode mode = ImportMode::Batch);
     void cancel();
     void close();
   signals:

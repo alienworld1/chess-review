@@ -24,7 +24,9 @@ enum class Lifecycle { Loading, Ready, Failed, Stopping, Stopped };
 class StartupCoordinator final : public QObject {
     Q_OBJECT
   public:
-    explicit StartupCoordinator(QObject* parent = nullptr);
+    // An injected import network manager must outlive the coordinator.
+    explicit StartupCoordinator(QObject* parent = nullptr,
+                                QNetworkAccessManager* importNetwork = nullptr);
     // Logger must outlive finished(). Omitting the UI-state filename disables preferences.
     explicit StartupCoordinator(diagnostics::Logger& logger, QObject* parent = nullptr);
     void start(const QString& databasePath,

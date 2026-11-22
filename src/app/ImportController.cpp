@@ -1,4 +1,5 @@
 #include "app/ImportController.h"
+#include "import/LocalPgnInput.h"
 #include <QMetaObject>
 #include <QThread>
 #include <QTimer>
@@ -7,9 +8,11 @@
 #include <utility>
 
 namespace chess_review::app {
-ImportController::ImportController(GameImportService& service, QObject* parent)
-    : QObject(parent), service_(service) {
+ImportController::ImportController(GameImportService& service, QObject* parent,
+                                   QNetworkAccessManager* remoteNetwork)
+    : QObject(parent), service_(service), remote_(pool_, remoteNetwork) {
     pool_.setMaxThreadCount(1);
+    connect(&remote_, &input::RemotePgnFetcher::finished, this, &ImportController::acquired);
     connect(&service_, &GameImportService::savingGame, this,
             [this](persistence::RequestId request, std::size_t ordinal) {
                 if (request_.isNull() || request != request_) {
@@ -114,6 +117,26 @@ bool ImportController::importText(QString text) {
     next();
     return true;
 }
+bool ImportController::importUrl(input::RemoteGame game) {
+    if (!begin()) {
+        return false;
+    }
+    results_.push_back({game.publicUrl().toString(QUrl::FullyEncoded),
+                        ImportFileState::Downloading,
+                        {},
+                        {},
+                        true});
+    emit submitted();
+    if (stop_.stop_requested()) {
+        results_.front().state = ImportFileState::Cancelled;
+        finish(ImportBatchStatus::Cancelled);
+        return true;
+    }
+    reading_ = true;
+    remote_.fetch(std::move(game), stop_.get_token());
+    emit changed();
+    return true;
+}
 void ImportController::next() {
     if (stop_.stop_requested()) {
         finish(ImportBatchStatus::Cancelled);
@@ -164,6 +187,10 @@ void ImportController::acquired(input::InputResult result) {
         results_[index_].state = ImportFileState::Failed;
         results_[index_].message = result.error;
         ++failures_;
+        if (results_[index_].remote) {
+            finish(ImportBatchStatus::Failed);
+            return;
+        }
         ++index_;
         next();
         return;
@@ -171,7 +198,8 @@ void ImportController::acquired(input::InputResult result) {
     results_[index_].state = ImportFileState::Parsing;
     request_ = QUuid::createUuid();
     service_.importText(request_, std::move(result.bytes), std::move(result.source),
-                        {maxBatchGames - attempted_, maxImportReportWarnings - retainedWarnings_});
+                        {maxBatchGames - attempted_, maxImportReportWarnings - retainedWarnings_},
+                        results_[index_].remote ? ImportMode::OneCompletedGame : ImportMode::Batch);
     emit changed();
 }
 void ImportController::completeFile(const ImportReport& report) {
@@ -202,7 +230,7 @@ void ImportController::completeFile(const ImportReport& report) {
         file.state = ImportFileState::CompletedWithErrors;
     }
     ++index_;
-    if (storageFailure) {
+    if (storageFailure || (file.remote && report.status == ImportStatus::Failed)) {
         finish(ImportBatchStatus::Failed);
     } else if (report.gameLimitReached) {
         finish(ImportBatchStatus::GameLimitReached);
@@ -245,6 +273,7 @@ void ImportController::cancel() {
     stop_.request_stop();
     service_.cancel();
     emit changed();
+    remote_.abortRequest();
 }
 void ImportController::close() {
     if (closing_) {

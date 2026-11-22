@@ -74,6 +74,10 @@ chess_review_add_qt_test(import_tests import INTEGRATION WIDGETS
     SOURCES qt/ImportTest.cpp
     LIBRARIES chess_review_ui)
 
+chess_review_add_qt_test(remote_import_tests remote_import INTEGRATION WIDGETS
+    SOURCES qt/RemoteImportTest.cpp
+    LIBRARIES chess_review_ui Qt6::Network)
+
 chess_review_add_qt_test(game_opening_tests game_opening INTEGRATION WIDGETS
     SOURCES qt/GameOpeningTest.cpp
     LIBRARIES chess_review_ui Qt6::Sql)

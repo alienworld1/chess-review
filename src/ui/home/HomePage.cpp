@@ -121,8 +121,7 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent) {
     auto* introText = new QVBoxLayout;
     introText->setSpacing(8);
     introText->addWidget(textLabel(tr("Review your games"), intro, "title"));
-    entryHint_ =
-        textLabel(tr("Open a PGN file or paste a game to get started."), intro, "secondary");
+    entryHint_ = textLabel(tr("Import a game to review your moves."), intro, "secondary");
     introText->addWidget(entryHint_);
     entry_ = new QVBoxLayout;
     introText->addLayout(entry_);
@@ -199,7 +198,8 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent) {
     column->addStretch();
 }
 
-void HomePage::installImports(app::ImportController& imports, QAction& file, QAction& paste) {
+void HomePage::installImports(app::ImportController& imports, QAction& file, QAction& paste,
+                              QAction& link) {
     auto* buttons = new QHBoxLayout;
     auto* fileButton = new ImportDropButton(imports, this);
     fileButton->setObjectName(QStringLiteral("homeImportButton"));
@@ -214,10 +214,15 @@ void HomePage::installImports(app::ImportController& imports, QAction& file, QAc
     pasteButton->setDefaultAction(&paste);
     pasteButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
     buttons->addWidget(pasteButton);
+    auto* linkButton = new QToolButton(this);
+    linkButton->setDefaultAction(&link);
+    linkButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    buttons->addWidget(linkButton);
     buttons->addStretch();
     entry_->addLayout(buttons);
     setTabOrder(fileButton, pasteButton);
-    setTabOrder(pasteButton, resumeAction_);
+    setTabOrder(pasteButton, linkButton);
+    setTabOrder(linkButton, resumeAction_);
 }
 
 void HomePage::installLibrary(app::GameLibraryController& library) {

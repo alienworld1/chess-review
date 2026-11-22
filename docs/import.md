@@ -9,7 +9,7 @@ Files must have a `.pgn` extension (any letter case) and be regular local files.
 Links to regular files are supported. Folders, special files, and remote URLs
 are rejected. File URLs must be absolute and have no hostname, query, fragment,
 or invalid UTF-8 path bytes; remote-share/UNC URLs are rejected before filesystem
-inspection. Public game URL import is not implemented yet.
+inspection.
 
 **File → Paste PGN…** (`Ctrl+Shift+V`, outside text editors) opens an editable
 plain-text dialog containing the current clipboard text. Inputs above 1 MiB of
@@ -33,6 +33,27 @@ recovered or inferred from existing snapshots.
 PGNs must use UTF-8, optionally with a leading BOM. Other encodings must be
 converted explicitly before import; the app does not guess or replace invalid
 characters. See [parser compatibility](pgn.md) for notation rules.
+
+## Import a game link
+
+Choose **Import game link…** on Home, Games, or in the **File** menu. Paste the
+public link to a completed game and choose **Import game**. If your clipboard
+already has a supported link, the dialog fills it in. The provider is contacted
+only after you confirm the import.
+
+- **Chess.com** supports public Live and Daily game links, including their
+  analysis-page links. The app asks Chess.com for the game's details and picks
+  the matching PGN from the player's public monthly archive. A recently finished
+  game may take time to appear there. [Chess.com Published-Data API](https://www.chess.com/news/view/published-data-api)
+- **Lichess** supports public links with an eight-character game ID, including
+  links that open from White's or Black's side or at a particular move.
+  [Lichess game export API](https://lichess.org/api#tag/Games/operation/gamePgn)
+
+If the link fails or the game requires sign-in, use the provider's **Share → PGN**
+option and import the downloaded file or use **Paste PGN…**. The Games page
+shows delivery and PGN errors directly and keeps the details in **Import report**.
+You can cancel a download from Games and continue using the app while it runs.
+A successful import opens review setup when you're still in Games.
 
 ## Progress and results
 
@@ -90,7 +111,11 @@ Original PGN opening tags are preserved.
 
 Imported snapshots are independent of their source files. Local-file provenance
 stores the full absolute file URI; pasted games store only the source kind.
-These paths, player names, comments, and PGN content are not written to logs.
+Link imports store the provider and the canonical public game URL. Tracking
+parameters and move fragments are discarded. Requests use HTTPS without a
+provider account, and the app saves only the requested game from a Chess.com
+archive response. Logs exclude paths, game URLs, player names, comments, and
+PGN content.
 The source file is never reread to reopen a snapshot through the repository.
 
 ## Opening saved games

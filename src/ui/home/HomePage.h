@@ -23,7 +23,8 @@ class HomePage final : public QWidget {
   public:
     explicit HomePage(QWidget* parent = nullptr);
     void installLibrary(app::GameLibraryController& library);
-    void installImports(app::ImportController& imports, QAction& file, QAction& paste);
+    void installImports(app::ImportController& imports, QAction& file, QAction& paste,
+                        QAction& link);
     void installReview(app::ReviewGameController& review);
     void installPuzzles(app::PuzzleController& puzzles);
     void installEngines(app::EngineSettingsController& engines);

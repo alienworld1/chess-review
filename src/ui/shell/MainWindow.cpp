@@ -85,6 +85,67 @@ class DestinationItem final : public QWidgetItem {
         return hasHeightForWidth() ? widget()->heightForWidth(width) : -1;
     }
 };
+
+void showGameLinkDialog(QWidget& parent, app::ImportController& imports) {
+    auto* dialog = new QDialog(&parent);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("importGameLinkDialog"));
+    dialog->setWindowTitle(QObject::tr("Import a game link"));
+    auto* layout = new QVBoxLayout(dialog);
+    auto* hint = new QLabel(
+        QObject::tr("Paste the link to a completed public game from Chess.com or Lichess."),
+        dialog);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+    auto* label = new QLabel(QObject::tr("Game &link"), dialog);
+    auto* link = new QLineEdit(dialog);
+    link->setObjectName(QStringLiteral("gameLinkEditor"));
+    link->setAccessibleName(QObject::tr("Game link"));
+    link->setClearButtonEnabled(true);
+    // Keep one extra character so overlong pasted input cannot become a valid truncated URL.
+    link->setMaxLength(input::maxGameLinkLength + 1);
+    link->setPlaceholderText(QStringLiteral("https://lichess.org/YO3ICtJi"));
+    label->setBuddy(link);
+    layout->addWidget(label);
+    layout->addWidget(link);
+    auto* error = new QLabel(dialog);
+    error->setObjectName(QStringLiteral("gameLinkError"));
+    error->setTextFormat(Qt::PlainText);
+    error->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    error->setWordWrap(true);
+    error->hide();
+    layout->addWidget(error);
+    QObject::connect(link, &QLineEdit::textEdited, error, &QWidget::hide);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, dialog);
+    auto* submit = buttons->addButton(QObject::tr("Import game"), QDialogButtonBox::AcceptRole);
+    submit->setObjectName(QStringLiteral("confirmGameLinkImport"));
+    submit->setDefault(true);
+    setPrimaryAction(*submit);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    QObject::connect(submit, &QPushButton::clicked, dialog, [dialog, link, error, &imports] {
+        const auto game = input::RemoteGame::fromLink(link->text());
+        if (game && imports.importUrl(*game)) {
+            dialog->accept();
+            return;
+        }
+        error->setText(game ? QObject::tr("Import is currently unavailable. Try again shortly.")
+                            : QObject::tr("Enter a public Chess.com or Lichess game link. Copy the "
+                                          "link from the finished game's Share menu."));
+        error->show();
+        link->setFocus();
+    });
+    layout->addWidget(buttons);
+    if (const auto game = input::RemoteGame::fromLink(QApplication::clipboard()->text())) {
+        link->setText(game->publicUrl().toString(QUrl::FullyEncoded));
+    } else if (imports.status() == app::ImportBatchStatus::Failed && !imports.files().empty() &&
+               imports.files().front().remote) {
+        link->setText(imports.files().front().name);
+    }
+    dialog->resize(440, dialog->sizeHint().height());
+    dialog->open();
+    link->setFocus();
+    link->selectAll();
+}
 } // namespace
 QRect fittedWindowGeometry(const QRect& desired, const QRect& available) {
     if (available.isEmpty()) {
@@ -753,15 +814,18 @@ void MainWindow::installImports(app::ImportController& imports,
     pastePgn_ = new QAction(tr("Paste PGN…"), this);
     pastePgn_->setObjectName(QStringLiteral("pastePgnAction"));
     pastePgn_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+V")));
+    importLink_ = new QAction(tr("Import game link…"), this);
+    importLink_->setObjectName(QStringLiteral("importGameLinkAction"));
     file->insertAction(before, importFile_);
     file->insertAction(before, pastePgn_);
+    file->insertAction(before, importLink_);
     file->insertSeparator(before);
     auto* placeholder =
         pages_->findChild<QWidget*>(QStringLiteral("gamesPage"), Qt::FindDirectChildrenOnly);
     const int pageIndex = pages_->indexOf(placeholder);
     pages_->removeWidget(placeholder);
     delete placeholder;
-    auto* games = new GamesPage(imports, library, *importFile_, *pastePgn_, pages_);
+    auto* games = new GamesPage(imports, library, *importFile_, *pastePgn_, *importLink_, pages_);
     games->setVerbose(verbose_);
     pages_->insertWidget(pageIndex, games);
     connect(pages_, &QStackedWidget::currentChanged, this, [this, games, &library] {
@@ -785,7 +849,7 @@ void MainWindow::installImports(app::ImportController& imports,
             analysis_->setEnabled(!library.opening());
         }
     });
-    home_->installImports(imports, *importFile_, *pastePgn_);
+    home_->installImports(imports, *importFile_, *pastePgn_, *importLink_);
     home_->installLibrary(library);
     if (pages_->currentWidget() == home_) {
         library.activate(false);
@@ -817,7 +881,7 @@ void MainWindow::installImports(app::ImportController& imports,
     }
     connect(&imports, &app::ImportController::submitted, this, [this, setNotice] {
         setNotice({});
-        navigation_.navigate(app::Destination::Games);
+        showContextPage(app::Destination::Games, nullptr);
     });
     connect(&imports, &app::ImportController::finished, this, [this, &imports, setNotice] {
         if (closing_ || !reviewController_ ||
@@ -845,6 +909,8 @@ void MainWindow::installImports(app::ImportController& imports,
         }
         if (imports.failures() || imports.warnings()) {
             setNotice(tr("Some games have import issues. Open Games → Import report for details."));
+        } else if (imports.files().front().remote && imports.duplicates()) {
+            setNotice(tr("This game is already in your library."));
         }
         if (imported.size() == 1) {
             reviewController_->selectGame(*imported.begin());
@@ -889,14 +955,19 @@ void MainWindow::installImports(app::ImportController& imports,
         const bool available = imports.available() && !closing_;
         importFile_->setEnabled(available);
         pastePgn_->setEnabled(available);
+        importLink_->setEnabled(available);
         const auto reason = available ? tr("Import local UTF-8 PGN files")
                                       : tr("Import is unavailable while storage is loading, "
                                            "closing, or an import is running.");
         importFile_->setToolTip(reason);
         pastePgn_->setToolTip(available ? tr("Edit clipboard PGN before importing") : reason);
+        importLink_->setToolTip(available ? tr("Import a public game from Chess.com or Lichess")
+                                          : reason);
     };
     connect(&imports, &app::ImportController::changed, this, updateActions);
     updateActions();
+    connect(importLink_, &QAction::triggered, this,
+            [this, &imports] { showGameLinkDialog(*this, imports); });
     connect(importFile_, &QAction::triggered, this, [this, &imports] {
         auto* picker = new QFileDialog(this, tr("Import PGN files"));
         picker->setAttribute(Qt::WA_DeleteOnClose);

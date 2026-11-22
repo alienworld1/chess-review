@@ -21,6 +21,8 @@ QString fileState(app::ImportFileState state) {
         return QObject::tr("Waiting");
     case app::ImportFileState::Reading:
         return QObject::tr("Reading");
+    case app::ImportFileState::Downloading:
+        return QObject::tr("Downloading");
     case app::ImportFileState::Parsing:
         return QObject::tr("Importing");
     case app::ImportFileState::Completed:

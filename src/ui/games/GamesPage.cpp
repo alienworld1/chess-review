@@ -195,7 +195,8 @@ class LibraryTableModel final : public QAbstractTableModel {
 };
 
 GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController& library,
-                     QAction& fileAction, QAction& pasteAction, QWidget* parent)
+                     QAction& fileAction, QAction& pasteAction, QAction& linkAction,
+                     QWidget* parent)
     : QWidget(parent), imports_(imports), library_(library) {
     setObjectName(QStringLiteral("gamesPage"));
     setAcceptDrops(true);
@@ -204,7 +205,7 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     setTextRole(*heading, "title");
     layout->addWidget(heading);
     auto* toolbar = new QHBoxLayout;
-    for (auto* action : {&fileAction, &pasteAction}) {
+    for (auto* action : {&fileAction, &pasteAction, &linkAction}) {
         auto* button = new QToolButton(this);
         button->setDefaultAction(action);
         button->setToolButtonStyle(Qt::ToolButtonTextOnly);
@@ -430,10 +431,14 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     cancel_ = new QPushButton(tr("Cancel import"), this);
     cancel_->setObjectName(QStringLiteral("cancelImport"));
     progress->addWidget(cancel_);
-    layout->addLayout(progress);
+    layout->insertLayout(2, progress);
     report_ = new QPushButton(tr("Import report"), this);
     report_->setObjectName(QStringLiteral("importReportButton"));
     progress->addWidget(report_);
+    setTabOrder(refresh_, importStatus_);
+    setTabOrder(importStatus_, cancel_);
+    setTabOrder(cancel_, report_);
+    setTabOrder(report_, search_);
     reportDialog_ = new ImportReportDialog(imports, this);
     connect(report_, &QPushButton::clicked, reportDialog_, &QDialog::show);
     connect(reportDialog_, &ImportReportDialog::openRequested, this, &GamesPage::openRequested);
@@ -521,7 +526,7 @@ void GamesPage::updateLibrary() {
         : !library_.rows().empty()
             ? tr("Page %1 · %2 games").arg(library_.page() + 1).arg(library_.rows().size())
         : library_.query().filtered() ? tr("No games match your search or filters.")
-                                      : tr("No saved games yet. Import a PGN to get started."));
+                                      : tr("Import a game or drop PGN files here to get started."));
     refresh_->setEnabled(library_.ready() && !library_.busy());
     previous_->setEnabled(library_.ready() && !library_.busy() && library_.page() > 0);
     next_->setEnabled(library_.ready() && !library_.busy() && library_.hasNext());
@@ -607,9 +612,11 @@ void GamesPage::updatePreview() {
     field(tr("Round"), preview->round);
     field(tr("Imported"), QLocale().toString(imported, QLocale::ShortFormat));
     const auto& source = preview->source;
-    field(tr("Source"), source.type == u"paste"  ? tr("Pasted PGN")
-                        : source.type == u"file" ? tr("Local PGN file")
-                                                 : source.type);
+    field(tr("Source"), source.type == u"paste"       ? tr("Pasted PGN")
+                        : source.type == u"file"      ? tr("Local PGN file")
+                        : source.type == u"lichess"   ? QStringLiteral("Lichess")
+                        : source.type == u"chess.com" ? QStringLiteral("Chess.com")
+                                                      : source.type);
     if (!source.uri.isEmpty()) {
         const QUrl uri(source.uri);
         field(tr("Source location"),
@@ -660,11 +667,36 @@ void GamesPage::confirmDeletion() {
 void GamesPage::updateImport() {
     reportDialog_->sync();
     const bool hasResults = !imports_.files().empty();
+    importStatus_->setVisible(hasResults);
     report_->setVisible(hasResults);
     cancel_->setVisible(imports_.busy());
     cancel_->setEnabled(imports_.busy() && !imports_.cancelling());
     updateOpenAction();
     auto status = completionText(imports_.status(), imports_.failures() > 0);
+    if (hasResults && imports_.files().front().remote) {
+        const auto& source = imports_.files().front();
+        if (imports_.busy() && !imports_.cancelling()) {
+            importStatus_->setText(source.state == app::ImportFileState::Downloading
+                                       ? tr("Downloading game…")
+                                       : tr("Validating and saving game…"));
+            return;
+        }
+        if (imports_.status() == app::ImportBatchStatus::Failed) {
+            if (!source.message.isEmpty()) {
+                status = source.message;
+            } else if (!source.items.empty()) {
+                const auto& outcome = source.items.front().outcome;
+                if (const auto* failure = std::get_if<pgn::PgnFailure>(&outcome)) {
+                    status = tr("Game PGN could not be imported. %1")
+                                 .arg(QString::fromStdString(failure->error.message));
+                } else if (const auto* error = std::get_if<persistence::GameError>(&outcome)) {
+                    status = error->message;
+                }
+            }
+            importStatus_->setText(status);
+            return;
+        }
+    }
     if (imports_.busy()) {
         status = tr("Stopping import…");
         if (!imports_.cancelling() && imports_.currentFile() < imports_.files().size()) {
@@ -692,8 +724,6 @@ void GamesPage::updateImport() {
             status += imports_.warnings() == 1 ? tr(" · 1 warning")
                                                : tr(" · %1 warnings").arg(imports_.warnings());
         }
-    } else {
-        status = tr("Drop PGN files here to add games.");
     }
     importStatus_->setText(status);
 }

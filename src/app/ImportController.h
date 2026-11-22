@@ -1,7 +1,7 @@
 #pragma once
 
 #include "app/GameImportService.h"
-#include "import/LocalPgnInput.h"
+#include "import/RemotePgnInput.h"
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -18,6 +18,7 @@ inline constexpr std::size_t maxBatchGames = 10'000;
 enum class ImportFileState {
     Pending,
     Reading,
+    Downloading,
     Parsing,
     Completed,
     CompletedWithErrors,
@@ -31,17 +32,20 @@ struct ImportFileResult {
     ImportFileState state = ImportFileState::Pending;
     QString message;
     std::vector<ImportItem> items;
+    bool remote = false;
 };
 // GUI-thread facade. Injected service must outlive closed(). close() owns service closure.
 // Terminal notifications retain stable results; queue submissions requested by finished() slots.
 class ImportController final : public QObject {
     Q_OBJECT
   public:
-    explicit ImportController(GameImportService& service, QObject* parent = nullptr);
+    explicit ImportController(GameImportService& service, QObject* parent = nullptr,
+                              QNetworkAccessManager* remoteNetwork = nullptr);
     ~ImportController() override;
     static bool acceptsFiles(const QList<QUrl>& files);
     bool importFiles(const QList<QUrl>& files);
     bool importText(QString text);
+    bool importUrl(input::RemoteGame game);
     void setReady(bool ready);
     bool available() const { return ready_ && !busy_ && !finishing_ && !closing_; }
     bool busy() const { return busy_; }
@@ -73,6 +77,7 @@ class ImportController final : public QObject {
     void finishClose();
     GameImportService& service_;
     QThreadPool pool_;
+    input::RemotePgnFetcher remote_;
     QList<QUrl> urls_;
     QString text_;
     std::vector<ImportFileResult> results_;

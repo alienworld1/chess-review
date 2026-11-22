@@ -9,11 +9,45 @@
 namespace chess_review::app {
 using namespace persistence;
 struct GameImportService::ParseState {
-    ParseState(std::string input, std::size_t games) : bytes(std::move(input)) {
-        limits.maxGames = games;
+    ParseState(std::string input, std::size_t games, ImportMode importMode)
+        : bytes(std::move(input)), mode(importMode) {
+        limits.maxGames = mode == ImportMode::OneCompletedGame ? 1 : games;
+        limits.requireTermination = mode == ImportMode::OneCompletedGame;
+    }
+    pgn::PgnOutcome read() {
+        if (!reader) {
+            reader = std::make_unique<pgn::PgnReader>(bytes, limits, stop.get_token());
+        }
+        auto outcome = reader->next();
+        if (mode == ImportMode::Batch) {
+            return outcome;
+        }
+        if (auto* game = std::get_if<pgn::PgnDocument>(&outcome)) {
+            auto tail = reader->next();
+            if (std::holds_alternative<pgn::Cancelled>(tail)) {
+                return tail;
+            }
+            if (game->result != pgn::GameResult::Unknown &&
+                std::holds_alternative<pgn::EndOfInput>(tail)) {
+                return outcome;
+            }
+        } else if (auto* failure = std::get_if<pgn::PgnFailure>(&outcome)) {
+            failure->unreadableTail = true;
+            return outcome;
+        } else if (std::holds_alternative<pgn::Cancelled>(outcome)) {
+            return outcome;
+        }
+        return pgn::PgnFailure{1,
+                               {0, bytes.size()},
+                               {pgn::DiagnosticCode::InvalidSyntax,
+                                "The download must contain one completed game.",
+                                {},
+                                std::nullopt},
+                               true};
     }
     pgn::PgnLimits limits;
     std::string bytes;
+    ImportMode mode;
     std::stop_source stop;
     std::unique_ptr<pgn::PgnReader> reader; // Used only by the single parser worker.
 };
@@ -33,6 +67,9 @@ GameImportService::GameImportService(Database& database, QObject* parent)
                 emit progress(report_.request, report_.items.back());
                 if (std::holds_alternative<GameError>(result)) {
                     finish(ImportStatus::Failed);
+                } else if (parse_->mode == ImportMode::OneCompletedGame) {
+                    finish(parse_->stop.stop_requested() ? ImportStatus::Cancelled
+                                                         : ImportStatus::Completed);
                 } else {
                     next();
                 }
@@ -43,7 +80,7 @@ GameImportService::~GameImportService() {
                "Await closed() before destruction");
 }
 void GameImportService::importText(RequestId request, std::string bytes, GameSource source,
-                                   ImportBudget budget) {
+                                   ImportBudget budget, ImportMode mode) {
     Q_ASSERT(QThread::currentThread() == thread());
     if (closing_ || active_) {
         const auto error = GameError{closing_ ? GameErrorCode::Closing : GameErrorCode::Busy,
@@ -65,7 +102,7 @@ void GameImportService::importText(RequestId request, std::string bytes, GameSou
     report_ = {request, ImportStatus::Completed, {}};
     source_ = std::move(source);
     budget_ = budget;
-    parse_ = std::make_shared<ParseState>(std::move(bytes), budget.games);
+    parse_ = std::make_shared<ParseState>(std::move(bytes), budget.games, mode);
     next();
 }
 void GameImportService::next() {
@@ -75,11 +112,7 @@ void GameImportService::next() {
     }
     pool_.start([this, state = parse_] {
         try {
-            if (!state->reader) {
-                state->reader = std::make_unique<pgn::PgnReader>(state->bytes, state->limits,
-                                                                 state->stop.get_token());
-            }
-            auto outcome = state->reader->next();
+            auto outcome = state->read();
             QMetaObject::invokeMethod(
                 this,
                 [this, outcome = std::move(outcome)]() mutable { parsed(std::move(outcome)); },
@@ -99,6 +132,10 @@ void GameImportService::next() {
     });
 }
 void GameImportService::parsed(pgn::PgnOutcome outcome) {
+    if (parse_->stop.stop_requested()) {
+        finish(ImportStatus::Cancelled);
+        return;
+    }
     if (auto* document = std::get_if<pgn::PgnDocument>(&outcome)) {
         QString white = tr("White");
         QString black = tr("Black");
@@ -131,10 +168,6 @@ void GameImportService::parsed(pgn::PgnOutcome outcome) {
                                                  document->warnings.begin() +
                                                      static_cast<std::ptrdiff_t>(retained));
         retainedWarnings_ += retained;
-        if (parse_->stop.stop_requested()) {
-            finish(ImportStatus::Cancelled);
-            return;
-        }
         storageRequest_ = QUuid::createUuid();
         database_.insertGame(storageRequest_,
                              std::make_shared<const pgn::PgnDocument>(std::move(*document)),

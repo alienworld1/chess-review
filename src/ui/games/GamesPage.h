@@ -21,7 +21,8 @@ class GamesPage final : public QWidget {
     Q_OBJECT
   public:
     GamesPage(app::ImportController& imports, app::GameLibraryController& library,
-              QAction& fileAction, QAction& pasteAction, QWidget* parent = nullptr);
+              QAction& fileAction, QAction& pasteAction, QAction& linkAction,
+              QWidget* parent = nullptr);
     void setVerbose(bool verbose);
 
   signals:

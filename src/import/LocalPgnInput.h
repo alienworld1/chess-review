@@ -1,20 +1,12 @@
 #pragma once
 
-#include "persistence/GameRepository.h"
+#include "import/PgnInput.h"
 #include <QString>
 #include <QUrl>
 #include <cstddef>
 #include <stop_token>
-#include <string>
 
 namespace chess_review::input {
-struct InputResult {
-    std::string bytes;
-    persistence::GameSource source;
-    QString error;
-    std::size_t bytesRead = 0;
-    bool cancelled = false;
-};
 // Pure URL/path validation; performs no filesystem or network access.
 bool isLocalPgnUrl(const QUrl& url);
 // Blocking acquisition: call only on a worker. Errors contain no native/source text.

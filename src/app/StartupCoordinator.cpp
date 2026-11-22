@@ -6,7 +6,10 @@
 #include <utility>
 
 namespace chess_review::app {
-StartupCoordinator::StartupCoordinator(QObject* parent) : QObject(parent) { connectServices(); }
+StartupCoordinator::StartupCoordinator(QObject* parent, QNetworkAccessManager* importNetwork)
+    : QObject(parent), localImports_(imports_, nullptr, importNetwork) {
+    connectServices();
+}
 StartupCoordinator::StartupCoordinator(diagnostics::Logger& logger, QObject* parent)
     : QObject(parent), logger_(&logger), database_(logger) {
     connectServices();
@@ -132,8 +135,11 @@ void StartupCoordinator::connectServices() {
     });
     connect(&localImports_, &ImportController::committed, &library_,
             &GameLibraryController::importedGame);
-    connect(&localImports_, &ImportController::finished, &library_,
-            [this] { library_.refresh(true); });
+    connect(&localImports_, &ImportController::finished, &library_, [this] {
+        if (localImports_.status() == ImportBatchStatus::Completed || localImports_.inserted()) {
+            library_.refresh(true);
+        }
+    });
     connect(&database_, &persistence::Database::progress, this, &StartupCoordinator::progress);
     connect(&database_, &persistence::Database::ready, this, [this] {
         if (state_ == Lifecycle::Stopping || state_ == Lifecycle::Stopped) {

@@ -102,6 +102,7 @@ class MainWindow final : public QMainWindow {
     std::optional<int> configuredAnalysisLines_;
     QAction* importFile_ = nullptr;
     QAction* pastePgn_ = nullptr;
+    QAction* importLink_ = nullptr;
     app::GameLibraryController* library_ = nullptr;
     StartupPanel* startup_;
     HomePage* home_ = nullptr;

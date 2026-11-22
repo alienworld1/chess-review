@@ -29,6 +29,19 @@ offscreen platform for widget suites; direct widget invocations without a
 working display need `QT_QPA_PLATFORM=offscreen`. Use absolute paths for Qt Test
 `-o` reports because temporary working directories are removed at exit.
 
+### Game-link imports
+
+`ctest --preset dev -R '^remote_import$'` checks the desktop flow, provider
+adapters, cancellation, and response limits with in-process network fixtures.
+To exercise the Qt TLS client and current provider responses, run the opt-in
+cases with network access. The tests use three public games and temporary local
+storage.
+
+```sh
+QT_QPA_PLATFORM=offscreen CHESS_REVIEW_LIVE_IMPORT=1 \
+  ./build/dev/tests/remote_import_tests liveProviders
+```
+
 ## Dependencies and tooling
 
 With `BUILD_TESTING=ON` (the default), CMake fetches pinned Catch2 3.8.1 and
