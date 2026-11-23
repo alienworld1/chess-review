@@ -22,6 +22,12 @@ PositionEvidence proof(const chess::Position& root, int wins, const char* uci, c
     e.candidates = {{1, e.evaluation, {parsed(root, uci)}, e.strength}};
     return e;
 }
+Configuration wdlConfig() {
+    Configuration c;
+    c.conversion.preferWdl = true;
+    c.classification.excellentLoss = 0.01;
+    return c;
+}
 MoveEvidence original(const chess::Position& root, bool verified, int gap) {
     const bool white = root.sideToMove() == chess::Color::White;
     const auto played = parsed(root, white ? "e2e4" : "e7e5");
@@ -33,7 +39,8 @@ MoveEvidence original(const chess::Position& root, bool verified, int gap) {
     alt.wdl = Wdl{600 - gap, 0, 400 + gap};
     before.candidates.push_back({2, alt, {parsed(root, white ? "d2d4" : "d7d5")}, before.strength});
     return pairEvidence(root, played, before,
-                        proof(after, 550, white ? "g8f6" : "b1c3", verified ? "va" : "da", nodes));
+                        proof(after, 550, white ? "g8f6" : "b1c3", verified ? "va" : "da", nodes),
+                        {300, true}, 1);
 }
 MoveEvidence hintEvidence(const chess::Position& root, std::initializer_list<const char*> line,
                           const char* playedUci, bool verified) {
@@ -51,7 +58,8 @@ MoveEvidence hintEvidence(const chess::Position& root, std::initializer_list<con
     REQUIRE(std::holds_alternative<std::monostate>(after.play(played)));
     const auto reply = std::get<std::string>(after.uci(after.legalMoves().front()));
     return pairEvidence(root, played, before,
-                        proof(after, 550, reply.c_str(), verified ? "va" : "da", nodes));
+                        proof(after, 550, reply.c_str(), verified ? "va" : "da", nodes),
+                        {300, true}, 1);
 }
 } // namespace
 TEST_CASE("Retry accepts demonstrated alternatives at exact WDL boundaries",
@@ -67,12 +75,13 @@ TEST_CASE("Retry accepts demonstrated alternatives at exact WDL boundaries",
                                   {49, RetryGrade::Okay},
                                   {50, RetryGrade::TryAgain}}) {
             auto d = original(root, false, gap), v = original(root, true, gap);
-            const auto result = gradeRetry(root, parsed(root, black ? "d7d5" : "d2d4"), d, v, {});
+            const auto cfg = wdlConfig();
+            const auto result = gradeRetry(root, parsed(root, black ? "d7d5" : "d2d4"), d, v, cfg);
             REQUIRE(result.grade);
             CHECK(*result.grade == grade);
             CHECK(*result.gap == Catch::Approx(static_cast<double>(gap) / 1000));
             CHECK(result.success() == (grade == RetryGrade::Strong));
-            CHECK(gradeRetry(root, parsed(root, black ? "g8f6" : "g1f3"), d, v, {}).grade ==
+            CHECK(gradeRetry(root, parsed(root, black ? "g8f6" : "g1f3"), d, v, cfg).grade ==
                   RetryGrade::Best);
         }
     }
@@ -82,30 +91,31 @@ TEST_CASE("Retry withholds unsupported conflicting and incompatible evidence",
     const auto root = chess::Position::initial();
     auto d = original(root, false, 10), v = original(root, true, 10);
     const auto move = parsed(root, "d2d4");
-    REQUIRE(gradeRetry(root, move, d, v, {}).grade);
-    CHECK(!gradeRetry(root, parsed(root, "b1c3"), d, v, {}).grade);
-    CHECK(!gradeRetry(root, move, d, d, {}).grade);
-    auto config = Configuration{};
+    const auto cfg = wdlConfig();
+    REQUIRE(gradeRetry(root, move, d, v, cfg).grade);
+    CHECK(!gradeRetry(root, parsed(root, "b1c3"), d, v, cfg).grade);
+    CHECK(!gradeRetry(root, move, d, d, cfg).grade);
+    auto config = cfg;
     config.refinement.maximumDrift = std::numeric_limits<double>::quiet_NaN();
     CHECK(!gradeRetry(root, move, d, v, config).grade);
-    config = {};
+    config = cfg;
     config.classification.excellentLoss = -1;
     CHECK(!gradeRetry(root, move, d, v, config).grade);
     auto bad = v;
     bad.before.candidates[1].evaluation.wdl = Wdl{589, 0, 411};
-    CHECK(!gradeRetry(root, move, d, bad, {}).grade);
+    CHECK(!gradeRetry(root, move, d, bad, cfg).grade);
     bad = v;
     bad.before.evaluation.score->bound = Bound::Lower;
-    CHECK(!gradeRetry(root, move, d, bad, {}).grade);
+    CHECK(!gradeRetry(root, move, d, bad, cfg).grade);
     bad = v;
     bad.before.engineIdentity = "other";
-    CHECK(!gradeRetry(root, move, d, bad, {}).grade);
+    CHECK(!gradeRetry(root, move, d, bad, cfg).grade);
     bad = v;
     bad.before.position.moves.push_back(move);
-    CHECK(!gradeRetry(root, move, d, bad, {}).grade);
+    CHECK(!gradeRetry(root, move, d, bad, cfg).grade);
     bad = v;
     bad.before.evaluation.score = RawScore{ScoreKind::Mate, 4};
-    CHECK(!gradeRetry(root, move, d, bad, {}).grade);
+    CHECK(!gradeRetry(root, move, d, bad, cfg).grade);
 }
 TEST_CASE("Unknown retries require independent comparable child evidence",
           "[unit][review][retry]") {
@@ -116,18 +126,19 @@ TEST_CASE("Unknown retries require independent comparable child evidence",
     REQUIRE(std::holds_alternative<std::monostate>(after.play(move)));
     auto dc = proof(after, 410, "g8f6", "dc", 1000000);
     auto vc = proof(after, 410, "g8f6", "vc", 5000000);
-    CHECK(gradeRetry(root, move, d, v, {}, &dc, &vc).grade == RetryGrade::Strong);
-    CHECK(!gradeRetry(root, move, d, v, {}, &dc, &dc).grade);
-    CHECK(!gradeRetry(root, parsed(root, "d2d4"), d, v, {}, &dc, nullptr).grade);
-    CHECK(!gradeRetry(root, parsed(root, "d2d4"), d, v, {}, nullptr, &vc).grade);
+    const auto cfg = wdlConfig();
+    CHECK(gradeRetry(root, move, d, v, cfg, &dc, &vc).grade == RetryGrade::Strong);
+    CHECK(!gradeRetry(root, move, d, v, cfg, &dc, &dc).grade);
+    CHECK(!gradeRetry(root, parsed(root, "d2d4"), d, v, cfg, &dc, nullptr).grade);
+    CHECK(!gradeRetry(root, parsed(root, "d2d4"), d, v, cfg, nullptr, &vc).grade);
     vc.evaluation.wdl = Wdl{500, 0, 500};
     vc.candidates[0].evaluation = vc.evaluation;
-    CHECK(!gradeRetry(root, move, d, v, {}, &dc, &vc).grade);
+    CHECK(!gradeRetry(root, move, d, v, cfg, &dc, &vc).grade);
     vc = dc;
     vc.attemptIdentity = "vc";
     vc.strength.nodes = 5000000;
     vc.position.moves.clear();
-    CHECK(!gradeRetry(root, move, d, v, {}, &dc, &vc).grade);
+    CHECK(!gradeRetry(root, move, d, v, cfg, &dc, &vc).grade);
 }
 
 TEST_CASE("Retry rejects mixing engines across otherwise coherent passes",
@@ -136,13 +147,14 @@ TEST_CASE("Retry rejects mixing engines across otherwise coherent passes",
     const auto deep = original(root, false, 10);
     auto verified = original(root, true, 10);
     verified.before.engineIdentity = verified.after.engineIdentity = "another-engine";
-    CHECK(!gradeRetry(root, parsed(root, "d2d4"), deep, verified, {}).grade);
+    CHECK(!gradeRetry(root, parsed(root, "d2d4"), deep, verified, wdlConfig()).grade);
 }
 TEST_CASE("Retry drift includes the exact native WDL boundary", "[unit][review][retry]") {
     const auto root = chess::Position::initial();
     const auto deep = original(root, false, 13);
     const auto verified = original(root, true, 33);
-    CHECK(gradeRetry(root, parsed(root, "d2d4"), deep, verified, {}).grade == RetryGrade::Okay);
+    CHECK(gradeRetry(root, parsed(root, "d2d4"), deep, verified, wdlConfig()).grade ==
+          RetryGrade::Okay);
 }
 TEST_CASE("Retry hints fall back honestly and reject unsupported best moves",
           "[unit][review][retry]") {

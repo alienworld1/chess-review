@@ -250,7 +250,8 @@ class ReviewAcceptanceTest final : public QObject {
                 const auto& beforeValue = std::get<persistence::StoredReviewEvidence>(before);
                 const auto pair = review::pairEvidence(
                     position, moves[static_cast<std::size_t>(index)], beforeValue.evidence,
-                    afterValue, saved.settings.configuration.values.conversion);
+                    afterValue, saved.settings.configuration.values.conversion,
+                    saved.expectedScoreModelVersion);
                 QCOMPARE(pair.before.position, position.context());
                 QCOMPARE(row.rawBefore, pair.before.evaluation);
                 QCOMPARE(row.rawAfter, pair.after.evaluation);
@@ -262,6 +263,10 @@ class ReviewAcceptanceTest final : public QObject {
                 if (index < bookPlies && derived.label) {
                     QCOMPARE(row.classification->label, review::Classification::Book);
                     QCOMPARE(row.classification->ruleId, "opening.book.v1");
+                } else if (row.special.status == review::SpecialStatus::Verified &&
+                           row.special.label) {
+                    QCOMPARE(row.classification->label, row.special.label);
+                    QCOMPARE(row.classification->ruleId, row.special.ruleId);
                 } else {
                     QCOMPARE(row.classification->label, derived.label);
                     QCOMPARE(row.classification->ruleId, derived.ruleId);

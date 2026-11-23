@@ -10,6 +10,11 @@ namespace {
 int ticks(const RawEvaluation& raw, chess::Color side) {
     return 2 * (raw.perspective == side ? raw.wdl->wins : raw.wdl->losses) + raw.wdl->draws;
 }
+bool sameMate(const std::optional<RawScore>& a, const std::optional<RawScore>& b) {
+    return a && b && a->kind == ScoreKind::Mate && b->kind == ScoreKind::Mate &&
+           a->bound == Bound::Exact && b->bound == Bound::Exact && a->value != 0 && b->value != 0 &&
+           (a->value > 0) == (b->value > 0);
+}
 bool stronger(const PositionEvidence& a, const PositionEvidence& b, ComparisonModel model) {
     if (a.position != b.position) {
         return false;
@@ -17,16 +22,25 @@ bool stronger(const PositionEvidence& a, const PositionEvidence& b, ComparisonMo
     if (a.terminal && b.terminal) {
         return a.terminal == b.terminal;
     }
-    return a.engineIdentity == b.engineIdentity && !a.attemptIdentity.empty() &&
-           !b.attemptIdentity.empty() && a.attemptIdentity != b.attemptIdentity &&
-           a.strength.nodes && b.strength.nodes &&
-           (model == ComparisonModel::Version1 || *a.strength.nodes > 0) &&
-           *b.strength.nodes > *a.strength.nodes && a.strength.depth && b.strength.depth &&
-           *b.strength.depth >= *a.strength.depth;
+    if (a.engineIdentity != b.engineIdentity || a.attemptIdentity.empty() ||
+        b.attemptIdentity.empty() || a.attemptIdentity == b.attemptIdentity || !a.strength.nodes ||
+        !b.strength.nodes || !a.strength.depth || !b.strength.depth ||
+        *b.strength.depth < *a.strength.depth) {
+        return false;
+    }
+    if (model != ComparisonModel::Version1 && *a.strength.nodes == 0) {
+        return false;
+    }
+    if (*b.strength.nodes > *a.strength.nodes) {
+        return true;
+    }
+    return model >= ComparisonModel::Version3 && *a.strength.nodes == *b.strength.nodes &&
+           *a.strength.nodes > 0 && sameMate(a.evaluation.score, b.evaluation.score);
 }
 std::optional<int> scoreTicks(const MoveComparison& row, const MoveEvidence& pair,
                               chess::Color mover) {
-    if (!row.expected || row.expected->source == ConversionSource::ApproximateCentipawns) {
+    if (!row.expected || (row.expected->source != ConversionSource::NativeWdl &&
+                          row.expected->source != ConversionSource::Terminal)) {
         return {};
     }
     if (row.source == ComparisonSource::PlayedChild) {
@@ -38,12 +52,18 @@ std::optional<int> scoreTicks(const MoveComparison& row, const MoveEvidence& pai
     const auto found =
         std::find_if(pair.before.candidates.begin(), pair.before.candidates.end(),
                      [&](const auto& c) { return c.continuation.front() == row.move; });
+    if (found == pair.before.candidates.end() || !found->evaluation.wdl) {
+        return {};
+    }
     return ticks(found->evaluation, mover);
 }
 AlternativeComparison single(const chess::Position& root, const MoveEvidence& pair,
                              const Configuration& config, ComparisonModel model) {
     AlternativeComparison out;
-    const auto classified = classify(root, pair, config.classification, config.conversion);
+    const std::uint32_t classModel = model >= ComparisonModel::Version3 ? 3U : 2U;
+    const std::uint32_t expectedModel = model >= ComparisonModel::Version3 ? 2U : 1U;
+    const auto classified =
+        classify(root, pair, config.classification, config.conversion, classModel);
     out.reason = ComparisonReason::Insufficient;
     if (classified.issue || !classified.loss || !classified.bestMove) {
         return out;
@@ -54,14 +74,15 @@ AlternativeComparison single(const chess::Position& root, const MoveEvidence& pa
         row.played = move == pair.playedMove;
         if (candidate) {
             row.rank = candidate->rank;
-            row.expected =
-                convertEvaluation(candidate->evaluation, root.sideToMove(), config.conversion)
-                    .expected;
-            row.gap = classified.before.expected->source == ConversionSource::NativeWdl
+            row.expected = convertEvaluation(candidate->evaluation, root.sideToMove(),
+                                             config.conversion, expectedModel)
+                               .expected;
+            row.gap = classified.before.expected->source == ConversionSource::NativeWdl &&
+                              row.expected->source == ConversionSource::NativeWdl
                           ? static_cast<double>(ticks(pair.before.evaluation, root.sideToMove()) -
                                                 ticks(candidate->evaluation, root.sideToMove())) /
                                 2000
-                          : classified.before.expected->value - row.expected->value;
+                          : std::max(0.0, classified.before.expected->value - row.expected->value);
         } else {
             row.source = ComparisonSource::PlayedChild;
             row.expected = classified.after.expected;
@@ -71,7 +92,7 @@ AlternativeComparison single(const chess::Position& root, const MoveEvidence& pa
         if (row.played && candidate && std::isfinite(config.refinement.maximumDrift)) {
             const bool exact = row.expected->source == ConversionSource::NativeWdl &&
                                (classified.after.expected->source == ConversionSource::NativeWdl ||
-                                (model == ComparisonModel::Version2 &&
+                                (model >= ComparisonModel::Version2 &&
                                  classified.after.expected->source == ConversionSource::Terminal));
             const double disagreement =
                 exact ? static_cast<double>(std::abs(
@@ -82,9 +103,18 @@ AlternativeComparison single(const chess::Position& root, const MoveEvidence& pa
                             2000
                       : std::abs(row.expected->value - classified.after.expected->value);
             const bool qualityConflict =
-                model == ComparisonModel::Version2 &&
+                model >= ComparisonModel::Version2 &&
                 *row.equivalent != (*classified.loss <= config.classification.excellentLoss);
-            if (disagreement > config.refinement.maximumDrift || qualityConflict) {
+            if (model < ComparisonModel::Version3 &&
+                (disagreement > config.refinement.maximumDrift || qualityConflict)) {
+                row.expected.reset();
+                row.gap.reset();
+                row.equivalent.reset();
+                row.reason = ComparisonReason::Disagreement;
+            } else if (model >= ComparisonModel::Version3 &&
+                       disagreement > config.refinement.maximumDrift &&
+                       *row.equivalent !=
+                           (*classified.loss <= config.classification.excellentLoss)) {
                 row.expected.reset();
                 row.gap.reset();
                 row.equivalent.reset();
@@ -122,8 +152,9 @@ AlternativeComparison single(const chess::Position& root, const MoveEvidence& pa
 AlternativeComparison compareAlternatives(const chess::Position& root, const MoveEvidence& latest,
                                           const MoveEvidence* older, const Configuration& config,
                                           ComparisonModel model) {
-    if ((model != ComparisonModel::Version1 && model != ComparisonModel::Version2) ||
-        (model == ComparisonModel::Version2 &&
+    if ((model != ComparisonModel::Version1 && model != ComparisonModel::Version2 &&
+         model != ComparisonModel::Version3) ||
+        (model >= ComparisonModel::Version2 &&
          (!std::isfinite(config.refinement.maximumDrift) || config.refinement.maximumDrift < 0 ||
           config.refinement.maximumDrift > 1))) {
         AlternativeComparison unavailable;
@@ -146,7 +177,7 @@ AlternativeComparison compareAlternatives(const chess::Position& root, const Mov
                              stronger(older->before, latest.before, model) &&
                              stronger(older->after, latest.after, model);
     bool unique = true;
-    if (model == ComparisonModel::Version2) {
+    if (model >= ComparisonModel::Version2) {
         const std::array witnesses{&older->before, &older->after, &latest.before, &latest.after};
         for (std::size_t i = 0; i < witnesses.size(); ++i) {
             for (std::size_t j = i + 1; j < witnesses.size(); ++j) {
@@ -171,7 +202,9 @@ AlternativeComparison compareAlternatives(const chess::Position& root, const Mov
             row.reason = ComparisonReason::MissingCandidate;
         } else if (independent && unique) {
             const auto& prior = *found;
-            if (prior.source != row.source || prior.expected->source != row.expected->source ||
+            if (prior.source != row.source ||
+                (model < ComparisonModel::Version3 &&
+                 prior.expected->source != row.expected->source) ||
                 prior.expected->config != row.expected->config ||
                 prior.equivalent != row.equivalent) {
                 row.reason = ComparisonReason::Disagreement;
@@ -183,11 +216,12 @@ AlternativeComparison compareAlternatives(const chess::Position& root, const Mov
                            : std::abs(prior.expected->value - row.expected->value);
                 // Native gaps are exact half-permille counts; subtract counts before conversion.
                 const double gapDrift =
-                    a && b ? static_cast<double>(std::abs(
-                                 (ticks(older->before.evaluation, root.sideToMove()) - *a) -
-                                 (ticks(latest.before.evaluation, root.sideToMove()) - *b))) /
-                                 2000
-                           : std::abs(*prior.gap - *row.gap);
+                    a && b && older->before.evaluation.wdl && latest.before.evaluation.wdl
+                        ? static_cast<double>(
+                              std::abs((ticks(older->before.evaluation, root.sideToMove()) - *a) -
+                                       (ticks(latest.before.evaluation, root.sideToMove()) - *b))) /
+                              2000
+                        : std::abs(*prior.gap - *row.gap);
                 row.reason = scoreDrift > config.refinement.maximumDrift ||
                                      gapDrift > config.refinement.maximumDrift
                                  ? ComparisonReason::ScoreDrift

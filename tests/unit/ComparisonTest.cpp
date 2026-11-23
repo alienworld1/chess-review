@@ -24,7 +24,14 @@ PositionEvidence proof(const chess::Position& root, int wins, const char* uci, c
     e.candidates = {{1, e.evaluation, {move(root, uci)}, e.strength}};
     return e;
 }
-MoveEvidence pair(const chess::Position& root, bool verified, int gap = 10) {
+Configuration wdlConfig() {
+    Configuration c;
+    c.conversion.preferWdl = true;
+    c.classification.excellentLoss = 0.01;
+    return c;
+}
+MoveEvidence pair(const chess::Position& root, bool verified, int gap = 10,
+                  std::uint32_t expectedModel = 1) {
     const bool white = root.sideToMove() == chess::Color::White;
     const auto played = move(root, white ? "e2e4" : "e7e5");
     auto after = root;
@@ -36,7 +43,8 @@ MoveEvidence pair(const chess::Position& root, bool verified, int gap = 10) {
     before.candidates.push_back(
         {2, alternative, {move(root, white ? "d2d4" : "d7d5")}, before.strength});
     return pairEvidence(root, played, before,
-                        proof(after, 450, white ? "g8f6" : "b1c3", verified ? "va" : "da", nodes));
+                        proof(after, 450, white ? "g8f6" : "b1c3", verified ? "va" : "da", nodes),
+                        {300, true}, expectedModel);
 }
 } // namespace
 TEST_CASE("Comparison confirms identities and exact equivalence for both sides",
@@ -48,7 +56,7 @@ TEST_CASE("Comparison confirms identities and exact equivalence for both sides",
         }
         for (const int gap : {0, 10, 11}) {
             const auto a = pair(root, false, gap), b = pair(root, true, gap);
-            const auto result = compareAlternatives(root, b, &a, {});
+            const auto result = compareAlternatives(root, b, &a, wdlConfig());
             REQUIRE(result.reason == ComparisonReason::Confirmed);
             REQUIRE(result.moves.size() == 3);
             CHECK(result.moves.front().played);
@@ -63,47 +71,52 @@ TEST_CASE("Comparison needs independent compatible stronger evidence",
           "[unit][review][comparison]") {
     const auto root = chess::Position::initial();
     const auto a = pair(root, false), b = pair(root, true);
-    CHECK(compareAlternatives(root, b, nullptr, {}).reason == ComparisonReason::Pending);
-    CHECK(compareAlternatives(root, a, &a, {}).needsEvidence());
+    const auto cfg = wdlConfig();
+    CHECK(compareAlternatives(root, b, nullptr, cfg).reason == ComparisonReason::Pending);
+    CHECK(compareAlternatives(root, a, &a, cfg).needsEvidence());
     auto bad = b;
     bad.before.engineIdentity = "other";
-    CHECK(compareAlternatives(root, bad, &a, {}).needsEvidence());
+    CHECK(compareAlternatives(root, bad, &a, cfg).needsEvidence());
     bad = b;
     bad.before.position.halfmoveClock++;
-    CHECK(compareAlternatives(root, bad, &a, {}).moves.empty());
+    CHECK(compareAlternatives(root, bad, &a, cfg).moves.empty());
     bad = b;
     bad.before.candidates.back().evaluation.score->bound = Bound::Lower;
-    CHECK(compareAlternatives(root, bad, &a, {}).moves.empty());
+    CHECK(compareAlternatives(root, bad, &a, cfg).moves.empty());
     bad = b;
     bad.before.candidates.back().continuation = {move(root, "b1c3")};
-    CHECK(compareAlternatives(root, bad, &a, {}).reason == ComparisonReason::MissingCandidate);
+    CHECK(compareAlternatives(root, bad, &a, cfg).reason == ComparisonReason::MissingCandidate);
     bad = b;
     bad.before.candidates.back().evaluation.wdl = Wdl{589, 0, 411};
-    CHECK(compareAlternatives(root, bad, &a, {}).reason == ComparisonReason::Disagreement);
-    auto config = Configuration{};
+    CHECK(compareAlternatives(root, bad, &a, cfg).reason == ComparisonReason::Disagreement);
+    auto config = cfg;
     config.refinement.maximumDrift = std::numeric_limits<double>::quiet_NaN();
     CHECK(compareAlternatives(root, b, &a, config).needsEvidence());
     bad = b;
     bad.before.evaluation.score = RawScore{ScoreKind::Mate, 4};
-    CHECK(compareAlternatives(root, bad, &a, {}).moves.empty());
+    bad.before.candidates.front().evaluation = bad.before.evaluation;
+    CHECK(compareAlternatives(root, bad, &a, cfg, ComparisonModel::Version2).moves.empty());
+    const auto mateOk = compareAlternatives(root, bad, &a, {}, ComparisonModel::Version3);
+    CHECK(mateOk.reason == ComparisonReason::Disagreement); // 4 wins on Mate (1.0 vs 0.5) drifts
 }
 TEST_CASE("Comparison permits equivalent rank swaps and bounds score drift exactly",
           "[unit][review][comparison]") {
     const auto root = chess::Position::initial();
+    const auto cfg = wdlConfig();
     auto a = pair(root, false, 0), b = pair(root, true, 0);
     std::swap(b.before.candidates[0].continuation, b.before.candidates[1].continuation);
-    CHECK(compareAlternatives(root, b, &a, {}).reason == ComparisonReason::Confirmed);
+    CHECK(compareAlternatives(root, b, &a, cfg).reason == ComparisonReason::Confirmed);
     b = pair(root, true, 0);
     for (auto& c : b.before.candidates) {
         c.evaluation.wdl = Wdl{620, 0, 380};
     }
     b.before.evaluation = b.before.candidates.front().evaluation;
-    CHECK(compareAlternatives(root, b, &a, {}).reason == ComparisonReason::Confirmed);
+    CHECK(compareAlternatives(root, b, &a, cfg).reason == ComparisonReason::Confirmed);
     for (auto& c : b.before.candidates) {
         c.evaluation.wdl = Wdl{621, 0, 379};
     }
     b.before.evaluation = b.before.candidates.front().evaluation;
-    CHECK(compareAlternatives(root, b, &a, {}).reason == ComparisonReason::ScoreDrift);
+    CHECK(compareAlternatives(root, b, &a, cfg).reason == ComparisonReason::ScoreDrift);
 }
 TEST_CASE("Width one remains explicitly unassessed without comparison searches",
           "[unit][review][comparison]") {
@@ -111,7 +124,7 @@ TEST_CASE("Width one remains explicitly unassessed without comparison searches",
     auto a = pair(root, false), b = pair(root, true);
     a.before.candidates.resize(1);
     b.before.candidates.resize(1);
-    const auto result = compareAlternatives(root, b, &a, {});
+    const auto result = compareAlternatives(root, b, &a, wdlConfig());
     CHECK(result.reason == ComparisonReason::Coverage);
     CHECK(!result.needsEvidence());
     REQUIRE(result.moves.size() == 2);
@@ -130,13 +143,13 @@ TEST_CASE("Comparison retains promotion identity and approximate provenance",
     candidate.continuation = {move(root, "a7a8r")};
     before.candidates.push_back(candidate);
     auto child = proof(after, 450, "h8g7", "child", 1000000);
-    auto a = pairEvidence(root, played, before, child);
+    auto a = pairEvidence(root, played, before, child, {300, true}, 1);
     before.attemptIdentity = "second";
     child.attemptIdentity = "child2";
     before.strength.nodes = child.strength.nodes = 5000000;
     std::swap(before.candidates[0].continuation, before.candidates[1].continuation);
-    auto b = pairEvidence(root, played, before, child);
-    auto result = compareAlternatives(root, b, &a, {});
+    auto b = pairEvidence(root, played, before, child, {300, true}, 1);
+    auto result = compareAlternatives(root, b, &a, wdlConfig());
     REQUIRE(result.reason == ComparisonReason::Confirmed);
     REQUIRE(result.moves.size() == 3);
     CHECK(result.moves[1].move != result.moves[2].move);
@@ -160,11 +173,11 @@ TEST_CASE("Comparison supports proven terminal children and a sole legal move",
         alternative.rank = 2;
         alternative.continuation = {move(root, "f7h7")};
         before.candidates.push_back(alternative);
-        const auto a = pairEvidence(root, played, before, terminalEvidence(after));
+        const auto a = pairEvidence(root, played, before, terminalEvidence(after), {300, true}, 1);
         before.attemptIdentity = "second";
         before.strength.nodes = 5000000;
-        const auto b = pairEvidence(root, played, before, terminalEvidence(after));
-        const auto result = compareAlternatives(root, b, &a, {});
+        const auto b = pairEvidence(root, played, before, terminalEvidence(after), {300, true}, 1);
+        const auto result = compareAlternatives(root, b, &a, wdlConfig());
         REQUIRE(result.reason == ComparisonReason::Confirmed);
         REQUIRE(result.moves.front().expected);
         CHECK(result.moves.front().expected->source == ConversionSource::Terminal);
@@ -181,8 +194,9 @@ TEST_CASE("Comparison supports proven terminal children and a sole legal move",
         REQUIRE(std::holds_alternative<std::monostate>(after.play(played)));
         const auto next = std::get<std::string>(after.uci(after.legalMoves().front()));
         const auto a =
-            pairEvidence(root, played, before, proof(after, 500, next.c_str(), "child", 1000000));
-        const auto result = compareAlternatives(root, a, nullptr, {});
+            pairEvidence(root, played, before, proof(after, 500, next.c_str(), "child", 1000000),
+                         {300, true}, 1);
+        const auto result = compareAlternatives(root, a, nullptr, wdlConfig());
         CHECK(result.reason == ComparisonReason::NoAlternative);
         CHECK(!result.needsEvidence());
     }
@@ -194,7 +208,7 @@ TEST_CASE("Contradictory played-root and child values withhold numerical compari
     for (auto* evidence : {&a, &b}) {
         evidence->before.candidates.back().continuation = {evidence->playedMove};
     }
-    const auto result = compareAlternatives(root, b, &a, {});
+    const auto result = compareAlternatives(root, b, &a, wdlConfig());
     REQUIRE(!result.moves.empty());
     CHECK(result.moves.front().reason == ComparisonReason::Disagreement);
     CHECK(!result.moves.front().gap);
@@ -207,6 +221,7 @@ TEST_CASE("Played comparisons use exact native and terminal disagreement boundar
     const auto played = move(root, "f7e6");
     auto after = root;
     REQUIRE(std::holds_alternative<std::monostate>(after.play(played)));
+    const auto cfg = wdlConfig();
     for (const int wins : {519, 520, 521}) {
         auto before = proof(root, 750, "f7g7", "first", 1000000);
         auto candidate = before.candidates.front();
@@ -214,16 +229,16 @@ TEST_CASE("Played comparisons use exact native and terminal disagreement boundar
         candidate.continuation = {played};
         candidate.evaluation.wdl = Wdl{wins, 0, 1000 - wins};
         before.candidates.push_back(candidate);
-        const auto a = pairEvidence(root, played, before, terminalEvidence(after));
+        const auto a = pairEvidence(root, played, before, terminalEvidence(after), {300, true}, 1);
         before.attemptIdentity = "second";
         before.strength.nodes = 5000000;
-        const auto b = pairEvidence(root, played, before, terminalEvidence(after));
-        const auto result = compareAlternatives(root, b, &a, {});
+        const auto b = pairEvidence(root, played, before, terminalEvidence(after), {300, true}, 1);
+        const auto result = compareAlternatives(root, b, &a, cfg);
         REQUIRE(!result.moves.empty());
         CHECK(result.moves.front().reason ==
               (wins <= 520 ? ComparisonReason::Confirmed : ComparisonReason::Disagreement));
         CHECK(result.moves.front().gap.has_value() == (wins <= 520));
-        const auto legacy = compareAlternatives(root, b, &a, {}, ComparisonModel::Version1);
+        const auto legacy = compareAlternatives(root, b, &a, cfg, ComparisonModel::Version1);
         CHECK(legacy.moves.front().reason ==
               (wins < 520 ? ComparisonReason::Confirmed : ComparisonReason::Disagreement));
     }
@@ -237,12 +252,13 @@ TEST_CASE("Root and child equivalence disagreement cannot confirm played quality
         evidence->after.evaluation.wdl = Wdl{420, 0, 580};
         evidence->after.candidates.front().evaluation = evidence->after.evaluation;
     }
-    const auto result = compareAlternatives(root, b, &a, {});
+    const auto cfg = wdlConfig();
+    const auto result = compareAlternatives(root, b, &a, cfg);
     REQUIRE(!result.moves.empty());
     CHECK(result.moves.front().reason == ComparisonReason::Disagreement);
     CHECK(!result.moves.front().gap);
     CHECK(result.needsEvidence());
-    CHECK(compareAlternatives(root, b, &a, {}, ComparisonModel::Version1).reason ==
+    CHECK(compareAlternatives(root, b, &a, cfg, ComparisonModel::Version1).reason ==
           ComparisonReason::Confirmed);
 }
 TEST_CASE("Comparison rejects reused attempts zero strength and invalid configuration",
@@ -281,7 +297,7 @@ TEST_CASE("Comparison ignores supplied derived facts and rejects malformed raw w
             evidence->beforeEvaluation = {};
             evidence->afterEvaluation = {};
         }
-        CHECK(compareAlternatives(root, b, &a, {}).reason == ComparisonReason::Confirmed);
+        CHECK(compareAlternatives(root, b, &a, wdlConfig()).reason == ComparisonReason::Confirmed);
         return;
     }
     SECTION("duplicate root") {
@@ -296,4 +312,66 @@ TEST_CASE("Comparison ignores supplied derived facts and rejects malformed raw w
     SECTION("bad rank") { b.before.candidates.back().rank = std::numeric_limits<int>::min(); }
     SECTION("wrong child context") { b.after.position.halfmoveClock++; }
     CHECK(compareAlternatives(root, b, &a, {}).moves.empty());
+}
+
+TEST_CASE("Comparison model version three allows equal-node exact-mate confirmation",
+          "[unit][review][comparison]") {
+    const auto root =
+        std::get<chess::Position>(chess::Position::fromFen("6k1/5ppp/8/8/8/8/8/3R2K1 w - - 0 1"));
+    const auto mateMove = move(root, "d1d8");
+    const auto altMove = move(root, "d1a1");
+    auto matePos = root;
+    REQUIRE(std::holds_alternative<std::monostate>(matePos.play(mateMove)));
+
+    auto makeMateBefore = [&](const char* attempt) {
+        auto e = proof(root, 1000, "d1d8", attempt, 491);
+        e.strength.depth = 245;
+        e.evaluation = {chess::Color::White, RawScore{ScoreKind::Mate, 1, Bound::Exact}, {}};
+        e.candidates.front().evaluation = e.evaluation;
+        e.candidates.front().strength = e.strength;
+        RawEvaluation altEval{
+            chess::Color::White, RawScore{ScoreKind::Centipawns, 0, Bound::Exact}, {}};
+        e.candidates.push_back({2, altEval, {altMove}, e.strength});
+        return e;
+    };
+    const auto a = pairEvidence(root, mateMove, makeMateBefore("attempt-a"),
+                                terminalEvidence(matePos), ConversionConfig{}, 2);
+    const auto b = pairEvidence(root, mateMove, makeMateBefore("attempt-b"),
+                                terminalEvidence(matePos), ConversionConfig{}, 2);
+    CHECK(compareAlternatives(root, b, &a, {}, ComparisonModel::Version2).reason ==
+          ComparisonReason::Insufficient);
+    CHECK(compareAlternatives(root, b, &a, {}, ComparisonModel::Version3).reason ==
+          ComparisonReason::Confirmed);
+
+    // Non-terminal child equal-node exact mate (e.g., 16. Qb8+ -> Mate 2 / Mate -1 at 491 nodes).
+    const auto mate2Root =
+        std::get<chess::Position>(chess::Position::fromFen("4k3/3n4/8/8/8/8/1Q6/3R2K1 w - - 0 1"));
+    const auto queenMove = move(mate2Root, "b2b8");
+    auto mate2AfterPos = mate2Root;
+    REQUIRE(std::holds_alternative<std::monostate>(mate2AfterPos.play(queenMove)));
+    auto makeMate2Pair = [&](const std::string& suffix, std::uint64_t beforeNodes) {
+        const auto beforeAttempt = "b-" + suffix;
+        auto before = proof(mate2Root, 1000, "b2b8", beforeAttempt.c_str(), beforeNodes);
+        before.strength.depth = 14;
+        before.evaluation = {chess::Color::White, RawScore{ScoreKind::Mate, 2, Bound::Exact}, {}};
+        before.candidates.front().evaluation = before.evaluation;
+        before.candidates.front().strength = before.strength;
+        RawEvaluation altEval{
+            chess::Color::White, RawScore{ScoreKind::Centipawns, 400, Bound::Exact}, {}};
+        before.candidates.push_back({2, altEval, {move(mate2Root, "b2b3")}, before.strength});
+
+        const auto afterAttempt = "a-" + suffix;
+        auto after = proof(mate2AfterPos, 0, "d7b8", afterAttempt.c_str(), 491);
+        after.strength.depth = 245;
+        after.evaluation = {chess::Color::Black, RawScore{ScoreKind::Mate, -1, Bound::Exact}, {}};
+        after.candidates.front().evaluation = after.evaluation;
+        after.candidates.front().strength = after.strength;
+        return pairEvidence(mate2Root, queenMove, before, after, ConversionConfig{}, 2);
+    };
+    const auto m2a = makeMate2Pair("1", 200000U);
+    const auto m2b = makeMate2Pair("2", 400000U);
+    CHECK(compareAlternatives(mate2Root, m2b, &m2a, {}, ComparisonModel::Version2).reason ==
+          ComparisonReason::Insufficient);
+    CHECK(compareAlternatives(mate2Root, m2b, &m2a, {}, ComparisonModel::Version3).reason ==
+          ComparisonReason::Confirmed);
 }

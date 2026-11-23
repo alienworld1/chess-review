@@ -16,7 +16,8 @@ enum class ComparisonReason {
     ScoreDrift
 };
 // Policy 6 captures Version1 planning; current presentation and policy 7 use Version2.
-enum class ComparisonModel { Version1 = 1, Version2 = 2 };
+// Policy 14 uses Version3 (expectedScore v2, classification v3).
+enum class ComparisonModel { Version1 = 1, Version2 = 2, Version3 = 3 };
 enum class ComparisonSource { RootCandidate, PlayedChild };
 struct MoveComparison {
     chess::Move move;

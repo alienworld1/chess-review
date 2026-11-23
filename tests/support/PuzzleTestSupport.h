@@ -3,6 +3,7 @@
 #include "engine/private/Fingerprint.h"
 #include "persistence/PuzzleRepository.h"
 #include <algorithm>
+#include <cmath>
 
 namespace puzzle_test {
 using namespace chess_review;
@@ -109,9 +110,12 @@ inline engine::AnalysisResult normalPass(const persistence::PuzzleDocument& docu
     for (const auto move : roots) {
         engine::AnalysisLine line;
         line.rank = ++rank;
-        line.score =
-            engine::AnalysisScore{engine::ScoreType::Centipawns, 0, engine::ScoreBound::Exact};
         const int value = rank == 1 ? wins : std::max(0, wins - 200);
+        const double p = std::clamp(value, 1, 999) / 1000.0;
+        const int cp =
+            static_cast<int>(std::llround(300.0 * std::log(p / (1.0 - p)) / std::log(3.0)));
+        line.score =
+            engine::AnalysisScore{engine::ScoreType::Centipawns, cp, engine::ScoreBound::Exact};
         line.wdl = engine::Wdl{value, 0, 1000 - value};
         line.statistics = s.statistics;
         line.pv = {move};

@@ -1337,11 +1337,17 @@ void ReviewPage::updateSummary() {
     countFont.setWeight(QFont::DemiBold);
     const auto countBadgeSize = std::max(18, classificationCounts_->fontMetrics().height() + 2);
     classificationCounts_->setIconSize(QSize(countBadgeSize, countBadgeSize));
-    for (std::size_t i = 0; i < side.counts.size(); ++i) {
+    static constexpr std::array summaryOrder{
+        review::Classification::Brilliant,  review::Classification::Great,
+        review::Classification::Best,       review::Classification::Excellent,
+        review::Classification::Good,       review::Classification::Book,
+        review::Classification::Inaccuracy, review::Classification::Mistake,
+        review::Classification::Miss,       review::Classification::Blunder};
+    for (const auto label : summaryOrder) {
+        const auto i = static_cast<std::size_t>(label);
         if ((both ? white.counts[i] + black.counts[i] : side.counts[i]) == 0) {
             continue;
         }
-        const auto label = static_cast<review::Classification>(i);
         review::ClassificationResult result;
         result.label = label;
         const int row = classificationCounts_->rowCount();

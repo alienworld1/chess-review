@@ -44,9 +44,11 @@ CreateReview seed(StorageSession& session,
     request.engineProfileId =
         std::get<RegisteredEngine>(session.registerEngine(engineValue())).profile.id;
     request.fingerprint = engine::makeFingerprint(engineValue(), {});
-    // This fixture primarily exercises engine-based labels using synthetic evidence.
+    // This fixture primarily exercises engine-based labels using synthetic WDL evidence.
     request.configuration = *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
-        config::parse("[openings]\nenabled=false\n[analysis.standard]\nquickScanNodes=100000\n"
+        config::parse("[openings]\nenabled=false\n[review]\npreferWdl=true\n"
+                      "[classification]\nexcellentLoss=0.01\n"
+                      "[analysis.standard]\nquickScanNodes=100000\n"
                       "deepeningNodes=1000000\nverificationNodes=5000000\n"));
     return request;
 }
@@ -287,7 +289,7 @@ class ReviewRepositoryTest final : public QObject {
         Fixture f;
         auto request = seed(f.session);
         request.refinement = true;
-        for (const auto policy : {10U, 11U, 12U, 13U}) {
+        for (const auto policy : {10U, 11U, 12U, 13U, 14U}) {
             request.pipelineVersion = policy;
             const auto bytes = encodeReviewSettings(request);
             QVERIFY(!bytes.isEmpty());
@@ -303,7 +305,7 @@ class ReviewRepositoryTest final : public QObject {
                 QVERIFY(!decodeReviewSettings(reviewDocument(altered)));
             }
         }
-        request.pipelineVersion = 14;
+        request.pipelineVersion = 15;
         QVERIFY(encodeReviewSettings(request).isEmpty());
     }
     void specialLabelsReproduceFromSavedEvidence_data() {
@@ -964,7 +966,7 @@ class ReviewRepositoryTest final : public QObject {
         for (const bool refinement : {false, true}) {
             request.refinement = refinement;
             for (const std::uint32_t version :
-                 {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U, 13U}) {
+                 {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U, 13U, 14U}) {
                 request.pipelineVersion = version;
                 const auto bytes = encodeReviewSettings(request);
                 QVERIFY(!bytes.isEmpty());
@@ -1828,8 +1830,7 @@ class ReviewRepositoryTest final : public QObject {
             f.session.checkpointReview(checkpoint(run.id, run.revision, 1, fresh)));
         const auto changed =
             std::get<ReviewMovePage>(f.session.deriveReviewMoves(run.id, run.revision, 0, 50));
-        QCOMPARE(changed.moves.front().classification->modelVersion,
-                 review::classificationModelVersion);
+        QCOMPARE(changed.moves.front().classification->modelVersion, 2U);
         QCOMPARE(changed.moves.front().classification->label, review::Classification::Inaccuracy);
     }
     void classificationsCommitWithEvidenceAndBackfillWithoutChangingProgress() {
@@ -2816,6 +2817,95 @@ class ReviewRepositoryTest final : public QObject {
         QTRY_COMPARE(loaded.size(), 2);
         QCOMPARE(std::get<ReviewError>(qvariant_cast<LoadReviewResult>(loaded[1][1])).code,
                  ReviewErrorCode::Closing);
+    }
+    void pipelineFourteenPersistsAndReproducesWeightedReview() {
+        QTemporaryDir directory;
+        const auto path = directory.filePath(QStringLiteral("pipeline14.sqlite3"));
+        ReviewId id = 0;
+        std::int64_t revision = 0;
+        CreateReview request;
+        {
+            StorageSession session;
+            QVERIFY(!session.initialize(path, migrations(), ignore));
+            const auto doc = document("1. e4 e5 *");
+            request.pipelineVersion = review::pipelineModelVersion;
+            request.refinement = true;
+            request.gameId = std::get<Inserted>(session.insertGame(*doc, {})).id;
+            request.engineProfileId =
+                std::get<RegisteredEngine>(session.registerEngine(engineValue())).profile.id;
+            request.fingerprint = engine::makeFingerprint(engineValue(), {});
+            request.configuration =
+                *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
+                    config::parse("[openings]\nenabled=false\n"));
+            const auto bytes = encodeReviewSettings(request);
+            QVERIFY(!bytes.isEmpty());
+            const auto rawDoc = *readReviewDocument(bytes, maxReviewSettingsBytes);
+            QCOMPARE(rawDoc["pipelineVersion"].toInt(), 14);
+            QCOMPARE(rawDoc["expectedScoreModelVersion"].toInt(), 2);
+            QCOMPARE(rawDoc["accuracyModelVersion"].toInt(), 2);
+            QCOMPARE(rawDoc["stabilityModelVersion"].toInt(), 4);
+            QCOMPARE(rawDoc["specialLabelModelVersion"].toInt(), 4);
+            QCOMPARE(rawDoc["motifModelVersion"].toInt(), 4);
+            auto run = std::get<ReviewSummary>(session.createReview(request));
+            id = run.id;
+            auto applyScores = [&](engine::AnalysisResult& result, int index) {
+                if (index == 0) {
+                    const auto played = doc->originalMainline().front();
+                    result.evidence.bestMove = played;
+                    result.evidence.lines.front().pv = {played};
+                    result.evidence.lines.front().score = engine::AnalysisScore{
+                        engine::ScoreType::Centipawns, 40, engine::ScoreBound::Exact};
+                } else if (index == 1) {
+                    result.evidence.lines.front().score = engine::AnalysisScore{
+                        engine::ScoreType::Mate, 3, engine::ScoreBound::Exact};
+                } else {
+                    result.evidence.lines.front().score = engine::AnalysisScore{
+                        engine::ScoreType::Mate, -2, engine::ScoreBound::Exact};
+                }
+            };
+            for (const auto stage : {review::EvidenceStage::Quick, review::EvidenceStage::Deepening,
+                                     review::EvidenceStage::Verification}) {
+                const auto nodes =
+                    *review::stageBudget(request.configuration.values.budgets[1], stage);
+                for (int index = 0; index < 3; ++index) {
+                    auto result = resultAt(request, *doc, index);
+                    result.evidence.limit = engine::NodeLimit{nodes};
+                    result.evidence.statistics.nodes = nodes;
+                    result.evidence.lines.front().statistics = result.evidence.statistics;
+                    applyScores(result, index);
+                    auto cp = checkpoint(id, run.revision, index, result);
+                    cp.stage = stage;
+                    cp.status = stage == review::EvidenceStage::Quick ? JobStatus::QuickScanning
+                                                                      : JobStatus::Deepening;
+                    const auto saved = session.checkpointReview(cp);
+                    QVERIFY(std::holds_alternative<ReviewSummary>(saved));
+                    run = std::get<ReviewSummary>(saved);
+                }
+            }
+            ReviewCheckpoint done;
+            done.reviewId = id;
+            done.expectedRevision = run.revision;
+            done.status = JobStatus::Complete;
+            const auto finished = session.checkpointReview(done);
+            QVERIFY(std::holds_alternative<ReviewSummary>(finished));
+            run = std::get<ReviewSummary>(finished);
+            revision = run.revision;
+        }
+        StorageSession reopened;
+        QVERIFY(!reopened.initialize(path, migrations(), ignore));
+        const auto stored = std::get<StoredReview>(reopened.loadReview(id));
+        QCOMPARE(stored.expectedScoreModelVersion, 2U);
+        QCOMPARE(stored.settings.pipelineVersion, 14U);
+        const auto page = std::get<ReviewMovePage>(reopened.deriveReviewMoves(id, revision, 0, 50));
+        QCOMPARE(page.moves.size(), std::size_t{2});
+        QCOMPARE(page.moves[0].classification->modelVersion, 3U);
+        QCOMPARE(page.moves[0].classification->label, review::Classification::Best);
+        QCOMPARE(page.moves[1].classification->modelVersion, 3U);
+        QVERIFY(page.moves[1].classification->label.has_value());
+        const auto overview = std::get<ReviewOverview>(reopened.loadReviewOverview(id, revision));
+        QCOMPARE(overview.accuracyModelVersion, 2U);
+        QVERIFY(overview.sides[0].accuracy);
+        QCOMPARE(overview.sides[0].evaluated, 1);
     }
 };
 int main(int argc, char** argv) {

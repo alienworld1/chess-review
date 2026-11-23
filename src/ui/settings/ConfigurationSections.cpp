@@ -31,8 +31,8 @@ namespace chess_review::ui {
 namespace {
 constexpr std::array classificationPresets{
     review::ClassificationConfig{},
-    review::ClassificationConfig{0.04, 0.08, 0.16},
-    review::ClassificationConfig{0.06, 0.12, 0.24},
+    review::ClassificationConfig{0.04, 0.08, 0.16, 0.015},
+    review::ClassificationConfig{0.07, 0.14, 0.25, 0.03},
 };
 
 QLabel* text(QWidget* parent, const QString& value = {}) {
@@ -76,7 +76,11 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
                          "support fewer. Higher values spread the search across more moves."));
     reviewForm->addRow(tr("Candidate &lines"), lines);
     auto* book = new QCheckBox(tr("Use local opening references"), review);
-    auto* wdl = new QCheckBox(tr("Prefer engine win/draw/loss estimates when available"), review);
+    auto* wdl =
+        new QCheckBox(tr("Use raw engine WDL instead of calibrated win probability"), review);
+    wdl->setToolTip(tr("Modern Stockfish WDL reflects engine-vs-engine play and scores "
+                       "moderate advantages very steeply. Leave unchecked for Chess.com/Lichess-"
+                       "calibrated human move review."));
     auto* bothSides = new QCheckBox(tr("Include key moments from both players"), review);
     bothSides->setObjectName(QStringLiteral("reviewBothSides"));
     reviewForm->addRow(bothSides);
@@ -358,11 +362,11 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
         switch (static_cast<review::Quality>(index)) {
         case review::Quality::Fast:
             description->setText(
-                tr("Scans the whole game and checks up to two key moves in depth."));
+                tr("Scans the whole game and checks up to six key moves in depth."));
             break;
         case review::Quality::Standard:
             description->setText(
-                tr("Scans the whole game and checks up to four key moves in depth."));
+                tr("Scans the whole game and checks up to twelve key moves in depth."));
             break;
         case review::Quality::Thorough:
             description->setText(tr("Uses deeper searches and broader verification. Best when you "

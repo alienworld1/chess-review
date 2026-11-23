@@ -17,7 +17,8 @@ static_assert(static_cast<int>(review::ScoreKind::Centipawns) == 0 &&
 static_assert(static_cast<int>(review::Bound::Exact) == 0 &&
               static_cast<int>(review::Bound::Upper) == 2);
 static_assert(static_cast<int>(review::ConversionSource::NativeWdl) == 0 &&
-              static_cast<int>(review::ConversionSource::Terminal) == 2);
+              static_cast<int>(review::ConversionSource::Terminal) == 2 &&
+              static_cast<int>(review::ConversionSource::Mate) == 3);
 static_assert(static_cast<int>(review::EvidenceIssue::Invalid) == 0 &&
               static_cast<int>(review::EvidenceIssue::ContradictoryCandidates) == 11);
 static_assert(static_cast<int>(review::TerminalOutcome::Checkmate) == 0 &&
@@ -153,10 +154,14 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
     }
     const auto& c = settings.configuration.values;
     const auto& ids = settings.configuration.identities;
+    const auto expectedScoreModel =
+        review::expectedScoreModelForPipeline(settings.refinement ? settings.pipelineVersion : 1);
+    const auto accuracyModel =
+        review::accuracyModelForPipeline(settings.refinement ? settings.pipelineVersion : 1);
     auto document = QJsonObject{
         {"formatVersion", settings.configuration.classificationIdentityVersion == 1 ? 1 : 2},
         {"evidenceModelVersion", static_cast<int>(review::evidenceModelVersion)},
-        {"expectedScoreModelVersion", static_cast<int>(review::expectedScoreModelVersion)},
+        {"expectedScoreModelVersion", static_cast<int>(expectedScoreModel)},
         {"gameId", QString::number(settings.gameId)},
         {"engineProfileId", QString::number(settings.engineProfileId)},
         {"selectedSide", static_cast<int>(settings.selectedSide)},
@@ -240,7 +245,7 @@ QByteArray encodeReviewSettings(const CreateReview& settings) {
         document["pipelineVersion"] = static_cast<int>(settings.pipelineVersion);
         document["reviewModelVersion"] = 1;
         document["stabilityModelVersion"] = static_cast<int>(*stabilityModel);
-        document["accuracyModelVersion"] = 1;
+        document["accuracyModelVersion"] = static_cast<int>(accuracyModel);
         document["refinement"] = QJsonArray{c.refinement.boundaryMargin, c.refinement.maximumDrift,
                                             c.refinement.multiPv};
     }
@@ -291,7 +296,9 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
     }
     c.classification = {thresholds[0].toDouble(), thresholds[1].toDouble(),
                         thresholds[2].toDouble()};
-    if (format == 2) {
+    if (format == 1) {
+        c.classification.excellentLoss = 0.01;
+    } else if (format == 2) {
         c.classification.excellentLoss = o["excellentLoss"].toDouble(-1);
     }
     c.conversion = {o["fallbackScaleCp"].toDouble(), o["preferWdl"].toBool()};
@@ -310,12 +317,16 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
             c.special = {special[0].toDouble(-1), special[1].toDouble(-1), special[2].toDouble(-1),
                          special[3].toDouble(-1), special[4].toDouble(-1), special[5].toDouble(-1),
                          special[6].toDouble(-1), special[7].toInt(-1)};
+        } else {
+            c.special = review::SpecialLabelConfig{};
         }
         const auto r = o["refinement"].toArray();
         if (r.size() != 3) {
             return std::nullopt;
         }
         c.refinement = {r[0].toDouble(-1), r[1].toDouble(-1), r[2].toInt(-1)};
+    } else {
+        c.special = review::SpecialLabelConfig{};
     }
     out.configuration.identities = {
         QByteArray::fromHex(o["classificationIdentity"].toString().toLatin1()),
@@ -355,12 +366,14 @@ std::optional<CreateReview> decodeReviewSettings(const QByteArray& bytes) {
     return out;
 }
 QByteArray adaptedDocument(const review::PositionEvidence& evidence,
-                           const review::ConversionConfig& config) {
+                           const review::ConversionConfig& config,
+                           std::uint32_t expectedScoreModel) {
     return reviewDocument(
         {{"formatVersion", reviewFormatVersion},
          {"evidence", position(evidence)},
-         {"rawConversion", evaluation(review::convertEvaluation(
-                               evidence.evaluation, evidence.evaluation.perspective, config))}});
+         {"rawConversion",
+          evaluation(review::convertEvaluation(evidence.evaluation, evidence.evaluation.perspective,
+                                               config, expectedScoreModel))}});
 }
 QByteArray classificationDocument(const review::ClassificationResult& result, std::int64_t beforeId,
                                   std::int64_t afterId, const QByteArray& configurationIdentity) {

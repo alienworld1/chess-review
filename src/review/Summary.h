@@ -8,20 +8,38 @@
 #include <variant>
 #include <vector>
 namespace chess_review::review {
-inline constexpr std::uint32_t stabilityModelVersion = 3;
-inline constexpr std::uint32_t accuracyModelVersion = 1;
-inline constexpr std::uint32_t pipelineModelVersion = 13;
+inline constexpr std::uint32_t stabilityModelVersion = 4;
+inline constexpr std::uint32_t accuracyModelVersion = 2;
+inline constexpr std::uint32_t pipelineModelVersion = 14;
 [[nodiscard]] constexpr bool supportsPipelineModel(std::uint32_t version) {
     // Keep released policies explicit when the default advances.
     return version == 1 || version == 2 || version == 3 || version == 4 || version == 5 ||
            version == 6 || version == 7 || version == 8 || version == 9 || version == 10 ||
-           version == 11 || version == 12 || version == 13;
+           version == 11 || version == 12 || version == 13 || version == 14;
 }
-// Policy 13 limits whole moves before expanding their adjacent positions.
+[[nodiscard]] constexpr bool supportsAccuracyModel(std::uint32_t version) {
+    return version == 1 || version == 2;
+}
+[[nodiscard]] constexpr std::uint32_t expectedScoreModelForPipeline(std::uint32_t version) {
+    return version >= 14 ? 2U : 1U;
+}
+[[nodiscard]] constexpr std::uint32_t classificationModelForPipeline(std::uint32_t version) {
+    return version >= 14 ? 3U : 2U;
+}
+[[nodiscard]] constexpr std::uint32_t accuracyModelForPipeline(std::uint32_t version) {
+    return version >= 14 ? 2U : 1U;
+}
+// Policy 13/14 limit whole moves before expanding their adjacent positions.
 [[nodiscard]] constexpr std::optional<std::size_t> refinementMoveLimit(std::uint32_t version,
                                                                        Quality quality) {
-    if (version == 13 && quality != Quality::Thorough) {
+    if (quality == Quality::Thorough) {
+        return std::nullopt;
+    }
+    if (version == 13) {
         return quality == Quality::Fast ? 2 : 4;
+    }
+    if (version == 14) {
+        return quality == Quality::Fast ? 6 : 12;
     }
     return std::nullopt;
 }
@@ -45,6 +63,8 @@ stabilityModelForPipeline(std::uint32_t version) {
     case 12:
     case 13:
         return 3;
+    case 14:
+        return 4;
     default:
         return std::nullopt;
     }
@@ -165,8 +185,11 @@ assessStability(const ClassificationResult& deep, const ClassificationResult& ve
                 const RefinementConfig& config, std::uint32_t modelVersion = stabilityModelVersion);
 [[nodiscard]] std::optional<double> accuracyLoss(const MoveEvidence& validatedPair);
 // Independent of classification thresholds. Missing/invalid loss is excluded, never zero-filled.
-[[nodiscard]] std::optional<double> moveAccuracy(std::optional<double> loss);
+[[nodiscard]] std::optional<double> moveAccuracy(std::optional<double> loss,
+                                                 std::uint32_t modelVersion = 1);
 [[nodiscard]] std::optional<double> gameAccuracy(std::span<const double> moves);
+[[nodiscard]] std::optional<double> gameAccuracyWeighted(std::span<const double> moves,
+                                                         std::span<const double> weights);
 struct SideSummary {
     int total = 0;
     int evaluated = 0;
@@ -186,6 +209,8 @@ struct SummaryMoveFacts {
     RawEvaluation before;
     RawEvaluation after;
     bool bookDeparture = false;
+    std::optional<double> whiteExpectedBefore;
+    std::optional<double> whiteExpectedAfter;
 };
 struct KeyMomentSelection {
     bool selected = false;
@@ -200,16 +225,20 @@ struct SummaryFacts {
 // Stream original-mainline facts in chronological order. No engine, UI or storage dependencies.
 class SummaryBuilder {
   public:
-    explicit SummaryBuilder(chess::Color selectedSide, bool bothSides = false)
-        : selectedSide_(selectedSide), bothSides_(bothSides) {}
+    explicit SummaryBuilder(chess::Color selectedSide, bool bothSides = false,
+                            std::uint32_t accuracyModel = 1)
+        : selectedSide_(selectedSide), bothSides_(bothSides), accuracyModel_(accuracyModel) {}
     [[nodiscard]] KeyMomentSelection add(const SummaryMoveFacts& move);
     [[nodiscard]] SummaryFacts finish() const;
 
   private:
     chess::Color selectedSide_;
     bool bothSides_;
+    std::uint32_t accuracyModel_;
     SummaryFacts facts_;
     std::array<std::vector<double>, 2> accuracies_;
+    std::array<std::vector<std::size_t>, 2> accuracyWinIndices_;
+    std::vector<double> whiteWinPercents_;
     bool previousOpponentError_ = false;
 };
 } // namespace chess_review::review

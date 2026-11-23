@@ -8,8 +8,8 @@
 #include <string>
 #include <vector>
 namespace chess_review::review {
-inline constexpr std::uint32_t specialLabelModelVersion = 3;
-inline constexpr std::uint32_t motifModelVersion = 3;
+inline constexpr std::uint32_t specialLabelModelVersion = 4;
+inline constexpr std::uint32_t motifModelVersion = 4;
 struct IntelligenceModels {
     std::uint32_t special;
     std::uint32_t motif;
@@ -24,6 +24,8 @@ intelligenceModelsForPipeline(std::uint32_t pipeline) {
     case 12:
     case 13:
         return IntelligenceModels{3, 3};
+    case 14:
+        return IntelligenceModels{4, 4};
     default:
         return std::nullopt;
     }

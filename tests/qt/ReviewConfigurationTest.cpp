@@ -379,22 +379,22 @@ class ReviewConfigurationTest final : public QObject {
         const auto parsed = valid("");
         QVERIFY(parsed);
         QCOMPARE(parsed->identities.classification.toHex(),
-                 QByteArray("18cbfcc98e555dd09e919eac03d4454a377a0817cabc96b8909dbaac10a994e3"));
+                 QByteArray("9fd08a2ce574d843f9c5e3c86fc54237e389bda7c4d47358b4d2e01c4f1c4331"));
         QCOMPARE(parsed->identities.conversion.toHex(),
-                 QByteArray("5136a1ae0435b81fc247490dd783b0a2949ef6c1030f17f407e12c26f5d48162"));
+                 QByteArray("148d49bccfbd60685fc57a5098e68dd5328b3ddcf0cbf7b46553b40bad2f1076"));
         QCOMPARE(parsed->identities.analysis.toHex(),
-                 QByteArray("bbaec7f0f0f8cb8d4e0eda066ec187c3063ec82cfba57b6ff901371ec2ba78a9"));
+                 QByteArray("8604fee5f44f737df17f1480c27436a4579df39baadb2c079d80b5816621d53a"));
         const auto previous =
             valid("[analysis.fast]\nquickScanNodes=50000\ndeepeningNodes=500000\n"
                   "verificationNodes=2000000\n[analysis.standard]\nquickScanNodes=100000\n"
                   "deepeningNodes=1000000\nverificationNodes=5000000\n");
         QVERIFY(previous);
         QCOMPARE(previous->identities.analysis.toHex(),
-                 QByteArray("cfade89abac9aa3dd679a8bbc3847e84c6bfcfe816674bddfd59459afac4da7c"));
+                 QByteArray("c71dd556f486fbd38f808a0d2d65778e4ea71df054e976e09117a686195eba04"));
     }
     void excellentThresholdAndLegacyIdentity() {
         const auto defaults = valid("");
-        const auto changed = valid("[classification]\nexcellentLoss=0.02");
+        const auto changed = valid("[classification]\nexcellentLoss=0.01");
         QVERIFY(changed);
         QVERIFY(defaults->identities.classification != changed->identities.classification);
         QCOMPARE(defaults->identities.analysis, changed->identities.analysis);
@@ -405,7 +405,7 @@ class ReviewConfigurationTest final : public QObject {
               "[classification]\nexcellentLoss=nan"}) {
             QVERIFY(std::holds_alternative<config::Diagnostics>(config::parse(text)));
         }
-        const auto legacy = config::validate(defaults->values, 1);
+        const auto legacy = config::validate(changed->values, 1);
         const auto& value =
             *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(legacy);
         QCOMPARE(value.identities.classification.toHex(),
@@ -416,7 +416,7 @@ class ReviewConfigurationTest final : public QObject {
         const auto b = valid("# "
                              "comment\nversion=1\n[classification]\nblunderLoss=0."
                              "20\ninaccuracyLoss=0.05\nmistakeLoss=0.10\n[review]\nquality='"
-                             "standard'\npreferWdl=true\n[expectedScore]\nfallbackScaleCp=300.0");
+                             "standard'\npreferWdl=false\n[expectedScore]\nfallbackScaleCp=300.0");
         QVERIFY(a);
         QVERIFY(b);
         QCOMPARE(a->identities.classification, b->identities.classification);
@@ -717,6 +717,32 @@ class ReviewConfigurationTest final : public QObject {
         raw.evidence.lines[0].pv.clear();
         QVERIFY(
             std::holds_alternative<analysis::EvidenceAdapterIssue>(analysis::reviewEvidence(raw)));
+        // Exact mate early-stop and sole-legal-move width narrowing still qualify as complete.
+        auto mate = analysisResult();
+        mate.evidence.statistics.nodes = 18;
+        mate.evidence.lines[0].statistics.nodes = 18;
+        mate.evidence.lines[0].score =
+            engine::AnalysisScore{engine::ScoreType::Mate, 2, engine::ScoreBound::Exact};
+        auto mateAdapted = analysis::reviewEvidence(mate);
+        QVERIFY(std::holds_alternative<analysis::ReviewEvidenceRecord>(mateAdapted));
+        QVERIFY(std::get<analysis::ReviewEvidenceRecord>(mateAdapted).evidence.complete);
+        auto single = analysisResult();
+        const auto solePos =
+            std::get<chess::Position>(chess::Position::fromFen("7k/8/5K2/8/8/8/8/7R b - - 0 1"));
+        auto soleProv = std::make_shared<engine::AnalysisProvenance>(*single.evidence.provenance);
+        soleProv->position = solePos.context();
+        const auto soleMove = solePos.legalMoves().front();
+        single.evidence.provenance = soleProv;
+        single.evidence.requestedMultiPv = 3;
+        single.evidence.effectiveMultiPv = 1;
+        single.evidence.achievedWidth = 1;
+        single.evidence.bestMove = soleMove;
+        single.evidence.lines[0].pv = {soleMove};
+        single.evidence.statistics.nodes = 12;
+        single.evidence.lines[0].statistics.nodes = 12;
+        auto soleAdapted = analysis::reviewEvidence(single, &solePos);
+        QVERIFY(std::holds_alternative<analysis::ReviewEvidenceRecord>(soleAdapted));
+        QVERIFY(std::get<analysis::ReviewEvidenceRecord>(soleAdapted).evidence.complete);
         // The retained immutable provenance survives source destruction.
         raw = {};
         QVERIFY(!record.provenance->fingerprint.digest.isEmpty());

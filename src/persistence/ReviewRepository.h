@@ -182,6 +182,7 @@ struct ReviewOverview {
     ReviewId reviewId = 0;
     std::int64_t revision = 0;
     QString result;
+    std::uint32_t accuracyModelVersion = review::accuracyModelVersion;
     std::array<review::SideSummary, 2> sides;
     std::array<review::ScanCoverage, 2> quickScan;
     std::vector<int> refinementPositions;

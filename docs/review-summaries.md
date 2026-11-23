@@ -67,6 +67,21 @@ last successfully loaded summary. Invalid stage mappings are rejected even for
 games with no moves. During deepening, visible move interpretations coalesce
 checkpoint updates over 250 milliseconds; manual paging and final results remain prompt.
 
+## Accuracy model 2 (pipeline 14)
+
+New reviews use pipeline policy 14, expected-score model 2, classification model 3,
+stability model 4, special-label/motif model 4, and accuracy model 2. Calibrated
+centipawn win probability (`preferWdl = false`, `fallbackScaleCp = 300`) is the
+default because modern Stockfish WDL reflects engine-vs-engine self-play and scores
+moderate human advantages too steeply. Exact engine mate scores map to `1.0`/`0.0`
+(`ConversionSource::Mate`), negative horizon deltas clamp to `0.0` instead of
+withholding Best moves, and rank-1 engine choices are never rejected as
+`BestMoveConflict`. Move accuracy adds Lichess's `+1` offset
+(`clamp(103.1668 * exp(-0.04354 * L) - 3.1669 + 1.0, 0, 100)`) and game accuracy
+combines the volatility-weighted mean (sliding window over white win%, clamped
+weight `[0.5, 12]`) with the harmonic mean. Fast/Standard bounded refinement caps
+increase to 6/12 moves with sacrifices and non-repeated mates prioritized first.
+
 ## Accuracy model 1
 
 This app's metric adapts the open [Lichess move accuracy formula](https://lichess.org/page/accuracy)

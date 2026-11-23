@@ -110,7 +110,7 @@ ReviewGameController::ReviewGameController(persistence::Database& database,
                 const auto& run = *stored_;
                 if (run.summary.status < JobStatus::Partial ||
                     run.evidenceModelVersion != review::evidenceModelVersion ||
-                    run.expectedScoreModelVersion != review::expectedScoreModelVersion) {
+                    !review::supportsExpectedScoreModel(run.expectedScoreModelVersion)) {
                     fail(tr("This run cannot be resumed. Start a new run."),
                          review::JobFailure::Configuration);
                     return;

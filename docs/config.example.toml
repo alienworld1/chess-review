@@ -23,8 +23,8 @@ verificationNodes = 300000
 
 [analysis.standard]
 quickScanNodes = 50000
-deepeningNodes = 250000
-verificationNodes = 500000
+deepeningNodes = 200000
+verificationNodes = 400000
 
 [analysis.thorough]
 quickScanNodes = 250000
@@ -32,14 +32,14 @@ deepeningNodes = 3000000
 verificationNodes = 10000000
 
 [classification]
-excellentLoss = 0.01
+excellentLoss = 0.02
 inaccuracyLoss = 0.05
 mistakeLoss = 0.10
 blunderLoss = 0.20
 
 [review]
 quality = "standard"
-preferWdl = true
+preferWdl = false
 bothSides = false # Include guided moments from both players in new reviews.
 
 [expectedScore]
@@ -54,15 +54,15 @@ boundaryMargin = 0.01
 maximumDrift = 0.02
 multiPv = 3
 
-# Conservative special-label rules for new adaptive reviews (pipeline 11).
+# Special-label rules for adaptive reviews (pipeline 14).
 # Losses, gaps and margins are fractions of mover-perspective expected score.
 [special]
-maximumLoss = 0.01
-maximumLossDrift = 0.01
+maximumLoss = 0.02
+maximumLossDrift = 0.02
 alternativeGap = 0.10
 missLoss = 0.10
-viableScore = 0.50
-alreadyWinningScore = 0.95
+viableScore = 0.45
+alreadyWinningScore = 0.90
 margin = 0.01
 sacrificeValue = 2
 

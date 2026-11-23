@@ -23,30 +23,38 @@ PositionEvidence evidence(const chess::Position& position, std::int64_t cp = 0) 
         {1, result.evaluation, {position.legalMoves().front()}, {12, 100000, {}}});
     return result;
 }
-MoveEvidence pair(std::int64_t beforeCp, std::int64_t afterCp) {
+MoveEvidence pair(std::int64_t beforeCp, std::int64_t afterCp,
+                  ConversionConfig config = ConversionConfig{},
+                  std::uint32_t modelVersion = expectedScoreModelVersion) {
     const auto position = chess::Position::initial();
     const auto played = move(position, "e2e4");
     auto next = position;
     REQUIRE(std::holds_alternative<std::monostate>(next.play(played)));
-    return pairEvidence(position, played, evidence(position, beforeCp), evidence(next, afterCp));
+    return pairEvidence(position, played, evidence(position, beforeCp), evidence(next, afterCp),
+                        config, modelVersion);
 }
 } // namespace
 TEST_CASE("Expected scores carry perspective and a versioned conversion source", "[unit][review]") {
+    const ConversionConfig wdl{300, true};
     RawEvaluation raw{chess::Color::White, RawScore{ScoreKind::Centipawns, 300, Bound::Exact}, {}};
-    auto converted = convertEvaluation(raw, chess::Color::White);
+    auto converted = convertEvaluation(raw, chess::Color::White, wdl, 1);
     REQUIRE(converted.expected);
     CHECK(converted.expected->value == Catch::Approx(0.75));
     CHECK(converted.expected->source == ConversionSource::ApproximateCentipawns);
-    CHECK(converted.expected->modelVersion == expectedScoreModelVersion);
-    CHECK(convertEvaluation(raw, chess::Color::Black).expected->value == Catch::Approx(0.25));
+    CHECK(converted.expected->modelVersion == 1);
+    CHECK(convertEvaluation(raw, chess::Color::Black, wdl, 1).expected->value ==
+          Catch::Approx(0.25));
     raw.wdl = Wdl{200, 600, 200};
-    CHECK(convertEvaluation(raw, chess::Color::White).expected->value == Catch::Approx(0.5));
-    CHECK(convertEvaluation(raw, chess::Color::White).expected->source ==
+    CHECK(convertEvaluation(raw, chess::Color::White, wdl, 1).expected->value ==
+          Catch::Approx(0.5));
+    CHECK(convertEvaluation(raw, chess::Color::White, wdl, 1).expected->source ==
           ConversionSource::NativeWdl);
-    CHECK(convertEvaluation(raw, chess::Color::White, {300, false}).expected->value ==
+    CHECK(convertEvaluation(raw, chess::Color::White, {300, false}, 1).expected->value ==
           Catch::Approx(0.75));
+    CHECK(convertEvaluation(raw, chess::Color::White).expected->source ==
+          ConversionSource::ApproximateCentipawns);
     raw.wdl = Wdl{1000, 1000, 1000};
-    CHECK(convertEvaluation(raw, chess::Color::White).issue == EvidenceIssue::Invalid);
+    CHECK(convertEvaluation(raw, chess::Color::White, wdl, 1).issue == EvidenceIssue::Invalid);
     raw.wdl.reset();
     for (auto cp :
          {std::numeric_limits<std::int64_t>::min(), std::numeric_limits<std::int64_t>::max()}) {
@@ -59,20 +67,33 @@ TEST_CASE("Expected scores carry perspective and a versioned conversion source",
     raw.score->bound = Bound::Lower;
     CHECK(convertEvaluation(raw, chess::Color::White).issue == EvidenceIssue::Bounded);
     raw.score = RawScore{ScoreKind::Mate, 3, Bound::Exact};
-    CHECK(convertEvaluation(raw, chess::Color::White).issue == EvidenceIssue::MateClaim);
+    CHECK(convertEvaluation(raw, chess::Color::White, wdl, 1).issue == EvidenceIssue::MateClaim);
+    const auto mateV2 = convertEvaluation(raw, chess::Color::White);
+    REQUIRE(mateV2.expected);
+    CHECK(mateV2.expected->value == 1.0);
+    CHECK(mateV2.expected->source == ConversionSource::Mate);
+    CHECK(mateV2.expected->modelVersion == expectedScoreModelVersion);
+    CHECK(convertEvaluation(raw, chess::Color::Black).expected->value == 0.0);
     CHECK(convertEvaluation(raw, chess::Color::White, {0, true}).issue == EvidenceIssue::Invalid);
     CHECK(convertEvaluation({}, chess::Color::White).issue == EvidenceIssue::MissingEvaluation);
 }
-TEST_CASE("Pairing preserves mover perspective and withholds apparent gains", "[unit][review]") {
+TEST_CASE("Pairing preserves mover perspective and handles apparent gains by model",
+          "[unit][review]") {
     const auto result = pair(300, 0);
     REQUIRE(result.loss);
     CHECK(*result.loss == Catch::Approx(0.25));
     CHECK(result.afterEvaluation.expected->perspective == chess::Color::White);
-    auto gain = pair(0, -300);
-    CHECK(gain.issue == EvidenceIssue::NegativeLoss);
-    CHECK(!gain.loss);
-    REQUIRE(gain.signedDelta);
-    CHECK(*gain.signedDelta < 0);
+    auto legacyGain = pair(0, -300, {}, 1);
+    CHECK(legacyGain.issue == EvidenceIssue::NegativeLoss);
+    CHECK(!legacyGain.loss);
+    REQUIRE(legacyGain.signedDelta);
+    CHECK(*legacyGain.signedDelta < 0);
+    auto gainV2 = pair(0, -300);
+    CHECK(!gainV2.issue);
+    REQUIRE(gainV2.loss);
+    CHECK(*gainV2.loss == 0.0);
+    REQUIRE(gainV2.signedDelta);
+    CHECK(*gainV2.signedDelta < 0);
     const auto root = std::get<chess::Position>(
         chess::Position::fromFen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"));
     auto next = root;
@@ -93,8 +114,9 @@ TEST_CASE("Evidence pairing rejects incompatible and insufficient evidence", "[u
     SECTION("mixed methods") {
         after.evaluation.wdl = Wdl{500, 0, 500};
         after.candidates[0].evaluation = after.evaluation;
-        CHECK(pairEvidence(position, played, before, after).issue ==
+        CHECK(pairEvidence(position, played, before, after, {300, true}, 1).issue ==
               EvidenceIssue::MixedConversion);
+        CHECK(!pairEvidence(position, played, before, after).issue);
     }
     SECTION("incomplete") {
         after.complete = false;
@@ -195,8 +217,13 @@ TEST_CASE("Contradictory candidate evidence cannot support loss or rank", "[unit
     SECTION("secondary bound cannot prove a best baseline") {
         before.candidates[1].evaluation.score->bound = Bound::Lower;
     }
-    SECTION("secondary mate requires mate verification") {
+    SECTION("secondary mate in model 1 vs model 2") {
         before.candidates[1].evaluation.score = RawScore{ScoreKind::Mate, 2, Bound::Exact};
+        CHECK(pairEvidence(position, played, before, after, {}, 1).issue ==
+              EvidenceIssue::MateClaim);
+        CHECK(pairEvidence(position, played, before, after).issue ==
+              EvidenceIssue::ContradictoryCandidates);
+        return;
     }
     SECTION("unsupported model cannot publish a verified rank") { before.modelVersion = 99; }
     SECTION("malformed after candidates invalidate all derived quantities") {

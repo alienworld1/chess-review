@@ -81,18 +81,27 @@ TEST_CASE("Historical game corpus retains concrete reasons and withholds unsuppo
                 CHECK(sacrifice->square.name() == expected.square);
                 CHECK(sacrifice->beneficiary == chess::Color::White);
                 REQUIRE(find(facts, TacticalKind::Checkmate));
-                // The offered piece and its acceptance alone do not prove soundness.
-                const auto shallow =
+                // The offered piece and its acceptance alone do not prove soundness:
+                // legacy motif v3 withheld shallow sacrifices until recovery/mate, while
+                // motif v4 recognizes the material sacrifice directly and leaves
+                // soundness to numeric expected-score verification.
+                const auto shallowV3 =
+                    inspectTacticalLine(root, continuation.first(2), FactSource::Played, 3);
+                CHECK(!find(shallowV3, TacticalKind::Sacrifice));
+                CHECK(!find(shallowV3, TacticalKind::Checkmate));
+                const auto shallowV4 =
                     inspectTacticalLine(root, continuation.first(2), FactSource::Played);
-                CHECK(!find(shallow, TacticalKind::Sacrifice));
-                CHECK(!find(shallow, TacticalKind::Checkmate));
+                CHECK(find(shallowV4, TacticalKind::Sacrifice));
+                CHECK(!find(shallowV4, TacticalKind::Checkmate));
                 // A historical brilliancy is not permission for a special label
                 // without independent compatible numeric analysis evidence.
                 MoveEvidence absent;
                 absent.playedMove = moves[ply];
                 const auto assessment = verifySpecial(root, absent, nullptr, {});
                 CHECK(!assessment.label);
-                CHECK(assessment.ruleId == "special.numeric_evidence_required.v3");
+                CHECK(assessment.ruleId == "special.numeric_evidence_required.v4");
+                CHECK(verifySpecial(root, absent, nullptr, {}, 3).ruleId ==
+                      "special.numeric_evidence_required.v3");
             }
             REQUIRE(std::holds_alternative<std::monostate>(root.play(moves[ply])));
         }

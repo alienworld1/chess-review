@@ -240,7 +240,7 @@ class ReviewNavigationTest final : public QObject {
         view = app::reviewPositionEvaluation(&move, false);
         QCOMPARE(view.whiteExpected, std::optional{0.9});
         QVERIFY(view.approximate);
-        QVERIFY(view.description.contains(QStringLiteral("approximate")));
+        QVERIFY(view.description.contains(QStringLiteral("centipawn win probability")));
         result.after.issue = review::EvidenceIssue::Bounded;
         QVERIFY(!app::reviewPositionEvaluation(&move, false).whiteExpected);
         result.after.issue = review::EvidenceIssue::MateClaim;

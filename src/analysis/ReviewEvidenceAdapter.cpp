@@ -77,12 +77,23 @@ EvidenceResult reviewEvidence(const engine::AnalysisResult& result,
         return record();
     }
     evidence.strength.depth = depth;
-    evidence.complete = (completed ? static_cast<int>(lines.size()) : snapshot.achievedWidth) ==
-                            snapshot.requestedMultiPv &&
-                        depth && *depth > 0;
+    const int expectedWidth =
+        std::min<int>(snapshot.requestedMultiPv,
+                      static_cast<int>(std::max<std::size_t>(position.legalMoves().size(), 1)));
+    evidence.complete =
+        (completed ? static_cast<int>(lines.size()) : snapshot.achievedWidth) == expectedWidth &&
+        depth && *depth > 0;
+    const bool allExactMate =
+        !lines.empty() && std::all_of(lines.begin(), lines.end(), [](const auto& line) {
+            return line.score && line.score->type == engine::ScoreType::Mate &&
+                   line.score->bound == engine::ScoreBound::Exact && line.score->value != 0;
+        });
+    const bool forcedSingleMove = position.legalMoves().size() == 1;
     if (const auto* nodes = std::get_if<engine::NodeLimit>(&snapshot.limit)) {
-        evidence.complete = evidence.complete && snapshot.statistics.nodes &&
-                            *snapshot.statistics.nodes >= nodes->nodes;
+        evidence.complete =
+            evidence.complete && snapshot.statistics.nodes &&
+            (*snapshot.statistics.nodes >= nodes->nodes ||
+             ((allExactMate || forcedSingleMove) && *snapshot.statistics.nodes > 0));
     } else if (const auto* depthLimit = std::get_if<engine::DepthLimit>(&snapshot.limit)) {
         evidence.complete =
             evidence.complete && depth && static_cast<std::uint32_t>(*depth) >= depthLimit->depth;

@@ -514,13 +514,40 @@ void run(ui::MainWindow& window) {
     }
     if (benchmark) {
         const auto& overview = *review.state().overview;
-        require(stageSearches[1] <= 8 && stageSearches[2] <= 8 &&
+        require(stageSearches[1] <= 24 && stageSearches[2] <= 24 &&
                     overview.escalationPositions[0].empty() &&
                     overview.escalationPositions[1].empty(),
                 "bounded Standard review");
         QJsonArray checkedPositions;
         for (const int position : overview.refinementPositions) {
             checkedPositions.append(position);
+        }
+        auto sideCounts = [](const review::SideSummary& side) {
+            QJsonArray arr;
+            for (const int c : side.counts) {
+                arr.append(c);
+            }
+            return arr;
+        };
+        QJsonArray notableMoments;
+        for (const auto& m : overview.keyMoments) {
+            const int labelVal = m.classification && m.classification->label
+                                     ? static_cast<int>(*m.classification->label)
+                                     : -1;
+            notableMoments.append(QJsonObject{
+                {"ply", m.positionIndex},
+                {"move", QStringLiteral("%1%2%3")
+                             .arg(m.moveNumber)
+                             .arg(m.mover == chess::Color::White ? QStringLiteral(".")
+                                                                 : QStringLiteral("..."))
+                             .arg(m.san)},
+                {"label", labelVal},
+                {"rule",
+                 m.classification ? QString::fromStdString(m.classification->ruleId) : QString{}},
+                {"loss", m.classification && m.classification->loss
+                             ? QJsonValue(*m.classification->loss)
+                             : QJsonValue{}},
+                {"special_status", static_cast<int>(m.special.status)}});
         }
         report(
             {{"event", "benchmark"},
@@ -532,6 +559,15 @@ void run(ui::MainWindow& window) {
              {"stage_searches", QJsonArray{stageSearches[0], stageSearches[1], stageSearches[2]}},
              {"checked_positions", checkedPositions},
              {"evaluated", QJsonArray{overview.sides[0].evaluated, overview.sides[1].evaluated}},
+             {"totals", QJsonArray{overview.sides[0].total, overview.sides[1].total}},
+             {"accuracy",
+              QJsonArray{overview.sides[0].accuracy ? QJsonValue(*overview.sides[0].accuracy)
+                                                    : QJsonValue{},
+                         overview.sides[1].accuracy ? QJsonValue(*overview.sides[1].accuracy)
+                                                    : QJsonValue{}}},
+             {"white_counts", sideCounts(overview.sides[0])},
+             {"black_counts", sideCounts(overview.sides[1])},
+             {"key_moment_details", notableMoments},
              {"key_moments", overview.totalKeyMoments}});
     }
     report({{"event", "reviewed"},

@@ -16,7 +16,8 @@ int expectedTicks(const PositionEvidence& evidence, const ExpectedScore& score, 
     return 2 * (evidence.evaluation.perspective == side ? wdl.wins : wdl.losses) + wdl.draws;
 }
 std::optional<MeasuredGap> candidateGap(const PositionEvidence& before, chess::Move move,
-                                        const ConversionConfig& conversion) {
+                                        const ConversionConfig& conversion,
+                                        std::uint32_t expectedModel) {
     const auto found =
         std::find_if(before.candidates.begin(), before.candidates.end(), [move](const auto& c) {
             return !c.continuation.empty() && c.continuation.front() == move;
@@ -24,15 +25,16 @@ std::optional<MeasuredGap> candidateGap(const PositionEvidence& before, chess::M
     if (found == before.candidates.end()) {
         return {};
     }
-    const auto best =
-        convertEvaluation(before.evaluation, before.position.board.sideToMove, conversion);
-    const auto value =
-        convertEvaluation(found->evaluation, before.position.board.sideToMove, conversion);
+    const auto best = convertEvaluation(before.evaluation, before.position.board.sideToMove,
+                                        conversion, expectedModel);
+    const auto value = convertEvaluation(found->evaluation, before.position.board.sideToMove,
+                                         conversion, expectedModel);
     if (best.issue || value.issue || !best.expected || !value.expected ||
-        best.expected->source != value.expected->source) {
+        (expectedModel == 1 && best.expected->source != value.expected->source)) {
         return {};
     }
-    if (best.expected->source == ConversionSource::NativeWdl) {
+    if (best.expected->source == ConversionSource::NativeWdl &&
+        value.expected->source == ConversionSource::NativeWdl) {
         const auto ticks = [](const RawEvaluation& e, chess::Color side) {
             return 2 * (e.perspective == side ? e.wdl->wins : e.wdl->losses) + e.wdl->draws;
         };
@@ -40,7 +42,7 @@ std::optional<MeasuredGap> candidateGap(const PositionEvidence& before, chess::M
                                ticks(found->evaluation, before.position.board.sideToMove);
         return MeasuredGap{static_cast<double>(difference) / 2000, difference};
     }
-    return MeasuredGap{best.expected->value - value.expected->value, {}};
+    return MeasuredGap{std::max(0.0, best.expected->value - value.expected->value), {}};
 }
 RetryGrade grade(double gap, bool first, const ClassificationConfig& thresholds) {
     if (gap >= thresholds.inaccuracyLoss) {
@@ -63,30 +65,40 @@ RetryResult gradeRetry(const chess::Position& root, chess::Move attempted, const
         deep.before.engineIdentity != verified.before.engineIdentity) {
         return {};
     }
-    const auto d = classify(root, deep, config.classification, config.conversion);
-    const auto v = classify(root, verified, config.classification, config.conversion);
+    const bool useV2 =
+        (deep.beforeEvaluation.expected && deep.beforeEvaluation.expected->modelVersion >= 2) ||
+        (deep.before.evaluation.score && deep.before.evaluation.score->kind == ScoreKind::Mate) ||
+        (verified.before.evaluation.score &&
+         verified.before.evaluation.score->kind == ScoreKind::Mate);
+    const std::uint32_t classModel = useV2 ? 3U : 2U;
+    const std::uint32_t expectedModel = useV2 ? 2U : 1U;
+    const auto d = classify(root, deep, config.classification, config.conversion, classModel);
+    const auto v = classify(root, verified, config.classification, config.conversion, classModel);
     if (!assessStability(d, v, deep, verified, config.refinement, 1).stable || !d.bestMove ||
         !v.bestMove) {
         return {};
     }
     std::optional<MeasuredGap> dg, vg;
     if (deepChild && verifiedChild) {
-        const auto dp = pairEvidence(root, attempted, deep.before, *deepChild, config.conversion);
-        const auto vp =
-            pairEvidence(root, attempted, verified.before, *verifiedChild, config.conversion);
+        const auto dp = pairEvidence(root, attempted, deep.before, *deepChild, config.conversion,
+                                     expectedModel);
+        const auto vp = pairEvidence(root, attempted, verified.before, *verifiedChild,
+                                     config.conversion, expectedModel);
         if (dp.issue || vp.issue) {
             return {};
         }
         // classify owns the exact-WDL subtraction and best-move conflict rules.
-        const auto dc = classify(root, dp, config.classification, config.conversion);
-        const auto vc = classify(root, vp, config.classification, config.conversion);
+        const auto dc = classify(root, dp, config.classification, config.conversion, classModel);
+        const auto vc = classify(root, vp, config.classification, config.conversion, classModel);
         if (!assessStability(dc, vc, dp, vp, config.refinement, 1).stable) {
             return {};
         }
         const auto measure = [](const MoveEvidence& pair, const ClassificationResult& result) {
             MeasuredGap gap{*result.loss, {}};
-            if (result.before.expected->source != ConversionSource::ApproximateCentipawns &&
-                result.after.expected->source != ConversionSource::ApproximateCentipawns) {
+            if ((result.before.expected->source == ConversionSource::NativeWdl ||
+                 result.before.expected->source == ConversionSource::Terminal) &&
+                (result.after.expected->source == ConversionSource::NativeWdl ||
+                 result.after.expected->source == ConversionSource::Terminal)) {
                 gap.ticks = expectedTicks(pair.before, *result.before.expected, pair.mover) -
                             expectedTicks(pair.after, *result.after.expected, pair.mover);
             }
@@ -95,8 +107,8 @@ RetryResult gradeRetry(const chess::Position& root, chess::Move attempted, const
         dg = measure(dp, dc);
         vg = measure(vp, vc);
     } else {
-        dg = candidateGap(deep.before, attempted, config.conversion);
-        vg = candidateGap(verified.before, attempted, config.conversion);
+        dg = candidateGap(deep.before, attempted, config.conversion, expectedModel);
+        vg = candidateGap(verified.before, attempted, config.conversion, expectedModel);
     }
     if (!dg || !vg || !std::isfinite(dg->value) || !std::isfinite(vg->value) || dg->value < 0 ||
         vg->value < 0) {

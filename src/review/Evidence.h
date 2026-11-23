@@ -7,7 +7,10 @@
 
 namespace chess_review::review {
 inline constexpr std::uint32_t evidenceModelVersion = 1;
-inline constexpr std::uint32_t expectedScoreModelVersion = 1;
+inline constexpr std::uint32_t expectedScoreModelVersion = 2;
+[[nodiscard]] constexpr bool supportsExpectedScoreModel(std::uint32_t version) {
+    return version == 1 || version == 2;
+}
 enum class ScoreKind { Centipawns, Mate };
 enum class Bound { Exact, Lower, Upper };
 struct RawScore {
@@ -30,10 +33,10 @@ struct RawEvaluation {
 };
 struct ConversionConfig {
     double fallbackScaleCp = 300;
-    bool preferWdl = true;
+    bool preferWdl = false;
     bool operator==(const ConversionConfig&) const = default;
 };
-enum class ConversionSource { NativeWdl, ApproximateCentipawns, Terminal };
+enum class ConversionSource { NativeWdl, ApproximateCentipawns, Terminal, Mate };
 struct ExpectedScore {
     double value = 0.5;
     chess::Color perspective = chess::Color::White;
@@ -104,17 +107,21 @@ struct MoveEvidence {
     MateInformation mate;
     std::optional<EvidenceIssue> issue;
 };
-[[nodiscard]] EvaluationResult convertEvaluation(const RawEvaluation& raw, chess::Color perspective,
-                                                 const ConversionConfig& config = {});
-// Validates the complete candidate set against its original history. MateClaim means
-// valid mate-valued evidence needing a mate-aware interpreter, not a numeric score.
+[[nodiscard]] EvaluationResult
+convertEvaluation(const RawEvaluation& raw, chess::Color perspective,
+                  const ConversionConfig& config = {},
+                  std::uint32_t modelVersion = expectedScoreModelVersion);
+// Validates the complete candidate set against its original history. In model 1, MateClaim
+// means valid mate-valued evidence needing a mate-aware interpreter, not a numeric score.
 [[nodiscard]] std::optional<EvidenceIssue>
 validatePositionEvidence(const chess::Position& position, const PositionEvidence& evidence,
-                         const ConversionConfig& config = {});
+                         const ConversionConfig& config = {},
+                         std::uint32_t modelVersion = expectedScoreModelVersion);
 // Local proof only: no PGN result, repetition, move-count or material adjudication.
 [[nodiscard]] PositionEvidence terminalEvidence(const chess::Position& position);
 // The supplied board is a replay witness; complete history equality gates its use.
 [[nodiscard]] MoveEvidence pairEvidence(const chess::Position& position, chess::Move playedMove,
                                         PositionEvidence before, PositionEvidence after,
-                                        const ConversionConfig& config = {});
+                                        const ConversionConfig& config = {},
+                                        std::uint32_t modelVersion = expectedScoreModelVersion);
 } // namespace chess_review::review

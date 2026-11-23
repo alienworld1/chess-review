@@ -1,4 +1,5 @@
 #include "review/Classification.h"
+#include <algorithm>
 #include <cmath>
 namespace chess_review::review {
 namespace {
@@ -6,7 +7,8 @@ namespace {
 // before conversion to avoid cancellation at decimal classification boundaries.
 int expectedTicks(const PositionEvidence& evidence, const ExpectedScore& expected,
                   chess::Color perspective) {
-    if (expected.source == ConversionSource::Terminal) {
+    if (expected.source == ConversionSource::Terminal ||
+        expected.source == ConversionSource::Mate) {
         return static_cast<int>(expected.value * 2000);
     }
     const auto& wdl = *evidence.evaluation.wdl;
@@ -22,7 +24,8 @@ ClassificationResult classify(const chess::Position& position, const MoveEvidenc
     out.thresholds = config;
     out.mover = position.sideToMove();
     const auto rule = [modelVersion](const char* prefix) {
-        return std::string(prefix) + (modelVersion == 1 ? ".v1" : ".v2");
+        return std::string(prefix) +
+               (modelVersion == 1 ? ".v1" : (modelVersion == 2 ? ".v2" : ".v3"));
     };
     if (!supportsClassificationModel(modelVersion)) {
         out.issue = ClassificationIssue::Evidence;
@@ -39,8 +42,9 @@ ClassificationResult classify(const chess::Position& position, const MoveEvidenc
         out.ruleId = rule("normal.invalid_configuration");
         return out;
     }
-    const auto paired =
-        pairEvidence(position, evidence.playedMove, evidence.before, evidence.after, conversion);
+    const std::uint32_t expectedModel = modelVersion >= 3 ? 2U : 1U;
+    const auto paired = pairEvidence(position, evidence.playedMove, evidence.before, evidence.after,
+                                     conversion, expectedModel);
     out.before = paired.beforeEvaluation;
     out.after = paired.afterEvaluation;
     out.signedDelta = paired.signedDelta;
@@ -52,14 +56,18 @@ ClassificationResult classify(const chess::Position& position, const MoveEvidenc
         return out;
     }
     if (modelVersion >= 2 &&
-        paired.beforeEvaluation.expected->source != ConversionSource::ApproximateCentipawns &&
-        paired.afterEvaluation.expected->source != ConversionSource::ApproximateCentipawns) {
-        out.loss =
-            static_cast<double>(
-                expectedTicks(paired.before, *paired.beforeEvaluation.expected, paired.mover) -
-                expectedTicks(paired.after, *paired.afterEvaluation.expected, paired.mover)) /
-            2000.0;
-        out.signedDelta = out.loss;
+        (paired.beforeEvaluation.expected->source == ConversionSource::NativeWdl ||
+         paired.beforeEvaluation.expected->source == ConversionSource::Terminal) &&
+        (paired.afterEvaluation.expected->source == ConversionSource::NativeWdl ||
+         paired.afterEvaluation.expected->source == ConversionSource::Terminal)) {
+        const int deltaTicks =
+            expectedTicks(paired.before, *paired.beforeEvaluation.expected, paired.mover) -
+            expectedTicks(paired.after, *paired.afterEvaluation.expected, paired.mover);
+        out.signedDelta = static_cast<double>(deltaTicks) / 2000.0;
+        out.loss = modelVersion >= 3 ? std::max(0.0, *out.signedDelta) : *out.signedDelta;
+        if (modelVersion < 3) {
+            out.signedDelta = out.loss;
+        }
     }
     out.playedMoveRank = paired.playedMoveRank;
     out.bestMove = paired.before.candidates.front().continuation.front();
@@ -68,9 +76,11 @@ ClassificationResult classify(const chess::Position& position, const MoveEvidenc
         if (candidate.rank == 1) {
             continue;
         }
-        const auto value = convertEvaluation(candidate.evaluation, paired.mover, best.config);
-        double gap = best.value - value.expected->value;
-        if (modelVersion >= 2 && best.source == ConversionSource::NativeWdl) {
+        const auto value =
+            convertEvaluation(candidate.evaluation, paired.mover, best.config, expectedModel);
+        double gap = std::max(0.0, best.value - value.expected->value);
+        if (modelVersion >= 2 && best.source == ConversionSource::NativeWdl &&
+            value.expected->source == ConversionSource::NativeWdl) {
             const auto& wdl = *candidate.evaluation.wdl;
             const int candidateTicks =
                 2 * (candidate.evaluation.perspective == paired.mover ? wdl.wins : wdl.losses) +
@@ -81,6 +91,24 @@ ClassificationResult classify(const chess::Position& position, const MoveEvidenc
         }
         out.alternatives.push_back(
             {candidate.continuation.front(), candidate.rank, gap, gap <= config.excellentLoss});
+    }
+    if (modelVersion >= 3 && position.legalMoves().size() == 1) {
+        out.loss = 0.0;
+        out.label = Classification::Best;
+        out.ruleId = "forced.best.v3";
+        return out;
+    }
+    if (modelVersion >= 3 && paired.after.terminal == TerminalOutcome::Checkmate) {
+        out.loss = 0.0;
+        out.label = Classification::Best;
+        out.ruleId = "checkmate.best.v3";
+        return out;
+    }
+    if (modelVersion >= 3 && paired.playedMoveRank == 1) {
+        out.loss = 0.0;
+        out.label = Classification::Best;
+        out.ruleId = "verified_candidate.best.v3";
+        return out;
     }
     const double loss = *out.loss;
     if (paired.playedMoveRank == 1 && loss >= config.inaccuracyLoss) {

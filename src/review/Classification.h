@@ -6,9 +6,9 @@
 #include <string>
 #include <vector>
 namespace chess_review::review {
-inline constexpr std::uint32_t classificationModelVersion = 2;
+inline constexpr std::uint32_t classificationModelVersion = 3;
 inline constexpr bool supportsClassificationModel(std::uint32_t version) {
-    return version == 1 || version == 2;
+    return version == 1 || version == 2 || version == 3;
 }
 // Explicit durable document tags; model 1 remains readable.
 enum class Classification {

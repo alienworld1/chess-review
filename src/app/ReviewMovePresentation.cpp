@@ -171,11 +171,14 @@ QString expected(const review::EvaluationResult& evaluation) {
         source = QObject::tr("engine WDL");
         break;
     case review::ConversionSource::ApproximateCentipawns:
-        source = QObject::tr("approximate centipawn conversion, scale %1 cp")
+        source = QObject::tr("centipawn win probability, scale %1 cp")
                      .arg(e.config.fallbackScaleCp, 0, 'g', 10);
         break;
     case review::ConversionSource::Terminal:
         source = QObject::tr("locally proven terminal outcome");
+        break;
+    case review::ConversionSource::Mate:
+        source = QObject::tr("forced checkmate");
         break;
     }
     return QObject::tr("%1% (%2; conversion model %3)")
@@ -315,11 +318,7 @@ ReviewMomentPresentation presentReviewMoment(const persistence::ReviewMove* move
         view.explanation = QObject::tr("This move follows a line in the bundled opening book.");
         return view;
     }
-    // Explain one verified fact. A fact in an engine line is not a claim about every defence.
-    for (const auto& fact : move->tacticalFacts) {
-        if (fact.source == review::FactSource::Best && result.playedMoveRank == 1) {
-            continue;
-        }
+    const auto factContext = [&](const review::TacticalFact& fact) -> QString {
         const auto square = QString::fromStdString(fact.square.name());
         const auto side =
             fact.beneficiary == chess::Color::White ? QObject::tr("White") : QObject::tr("Black");
@@ -328,49 +327,150 @@ ReviewMomentPresentation presentReviewMoment(const persistence::ReviewMove* move
                                  : QObject::tr("In this move’s analyzed continuation, ");
         switch (fact.kind) {
         case review::TacticalKind::HangingPiece:
-            view.explanation =
-                context + QObject::tr("an undefended piece on %1 can be captured.").arg(square);
-            break;
+            return context + QObject::tr("an undefended piece on %1 can be captured.").arg(square);
         case review::TacticalKind::Fork:
-            view.explanation =
-                context + QObject::tr("the %1 on %2 gives check and attacks two pieces.")
-                              .arg(fact.modelVersion == 1 && fact.actor == chess::PieceType::Pawn
-                                       ? QObject::tr("piece")
-                                       : pieceText(fact.actor),
-                                   square);
-            break;
+            return context + QObject::tr("the %1 on %2 gives check and attacks two pieces.")
+                                 .arg(fact.modelVersion == 1 && fact.actor == chess::PieceType::Pawn
+                                          ? QObject::tr("piece")
+                                          : pieceText(fact.actor),
+                                      square);
         case review::TacticalKind::Material:
-            view.explanation =
-                context +
-                QObject::tr("%1 gains %2 pawns of material.").arg(side).arg(fact.material);
-            break;
+            return context +
+                   QObject::tr("%1 gains %2 pawns of material.").arg(side).arg(fact.material);
         case review::TacticalKind::Exchange:
-            view.explanation = context + QObject::tr("%1 wins a rook for a minor piece.").arg(side);
-            break;
+            return context + QObject::tr("%1 wins a rook for a minor piece.").arg(side);
         case review::TacticalKind::Checkmate:
-            view.explanation =
-                context + QObject::tr("the line ends in checkmate. Other defences may differ.");
-            break;
+            return context + QObject::tr("the line ends in checkmate. Other defences may differ.");
         case review::TacticalKind::Promotion:
-            view.explanation =
-                context + QObject::tr("%1 promotes to a %2.").arg(side, pieceText(fact.actor));
-            break;
+            return context + QObject::tr("%1 promotes to a %2.").arg(side, pieceText(fact.actor));
         case review::TacticalKind::Sacrifice:
-            view.explanation =
-                context +
-                QObject::tr("%1 gives up material before the tactical resolution.").arg(side);
-            break;
+            return context +
+                   QObject::tr("%1 gives up material before the tactical resolution.").arg(side);
         }
-        if (!view.explanation.isEmpty()) {
-            break;
+        return {};
+    };
+    const auto mateBefore =
+        move->rawBefore.score && move->rawBefore.score->kind == review::ScoreKind::Mate
+            ? std::optional(*move->rawBefore.score)
+            : std::nullopt;
+    const auto mateAfter =
+        move->rawAfter.score && move->rawAfter.score->kind == review::ScoreKind::Mate
+            ? std::optional(*move->rawAfter.score)
+            : std::nullopt;
+    const bool mateAfterForMover =
+        mateAfter &&
+        ((move->rawAfter.perspective == move->mover) ? mateAfter->value > 0 : mateAfter->value < 0);
+    const bool mateBeforeForMover =
+        mateBefore && ((move->rawBefore.perspective == move->mover) ? mateBefore->value > 0
+                                                                    : mateBefore->value < 0);
+    const bool mateAfterAgainstMover =
+        mateAfter &&
+        ((move->rawAfter.perspective == move->mover) ? mateAfter->value < 0 : mateAfter->value > 0);
+    if (result.label == review::Classification::Brilliant) {
+        const auto* sac = [&]() -> const review::TacticalFact* {
+            for (const auto& f : move->special.witnesses) {
+                if (f.kind == review::TacticalKind::Sacrifice) {
+                    return &f;
+                }
+            }
+            for (const auto& f : move->tacticalFacts) {
+                if (f.source == review::FactSource::Played &&
+                    f.kind == review::TacticalKind::Sacrifice) {
+                    return &f;
+                }
+            }
+            return nullptr;
+        }();
+        if (sac) {
+            view.explanation =
+                QObject::tr("A brilliant sacrifice! Giving up the %1 on %2 leads to a decisive "
+                            "advantage.")
+                    .arg(pieceText(sac->actor), QString::fromStdString(sac->square.name()));
+        } else {
+            view.explanation =
+                QObject::tr("A brilliant sacrifice that is the strongest way to press the game.");
+        }
+    } else if (result.label == review::Classification::Great) {
+        if (result.after.expected && result.after.expected->value <= 0.58) {
+            view.explanation =
+                QObject::tr("The only move that keeps the position viable and holds the balance.");
+        } else {
+            view.explanation = QObject::tr(
+                "A critical, hard-to-find move that stands clearly above every alternative.");
+        }
+    } else if (result.label == review::Classification::Miss) {
+        if (mateBeforeForMover && !mateAfterForMover) {
+            view.explanation = !move->bestSan.isEmpty()
+                                   ? QObject::tr("This misses a forced checkmate; %1 was winning.")
+                                         .arg(move->bestSan)
+                                   : QObject::tr("This misses a forced checkmate.");
+        } else if (!move->bestSan.isEmpty()) {
+            view.explanation =
+                QObject::tr("This misses a winning tactical chance with %1.").arg(move->bestSan);
+        }
+    } else if (result.label == review::Classification::Blunder ||
+               result.label == review::Classification::Mistake ||
+               result.label == review::Classification::Inaccuracy) {
+        if (mateAfterAgainstMover && !move->bestSan.isEmpty()) {
+            view.explanation =
+                QObject::tr("This allows a forced checkmate; %1 was needed.").arg(move->bestSan);
+        } else if (mateBeforeForMover && !mateAfterForMover && !move->bestSan.isEmpty()) {
+            view.explanation =
+                QObject::tr("This lets a forced checkmate slip away; %1 was winning.")
+                    .arg(move->bestSan);
         }
     }
     if (view.explanation.isEmpty()) {
-        view.explanation =
-            !result.label ? QObject::tr("There isn’t enough reliable analysis to assess this move.")
-            : result.playedMoveRank == 1
-                ? QObject::tr("This matches the engine’s best move.")
-                : QObject::tr("Compare this move with the engine’s continuation.");
+        // Explain one verified fact. A fact in an engine line is not a claim about every defence.
+        for (const auto& fact : move->tacticalFacts) {
+            if (fact.source == review::FactSource::Best && result.playedMoveRank == 1) {
+                continue;
+            }
+            if (fact.source == review::FactSource::Played &&
+                fact.kind == review::TacticalKind::Material && fact.beneficiary != move->mover &&
+                result.label && !review::isError(*result.label)) {
+                continue;
+            }
+            view.explanation = factContext(fact);
+            if (!view.explanation.isEmpty()) {
+                break;
+            }
+        }
+    }
+    if (view.explanation.isEmpty()) {
+        if (!result.label) {
+            view.explanation =
+                QObject::tr("There isn’t enough reliable analysis to assess this move.");
+        } else if (result.ruleId == "forced.best.v3") {
+            view.explanation = QObject::tr("This is the only legal move.");
+        } else if (result.playedMoveRank == 1) {
+            view.explanation = QObject::tr("This is the strongest move in the position.");
+        } else if (*result.label == review::Classification::Excellent) {
+            view.explanation =
+                QObject::tr("A strong move, nearly as good as the engine’s top choice.");
+        } else if (*result.label == review::Classification::Good) {
+            view.explanation = QObject::tr("A solid move that keeps the position playable.");
+        } else if (*result.label == review::Classification::Inaccuracy) {
+            view.explanation =
+                !move->bestSan.isEmpty()
+                    ? QObject::tr("A slight inaccuracy; %1 keeps more pressure.").arg(move->bestSan)
+                    : QObject::tr("A slight inaccuracy that gives away a small edge.");
+        } else if (*result.label == review::Classification::Mistake) {
+            view.explanation =
+                !move->bestSan.isEmpty()
+                    ? QObject::tr("A mistake that worsens your position; %1 was stronger.")
+                          .arg(move->bestSan)
+                    : QObject::tr("A mistake that gives the opponent a clear advantage.");
+        } else if (*result.label == review::Classification::Blunder) {
+            view.explanation =
+                !move->bestSan.isEmpty()
+                    ? QObject::tr("A critical blunder that seriously hurts your position; %1 was "
+                                  "much better.")
+                          .arg(move->bestSan)
+                    : QObject::tr("A critical blunder that swings the game sharply.");
+        } else {
+            view.explanation = QObject::tr("Compare this move with the engine’s continuation.");
+        }
     }
     if (move->bookDeparture) {
         view.explanation.prepend(QObject::tr("This is the first move outside the local book. "));
@@ -421,7 +521,7 @@ ReviewEvaluation reviewPositionEvaluation(const persistence::ReviewMove* row, bo
     }
     const auto& value = *evaluation.expected;
     if (!std::isfinite(value.value) || value.value < 0 || value.value > 1 ||
-        value.modelVersion != review::expectedScoreModelVersion) {
+        !review::supportsExpectedScoreModel(value.modelVersion)) {
         return result;
     }
     result.whiteExpected = value.perspective == chess::Color::White ? value.value : 1 - value.value;
@@ -429,10 +529,11 @@ ReviewEvaluation reviewPositionEvaluation(const persistence::ReviewMove* row, bo
     result.description =
         QObject::tr("White expected score: %1%\n%2\nmodel %3")
             .arg(*result.whiteExpected * 100, 0, 'f', 1)
-            .arg(result.approximate ? QObject::tr("approximate centipawn conversion")
+            .arg(result.approximate ? QObject::tr("centipawn win probability")
                  : value.source == review::ConversionSource::Terminal
                      ? QObject::tr("locally proven terminal outcome")
-                     : QObject::tr("engine WDL"))
+                 : value.source == review::ConversionSource::Mate ? QObject::tr("forced checkmate")
+                                                                  : QObject::tr("engine WDL"))
             .arg(value.modelVersion);
     if (row->pendingRevision) {
         result.description += QObject::tr("\nprevious checkpoint; updating");
@@ -522,7 +623,7 @@ QString reviewMomentHeadline(const persistence::ReviewMove* move, int position) 
 QString reviewOverviewText(const persistence::ReviewOverview& overview, chess::Color selectedSide) {
     QStringList text;
     text << QObject::tr("Game summary\naccuracy model %1\nexpected-score evidence")
-                .arg(review::accuracyModelVersion);
+                .arg(overview.accuracyModelVersion);
     text << QObject::tr("Recorded result: %1").arg(overview.result);
     if (overview.sides[0].total + overview.sides[1].total > 0 &&
         overview.sides[0].evaluated + overview.sides[1].evaluated == 0) {
@@ -609,7 +710,8 @@ ReviewComparisonPresentation presentReviewComparison(const review::MoveCompariso
         row.expected
             ? QObject::tr("%1%%2")
                   .arg(row.expected->value * 100, 0, 'f', 1)
-                  .arg(row.expected->source == review::ConversionSource::ApproximateCentipawns
+                  .arg(row.expected->source == review::ConversionSource::ApproximateCentipawns &&
+                               row.expected->modelVersion < 2
                            ? QStringLiteral(" ≈")
                            : QString{})
             : QStringLiteral("—");

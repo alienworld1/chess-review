@@ -95,6 +95,12 @@ class Fixture {
             // The existing scenarios explicitly exercise the exhaustive pipeline at these budgets.
             contents += "\n[analysis.thorough]\nquickScanNodes=100000\n"
                         "deepeningNodes=1000000\nverificationNodes=5000000\n";
+            if (!contents.contains("[review]")) {
+                contents += "\n[review]\npreferWdl=true\n";
+            }
+            if (!contents.contains("[classification]")) {
+                contents += "\n[classification]\nexcellentLoss=0.01\n";
+            }
             configPath = directory.filePath(QStringLiteral("config.toml"));
             QFile config(*configPath);
             if (!config.open(QIODevice::WriteOnly) || config.write(contents) != contents.size()) {
@@ -3397,7 +3403,7 @@ class QuickReviewTest final : public QObject {
         QCOMPARE(controller.state().overview->sides[0].stable, stable ? 1 : 0);
         QTRY_VERIFY(controller.moves().state().page && !controller.moves().state().loading);
         const auto& row = controller.moves().state().page->moves.front();
-        QCOMPARE(row.stability.modelVersion, 3U);
+        QCOMPARE(row.stability.modelVersion, review::stabilityModelVersion);
         QCOMPARE(row.classification->stable, stable);
         QCOMPARE(row.escalationRound, rounds);
         const auto details = app::reviewMoveDetails(row);
@@ -3888,19 +3894,20 @@ class QuickReviewTest final : public QObject {
     void boundedPresetsStopAfterTheRankedPairs_data() {
         QTest::addColumn<int>("preset");
         QTest::addColumn<int>("pairs");
-        QTest::newRow("fast") << static_cast<int>(review::Quality::Fast) << 2;
-        QTest::newRow("standard") << static_cast<int>(review::Quality::Standard) << 4;
+        QTest::newRow("fast") << static_cast<int>(review::Quality::Fast) << 6;
+        QTest::newRow("standard") << static_cast<int>(review::Quality::Standard) << 12;
     }
     void boundedPresetsStopAfterTheRankedPairs() {
         QFETCH(int, preset);
         QFETCH(int, pairs);
         Fixture f({}, {}, {}, false);
-        QVERIFY(f.seed("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 *"));
+        QVERIFY(f.seed(
+            "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7 6. Re1 b5 7. Bb3 d6 8. c3 O-O *"));
         std::vector<int> positions;
         for (int index = 0; index <= pairs; ++index) {
             positions.push_back(index);
         }
-        // Every quick score is missing, so all eight moves have equal priority. Adjacent
+        // Every quick score is missing, so all sixteen moves have equal priority. Adjacent
         // selected moves share positions and still require both full evidence passes.
         const auto quality = static_cast<review::Quality>(preset);
         const auto limits = review::Configuration{}.budgets[static_cast<std::size_t>(preset)];
@@ -3913,7 +3920,7 @@ class QuickReviewTest final : public QObject {
         QVERIFY2(controller.state().error.isEmpty(), qPrintable(controller.state().error));
         const auto run = *controller.state().run;
         QCOMPARE(run.status, review::JobStatus::Complete);
-        QCOMPARE(run.completedPositions, 9);
+        QCOMPARE(run.completedPositions, 17);
         QTRY_VERIFY(controller.state().overview &&
                     controller.state().overview->revision == run.revision);
         const auto& overview = *controller.state().overview;
@@ -3922,7 +3929,7 @@ class QuickReviewTest final : public QObject {
         QCOMPARE(overview.verifiedPositions, pairs + 1);
         QVERIFY(overview.escalationPositions[0].empty());
         QVERIFY(overview.escalationPositions[1].empty());
-        QCOMPARE(searches.size(), 9 + 2 * (pairs + 1));
+        QCOMPARE(searches.size(), 17 + 2 * (pairs + 1));
         QTRY_VERIFY(controller.moves().state().page && !controller.moves().state().loading);
         const auto& last = controller.moves().state().page->moves.back();
         QVERIFY(!last.classification || !last.classification->stable);

@@ -154,20 +154,27 @@ std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
     if (!doc) {
         return invalid();
     }
+    const auto expectedScoreModel =
+        static_cast<std::uint32_t>((*doc)["expectedScoreModelVersion"].toInt(-1));
     if (((*doc)["formatVersion"].toInt(-1) != 1 && (*doc)["formatVersion"].toInt(-1) != 2) ||
         (*doc)["configurationVersion"].toInt(-1) != 1 ||
         (*doc)["evidenceModelVersion"].toInt(-1) !=
             static_cast<int>(review::evidenceModelVersion) ||
-        (*doc)["expectedScoreModelVersion"].toInt(-1) !=
-            static_cast<int>(review::expectedScoreModelVersion)) {
+        !review::supportsExpectedScoreModel(expectedScoreModel)) {
         return error(ReviewErrorCode::UnsupportedVersion);
     }
-    const auto stabilityModel = review::stabilityModelForPipeline(
-        static_cast<std::uint32_t>((*doc)["pipelineVersion"].toInt(-1)));
+    const auto pipeline = static_cast<std::uint32_t>((*doc)["pipelineVersion"].toInt(-1));
+    const auto stabilityModel = review::stabilityModelForPipeline(pipeline);
     if (doc->contains("pipelineVersion") &&
-        (!stabilityModel || (*doc)["accuracyModelVersion"].toInt(-1) != 1 ||
+        (!stabilityModel ||
+         (*doc)["accuracyModelVersion"].toInt(-1) !=
+             static_cast<int>(review::accuracyModelForPipeline(pipeline)) ||
          (*doc)["stabilityModelVersion"].toInt(-1) != static_cast<int>(*stabilityModel) ||
-         (*doc)["reviewModelVersion"].toInt(-1) != 1)) {
+         (*doc)["reviewModelVersion"].toInt(-1) != 1 ||
+         expectedScoreModel != review::expectedScoreModelForPipeline(pipeline))) {
+        return error(ReviewErrorCode::UnsupportedVersion);
+    }
+    if (!doc->contains("pipelineVersion") && expectedScoreModel != 1) {
         return error(ReviewErrorCode::UnsupportedVersion);
     }
     if ((*doc)["pipelineVersion"].toInt(-1) >= 10) {
@@ -201,7 +208,8 @@ std::variant<StoredReview, ReviewError> readReviewHeader(QSqlDatabase& db,
         return invalid();
     }
     q.finish();
-    return StoredReview{snapshot, std::move(*settings), identity};
+    return StoredReview{snapshot, std::move(*settings), identity, review::evidenceModelVersion,
+                        expectedScoreModel};
 }
 int bookPlies(const StoredReview& run) {
     return run.settings.opening ? run.settings.opening->bookPlies.value_or(0) : 0;
@@ -427,13 +435,13 @@ readEvidence(QSqlDatabase& db, const StoredReview& run, const chess::Position& p
         out.evidence = value->evidence;
         out.analysis = std::move(*decoded);
     }
-    if (adaptedDocument(out.evidence, run.settings.configuration.values.conversion) !=
-        q.value(5).toByteArray()) {
+    if (adaptedDocument(out.evidence, run.settings.configuration.values.conversion,
+                        run.expectedScoreModelVersion) != q.value(5).toByteArray()) {
         return invalid();
     }
-    out.conversion =
-        review::convertEvaluation(out.evidence.evaluation, out.evidence.evaluation.perspective,
-                                  run.settings.configuration.values.conversion);
+    out.conversion = review::convertEvaluation(
+        out.evidence.evaluation, out.evidence.evaluation.perspective,
+        run.settings.configuration.values.conversion, run.expectedScoreModelVersion);
     return out;
 }
 std::variant<review::MoveEvidence, ReviewError> readPair(QSqlDatabase& db, const StoredReview& run,
@@ -468,7 +476,8 @@ std::variant<review::MoveEvidence, ReviewError> readPair(QSqlDatabase& db, const
         return error(ReviewErrorCode::UnsupportedVersion);
     }
     auto paired = review::pairEvidence(beforePosition, move, before.evidence, after.evidence,
-                                       run.settings.configuration.values.conversion);
+                                       run.settings.configuration.values.conversion,
+                                       run.expectedScoreModelVersion);
     if (bytes != pairedDocument(paired)) {
         return invalid();
     }
@@ -516,10 +525,15 @@ refinedPair(QSqlDatabase& db, const StoredReview& run, const chess::Position& po
         a.engineIdentity = run.settings.fingerprint.digest.toHex().toStdString();
     }
     out.pair = review::pairEvidence(position, move, std::move(b), std::move(a),
-                                    run.settings.configuration.values.conversion);
+                                    run.settings.configuration.values.conversion,
+                                    run.expectedScoreModelVersion);
+    const auto classModel =
+        run.settings.refinement
+            ? review::classificationModelForPipeline(run.settings.pipelineVersion)
+            : 2U;
     out.classification =
         review::classify(position, out.pair, run.settings.configuration.values.classification,
-                         run.settings.configuration.values.conversion);
+                         run.settings.configuration.values.conversion, classModel);
     return std::optional<RefinedPair>{std::move(out)};
 }
 std::optional<ReviewError> validateRefinement(QSqlDatabase& db, const StoredReview& run,
@@ -545,7 +559,9 @@ std::optional<ReviewError> retainClassification(QSqlDatabase& db, const StoredRe
     bool present = false;
     bool sameEvidence = false;
     QByteArray previousBytes;
-    auto modelVersion = review::classificationModelVersion;
+    auto modelVersion = run.settings.refinement
+                            ? review::classificationModelForPipeline(run.settings.pipelineVersion)
+                            : 2U;
     if (q.next()) {
         present = true;
         previousBytes = q.value(2).toByteArray();
@@ -652,7 +668,8 @@ bool updatePair(QSqlDatabase& db, const StoredReview& run, const StoredGame& gam
     const auto& b = std::get<StoredReviewEvidence>(before);
     const auto& a = std::get<StoredReviewEvidence>(after);
     const auto paired = review::pairEvidence(*position, move, b.evidence, a.evidence,
-                                             run.settings.configuration.values.conversion);
+                                             run.settings.configuration.values.conversion,
+                                             run.expectedScoreModelVersion);
     const auto bytes = pairedDocument(paired);
     if (bytes.size() > maxAnalysisBytes) {
         return false;
@@ -1126,8 +1143,8 @@ CheckpointReviewResult StorageSession::checkpointReview(const ReviewCheckpoint& 
                 return error(ReviewErrorCode::InvalidInput);
             }
         }
-        const auto adapted =
-            adaptedDocument(evidence, run.settings.configuration.values.conversion);
+        const auto adapted = adaptedDocument(evidence, run.settings.configuration.values.conversion,
+                                             run.expectedScoreModelVersion);
         if (adapted.size() > maxAnalysisBytes) {
             return error(ReviewErrorCode::InvalidInput);
         }
@@ -1435,9 +1452,10 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
     if (run.settings.pipelineVersion >= 10 && !intelligenceModels) {
         return error(ReviewErrorCode::UnsupportedVersion);
     }
-    const auto comparisonModel = run.settings.pipelineVersion == 6
-                                     ? review::ComparisonModel::Version1
-                                     : review::ComparisonModel::Version2;
+    const auto comparisonModel =
+        run.settings.pipelineVersion == 6    ? review::ComparisonModel::Version1
+        : run.settings.pipelineVersion >= 14 ? review::ComparisonModel::Version3
+                                             : review::ComparisonModel::Version2;
     const int total = run.summary.totalPositions - 1;
     const bool bounded = boundedRefinement(run);
     std::optional<bool> escalationPresent;
@@ -1774,9 +1792,12 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
                     chosen && row.stage == row.comparisonStages[1] && pairs[olderIndex]
                         ? &pairs[olderIndex]->pair
                         : nullptr;
-                row.alternatives =
-                    review::compareAlternatives(*position, chosen ? chosen->pair : quickPair, older,
-                                                run.settings.configuration.values);
+                const auto presentationComparison = run.settings.pipelineVersion >= 14
+                                                        ? review::ComparisonModel::Version3
+                                                        : review::ComparisonModel::Version2;
+                row.alternatives = review::compareAlternatives(
+                    *position, chosen ? chosen->pair : quickPair, older,
+                    run.settings.configuration.values, presentationComparison);
                 if (row.refinementTarget &&
                     row.escalationRound > std::max(0, static_cast<int>(row.stage) - 2)) {
                     row.alternatives.reason = review::ComparisonReason::Pending;
@@ -2186,8 +2207,11 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
     out.revision = revision;
     out.keyOffset = keyOffset;
     out.result = game.summary.result.left(32);
+    out.accuracyModelVersion = review::accuracyModelForPipeline(
+        run.settings.refinement ? run.settings.pipelineVersion : 1);
     out.reviewBothSides = run.settings.configuration.ui.reviewBothSides;
-    review::SummaryBuilder summaryBuilder(run.summary.selectedSide, out.reviewBothSides);
+    review::SummaryBuilder summaryBuilder(run.summary.selectedSide, out.reviewBothSides,
+                                          out.accuracyModelVersion);
     std::vector<review::RefinementCandidate> candidates;
     std::array<std::vector<review::RefinementCandidate>, 2> escalationCandidates;
     int keyMoments = 0;
@@ -2225,10 +2249,20 @@ LoadReviewOverviewResult StorageSession::loadReviewOverview(ReviewId id, std::in
                 break;
             }
             const auto& c = move.classification;
-            const auto selection =
-                summaryBuilder.add({move.positionIndex, move.mover, c.has_value(), c && c->stable,
-                                    c ? c->label : std::nullopt, move.accuracyLoss, move.rawBefore,
-                                    move.rawAfter, move.bookDeparture});
+            const auto whiteExpected =
+                [](const review::EvaluationResult& eval) -> std::optional<double> {
+                if (eval.issue || !eval.expected) {
+                    return std::nullopt;
+                }
+                return eval.expected->perspective == chess::Color::White
+                           ? eval.expected->value
+                           : 1.0 - eval.expected->value;
+            };
+            const auto selection = summaryBuilder.add(
+                {move.positionIndex, move.mover, c.has_value(), c && c->stable,
+                 c ? c->label : std::nullopt, move.accuracyLoss, move.rawBefore, move.rawAfter,
+                 move.bookDeparture, c ? whiteExpected(c->before) : std::nullopt,
+                 c ? whiteExpected(c->after) : std::nullopt});
             if (move.refinementTarget) {
                 candidates.push_back({move.positionIndex, move.quickScan});
                 for (std::size_t round = 0; round < 2; ++round) {

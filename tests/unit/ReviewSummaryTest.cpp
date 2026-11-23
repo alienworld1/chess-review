@@ -211,7 +211,7 @@ TEST_CASE("Stability rejects invalid or incompatible derived evaluations",
     verified.after.expected->value = std::numeric_limits<double>::infinity();
     CHECK(!assessStability(deep, verified, first, second, {}, 1).stable);
     verified = deep;
-    verified.thresholds.excellentLoss = .02;
+    verified.thresholds.excellentLoss = .01;
     CHECK(!assessStability(deep, verified, first, second, {}, 1).stable);
     verified = deep;
     verified.modelVersion = 1;
@@ -282,4 +282,49 @@ TEST_CASE("Accuracy model one has stable published numeric examples", "[unit][re
     CHECK(facts.sides[0].counts[static_cast<std::size_t>(Classification::Brilliant)] == 1);
     CHECK(facts.sides[0].counts[static_cast<std::size_t>(Classification::Miss)] == 1);
     CHECK(*facts.sides[1].accuracy == Catch::Approx(79.81704006344074));
+}
+
+TEST_CASE("Accuracy model two applies Lichess offset and volatility-weighted aggregation",
+          "[unit][review][summary]") {
+    CHECK(moveAccuracy(0.0, 2) == 100.0);
+    CHECK(moveAccuracy(1.0, 2) == Catch::Approx(0.0));
+    const auto smallLossV1 = moveAccuracy(0.02, 1);
+    const auto smallLossV2 = moveAccuracy(0.02, 2);
+    REQUIRE(smallLossV1);
+    REQUIRE(smallLossV2);
+    CHECK(*smallLossV2 == Catch::Approx(std::min(100.0, *smallLossV1 + 1.0)));
+
+    const std::array<double, 4> accs{95.0, 95.0, 60.0, 98.0};
+    const std::array<double, 4> evals{0.50, 0.52, 0.80, 0.82};
+    const auto weighted = gameAccuracyWeighted(accs, evals);
+    const auto plain = gameAccuracy(accs);
+    REQUIRE(weighted);
+    REQUIRE(plain);
+    CHECK(*weighted >= 0.0);
+    CHECK(*weighted <= 100.0);
+
+    // Single move falls back cleanly to that move's accuracy.
+    const std::array<double, 1> singleAcc{92.5};
+    const std::array<double, 1> singleEval{0.55};
+    CHECK(gameAccuracyWeighted(singleAcc, singleEval) == Catch::Approx(92.5));
+
+    SummaryBuilder builder(chess_review::chess::Color::White, false,
+                           accuracyModelForPipeline(pipelineModelVersion));
+    SummaryMoveFacts m1;
+    m1.positionIndex = 1;
+    m1.mover = chess_review::chess::Color::White;
+    m1.processed = true;
+    m1.loss = 0.01;
+    m1.whiteExpectedBefore = 0.50;
+    m1.whiteExpectedAfter = 0.49;
+    (void)builder.add(m1);
+    m1.positionIndex = 3;
+    m1.loss = 0.03;
+    m1.whiteExpectedBefore = 0.55;
+    m1.whiteExpectedAfter = 0.52;
+    (void)builder.add(m1);
+    const auto built = builder.finish();
+    REQUIRE(built.sides[0].accuracy);
+    CHECK(*built.sides[0].accuracy > *moveAccuracy(0.03, 2));
+    CHECK(*built.sides[0].accuracy < *moveAccuracy(0.01, 2));
 }
