@@ -115,6 +115,14 @@ class ReviewPage final : public QWidget {
     QTableView* comparisonRows_;
     ReviewComparisonModel* comparisonModel_;
     QWidget* explorationBox_;
+    QWidget* linePreview_ = nullptr;
+    QLabel* lineStepLabel_ = nullptr;
+    QLabel* lineMoves_ = nullptr;
+    QPushButton* lineFirst_ = nullptr;
+    QPushButton* linePrevious_ = nullptr;
+    QPushButton* linePlayPause_ = nullptr;
+    QPushButton* lineNext_ = nullptr;
+    QPushButton* lineLast_ = nullptr;
     QLabel* explorationStatus_ = nullptr;
     QPushButton* showLine_;
     QPushButton* tryAgain_;

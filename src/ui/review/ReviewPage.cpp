@@ -489,6 +489,8 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
             &app::ReviewExplorationController::end);
     connect(&controller_.exploration(), &app::ReviewExplorationController::moveFeedback, board_,
             &ChessBoardWidget::flashMove);
+    connect(&controller_.exploration(), &app::ReviewExplorationController::moveAnimated, board_,
+            &ChessBoardWidget::animateMove);
     connect(board_, &ChessBoardWidget::squareSelected, &controller_.exploration(),
             &app::ReviewExplorationController::selectSquare);
     connect(board_, &ChessBoardWidget::selectionCleared, &controller_.exploration(),
@@ -737,6 +739,53 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     setSubtleSurface(*explorationBox_);
     auto* expStatusLayout = new QVBoxLayout(explorationBox_);
     expStatusLayout->setContentsMargins(12, 8, 12, 8);
+    expStatusLayout->setSpacing(6);
+    linePreview_ = new QWidget(explorationBox_);
+    linePreview_->setObjectName(QStringLiteral("reviewLinePreview"));
+    auto* linePreviewLayout = new QVBoxLayout(linePreview_);
+    linePreviewLayout->setContentsMargins(0, 0, 0, 0);
+    linePreviewLayout->setSpacing(4);
+    auto* lineHeader = new QHBoxLayout;
+    lineHeader->setSpacing(4);
+    lineStepLabel_ = new QLabel(linePreview_);
+    lineStepLabel_->setObjectName(QStringLiteral("reviewLineStep"));
+    setTextRole(*lineStepLabel_, "strong");
+    lineHeader->addWidget(lineStepLabel_);
+    lineHeader->addStretch();
+    const auto lineButton = [this, lineHeader](const QString& text, const QString& name,
+                                               const QString& icon, const QString& tip) {
+        auto* control = new QPushButton(text, linePreview_);
+        control->setObjectName(name);
+        setQuietAction(*control);
+        setIconOnly(*control, icon);
+        control->setToolTip(tip);
+        control->setFixedWidth(30);
+        control->installEventFilter(this);
+        lineHeader->addWidget(control);
+        return control;
+    };
+    lineFirst_ = lineButton(tr("Start"), QStringLiteral("reviewLineFirst"),
+                            QStringLiteral("skip-start"), tr("Start of line (Home)"));
+    linePrevious_ = lineButton(tr("Previous"), QStringLiteral("reviewLinePrevious"),
+                               QStringLiteral("chevron-left"), tr("Previous move in line (Left)"));
+    linePlayPause_ = lineButton(tr("Play"), QStringLiteral("reviewLinePlayPause"),
+                                QStringLiteral("play"), tr("Play continuation"));
+    lineNext_ = lineButton(tr("Next"), QStringLiteral("reviewLineNext"),
+                           QStringLiteral("chevron-right"), tr("Next move in line (Right)"));
+    lineLast_ = lineButton(tr("End"), QStringLiteral("reviewLineLast"), QStringLiteral("skip-end"),
+                           tr("End of line (End)"));
+    linePreviewLayout->addLayout(lineHeader);
+    lineMoves_ = new QLabel(linePreview_);
+    lineMoves_->setObjectName(QStringLiteral("reviewLineMoves"));
+    lineMoves_->setTextFormat(Qt::RichText);
+    lineMoves_->setWordWrap(true);
+    lineMoves_->setOpenExternalLinks(false);
+    lineMoves_->setTextInteractionFlags(Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard);
+    lineMoves_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    lineMoves_->installEventFilter(this);
+    linePreviewLayout->addWidget(lineMoves_);
+    linePreview_->hide();
+    expStatusLayout->addWidget(linePreview_);
     explorationStatus_ = new QLabel(explorationBox_);
     explorationStatus_->setObjectName(QStringLiteral("reviewExplorationStatus"));
     explorationStatus_->setTextFormat(Qt::PlainText);
@@ -863,8 +912,35 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     secondaryGroup->addLayout(extraExploreRow);
     rightLayout->addLayout(secondaryGroup);
     auto& exploration = controller_.exploration();
-    connect(showLine_, &QPushButton::clicked, this,
-            [this] { controller_.exploration().showLine(candidates_->currentIndex()); });
+    connect(lineFirst_, &QPushButton::clicked, &exploration,
+            &app::ReviewExplorationController::beginning);
+    connect(linePrevious_, &QPushButton::clicked, &exploration,
+            &app::ReviewExplorationController::previous);
+    connect(linePlayPause_, &QPushButton::clicked, &exploration,
+            &app::ReviewExplorationController::togglePlayback);
+    connect(lineNext_, &QPushButton::clicked, &exploration,
+            &app::ReviewExplorationController::next);
+    connect(lineLast_, &QPushButton::clicked, &exploration, &app::ReviewExplorationController::end);
+    connect(lineMoves_, &QLabel::linkActivated, this, [this](const QString& link) {
+        bool ok = false;
+        const int targetStep = link.toInt(&ok);
+        if (ok && targetStep >= 1 && targetStep <= controller_.exploration().state().length) {
+            controller_.exploration().step(targetStep);
+        }
+    });
+    connect(showLine_, &QPushButton::clicked, this, [this] {
+        const int candidate = std::max(0, candidates_->currentIndex());
+        const auto& exp = controller_.exploration().state();
+        if (exp.mode == app::ExplorationMode::Line && exp.candidate == candidate) {
+            controller_.exploration().togglePlayback();
+        } else {
+            controller_.exploration().showLine(candidate);
+        }
+    });
+    for (auto* control : {showLine_, tryAgain_, returnGame_, analyze_, previousMoment_, nextMoment_,
+                          chessDetailsToggle_}) {
+        control->installEventFilter(this);
+    }
     connect(candidates_, &QComboBox::activated, this, [this](int index) {
         if (controller_.exploration().state().mode == app::ExplorationMode::Line) {
             controller_.exploration().showLine(index);
@@ -1412,17 +1488,19 @@ void ReviewPage::setSplitShare(int share) {
 void ReviewPage::hideEvent(QHideEvent* event) {
     analysisReadingGeneration_.reset();
     controller_.navigation().clearPreview();
+    controller_.exploration().pauseLine();
     if (controller_.exploration().hidesSolution()) {
         controller_.exploration().returnToGame();
     }
     QWidget::hideEvent(event);
 }
 bool ReviewPage::eventFilter(QObject* watched, QEvent* event) {
-    if (watched == explorationStatus_ && event->type() == QEvent::Resize) {
+    if ((watched == explorationStatus_ || watched == lineMoves_) &&
+        event->type() == QEvent::Resize) {
         fitRetryFeedback();
     }
-    if (event->type() == QEvent::KeyPress && watched != side_ && watched != engine_ &&
-        watched != quality_) {
+    if (event->type() == QEvent::KeyPress && !QApplication::activePopupWidget() &&
+        watched != side_ && watched != engine_ && watched != quality_) {
         auto* key = static_cast<QKeyEvent*>(event);
         if (key->modifiers() == Qt::NoModifier) {
             auto& nav = controller_.exploration();
@@ -1452,11 +1530,35 @@ bool ReviewPage::eventFilter(QObject* watched, QEvent* event) {
     return QWidget::eventFilter(watched, event);
 }
 void ReviewPage::keyPressEvent(QKeyEvent* event) {
-    if (event->key() == Qt::Key_Escape && !QApplication::activePopupWidget() &&
-        controller_.exploration().active()) {
-        controller_.exploration().returnToGame();
-        event->accept();
-        return;
+    if (!QApplication::activePopupWidget()) {
+        if (event->key() == Qt::Key_Escape && controller_.exploration().active()) {
+            controller_.exploration().returnToGame();
+            event->accept();
+            return;
+        }
+        if (event->modifiers() == Qt::NoModifier) {
+            auto& nav = controller_.exploration();
+            switch (event->key()) {
+            case Qt::Key_Left:
+                nav.previous();
+                event->accept();
+                return;
+            case Qt::Key_Right:
+                nav.next();
+                event->accept();
+                return;
+            case Qt::Key_Home:
+                nav.beginning();
+                event->accept();
+                return;
+            case Qt::Key_End:
+                nav.end();
+                event->accept();
+                return;
+            default:
+                break;
+            }
+        }
     }
     QWidget::keyPressEvent(event);
 }
@@ -1711,8 +1813,9 @@ void ReviewPage::updateNavigation() {
         moves_->setCurrentIndex({});
         moves_->clearSelection();
     }
-    board_->setState(controller_.exploration().board());
-    const bool black = nav.board().blackAtBottom;
+    const auto& activeBoard = controller_.exploration().board();
+    board_->setState(activeBoard);
+    const bool black = activeBoard.blackAtBottom;
     topSwatch_->setWhite(black);
     bottomSwatch_->setWhite(!black);
     const auto white = nav.whitePlayer().isEmpty() ? tr("White") : nav.whitePlayer();
@@ -1872,6 +1975,7 @@ void ReviewPage::updateExploration() {
             state.pendingBoard ? tr("Loading exploration position…")
             : line             ? tr("Line preview: move %1 of %2").arg(state.step).arg(state.length)
                                : tr("Practice position"));
+        previewLabel_->setVisible(true);
     }
     board_->setToolTip(
         hidden ? tr("Play one legal move to try again.")
@@ -1931,9 +2035,95 @@ void ReviewPage::updateExploration() {
         const QSignalBlocker blocker(candidates_);
         candidates_->setCurrentIndex(state.candidate);
     }
+    const bool lineReady = line && !state.pendingBoard;
     showLine_->setVisible(!hidden);
-    showLine_->setEnabled(!state.loading && !state.candidates.empty());
-    showLine_->setToolTip(tr("Replay the engine’s continuation on the board."));
+    if (line) {
+        const QString showIcon = state.playing ? QStringLiteral("pause") : QStringLiteral("play");
+        if (showLine_->property("themeIcon").toString() != showIcon) {
+            setIcon(*showLine_, showIcon);
+        }
+        showLine_->setText(state.playing                ? tr("Pause Line")
+                           : state.step >= state.length ? tr("Replay Line")
+                                                        : tr("Play Line"));
+        showLine_->setEnabled(!state.loading && !state.candidates.empty() && state.length > 0 &&
+                              (state.playing || lineReady));
+        showLine_->setToolTip(state.playing ? tr("Pause line playback.")
+                              : state.step >= state.length
+                                  ? tr("Replay this continuation from the start.")
+                                  : tr("Play through the continuation moves on the board."));
+    } else {
+        if (showLine_->property("themeIcon").toString() != QStringLiteral("line")) {
+            setIcon(*showLine_, QStringLiteral("line"));
+        }
+        showLine_->setText(tr("Show Line"));
+        showLine_->setEnabled(!state.loading && !state.candidates.empty());
+        showLine_->setToolTip(tr("Replay the engine’s continuation on the board."));
+    }
+    linePreview_->setVisible(line && !hidden);
+    if (!line || hidden) {
+        lineStepLabel_->clear();
+        lineMoves_->clear();
+        lineMoves_->hide();
+    } else {
+        lineStepLabel_->setText(state.pendingBoard
+                                    ? tr("Loading line…")
+                                    : tr("Move %1 of %2").arg(state.step).arg(state.length));
+        if (state.lineMoves.isEmpty()) {
+            lineMoves_->clear();
+            lineMoves_->hide();
+        } else {
+            const auto& pal = palette();
+            const QString highlightBg = pal.color(QPalette::Highlight).name(QColor::HexRgb);
+            const QString highlightFg = pal.color(QPalette::HighlightedText).name(QColor::HexRgb);
+            const QString linkFg = pal.color(QPalette::Link).name(QColor::HexRgb);
+            const QString normalFg = pal.color(QPalette::WindowText).name(QColor::HexRgb);
+            QStringList tokens;
+            tokens.reserve(state.lineMoves.size());
+            for (int i = 0; i < state.lineMoves.size(); ++i) {
+                const int targetStep = i + 1;
+                const QString label = state.lineMoves.at(i).toHtmlEscaped();
+                if (targetStep == state.step) {
+                    tokens << QStringLiteral(
+                                  "<a href=\"%1\" style=\"background-color: %2; color: %3; "
+                                  "font-weight: bold; text-decoration: none;\">&nbsp;%4&nbsp;</a>")
+                                  .arg(targetStep)
+                                  .arg(highlightBg, highlightFg, label);
+                } else if (i == state.step) {
+                    tokens << QStringLiteral("<a href=\"%1\" style=\"color: %2; font-weight: bold; "
+                                             "text-decoration: underline;\">%3</a>")
+                                  .arg(targetStep)
+                                  .arg(linkFg, label);
+                } else {
+                    tokens
+                        << QStringLiteral(
+                               "<a href=\"%1\" style=\"color: %2; text-decoration: none;\">%3</a>")
+                               .arg(targetStep)
+                               .arg(normalFg, label);
+                }
+            }
+            const QString html = tokens.join(QLatin1Char(' '));
+            if (lineMoves_->text() != html) {
+                lineMoves_->setText(html);
+            }
+            lineMoves_->show();
+        }
+        lineFirst_->setEnabled(lineReady && state.step > 0);
+        linePrevious_->setEnabled(lineReady && state.step > 0);
+        linePlayPause_->setEnabled(state.length > 0 && (state.playing || lineReady));
+        lineNext_->setEnabled(lineReady && state.step < state.length);
+        lineLast_->setEnabled(lineReady && state.step < state.length);
+        const QString playIcon = state.playing ? QStringLiteral("pause") : QStringLiteral("play");
+        if (linePlayPause_->property("themeIcon").toString() != playIcon) {
+            setIcon(*linePlayPause_, playIcon);
+        }
+        const QString playLabel = state.playing                ? tr("Pause")
+                                  : state.step >= state.length ? tr("Replay")
+                                                               : tr("Play");
+        linePlayPause_->setAccessibleName(playLabel);
+        linePlayPause_->setToolTip(state.playing                ? tr("Pause continuation")
+                                   : state.step >= state.length ? tr("Replay continuation")
+                                                                : tr("Play continuation"));
+    }
     tryAgain_->setVisible(!hidden);
     tryAgain_->setEnabled(state.canRetry);
     analyze_->setVisible(!hidden);
@@ -1961,13 +2151,14 @@ void ReviewPage::updateExploration() {
     }
     if (explorationStatus_->text() != status) {
         explorationStatus_->setText(status);
-        fitRetryFeedback();
         if (hidden && !status.isEmpty()) {
             QAccessibleAnnouncementEvent announcement(explorationStatus_, status);
             QAccessible::updateAccessibility(&announcement);
         }
     }
-    explorationBox_->setVisible(!status.isEmpty());
+    explorationStatus_->setVisible(!status.isEmpty());
+    explorationBox_->setVisible((line && !hidden) || !status.isEmpty());
+    fitRetryFeedback();
     if (hidden && !retryBoardFocused_ && board_->state().interactive && isVisible()) {
         retryBoardFocused_ = true;
         board_->setFocus(Qt::OtherFocusReason);
@@ -1978,10 +2169,10 @@ void ReviewPage::updateExploration() {
     restoreRetryFocus();
     finishAnalysisReturn();
     if (line) {
-        firstMove_->setEnabled(state.step > 0);
-        previousMove_->setEnabled(state.step > 0);
-        nextMove_->setEnabled(state.step < state.length);
-        lastMove_->setEnabled(state.step < state.length);
+        firstMove_->setEnabled(lineReady && state.step > 0);
+        previousMove_->setEnabled(lineReady && state.step > 0);
+        nextMove_->setEnabled(lineReady && state.step < state.length);
+        lastMove_->setEnabled(lineReady && state.step < state.length);
     } else if (hidden) {
         firstMove_->setEnabled(false);
         previousMove_->setEnabled(false);
@@ -1992,9 +2183,18 @@ void ReviewPage::updateExploration() {
 void ReviewPage::fitRetryFeedback() {
     // QLabel's one-line minimum can otherwise clip cumulative wrapped hints.
     // Let Qt measure the text at the pane's actual width; the pane owns overflow.
-    const int height = std::max(0, explorationStatus_->heightForWidth(explorationStatus_->width()));
-    if (explorationStatus_->minimumHeight() != height) {
-        explorationStatus_->setMinimumHeight(height);
+    const int statusHeight =
+        !explorationStatus_->text().isEmpty() && explorationStatus_->width() > 0
+            ? std::max(0, explorationStatus_->heightForWidth(explorationStatus_->width()))
+            : 0;
+    if (explorationStatus_->minimumHeight() != statusHeight) {
+        explorationStatus_->setMinimumHeight(statusHeight);
+    }
+    const int movesHeight = !lineMoves_->text().isEmpty() && lineMoves_->width() > 0
+                                ? std::max(0, lineMoves_->heightForWidth(lineMoves_->width()))
+                                : 0;
+    if (lineMoves_->minimumHeight() != movesHeight) {
+        lineMoves_->setMinimumHeight(movesHeight);
     }
 }
 QString ReviewPage::analysisDescription() const {

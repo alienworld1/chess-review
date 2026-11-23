@@ -74,8 +74,11 @@ stronger alternative when available.
   restores your expanded details, reading position, and keyboard focus.
   **Escape** dismisses an active chooser, gesture, selection, or keyboard entry mode
   first. Press it again to cancel practice or return from a line preview.
-- **Show Line** replays an analyzed continuation. Use the board navigation
-  controls to step through it, then **Return to Game**.
+- **Show Line** opens an analyzed continuation in the coach panel with a next-move
+  board arrow, clickable move list, and inline playback controls (**Play Line** /
+  **Pause Line** / **Replay Line**). Use the inline buttons, clickable moves,
+  board navigation controls, or Left/Right/Home/End keys to step through it, then
+  **Return to Game**.
 - **Analyze Position** opens the selected position or continuation step with its
   move history and any matching saved evaluation. Review can keep refining the
   game while you explore. Use **Back to Review** or **Alt+Left** to restore the

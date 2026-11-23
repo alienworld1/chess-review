@@ -2263,6 +2263,102 @@ class QuickReviewTest final : public QObject {
         QCOMPARE(reads.count(), 0);
         QCOMPARE(searches.count(), 0);
     }
+    void showLineDisplaysPreviewControlsArrowPlaybackAndKeyboardStepping() {
+        Fixture f;
+        QVERIFY(f.seed(R"([White "Alice"][Black "Bob"] 1. e4 e5 *)", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true, {}, 0, 0, false, RetryScript::None, {}, {}, {}, -1, {}, {}, true);
+        f.run();
+        QVERIFY(f.done());
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        f.window.resize(1100, 720);
+        f.window.show();
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(2);
+        QTRY_VERIFY(!exploration.state().loading && exploration.state().canRetry);
+        auto* showLine = f.window.findChild<QPushButton*>(QStringLiteral("reviewShowLine"));
+        auto* preview = f.window.findChild<QLabel*>(QStringLiteral("reviewPreview"));
+        auto* linePreview = f.window.findChild<QWidget*>(QStringLiteral("reviewLinePreview"));
+        auto* lineStep = f.window.findChild<QLabel*>(QStringLiteral("reviewLineStep"));
+        auto* lineMoves = f.window.findChild<QLabel*>(QStringLiteral("reviewLineMoves"));
+        auto* linePlayPause =
+            f.window.findChild<QPushButton*>(QStringLiteral("reviewLinePlayPause"));
+        auto* topPlayer = f.window.findChild<QLabel*>(QStringLiteral("reviewTopPlayer"));
+        auto* bottomPlayer = f.window.findChild<QLabel*>(QStringLiteral("reviewBottomPlayer"));
+        QVERIFY(showLine && preview && linePreview && lineStep && lineMoves && linePlayPause &&
+                topPlayer && bottomPlayer);
+        QVERIFY(linePreview->isHidden());
+
+        showLine->click();
+        QTRY_VERIFY(exploration.state().canAnalyze);
+        QCOMPARE(exploration.state().mode, app::ExplorationMode::Line);
+        QCOMPARE(exploration.state().step, 0);
+        QCOMPARE(exploration.state().length, 3);
+        QVERIFY(!exploration.state().playing);
+        QVERIFY(preview->isVisible());
+        QCOMPARE(preview->text(), QStringLiteral("Line preview: move 0 of 3"));
+        QVERIFY(linePreview->isVisible());
+        QCOMPARE(lineStep->text(), QStringLiteral("Move 0 of 3"));
+        QVERIFY(lineMoves->isVisible());
+        QCOMPARE(exploration.state().lineMoves.size(), 3);
+        QCOMPARE(exploration.board().annotations.size(), std::size_t{1});
+        QCOMPARE(exploration.board().annotations.front().color, 0);
+        const auto firstArrow = exploration.board().annotations.front();
+        QCOMPARE(showLine->text(), QStringLiteral("Play Line"));
+
+        showLine->setFocus();
+        // Separate events avoid a clang analyzer false positive in Qt's keyClick guard.
+        QTest::keyPress(showLine, Qt::Key_Right);
+        QTest::keyRelease(showLine, Qt::Key_Right);
+        QTRY_VERIFY(exploration.state().step == 1 && exploration.state().canAnalyze);
+        QCOMPARE(preview->text(), QStringLiteral("Line preview: move 1 of 3"));
+        QCOMPARE(lineStep->text(), QStringLiteral("Move 1 of 3"));
+        QCOMPARE(exploration.board().annotations.size(), std::size_t{1});
+        QVERIFY(exploration.board().annotations.front() != firstArrow);
+
+        QTest::keyPress(showLine, Qt::Key_Left);
+        QTest::keyRelease(showLine, Qt::Key_Left);
+        QTRY_VERIFY(exploration.state().step == 0 && exploration.state().canAnalyze);
+        QCOMPARE(exploration.board().annotations.front(), firstArrow);
+
+        emit lineMoves->linkActivated(QStringLiteral("2"));
+        QTRY_VERIFY(exploration.state().step == 2 && exploration.state().canAnalyze);
+        QCOMPARE(lineStep->text(), QStringLiteral("Move 2 of 3"));
+        QCOMPARE(exploration.board().annotations.size(), std::size_t{1});
+
+        exploration.beginning();
+        QTRY_VERIFY(exploration.state().step == 0 && exploration.state().canAnalyze);
+        showLine->click();
+        QVERIFY(exploration.state().playing);
+        QCOMPARE(showLine->text(), QStringLiteral("Pause Line"));
+        QTRY_VERIFY_WITH_TIMEOUT(!exploration.state().playing && exploration.state().step == 3 &&
+                                     exploration.state().canAnalyze,
+                                 6000);
+        QVERIFY(exploration.board().annotations.empty());
+        QCOMPARE(showLine->text(), QStringLiteral("Replay Line"));
+
+        showLine->click();
+        QVERIFY(exploration.state().playing);
+        QTRY_VERIFY_WITH_TIMEOUT(exploration.state().playing && exploration.state().step >= 1 &&
+                                     exploration.state().canAnalyze,
+                                 3000);
+        linePlayPause->click();
+        QVERIFY(!exploration.state().playing);
+        QCOMPARE(showLine->text(), QStringLiteral("Play Line"));
+
+        const auto topBefore = topPlayer->text();
+        const auto bottomBefore = bottomPlayer->text();
+        QVERIFY(topBefore != bottomBefore);
+        exploration.flip();
+        QCOMPARE(topPlayer->text(), bottomBefore);
+        QCOMPARE(bottomPlayer->text(), topBefore);
+
+        exploration.tryAgain();
+        QTRY_VERIFY(exploration.hidesSolution());
+        QVERIFY(linePreview->isHidden());
+        QVERIFY(lineMoves->text().isEmpty());
+    }
     void completedRefinementRefreshesUnpinnedCandidates() {
         Fixture f;
         QVERIFY(f.seed("1. e4 e5 *", true));

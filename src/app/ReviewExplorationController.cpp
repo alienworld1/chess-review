@@ -9,6 +9,9 @@
 #include <utility>
 
 namespace chess_review::app {
+namespace {
+constexpr int playbackIntervalMs = 850;
+} // namespace
 ReviewExplorationController::ReviewExplorationController(persistence::Database& database,
                                                          ReviewNavigationController& navigation,
                                                          EngineSettingsController& settings,
@@ -18,18 +21,76 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
     worker_.setMaxThreadCount(1);
     success_.setSingleShot(true);
     retryRead_.setSingleShot(true);
+    playbackTimer_.setSingleShot(true);
     connect(&success_, &QTimer::timeout, this, &ReviewExplorationController::returnToGame);
     connect(&retryRead_, &QTimer::timeout, this, &ReviewExplorationController::request);
+    connect(&playbackTimer_, &QTimer::timeout, this, [this] {
+        if (closing_ || !state_.playing || state_.mode != ExplorationMode::Line || !evidence_) {
+            stopPlayback();
+            return;
+        }
+        if (state_.step >= state_.length) {
+            stopPlayback();
+            publish();
+            return;
+        }
+        if (!sandbox_.busy() && sandbox_.canNavigate()) {
+            navigateStep(state_.step + 1);
+        }
+    });
     connect(&navigation_, &ReviewNavigationController::changed, this,
             &ReviewExplorationController::synchronize);
+    connect(&sandbox_, &AnalysisController::navigationAnimationRequested, this,
+            [this](chess::Move move) {
+                if (!closing_ && state_.mode == ExplorationMode::Line) {
+                    emit moveAnimated(move);
+                }
+            });
     connect(&sandbox_, &AnalysisController::changed, this, [this] {
         if (!closing_) {
             displayedBoard_ = sandbox_.board();
             state_.pendingBoard = sandbox_.busy();
             displayedBoard_.interactive = sandbox_.board().interactive &&
                                           state_.mode == ExplorationMode::Retry && !workerBusy_;
-            if (state_.mode == ExplorationMode::Line && evidence_ && !sandbox_.busy()) {
-                state_.step = static_cast<int>(sandbox_.currentNode().value) - evidence_->rootPly;
+            if (state_.mode == ExplorationMode::Line && evidence_) {
+                if (sandbox_.busy()) {
+                    displayedBoard_.annotations.clear();
+                } else {
+                    state_.step = std::clamp(static_cast<int>(sandbox_.currentNode().value) -
+                                                 evidence_->rootPly,
+                                             0, state_.length);
+                    if (state_.lineMoves.isEmpty() && sandbox_.navigationTree()) {
+                        const auto& nodes = sandbox_.navigationTree()->nodes;
+                        for (int i = 1; i <= state_.length; ++i) {
+                            const chess::NodeId nodeId{
+                                static_cast<std::uint64_t>(evidence_->rootPly + i)};
+                            const auto found = nodes.find(nodeId);
+                            if (found == nodes.end()) {
+                                break;
+                            }
+                            const auto& entry = found->second;
+                            state_.lineMoves
+                                << (i == 1 || entry.side == chess::Color::White ? entry.label
+                                                                                : entry.san);
+                        }
+                    }
+                    if (const auto* moves = evidence_->continuation(state_.candidate);
+                        moves && state_.step >= 0 &&
+                        static_cast<std::size_t>(state_.step) < moves->size()) {
+                        const auto nextMove = (*moves)[static_cast<std::size_t>(state_.step)];
+                        displayedBoard_.annotations = {
+                            BoardAnnotation{nextMove.from, nextMove.to, 0}};
+                    } else {
+                        displayedBoard_.annotations.clear();
+                    }
+                    if (state_.playing) {
+                        if (state_.step >= state_.length) {
+                            stopPlayback();
+                        } else if (!playbackTimer_.isActive()) {
+                            playbackTimer_.start(playbackIntervalMs);
+                        }
+                    }
+                }
             }
             publish();
         }
@@ -359,6 +420,7 @@ void ReviewExplorationController::showLine(int candidate) {
 void ReviewExplorationController::openLine(int candidate) {
     const auto generation = ++generation_;
     const auto evidence = evidence_;
+    stopPlayback();
     navigation_.clearPreview();
     if (closing_ || generation != generation_) {
         return;
@@ -370,10 +432,12 @@ void ReviewExplorationController::openLine(int candidate) {
     state_.mode = ExplorationMode::Line;
     state_.pendingBoard = true;
     displayedBoard_.interactive = false;
+    displayedBoard_.annotations.clear();
     state_.candidate = candidate;
     state_.step = 0;
     const auto& moves = *evidence->continuation(candidate);
     state_.length = static_cast<int>(moves.size());
+    state_.lineMoves.clear();
     sandbox_.openLine(evidence->before, moves, 0);
     if (closing_ || generation != generation_) {
         return;
@@ -385,12 +449,58 @@ void ReviewExplorationController::openLine(int candidate) {
                  "the played move, not each replayed position.");
     publish();
 }
-void ReviewExplorationController::step(int position) {
+void ReviewExplorationController::navigateStep(int position) {
     if (state_.mode != ExplorationMode::Line || !evidence_ || !sandbox_.canNavigate()) {
         return;
     }
     state_.step = std::clamp(position, 0, state_.length);
     sandbox_.navigate(chess::NodeId{static_cast<std::uint64_t>(evidence_->rootPly + state_.step)});
+}
+void ReviewExplorationController::stopPlayback() {
+    playbackTimer_.stop();
+    state_.playing = false;
+}
+void ReviewExplorationController::step(int position) {
+    if (state_.mode != ExplorationMode::Line || !evidence_ || !sandbox_.canNavigate()) {
+        return;
+    }
+    const bool wasPlaying = state_.playing;
+    stopPlayback();
+    const int targetStep = std::clamp(position, 0, state_.length);
+    const bool atTarget =
+        !sandbox_.busy() &&
+        static_cast<int>(sandbox_.currentNode().value) - evidence_->rootPly == targetStep &&
+        static_cast<int>(sandbox_.requestedNode().value) - evidence_->rootPly == targetStep;
+    navigateStep(targetStep);
+    if (wasPlaying && atTarget) {
+        publish();
+    }
+}
+void ReviewExplorationController::playLine() {
+    if (closing_ || state_.mode != ExplorationMode::Line || !evidence_ || state_.length <= 0 ||
+        state_.playing) {
+        return;
+    }
+    state_.playing = true;
+    if (state_.pendingBoard || !sandbox_.canNavigate()) {
+        publish();
+        return;
+    }
+    navigateStep(state_.step >= state_.length ? 0 : state_.step + 1);
+    publish();
+}
+void ReviewExplorationController::pauseLine() {
+    if (state_.playing || playbackTimer_.isActive()) {
+        stopPlayback();
+        publish();
+    }
+}
+void ReviewExplorationController::togglePlayback() {
+    if (state_.playing) {
+        pauseLine();
+    } else {
+        playLine();
+    }
 }
 void ReviewExplorationController::previous() {
     if (active()) {
@@ -425,15 +535,18 @@ void ReviewExplorationController::returnToGame() {
     ++generation_;
     success_.stop();
     retryRead_.stop();
+    stopPlayback();
     if (!search_.isNull()) {
         supervisor_.cancelScheduledAnalysis(session_, search_);
     }
     state_.mode = ExplorationMode::Game;
     state_.message.clear();
+    state_.lineMoves.clear();
     state_.hints.clear();
     state_.hintLevel = review::RetryHintLevel::None;
     state_.pendingBoard = false;
     displayedBoard_.interactive = false;
+    displayedBoard_.annotations.clear();
     if (evidence_ && run_ && evidence_->run.summary.revision != run_->revision) {
         evidence_.reset();
         state_.candidates.clear();
@@ -454,6 +567,7 @@ void ReviewExplorationController::tryAgain() {
     }
     const auto generation = ++generation_;
     const auto evidence = evidence_;
+    stopPlayback();
     navigation_.clearPreview();
     if (closing_ || generation != generation_) {
         return;
@@ -464,9 +578,11 @@ void ReviewExplorationController::tryAgain() {
     }
     state_.hintLevel = review::RetryHintLevel::None;
     state_.hints.clear();
+    state_.lineMoves.clear();
     state_.mode = ExplorationMode::Retry;
     state_.pendingBoard = true;
     displayedBoard_.interactive = false;
+    displayedBoard_.annotations.clear();
     state_.message = tr("Find a stronger move. You can request a hint or show the solution.");
     sandbox_.openPosition(evidence->before);
     if (closing_ || generation != generation_) {
@@ -779,6 +895,7 @@ bool ReviewExplorationController::openAnalysis() {
     if (!origin || closing_) {
         return false;
     }
+    stopPlayback();
     if (sameAnalysisOrigin()) {
         return true;
     }
@@ -861,8 +978,11 @@ bool ReviewExplorationController::restoreReviewOrigin() {
         }
         evidence_ = evidence;
         state_ = linkedState;
+        stopPlayback();
+        state_.lineMoves.clear();
         state_.pendingBoard = true;
         displayedBoard_.interactive = false;
+        displayedBoard_.annotations.clear();
         sandbox_.openLine(evidence_->before, origin.continuation, origin.step);
     }
     publish();

@@ -26,12 +26,14 @@ struct ExplorationState {
     ExplorationMode mode = ExplorationMode::Game;
     bool loading = false;
     bool pendingBoard = false;
+    bool playing = false;
     bool canRetry = false;
     bool canAnalyze = false;
     int candidate = 0;
     int step = 0;
     int length = 0;
     QString message;
+    QStringList lineMoves;
     review::RetryHintLevel hintLevel = review::RetryHintLevel::None;
     QStringList hints;
     QString notice;
@@ -59,6 +61,9 @@ class ReviewExplorationController final : public QObject {
     void reload();
     void showLine(int candidate = 0);
     void step(int position);
+    void playLine();
+    void pauseLine();
+    void togglePlayback();
     void previous();
     void next();
     void beginning();
@@ -83,12 +88,15 @@ class ReviewExplorationController final : public QObject {
     void changed();
     void closed();
     void moveFeedback(chess_review::chess::Move move, bool success);
+    void moveAnimated(chess_review::chess::Move move);
 
   private:
     void publish();
     void synchronize();
     void request();
     void openLine(int candidate);
+    void navigateStep(int position);
+    void stopPlayback();
     void grade(chess::Move move);
     void scheduleChild();
     void evaluateChild(engine::AnalysisResult result, bool cached = false);
@@ -125,6 +133,7 @@ class ReviewExplorationController final : public QObject {
     QThreadPool worker_;
     QTimer success_;
     QTimer retryRead_;
+    QTimer playbackTimer_;
     QUuid cacheRead_;
     std::uint64_t cacheGeneration_ = 0;
     QUuid pending_;
