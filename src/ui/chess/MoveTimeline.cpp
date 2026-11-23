@@ -1,15 +1,19 @@
 #include "ui/chess/MoveTimeline.h"
+#include "review/Classification.h"
+#include "ui/Theme.h"
 #include <QAbstractTableModel>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPolygonF>
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QStyle>
 #include <QStyleOptionViewItem>
 #include <QStyledItemDelegate>
+#include <algorithm>
 #include <map>
 namespace chess_review::ui {
 namespace {
@@ -17,6 +21,8 @@ constexpr int currentPositionRole = Qt::UserRole;
 constexpr int pendingPositionRole = Qt::UserRole + 1;
 constexpr int accentRole = Qt::UserRole + 2;
 constexpr int markerRole = Qt::UserRole + 3;
+constexpr int classificationRole = Qt::UserRole + 4;
+constexpr int keyMomentRole = Qt::UserRole + 5;
 } // namespace
 class TimelineModel final : public QAbstractTableModel {
   public:
@@ -59,6 +65,16 @@ class TimelineModel final : public QAbstractTableModel {
         }
         if (role == markerRole) {
             return marker_ ? marker_(*id) : QString{};
+        }
+        if (role == classificationRole) {
+            if (!classification_) {
+                return {};
+            }
+            const auto value = classification_(*id);
+            return value ? QVariant::fromValue(static_cast<int>(*value)) : QVariant{};
+        }
+        if (role == keyMomentRole) {
+            return keyMoment_ ? keyMoment_(*id) : false;
         }
         if (role == Qt::ToolTipRole || role == Qt::AccessibleTextRole) {
             const QString extra = description_ ? description_(*id) : QString{};
@@ -134,6 +150,8 @@ class TimelineModel final : public QAbstractTableModel {
     std::function<QString(chess::NodeId)> description_;
     std::function<QString(chess::NodeId)> marker_;
     std::function<QColor(chess::NodeId)> accent_;
+    std::function<std::optional<review::Classification>(chess::NodeId)> classification_;
+    std::function<bool(chess::NodeId)> keyMoment_;
 
   private:
     std::shared_ptr<const app::NavigationTree> tree_;
@@ -149,38 +167,86 @@ class TimelineDelegate final : public QStyledItemDelegate {
     explicit TimelineDelegate(QObject* parent) : QStyledItemDelegate(parent) {}
     void paint(QPainter* painter, const QStyleOptionViewItem& option,
                const QModelIndex& index) const override {
+        const bool current = index.data(currentPositionRole).toBool();
+        const bool hovered = option.state.testFlag(QStyle::State_MouseOver) &&
+                             index.flags().testFlag(Qt::ItemIsEnabled);
+        if (current || hovered) {
+            painter->save();
+            painter->setRenderHint(QPainter::Antialiasing);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(current ? option.palette.highlight()
+                                      : option.palette.alternateBase());
+            painter->drawRoundedRect(option.rect.adjusted(2, 2, -2, -2), 5.0, 5.0);
+            painter->restore();
+        }
+        const auto cls = index.data(classificationRole);
+        const bool keyMoment = index.data(keyMomentRole).toBool();
         const auto marker = index.data(markerRole).toString();
+        const int badgeSide = std::min(17, std::max(13, option.rect.height() - 11));
+        int rightInset = 0;
+        if (cls.isValid()) {
+            rightInset = badgeSide + (keyMoment ? 18 : 8);
+        } else if (keyMoment) {
+            rightInset = 14;
+        } else if (!marker.isEmpty()) {
+            rightInset = option.fontMetrics.horizontalAdvance(marker) + 16;
+        }
         auto content = option;
-        const int markerWidth =
-            marker.isEmpty() ? 0 : option.fontMetrics.horizontalAdvance(marker) + 20;
-        content.rect.adjust(0, 0, -markerWidth, 0);
+        content.backgroundBrush = Qt::NoBrush;
+        content.state &=
+            ~(QStyle::State_Selected | QStyle::State_MouseOver | QStyle::State_HasFocus);
+        content.rect.adjust(0, 0, -rightInset, 0);
         QStyledItemDelegate::paint(painter, content, index);
         const auto color = index.data(accentRole).value<QColor>();
         painter->save();
-        painter->setFont(option.font);
-        if (!marker.isEmpty()) {
-            const QRect badge(option.rect.right() - markerWidth, option.rect.top(), markerWidth,
+        painter->setRenderHint(QPainter::Antialiasing);
+        if (cls.isValid()) {
+            const qreal x = option.rect.right() - badgeSide - 6;
+            const qreal y = option.rect.center().y() - badgeSide / 2.0;
+            paintClassificationBadge(*painter, QRectF(x, y, badgeSide, badgeSide),
+                                     static_cast<review::Classification>(cls.toInt()));
+            if (keyMoment) {
+                const QPointF c(x - 6.0, option.rect.center().y());
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(color.isValid() ? color : option.palette.text().color());
+                painter->drawPolygon(QPolygonF{{c.x(), c.y() - 3.2},
+                                               {c.x() + 3.2, c.y()},
+                                               {c.x(), c.y() + 3.2},
+                                               {c.x() - 3.2, c.y()}});
+            }
+        } else if (keyMoment) {
+            const QPointF c(option.rect.right() - 8.0, option.rect.center().y());
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(color.isValid() ? color : option.palette.text().color());
+            painter->drawPolygon(QPolygonF{{c.x(), c.y() - 3.2},
+                                           {c.x() + 3.2, c.y()},
+                                           {c.x(), c.y() + 3.2},
+                                           {c.x() - 3.2, c.y()}});
+        } else if (!marker.isEmpty()) {
+            const QRect badge(option.rect.right() - rightInset, option.rect.top(), rightInset,
                               option.rect.height());
-            painter->fillRect(badge, index.data(currentPositionRole).toBool()
-                                         ? option.palette.highlight()
-                                         : option.palette.base());
+            painter->setFont(option.font);
             painter->setPen(color.isValid() ? color : option.palette.text().color());
-            painter->drawText(badge.adjusted(2, 0, -8, 0), Qt::AlignRight | Qt::AlignVCenter,
+            painter->drawText(badge.adjusted(2, 0, -6, 0), Qt::AlignRight | Qt::AlignVCenter,
                               marker);
         }
-        if (color.isValid()) {
-            painter->fillRect(QRect(option.rect.right() - 3, option.rect.top() + 3, 3,
-                                    std::max(1, option.rect.height() - 6)),
-                              color);
+        if (option.state.testFlag(QStyle::State_HasFocus)) {
+            painter->setBrush(Qt::NoBrush);
+            painter->setPen(QPen(option.palette.color(QPalette::Link), 1.5));
+            painter->drawRoundedRect(QRectF(option.rect).adjusted(2.5, 2.5, -2.5, -2.5), 5.0, 5.0);
         }
         painter->restore();
     }
     void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
         QStyledItemDelegate::initStyleOption(option, index);
         option->state &= ~QStyle::State_Selected;
-        if (index.data(currentPositionRole).toBool()) {
-            option->backgroundBrush = option->palette.highlight();
+        option->backgroundBrush = Qt::NoBrush;
+        if (index.column() == 0) {
+            option->displayAlignment = Qt::AlignRight | Qt::AlignVCenter;
+            option->palette.setBrush(QPalette::Text, option->palette.placeholderText());
+        } else if (index.data(currentPositionRole).toBool()) {
             option->palette.setBrush(QPalette::Text, option->palette.highlightedText());
+            option->font.setWeight(QFont::DemiBold);
         }
         if (index.data(pendingPositionRole).toBool()) {
             option->font.setUnderline(true);
@@ -197,13 +263,14 @@ MoveTimeline::MoveTimeline(QWidget* parent) : QTableView(parent), moves_(new Tim
     setItemDelegate(new TimelineDelegate(this));
     setSelectionBehavior(SelectItems);
     verticalHeader()->hide();
-    verticalHeader()->setDefaultSectionSize(34);
+    verticalHeader()->setDefaultSectionSize(30);
     setShowGrid(false);
+    horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
-    setMinimumHeight(84);
-    setMaximumHeight(110);
+    setMinimumHeight(82);
+    setMaximumHeight(114);
     connect(selectionModel(), &QItemSelectionModel::selectionChanged, this,
             [this](const QItemSelection& selected) {
                 if (refreshing_) {
@@ -267,6 +334,13 @@ void MoveTimeline::setMoveMarker(std::function<QString(chess::NodeId)> marker) {
 }
 void MoveTimeline::setMoveAccent(std::function<QColor(chess::NodeId)> accent) {
     moves_->accent_ = std::move(accent);
+}
+void MoveTimeline::setMoveClassification(
+    std::function<std::optional<review::Classification>(chess::NodeId)> classification) {
+    moves_->classification_ = std::move(classification);
+}
+void MoveTimeline::setMoveKeyMoment(std::function<bool(chess::NodeId)> keyMoment) {
+    moves_->keyMoment_ = std::move(keyMoment);
 }
 void MoveTimeline::setHoverPreview(bool enabled) {
     hoverPreview_ = enabled;

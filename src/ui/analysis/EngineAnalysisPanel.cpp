@@ -10,6 +10,7 @@
 #include <QListWidget>
 #include <QLocale>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -18,6 +19,21 @@
 #include <algorithm>
 
 namespace chess_review::ui {
+namespace {
+class CandidateLineList final : public QListWidget {
+  public:
+    explicit CandidateLineList(QWidget* parent) : QListWidget(parent) {}
+
+    QSize sizeHint() const override {
+        const int rows = std::clamp(count(), 1, 3);
+        const int rowHeight =
+            count() > 0 && sizeHintForRow(0) > 0 ? sizeHintForRow(0) : fontMetrics().height() + 8;
+        return {QListWidget::sizeHint().width(), std::clamp(rows * rowHeight + 2 * frameWidth() + 4,
+                                                            minimumHeight(), maximumHeight())};
+    }
+};
+} // namespace
+
 EvaluationBarWidget::EvaluationBarWidget(ChessBoardWidget& board, QWidget* parent)
     : QWidget(parent), board_(board) {
     setObjectName(QStringLiteral("evaluationBar"));
@@ -64,113 +80,169 @@ void EvaluationBarWidget::setExpectedScore(std::optional<double> whiteShare,
 }
 void EvaluationBarWidget::paintEvent(QPaintEvent*) {
     QPainter painter(this);
-    const QRectF bar = QRectF(rect()).adjusted(0, 0, -1, -1);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QRectF bar = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    QPainterPath clip;
+    clip.addRoundedRect(bar, 3.0, 3.0);
+    painter.save();
+    painter.setClipPath(clip);
     if (!whiteShare_) {
-        painter.fillRect(bar, QBrush(palette().color(QPalette::Mid), Qt::Dense4Pattern));
+        painter.fillRect(bar, palette().color(QPalette::AlternateBase));
+        painter.setPen(QPen(palette().color(QPalette::Mid), 1.5));
+        painter.drawLine(QPointF(bar.left() + 5, bar.center().y()),
+                         QPointF(bar.right() - 5, bar.center().y()));
     } else {
-        const QColor light(QStringLiteral("#e6e9e7"));
-        const QColor dark(QStringLiteral("#27312e"));
+        const QColor light(QStringLiteral("#e8ece9"));
+        const QColor dark(QStringLiteral("#2a3430"));
         const bool flipped = board_.state().blackAtBottom;
         painter.fillRect(bar, flipped ? dark : light);
         const double upperShare = flipped ? *whiteShare_ : 1.0 - *whiteShare_;
         painter.fillRect(QRectF(bar.left(), bar.top(), bar.width(), bar.height() * upperShare),
                          flipped ? light : dark);
+        painter.setPen(QPen(QColor(128, 140, 134, 90), 1.0));
+        painter.drawLine(QPointF(bar.left(), bar.center().y()),
+                         QPointF(bar.right(), bar.center().y()));
     }
+    painter.restore();
     painter.setPen(palette().color(QPalette::Mid));
-    painter.drawRect(bar);
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRoundedRect(bar, 3.0, 3.0);
 }
 
 EngineAnalysisPanel::EngineAnalysisPanel(app::EngineAnalysisController& controller, QWidget* parent)
     : QWidget(parent), controller_(controller) {
     setObjectName(QStringLiteral("engineAnalysisPanel"));
     setAccessibleName(tr("Live engine analysis"));
+    setPanelSurface(*this);
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(0, 0, 0, 0);
-    const auto label = [this, layout](const QString& name) {
+    layout->setContentsMargins(10, 6, 10, 6);
+    layout->setSpacing(4);
+    const auto makeLabel = [this](const QString& name) {
         auto* result = new QLabel(this);
         result->setObjectName(name);
         result->setTextFormat(Qt::PlainText);
         result->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
         result->setWordWrap(true);
         result->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-        layout->addWidget(result);
         return result;
     };
-    engine_ = label(QStringLiteral("analysisEngineName"));
+    engine_ = makeLabel(QStringLiteral("analysisEngineName"));
     setTextRole(*engine_, "heading");
     engine_->setWordWrap(false);
-    status_ = label(QStringLiteral("engineAnalysisStatus"));
-    auto* commands = new QGridLayout;
-    const auto button = [this](const QString& text, const char* name) {
+    status_ = makeLabel(QStringLiteral("engineAnalysisStatus"));
+    setTextRole(*status_, "caption");
+    const auto button = [this](const QString& text, const char* name,
+                               const QString& iconName = {}) {
         auto* result = new QPushButton(text, this);
         result->setObjectName(QString::fromLatin1(name));
+        setCompactAction(*result);
+        if (!iconName.isEmpty()) {
+            result->setProperty("keepIconSize", true);
+            result->setIconSize(QSize(14, 14));
+            setIcon(*result, iconName);
+        }
         return result;
     };
-    start_ = button(tr("Start"), "startEngineAnalysis");
-    start_->setToolTip(tr("Follow the current board with continuous analysis."));
-    pause_ = button(tr("Pause"), "pauseEngineAnalysis");
-    pause_->setToolTip(tr("Pause engine work until you choose Resume."));
-    stop_ = button(tr("Stop"), "stopEngineAnalysis");
-    deepen_ = button(tr("Deepen"), "deepenEngineAnalysis");
-    deepen_->setToolTip(tr("Run a depth-limited search on the current position."));
-    auto* manage = button(tr("Engines…"), "manageAnalysisEngines");
-    setPrimaryAction(*start_);
-    commands->addWidget(start_, 0, 0);
-    commands->addWidget(pause_, 0, 1);
-    commands->addWidget(stop_, 0, 2);
-    commands->addWidget(deepen_, 0, 3);
-    commands->addWidget(manage, 1, 0, 1, 2);
+    auto* header = new QHBoxLayout;
+    header->setSpacing(6);
+    auto* headerText = new QVBoxLayout;
+    headerText->setSpacing(1);
+    headerText->addWidget(engine_);
+    headerText->addWidget(status_);
+    header->addLayout(headerText, 1);
     auto* widthLabel = new QLabel(tr("&Lines"), this);
+    setTextRole(*widthLabel, "caption");
     width_ = new QSpinBox(this);
     width_->setObjectName(QStringLiteral("analysisMultiPv"));
     width_->setKeyboardTracking(false);
     widthLabel->setBuddy(width_);
-    commands->addWidget(widthLabel, 1, 2, Qt::AlignRight);
-    commands->addWidget(width_, 1, 3);
+    header->addWidget(widthLabel);
+    header->addWidget(width_);
+    auto* manage = button(tr("Engines…"), "manageAnalysisEngines", QStringLiteral("engine"));
+    setQuietAction(*manage);
+    header->addWidget(manage);
+    layout->addLayout(header);
+
+    auto* commands = new QHBoxLayout;
+    commands->setSpacing(4);
+    start_ = button(tr("Start"), "startEngineAnalysis", QStringLiteral("play"));
+    start_->setToolTip(tr("Follow the current board with continuous analysis."));
+    pause_ = button(tr("Pause"), "pauseEngineAnalysis", QStringLiteral("pause"));
+    pause_->setToolTip(tr("Pause engine work until you choose Resume."));
+    stop_ = button(tr("Stop"), "stopEngineAnalysis", QStringLiteral("stop"));
+    deepen_ = button(tr("Deepen"), "deepenEngineAnalysis", QStringLiteral("deepen"));
+    deepen_->setToolTip(tr("Run a depth-limited search on the current position."));
+    setPrimaryAction(*start_);
+    commands->addWidget(start_);
+    commands->addWidget(pause_);
+    commands->addWidget(stop_);
+    commands->addWidget(deepen_);
+    commands->addStretch();
     layout->addLayout(commands);
-    evaluation_ = label(QStringLiteral("engineEvaluation"));
+
+    evaluation_ = makeLabel(QStringLiteral("engineEvaluation"));
     evaluation_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    evaluation_->setAlignment(Qt::AlignCenter);
+    evaluation_->setMinimumWidth(64);
+    evaluation_->setContentsMargins(6, 3, 6, 3);
+    setSubtleSurface(*evaluation_);
+    setTextRole(*evaluation_, "strong");
     evaluation_->setAccessibleName(tr("Evaluation from White's perspective"));
-    layout->removeWidget(evaluation_);
-    depth_ = label(QStringLiteral("engineDepth"));
-    setTextRole(*depth_, "secondary");
-    auto* details = button(tr("Engine details"), "engineMetricsToggle");
-    details->setCheckable(true);
-    layout->addWidget(details, 0, Qt::AlignLeft);
-    depth_->hide();
-    connect(details, &QPushButton::toggled, depth_, &QWidget::setVisible);
-    pv_ = new QListWidget(this);
+    pv_ = new CandidateLineList(this);
     pv_->setObjectName(QStringLiteral("enginePv"));
     pv_->setAccessibleName(tr("Engine candidate lines"));
     pv_->setAccessibleDescription(tr("Select a line to preview it on the board."));
-    pv_->setMinimumHeight(70);
+    pv_->setMinimumHeight(38);
     pv_->setMaximumHeight(112);
     pv_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     pv_->setTextElideMode(Qt::ElideRight);
     pv_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    pv_->setFrameShape(QFrame::NoFrame);
+    pv_->setAlternatingRowColors(true);
+    setFlatSurface(*pv_);
     auto* candidate = new QHBoxLayout;
+    candidate->setSpacing(8);
     candidate->addWidget(evaluation_, 0, Qt::AlignTop);
     candidate->addWidget(pv_, 1);
-    layout->insertLayout(layout->indexOf(depth_), candidate);
+    layout->addLayout(candidate);
+
     previewControls_ = new QWidget(this);
+    setSubtleSurface(*previewControls_);
     auto* previewLayout = new QVBoxLayout(previewControls_);
-    previewLayout->setContentsMargins(0, 0, 0, 0);
+    previewLayout->setContentsMargins(10, 8, 10, 8);
+    previewLayout->setSpacing(6);
     previewStatus_ = new QLabel(previewControls_);
     previewStatus_->setTextFormat(Qt::PlainText);
     previewStatus_->setWordWrap(true);
+    setTextRole(*previewStatus_, "caption");
     previewLayout->addWidget(previewStatus_);
-    auto* previewButtons = new QGridLayout;
-    previous_ = button(tr("Previous"), "previousEnginePreview");
-    next_ = button(tr("Next"), "nextEnginePreview");
-    add_ = button(tr("Add Line"), "addEngineVariation");
-    auto* dismiss = button(tr("Exit Preview"), "dismissEngineVariation");
-    previewButtons->addWidget(previous_, 0, 0);
-    previewButtons->addWidget(next_, 0, 1);
-    previewButtons->addWidget(add_, 1, 0);
-    previewButtons->addWidget(dismiss, 1, 1);
+    auto* previewButtons = new QHBoxLayout;
+    previewButtons->setSpacing(6);
+    previous_ = button(tr("Previous"), "previousEnginePreview", QStringLiteral("chevron-left"));
+    next_ = button(tr("Next"), "nextEnginePreview", QStringLiteral("chevron-right"));
+    add_ = button(tr("Add Line"), "addEngineVariation", QStringLiteral("plus"));
+    setPrimaryAction(*add_);
+    auto* dismiss = button(tr("Exit Preview"), "dismissEngineVariation", QStringLiteral("close"));
+    setQuietAction(*dismiss);
+    previewButtons->addWidget(previous_);
+    previewButtons->addWidget(next_);
+    previewButtons->addStretch();
+    previewButtons->addWidget(add_);
+    previewButtons->addWidget(dismiss);
     previewLayout->addLayout(previewButtons);
-    layout->insertWidget(layout->indexOf(depth_), previewControls_);
-    error_ = label(QStringLiteral("engineAnalysisError"));
+    layout->addWidget(previewControls_);
+
+    auto* details = button(tr("Engine details"), "engineMetricsToggle", QStringLiteral("info"));
+    details->setCheckable(true);
+    setQuietAction(*details);
+    layout->addWidget(details, 0, Qt::AlignLeft);
+    depth_ = makeLabel(QStringLiteral("engineDepth"));
+    setTextRole(*depth_, "caption");
+    layout->addWidget(depth_);
+    depth_->hide();
+    connect(details, &QPushButton::toggled, depth_, &QWidget::setVisible);
+    error_ = makeLabel(QStringLiteral("engineAnalysisError"));
+    layout->addWidget(error_);
     connect(start_, &QPushButton::clicked, &controller_, &app::EngineAnalysisController::start);
     connect(pause_, &QPushButton::clicked, &controller_, &app::EngineAnalysisController::pause);
     connect(stop_, &QPushButton::clicked, &controller_, &app::EngineAnalysisController::stop);
@@ -214,8 +286,9 @@ void EngineAnalysisPanel::refresh() {
         detail.append(target);
     }
     const QLocale locale;
-    status_->setText(detail.isEmpty() ? state.status
-                                      : state.status + u'\n' + locale.createSeparatedList(detail));
+    status_->setText(detail.isEmpty()
+                         ? state.status
+                         : state.status + tr(" · ") + locale.createSeparatedList(detail));
     evaluation_->setText(
         tr("White\n%1")
             .arg(state.line.evaluation.isEmpty() ? tr("Unavailable") : state.line.evaluation));
@@ -270,6 +343,7 @@ void EngineAnalysisPanel::refresh() {
                                               : Qt::ItemIsEnabled | Qt::ItemIsSelectable);
             item->setData(Qt::UserRole, line.rank);
         }
+        pv_->updateGeometry();
     }
 
     const QSignalBlocker block(width_);

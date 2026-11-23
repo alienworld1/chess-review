@@ -93,10 +93,13 @@ void showGameLinkDialog(QWidget& parent, app::ImportController& imports) {
     dialog->setObjectName(QStringLiteral("importGameLinkDialog"));
     dialog->setWindowTitle(QObject::tr("Import a game link"));
     auto* layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(10);
     auto* hint = new QLabel(
         QObject::tr("Paste the link to a completed public game from Chess.com or Lichess."),
         dialog);
     hint->setWordWrap(true);
+    setTextRole(*hint, "secondary");
     layout->addWidget(hint);
     auto* label = new QLabel(QObject::tr("Game &link"), dialog);
     auto* link = new QLineEdit(dialog);
@@ -184,7 +187,8 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     }
     auto* central = new QWidget(this);
     auto* column = new QVBoxLayout(central);
-    column->setContentsMargins(12, 12, 12, 12);
+    column->setContentsMargins(10, 8, 12, 10);
+    column->setSpacing(8);
     startup_ = new StartupPanel(central);
     connect(startup_, &StartupPanel::closeRequested, this, &QWidget::close);
     column->addWidget(startup_);
@@ -195,11 +199,14 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     preferencesNotice_->hide();
     column->addWidget(preferencesNotice_);
     auto* row = new QHBoxLayout;
+    row->setSpacing(12);
     auto* sidebar = new QWidget(central);
     sidebar->setAccessibleName(tr("Destinations"));
     sidebar->setObjectName(QStringLiteral("navigationRail"));
+    sidebar->setMinimumWidth(68);
     auto* buttons = new QVBoxLayout(sidebar);
-    buttons->setContentsMargins(0, 0, 12, 0);
+    buttons->setContentsMargins(0, 4, 10, 4);
+    buttons->setSpacing(4);
     pages_ = new DestinationStack(central);
     pages_->setObjectName(QStringLiteral("destinationPages"));
     auto* group = new QActionGroup(this);
@@ -209,6 +216,7 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     const std::array values{app::Destination::Home, app::Destination::Games,
                             app::Destination::Puzzles, app::Destination::Analyze,
                             app::Destination::Settings};
+    const std::array icons{"home", "games", "puzzle", "analyze", "settings"};
     for (std::size_t i = 0; i < values.size(); ++i) {
         auto* action = new QAction(labels[i], this);
         action->setObjectName(app::destinationId(values[i]) + QStringLiteral("Action"));
@@ -232,7 +240,12 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
         auto* button = new QToolButton(sidebar);
         button->setObjectName(app::destinationId(values[i]) + QStringLiteral("Button"));
         button->setDefaultAction(action);
-        button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        button->setProperty("keepIconSize", true);
+        button->setProperty("mutedUnchecked", true);
+        button->setIconSize(QSize(20, 20));
+        setTextRole(*button, "caption");
+        setIcon(*button, QString::fromLatin1(icons[i]));
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         buttons->addWidget(button);
         if (values[i] == app::Destination::Home) {
@@ -380,6 +393,8 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
     pages_->addWidget(puzzleAnalysis_);
     auto* back = new QPushButton(tr("Back to puzzle"), puzzleAnalysis_);
     back->setObjectName(QStringLiteral("backToPuzzle"));
+    setQuietAction(*back);
+    setIcon(*back, QStringLiteral("arrow-left"));
     puzzleAnalysis_->findChild<QHBoxLayout*>(QStringLiteral("analysisCommands"))->addWidget(back);
     connect(back, &QPushButton::clicked, this,
             [this] { navigation_.navigate(app::Destination::Puzzles); });
@@ -414,6 +429,8 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
         auto* commands = analysisPage->findChild<QHBoxLayout*>(QStringLiteral("analysisCommands"));
         auto* save = new QPushButton(tr("Save Position as Puzzle"), analysisPage);
         save->setObjectName(QStringLiteral("savePositionAsPuzzle"));
+        setQuietAction(*save);
+        setIcon(*save, QStringLiteral("puzzle"));
         commands->addWidget(save);
         auto* notice = new QLabel(analysisPage);
         notice->setObjectName(QStringLiteral("manualPuzzleStatus"));
@@ -422,6 +439,8 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
         qobject_cast<QVBoxLayout*>(analysisPage->layout())->insertWidget(1, notice);
         auto* openSaved = new QPushButton(tr("Open saved puzzle"), analysisPage);
         openSaved->setObjectName(QStringLiteral("openManualPuzzle"));
+        setQuietAction(*openSaved);
+        setIcon(*openSaved, QStringLiteral("chevron-right"));
         commands->addWidget(openSaved);
         const auto update = [this, save, notice, openSaved, analysisPage, engine, &generation] {
             save->setEnabled(generation.canSavePosition() && (!engine || !engine->preview()) &&
@@ -474,17 +493,30 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
     if (reviewController_ && reviewPage_) {
         auto* summary = reviewPage_->findChild<QWidget*>(QStringLiteral("reviewOverviewPanel"));
         auto* layout = qobject_cast<QVBoxLayout*>(summary->layout());
-        auto* count = new QLabel(summary);
+        auto* separator = makeSeparator(summary);
+        auto* footer = new QWidget(summary);
+        auto* footerLayout = new QHBoxLayout(footer);
+        footerLayout->setContentsMargins(0, 0, 0, 0);
+        footerLayout->setSpacing(8);
+        auto* count = new QLabel(footer);
         count->setObjectName(QStringLiteral("reviewPuzzleSummary"));
         count->setTextFormat(Qt::PlainText);
         count->setWordWrap(true);
-        auto* generate = new QPushButton(tr("Generate Puzzles"), summary);
+        setTextRole(*count, "secondary");
+        auto* generate = new QPushButton(tr("Generate Puzzles"), footer);
         generate->setObjectName(QStringLiteral("generateReviewPuzzles"));
-        auto* library = new QPushButton(tr("Open puzzles from this review"), summary);
-        layout->addWidget(count);
-        layout->addWidget(generate);
-        layout->addWidget(library);
-        const auto update = [this, count, generate, library, &puzzles, &generation] {
+        setIcon(*generate, QStringLiteral("puzzle"));
+        auto* library = new QPushButton(tr("View puzzles"), footer);
+        library->setToolTip(tr("Open puzzles from this review"));
+        setQuietAction(*library);
+        setIcon(*library, QStringLiteral("chevron-right"));
+        footerLayout->addWidget(count, 1);
+        footerLayout->addWidget(generate);
+        footerLayout->addWidget(library);
+        layout->addWidget(separator);
+        layout->addWidget(footer);
+        const auto update = [this, separator, footer, count, generate, library, &puzzles,
+                             &generation] {
             const auto& run = reviewController_->state().run;
             if (run) {
                 puzzles.inspectReview(run->id);
@@ -493,6 +525,8 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
             const bool ready = run && run->status == review::JobStatus::Complete;
             const bool same = run && saved.id == run->id;
             const bool loading = !same || puzzles.reviewSummaryLoading();
+            separator->setVisible(ready);
+            footer->setVisible(ready);
             count->setVisible(ready);
             generate->setVisible(ready);
             library->setVisible(ready && !loading && saved.error.isEmpty() && saved.count > 0);
@@ -646,7 +680,10 @@ void MainWindow::installReview(app::ReviewGameController& review) {
     auto* task = new QPushButton(scroll->widget());
     task->setObjectName(QStringLiteral("reviewTaskStatus"));
     task->setAccessibleName(tr("Background review status; return to review"));
-    qobject_cast<QVBoxLayout*>(scroll->widget()->layout())->insertWidget(2, task);
+    setIcon(*task, QStringLiteral("play"));
+    setTextRole(*task, "strong");
+    qobject_cast<QVBoxLayout*>(scroll->widget()->layout())
+        ->insertWidget(2, task, 0, Qt::AlignRight);
     task->hide();
     const auto sameReviewAsTask = [&review] {
         return review.state().run && review.taskState().run &&
@@ -768,6 +805,8 @@ void MainWindow::installEngines(app::EngineSettingsController& engines) {
             });
     backToReviewAnalysis_ = new QPushButton(tr("Back to Analysis"), settings);
     backToReviewAnalysis_->setObjectName(QStringLiteral("backToReviewAnalysis"));
+    setQuietAction(*backToReviewAnalysis_);
+    setIcon(*backToReviewAnalysis_, QStringLiteral("arrow-left"));
     backToReviewAnalysis_->hide();
     qobject_cast<QVBoxLayout*>(settings->layout())
         ->insertWidget(0, backToReviewAnalysis_, 0, Qt::AlignLeft);
@@ -981,9 +1020,12 @@ void MainWindow::installImports(app::ImportController& imports,
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->setWindowTitle(tr("Choose a game to review"));
         auto* layout = new QVBoxLayout(dialog);
+        layout->setContentsMargins(16, 16, 16, 16);
+        layout->setSpacing(12);
         auto* list = new QListWidget(dialog);
         list->setObjectName(QStringLiteral("importGameChoices"));
         list->setAccessibleName(tr("Imported games"));
+        list->setAlternatingRowColors(true);
         for (const auto id : imported) {
             auto* item =
                 new QListWidgetItem(titles[id].isEmpty() ? tr("Imported game") : titles[id], list);
@@ -994,6 +1036,7 @@ void MainWindow::installImports(app::ImportController& imports,
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, dialog);
         auto* open = buttons->addButton(tr("Review game"), QDialogButtonBox::AcceptRole);
         open->setObjectName(QStringLiteral("reviewImportedGame"));
+        setIcon(*open, QStringLiteral("play"));
         setPrimaryAction(*open);
         layout->addWidget(buttons);
         const auto choose = [this, list, dialog] {
@@ -1045,6 +1088,8 @@ void MainWindow::installImports(app::ImportController& imports,
         dialog->setWindowTitle(tr("Paste PGN"));
         dialog->setWindowModality(Qt::WindowModal);
         auto* layout = new QVBoxLayout(dialog);
+        layout->setContentsMargins(16, 16, 16, 16);
+        layout->setSpacing(10);
         auto* editor = new PgnTextEdit(dialog);
         editor->setObjectName(QStringLiteral("pastePgnEditor"));
         editor->setAccessibleName(tr("PGN text to import"));
@@ -1060,6 +1105,7 @@ void MainWindow::installImports(app::ImportController& imports,
         previewInfo->setObjectName(QStringLiteral("pastePgnPreviewInfo"));
         previewInfo->setTextFormat(Qt::PlainText);
         previewInfo->setWordWrap(true);
+        setTextRole(*previewInfo, "secondary");
         previewInfo->setText(tr("Large PGN: read-only preview of the beginning. Import full text "
                                 "imports all supplied text. To edit it, use a UTF-8 PGN file."));
         previewInfo->hide();
@@ -1069,6 +1115,7 @@ void MainWindow::installImports(app::ImportController& imports,
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, dialog);
         auto* submit = buttons->addButton(tr("Import"), QDialogButtonBox::AcceptRole);
         submit->setObjectName(QStringLiteral("confirmPasteImport"));
+        setPrimaryAction(*submit);
         connect(editor, &PgnTextEdit::previewChanged, dialog, [previewInfo, submit](bool preview) {
             previewInfo->setVisible(preview);
             submit->setText(preview ? tr("Import full text") : tr("Import"));

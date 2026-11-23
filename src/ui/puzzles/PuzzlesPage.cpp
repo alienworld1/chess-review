@@ -2,9 +2,11 @@
 #include "ui/Theme.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include <QComboBox>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLocale>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -24,31 +26,71 @@ QLabel* label(QWidget* parent, const QString& text = {}) {
     result->setWordWrap(true);
     return result;
 }
+void fitWrappedLabel(QLabel& target, int widthHint = 0) {
+    const int width = widthHint > 0 ? widthHint : target.width();
+    if (target.text().isEmpty() || width <= 0) {
+        if (target.minimumHeight() != 0) {
+            target.setMinimumHeight(0);
+        }
+        return;
+    }
+    const int height = std::max(0, target.heightForWidth(width));
+    if (target.minimumHeight() != height) {
+        target.setMinimumHeight(height);
+        target.updateGeometry();
+        if (auto* parent = target.parentWidget()) {
+            parent->updateGeometry();
+        }
+    }
+}
+class LabelHeightFilter final : public QObject {
+  public:
+    explicit LabelHeightFilter(QLabel& target, QObject* parent = nullptr)
+        : QObject(parent), target_(target) {}
+
+  protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == &target_ &&
+            (event->type() == QEvent::Resize || event->type() == QEvent::FontChange)) {
+            fitWrappedLabel(target_);
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+  private:
+    QLabel& target_;
+};
 } // namespace
 PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
                          app::PuzzleGenerationController& generation, QWidget* parent)
     : QWidget(parent), controller_(controller), generation_(generation) {
     setObjectName(QStringLiteral("puzzlesPage"));
     auto* layout = new QVBoxLayout(this);
-    auto* title = label(this, tr("Your puzzles"));
-    setTextRole(*title, "title");
-    layout->addWidget(title);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(10);
     generationNotice_ = label(this);
     generationNotice_->setObjectName(QStringLiteral("puzzleGenerationStatus"));
+    setTextRole(*generationNotice_, "secondary");
     layout->addWidget(generationNotice_);
-    auto* generationActions = new QHBoxLayout;
-    cancel_ = new QPushButton(tr("Pause generation"), this);
+    auto* generationBar = new QWidget(this);
+    auto* generationActions = new QHBoxLayout(generationBar);
+    generationActions->setContentsMargins(0, 0, 0, 0);
+    generationActions->setSpacing(8);
+    cancel_ = new QPushButton(tr("Pause generation"), generationBar);
+    setIcon(*cancel_, QStringLiteral("pause"));
     connect(cancel_, &QPushButton::clicked, &generation_, &app::PuzzleGenerationController::cancel);
-    jobs_ = new QComboBox(this);
+    jobs_ = new QComboBox(generationBar);
     jobs_->setAccessibleName(tr("Interrupted puzzle generation"));
-    resume_ = new QPushButton(tr("Resume generation"), this);
+    resume_ = new QPushButton(tr("Resume generation"), generationBar);
+    setIcon(*resume_, QStringLiteral("play"));
     connect(resume_, &QPushButton::clicked, this, [this] {
         const auto i = jobs_->currentIndex();
         if (i >= 0 && static_cast<std::size_t>(i) < jobIds_.size()) {
             generation_.resume(jobIds_[static_cast<std::size_t>(i)]);
         }
     });
-    saved_ = new QPushButton(tr("Open saved puzzle"), this);
+    saved_ = new QPushButton(tr("Open saved puzzle"), generationBar);
+    setIcon(*saved_, QStringLiteral("chevron-right"));
     connect(saved_, &QPushButton::clicked, this, [this] {
         if (generation_.state().lastSaved) {
             controller_.open(*generation_.state().lastSaved);
@@ -58,15 +100,29 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
     generationActions->addWidget(jobs_, 1);
     generationActions->addWidget(resume_);
     generationActions->addWidget(saved_);
-    layout->addLayout(generationActions);
+    layout->addWidget(generationBar);
     pages_ = new QStackedWidget(this);
     layout->addWidget(pages_, 1);
     auto* libraryPage = new QWidget(pages_);
     auto* libraryLayout = new QVBoxLayout(libraryPage);
+    libraryLayout->setContentsMargins(0, 0, 0, 0);
+    libraryLayout->setSpacing(10);
+    auto* headerRow = new QHBoxLayout;
+    auto* title = label(libraryPage, tr("Your puzzles"));
+    setTextRole(*title, "title");
+    headerRow->addWidget(title);
+    headerRow->addStretch();
+    refresh_ = new QPushButton(libraryPage);
+    refresh_->setObjectName(QStringLiteral("refreshPuzzles"));
+    setQuietAction(*refresh_);
+    setIcon(*refresh_, QStringLiteral("refresh"));
+    headerRow->addWidget(refresh_);
+    libraryLayout->addLayout(headerRow);
     libraryNotice_ =
         label(libraryPage, tr("Save positions from Analysis or generate puzzles from a completed "
                               "review. Choose any puzzle whenever you wish."));
     libraryNotice_->setObjectName(QStringLiteral("puzzleLibraryStatus"));
+    setTextRole(*libraryNotice_, "secondary");
     libraryLayout->addWidget(libraryNotice_);
     library_ = new QTableWidget(0, 3, libraryPage);
     library_->setObjectName(QStringLiteral("puzzleLibrary"));
@@ -75,11 +131,20 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
     library_->setSelectionBehavior(QAbstractItemView::SelectRows);
     library_->setSelectionMode(QAbstractItemView::SingleSelection);
     library_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    library_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    library_->setShowGrid(false);
+    library_->setAlternatingRowColors(true);
+    library_->verticalHeader()->hide();
+    library_->verticalHeader()->setDefaultSectionSize(36);
+    library_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    library_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    library_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     libraryLayout->addWidget(library_, 1);
     auto* actions = new QHBoxLayout;
+    actions->setSpacing(8);
     open_ = new QPushButton(tr("Solve"), libraryPage);
     open_->setObjectName(QStringLiteral("openPuzzle"));
+    setPrimaryAction(*open_);
+    setIcon(*open_, QStringLiteral("play"));
     const auto openSelected = [this] {
         const int row = library_->currentRow();
         if (row >= 0 && static_cast<std::size_t>(row) < rows_.size()) {
@@ -90,11 +155,15 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
     connect(library_, &QTableWidget::cellActivated, this,
             [openSelected](int, int) { openSelected(); });
     remove_ = new QPushButton(tr("Delete…"), libraryPage);
+    setQuietAction(*remove_);
+    setIcon(*remove_, QStringLiteral("trash"));
     connect(remove_, &QPushButton::clicked, this, &PuzzlesPage::removeSelected);
     previous_ = new QPushButton(tr("Previous"), libraryPage);
     next_ = new QPushButton(tr("Next"), libraryPage);
-    refresh_ = new QPushButton(libraryPage);
-    refresh_->setObjectName(QStringLiteral("refreshPuzzles"));
+    setQuietAction(*previous_);
+    setQuietAction(*next_);
+    setIcon(*previous_, QStringLiteral("chevron-left"));
+    setIcon(*next_, QStringLiteral("chevron-right"));
     connect(previous_, &QPushButton::clicked, this,
             [this] { controller_.refresh(controller_.state().library.offset - 50); });
     connect(next_, &QPushButton::clicked, this,
@@ -111,59 +180,90 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
     actions->addStretch();
     actions->addWidget(previous_);
     actions->addWidget(next_);
-    actions->addWidget(refresh_);
     libraryLayout->addLayout(actions);
     pages_->addWidget(libraryPage);
     auto* solvePage = new QWidget(pages_);
     auto* solveLayout = new QVBoxLayout(solvePage);
+    solveLayout->setContentsMargins(0, 0, 0, 0);
+    solveLayout->setSpacing(10);
+    auto* solveTop = new QHBoxLayout;
     auto* back = new QPushButton(tr("Back to library"), solvePage);
+    setQuietAction(*back);
+    setIcon(*back, QStringLiteral("arrow-left"));
     connect(back, &QPushButton::clicked, &controller_, &app::PuzzleController::showLibrary);
-    solveLayout->addWidget(back, 0, Qt::AlignLeft);
+    solveTop->addWidget(back);
+    solveTop->addStretch();
+    auto* flip = new QPushButton(tr("Flip board"), solvePage);
+    setQuietAction(*flip);
+    setIcon(*flip, QStringLiteral("flip"));
+    connect(flip, &QPushButton::clicked, &controller_, &app::PuzzleController::flip);
+    solveTop->addWidget(flip);
+    solveLayout->addLayout(solveTop);
     splitter_ = new QSplitter(Qt::Horizontal, solvePage);
     splitter_->setChildrenCollapsible(false);
     board_ = new ChessBoardWidget(splitter_);
     board_->setObjectName(QStringLiteral("puzzleBoard"));
     board_->setMinimumSize(240, 240);
     auto* lesson = new QWidget(splitter_);
+    setPanelSurface(*lesson);
     auto* lessonLayout = new QVBoxLayout(lesson);
+    lessonLayout->setContentsMargins(18, 16, 18, 16);
+    lessonLayout->setSpacing(12);
     message_ = label(lesson);
     message_->setObjectName(QStringLiteral("puzzleMessage"));
     message_->setAccessibleName(tr("Puzzle feedback"));
+    setTextRole(*message_, "heading");
+    message_->installEventFilter(new LabelHeightFilter(*message_, message_));
     lessonLayout->addWidget(message_);
-    hints_ = label(lesson);
+    auto* hintBox = new QWidget(lesson);
+    setSubtleSurface(*hintBox);
+    auto* hintLayout = new QVBoxLayout(hintBox);
+    hintLayout->setContentsMargins(12, 8, 12, 8);
+    hints_ = label(hintBox);
     hints_->setObjectName(QStringLiteral("puzzleHints"));
-    lessonLayout->addWidget(hints_);
+    hints_->installEventFilter(new LabelHeightFilter(*hints_, hints_));
+    hintLayout->addWidget(hints_);
+    lessonLayout->addWidget(hintBox);
     auto* controls = new QHBoxLayout;
-    retry_ = new QPushButton(tr("Retry"), lesson);
+    controls->setSpacing(8);
     hint_ = new QPushButton(tr("Hint"), lesson);
+    retry_ = new QPushButton(tr("Retry"), lesson);
     reveal_ = new QPushButton(tr("Reveal"), lesson);
-    retry_->setObjectName(QStringLiteral("retryPuzzle"));
     hint_->setObjectName(QStringLiteral("hintPuzzle"));
+    retry_->setObjectName(QStringLiteral("retryPuzzle"));
     reveal_->setObjectName(QStringLiteral("revealPuzzle"));
+    setPrimaryAction(*hint_);
+    setIcon(*hint_, QStringLiteral("hint"));
+    setIcon(*retry_, QStringLiteral("retry"));
+    setQuietAction(*reveal_);
+    setIcon(*reveal_, QStringLiteral("eye"));
     connect(retry_, &QPushButton::clicked, &controller_, &app::PuzzleController::retry);
     connect(hint_, &QPushButton::clicked, &controller_, &app::PuzzleController::hint);
     connect(reveal_, &QPushButton::clicked, &controller_, &app::PuzzleController::reveal);
+    controls->addWidget(hint_, 1);
     controls->addWidget(retry_);
-    controls->addWidget(hint_);
     controls->addWidget(reveal_);
     lessonLayout->addLayout(controls);
     auto* lineControls = new QHBoxLayout;
+    lineControls->setSpacing(8);
     stepBack_ = new QPushButton(tr("Previous move"), lesson);
     stepNext_ = new QPushButton(tr("Next move"), lesson);
     stepBack_->setObjectName(QStringLiteral("previousPuzzleMove"));
     stepNext_->setObjectName(QStringLiteral("nextPuzzleMove"));
+    setIcon(*stepBack_, QStringLiteral("chevron-left"));
+    setIcon(*stepNext_, QStringLiteral("chevron-right"));
     connect(stepBack_, &QPushButton::clicked, &controller_, &app::PuzzleController::previous);
     connect(stepNext_, &QPushButton::clicked, &controller_, &app::PuzzleController::next);
-    lineControls->addWidget(stepBack_);
-    lineControls->addWidget(stepNext_);
+    lineControls->addWidget(stepBack_, 1);
+    lineControls->addWidget(stepNext_, 1);
     lessonLayout->addLayout(lineControls);
+    lessonLayout->addWidget(makeSeparator(lesson));
     analyze_ = new QPushButton(tr("Analyze"), lesson);
     analyze_->setObjectName(QStringLiteral("analyzePuzzle"));
+    setQuietAction(*analyze_);
+    setIcon(*analyze_, QStringLiteral("analyze"));
     connect(analyze_, &QPushButton::clicked, &controller_, &app::PuzzleController::openAnalysis);
-    lessonLayout->addWidget(analyze_);
-    auto* flip = new QPushButton(tr("Flip board"), lesson);
-    connect(flip, &QPushButton::clicked, &controller_, &app::PuzzleController::flip);
-    lessonLayout->addWidget(flip);
+    lessonLayout->addWidget(analyze_, 0, Qt::AlignLeft);
     lessonLayout->addStretch();
     splitter_->setStretchFactor(0, 3);
     splitter_->setStretchFactor(1, 2);
@@ -202,8 +302,24 @@ void PuzzlesPage::refresh() {
     message_->setText(state.error.isEmpty()
                           ? (state.loading ? tr("Opening puzzle…") : state.message)
                           : state.error);
+    fitWrappedLabel(*message_);
+    auto* hintBox = hints_->parentWidget();
+    const bool wasVisible = hintBox->isVisible();
     hints_->setText(state.hints.join(QLatin1Char('\n')));
+    hintBox->setVisible(!state.hints.empty());
     hints_->setVisible(!state.hints.empty());
+    int hintWidth = 0;
+    if (!state.hints.empty() && !wasVisible) {
+        if (auto* lesson = hintBox->parentWidget(); lesson && lesson->width() > 0) {
+            const auto lessonMargins =
+                lesson->layout() ? lesson->layout()->contentsMargins() : QMargins{};
+            const auto boxMargins =
+                hintBox->layout() ? hintBox->layout()->contentsMargins() : QMargins{};
+            hintWidth = lesson->width() - lessonMargins.left() - lessonMargins.right() -
+                        boxMargins.left() - boxMargins.right() - 2;
+        }
+    }
+    fitWrappedLabel(*hints_, hintWidth);
     retry_->setEnabled(state.selected.has_value() && !state.loading && !state.grading);
     hint_->setEnabled(controller_.canHint());
     reveal_->setEnabled(state.selected.has_value() && !state.loading && !state.revealed);
@@ -233,9 +349,9 @@ void PuzzlesPage::refresh() {
                               new QTableWidgetItem(item.origin == puzzles::Origin::Generated
                                                        ? tr("Generated")
                                                        : tr("Manual")));
-            library_->setItem(
-                static_cast<int>(i), 2,
-                new QTableWidgetItem(item.createdAt.toLocalTime().toString(Qt::ISODate)));
+            library_->setItem(static_cast<int>(i), 2,
+                              new QTableWidgetItem(QLocale().toString(item.createdAt.toLocalTime(),
+                                                                      QLocale::ShortFormat)));
         }
         if (!rows_.empty()) {
             const auto selected = previousId ? std::ranges::find(rows_, *previousId) : rows_.end();
@@ -293,6 +409,8 @@ void PuzzlesPage::refreshGeneration() {
     resume_->setVisible(!jobIds_.empty());
     resume_->setEnabled(!state.active);
     saved_->setVisible(state.lastSaved.has_value());
+    cancel_->parentWidget()->setVisible(state.active || !jobIds_.empty() ||
+                                        state.lastSaved.has_value());
 }
 void PuzzlesPage::removeSelected() {
     const int row = library_->currentRow();

@@ -19,7 +19,9 @@ class QScrollArea;
 class QKeyEvent;
 namespace chess_review::ui {
 class ChessBoardWidget;
+class ClassificationBadge;
 class MoveTimeline;
+class PlayerSwatch;
 class ReviewRunsModel;
 class ReviewMovesModel;
 class ReviewComparisonModel;
@@ -98,7 +100,9 @@ class ReviewPage final : public QWidget {
     QLabel* resultValue_;
     QLabel* summaryOpening_;
     QLabel* classification_;
+    ClassificationBadge* badge_;
     QLabel* availability_;
+    QWidget* alternativeBox_;
     QLabel* alternative_;
     QLabel* impact_;
     QTableWidget* classificationCounts_;
@@ -110,6 +114,7 @@ class ReviewPage final : public QWidget {
     QLabel* comparisonStatus_;
     QTableView* comparisonRows_;
     ReviewComparisonModel* comparisonModel_;
+    QWidget* explorationBox_;
     QLabel* explorationStatus_ = nullptr;
     QPushButton* showLine_;
     QPushButton* tryAgain_;
@@ -128,6 +133,8 @@ class ReviewPage final : public QWidget {
     QLabel* explanation_;
     QLabel* topPlayer_;
     QLabel* bottomPlayer_;
+    PlayerSwatch* topSwatch_;
+    PlayerSwatch* bottomSwatch_;
     QFrame* rail_;
     QWidget* setup_;
     QAction* setupToggle_;

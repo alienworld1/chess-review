@@ -41,21 +41,23 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     : QWidget(parent), controller_(controller) {
     setObjectName(QStringLiteral("settingsPage"));
     auto* page = new QVBoxLayout(this);
+    page->setContentsMargins(0, 0, 0, 0);
+    page->setSpacing(10);
+    auto* headerRow = new QHBoxLayout;
     auto* heading = plainLabel(this, tr("Settings"));
     setTextRole(*heading, "title");
-    page->addWidget(heading);
-    auto* appearanceRow = new QHBoxLayout;
+    headerRow->addWidget(heading, 1);
     auto* appearanceLabel = new QLabel(tr("&Appearance"), this);
+    setTextRole(*appearanceLabel, "secondary");
     appearance_ = new QComboBox(this);
     appearance_->setObjectName(QStringLiteral("appearanceMode"));
     appearance_->addItem(tr("System"), static_cast<int>(Qt::ColorScheme::Unknown));
     appearance_->addItem(tr("Light"), static_cast<int>(Qt::ColorScheme::Light));
     appearance_->addItem(tr("Dark"), static_cast<int>(Qt::ColorScheme::Dark));
     appearanceLabel->setBuddy(appearance_);
-    appearanceRow->addWidget(appearanceLabel);
-    appearanceRow->addWidget(appearance_);
-    appearanceRow->addStretch();
-    page->addLayout(appearanceRow);
+    headerRow->addWidget(appearanceLabel);
+    headerRow->addWidget(appearance_);
+    page->addLayout(headerRow);
     connect(appearance_, &QComboBox::currentIndexChanged, this, [this] {
         emit colorSchemeChanged(static_cast<Qt::ColorScheme>(appearance_->currentData().toInt()));
     });
@@ -66,13 +68,27 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     engines->setWidgetResizable(true);
     engines->setFrameShape(QFrame::NoFrame);
     auto* content = new QWidget(engines);
+    content->setMaximumWidth(920);
     auto* layout = new QVBoxLayout(content);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setSpacing(10);
     engines->setWidget(content);
     sections_->addTab(engines, tr("&Engines"));
-    layout->addWidget(
-        plainLabel(this, tr("Add a trusted UCI engine installed on your computer. Its executable "
-                            "stays where you installed it.")));
-    profiles_ = new QTableWidget(0, 4, this);
+    auto* engineTopRow = new QHBoxLayout;
+    engineTopRow->setSpacing(12);
+    auto* engineHint =
+        plainLabel(content, tr("Add a trusted UCI engine installed on your computer. Its "
+                               "executable stays where you installed it."));
+    setTextRole(*engineHint, "secondary");
+    engineTopRow->addWidget(engineHint, 1);
+    browse_ = new QPushButton(tr("&Choose executable…"), content);
+    browse_->setObjectName(QStringLiteral("chooseEngine"));
+    setIcon(*browse_, QStringLiteral("plus"));
+    browse_->setToolTip(tr("Connect or add one UCI engine at a time. Disconnect the current engine "
+                           "before registering another."));
+    engineTopRow->addWidget(browse_, 0, Qt::AlignVCenter);
+    layout->addLayout(engineTopRow);
+    profiles_ = new QTableWidget(0, 4, content);
     profiles_->setObjectName(QStringLiteral("engineProfiles"));
     profiles_->setAccessibleName(tr("Registered engines"));
     profiles_->setHorizontalHeaderLabels(
@@ -81,7 +97,10 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     profiles_->setSelectionBehavior(QAbstractItemView::SelectRows);
     profiles_->setSelectionMode(QAbstractItemView::SingleSelection);
     profiles_->setWordWrap(false);
+    profiles_->setShowGrid(false);
+    profiles_->setAlternatingRowColors(true);
     profiles_->verticalHeader()->hide();
+    profiles_->verticalHeader()->setDefaultSectionSize(36);
     profiles_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     profiles_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     profiles_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
@@ -106,6 +125,8 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     technicalLayout->addWidget(detailsTabs_);
     inspector_ = new QPushButton(tr("Engine details…"), this);
     inspector_->setObjectName(QStringLiteral("engineInspectorButton"));
+    setQuietAction(*inspector_);
+    setIcon(*inspector_, QStringLiteral("info"));
 
     connect(inspector_, &QPushButton::clicked, technical, &QDialog::show);
     auto* close = new QDialogButtonBox(QDialogButtonBox::Close, technical);
@@ -114,19 +135,23 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     auto* connectionActions = new QHBoxLayout;
     connect_ = new QPushButton(tr("&Connect"), this);
     connect_->setObjectName(QStringLiteral("connectEngine"));
+    setIcon(*connect_, QStringLiteral("play"));
     disconnect_ = new QPushButton(tr("&Disconnect"), this);
     disconnect_->setObjectName(QStringLiteral("disconnectEngine"));
+    setIcon(*disconnect_, QStringLiteral("stop"));
     connectionActions->addWidget(connect_);
     connectionActions->addWidget(disconnect_);
     test_ = new QPushButton(tr("&Test analysis"), this);
     test_->setObjectName(QStringLiteral("testEngine"));
     test_->setToolTip(tr("Run a short search of the starting position with the connected engine."));
+    setIcon(*test_, QStringLiteral("analyze"));
     connectionActions->addWidget(test_);
     connectionActions->addStretch();
     layout->addLayout(connectionActions);
     runtimeStatus_ = plainLabel(this);
     runtimeStatus_->setObjectName(QStringLiteral("engineRuntimeStatus"));
     runtimeStatus_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    setTextRole(*runtimeStatus_, "secondary");
     layout->addWidget(runtimeStatus_);
     testMessage_ = plainLabel(this);
     testMessage_->setObjectName(QStringLiteral("engineTestMessage"));
@@ -173,12 +198,16 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     auto* profileActions = new QHBoxLayout;
     configure_ = new QPushButton(tr("&Options…"), this);
     configure_->setObjectName(QStringLiteral("editEngineOptions"));
+    setIcon(*configure_, QStringLiteral("settings"));
     rename_ = new QPushButton(tr("&Rename…"), this);
     rename_->setObjectName(QStringLiteral("renameEngine"));
+    setIcon(*rename_, QStringLiteral("note"));
     makeDefault_ = new QPushButton(tr("Set as &default"), this);
     makeDefault_->setObjectName(QStringLiteral("defaultEngine"));
     remove_ = new QPushButton(tr("Remo&ve…"), this);
     remove_->setObjectName(QStringLiteral("removeEngine"));
+    setQuietAction(*remove_);
+    setIcon(*remove_, QStringLiteral("trash"));
     profileActions->addWidget(configure_);
     profileActions->addWidget(rename_);
     profileActions->addWidget(makeDefault_);
@@ -244,32 +273,38 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
         dialog->open();
     });
     listError_ = plainLabel(this);
+    setTextRole(*listError_, "secondary");
     layout->addWidget(listError_);
-    browse_ = new QPushButton(tr("&Choose executable…"), this);
-    browse_->setObjectName(QStringLiteral("chooseEngine"));
-    layout->addWidget(browse_, 0, Qt::AlignLeft);
-    browse_->setToolTip(tr("Connect or add one UCI engine at a time. Disconnect the current engine "
-                           "before registering another."));
-    path_ = new QPlainTextEdit(this);
+    auto* registrationBox = new QWidget(content);
+    setSubtleSurface(*registrationBox);
+    auto* regLayout = new QVBoxLayout(registrationBox);
+    regLayout->setContentsMargins(12, 10, 12, 10);
+    regLayout->setSpacing(8);
+    path_ = new QPlainTextEdit(registrationBox);
     path_->setObjectName(QStringLiteral("engineSelectedPath"));
     path_->setAccessibleName(tr("Resolved executable path"));
     path_->setReadOnly(true);
-    path_->setMaximumHeight(60);
-    layout->addWidget(path_);
-    message_ = plainLabel(this);
+    path_->setFrameShape(QFrame::NoFrame);
+    setFlatSurface(*path_);
+    path_->setMaximumHeight(52);
+    regLayout->addWidget(path_);
+    message_ = plainLabel(registrationBox);
     message_->setObjectName(QStringLiteral("engineRegistrationMessage"));
     message_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    layout->addWidget(message_);
+    regLayout->addWidget(message_);
     auto* actions = new QHBoxLayout;
-    add_ = new QPushButton(tr("&Validate and add"), this);
+    add_ = new QPushButton(tr("&Validate and add"), registrationBox);
     add_->setObjectName(QStringLiteral("registerEngine"));
-    cancel_ = new QPushButton(tr("Cancel"), this);
+    cancel_ = new QPushButton(tr("Cancel"), registrationBox);
     cancel_->setObjectName(QStringLiteral("cancelEngineRegistration"));
     setPrimaryAction(*add_);
+    setIcon(*add_, QStringLiteral("plus"));
+    setQuietAction(*cancel_);
     actions->addWidget(add_);
     actions->addWidget(cancel_);
     actions->addStretch();
-    layout->addLayout(actions);
+    regLayout->addLayout(actions);
+    layout->addWidget(registrationBox);
     layout->addStretch();
     connect(browse_, &QPushButton::clicked, this, [this] {
         if (picking_) {
@@ -341,6 +376,7 @@ void EngineSettingsPage::updateState() {
     path_->setVisible(!path.isEmpty());
     message_->setText(state.message);
     message_->setVisible(!state.message.isEmpty());
+    path_->parentWidget()->setVisible(adding || !path.isEmpty() || !state.message.isEmpty());
     profileMessage_->setText(state.profileMessage);
     profileMessage_->setVisible(!state.profileMessage.isEmpty());
     testMessage_->setText(state.testMessage);

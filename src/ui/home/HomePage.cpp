@@ -17,14 +17,97 @@
 #include <QListWidget>
 #include <QLocale>
 #include <QMimeData>
+#include <QPainter>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QStyledItemDelegate>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <algorithm>
 
 namespace chess_review::ui {
 namespace {
+class SectionIcon final : public QWidget {
+  public:
+    SectionIcon(QString name, QWidget* parent) : QWidget(parent), name_(std::move(name)) {
+        setFixedSize(20, 20);
+    }
+
+  protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        const auto color = palette().color(QPalette::PlaceholderText);
+        themedIcon(name_, color, color).paint(&painter, rect());
+    }
+
+  private:
+    QString name_;
+};
+
+class RecentGameDelegate final : public QStyledItemDelegate {
+  public:
+    explicit RecentGameDelegate(QObject* parent) : QStyledItemDelegate(parent) {}
+    void paint(QPainter* painter, const QStyleOptionViewItem& option,
+               const QModelIndex& index) const override {
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+        const auto text = index.data(Qt::DisplayRole).toString();
+        auto split = text.indexOf(u'\n');
+        if (split < 0) {
+            split = text.indexOf(QChar::LineSeparator);
+        }
+        const QString title = split >= 0 ? text.left(split) : text;
+        const QString subtitle = split >= 0 ? text.mid(split + 1) : QString{};
+        opt.text.clear();
+        opt.features &= ~QStyleOptionViewItem::HasDisplay;
+        if (opt.widget) {
+            opt.widget->style()->drawPrimitive(QStyle::PE_PanelItemViewItem, &opt, painter,
+                                               opt.widget);
+        }
+        const QRect bounds = opt.rect.adjusted(12, 4, -12, -4);
+        painter->save();
+        QFont titleFont = opt.font;
+        titleFont.setWeight(QFont::DemiBold);
+        QFont subFont = opt.font;
+        if (subFont.pointSizeF() > 0) {
+            subFont.setPointSizeF(subFont.pointSizeF() * 0.92);
+        }
+        const QFontMetrics subMetrics(subFont);
+        const int subWidth =
+            subtitle.isEmpty()
+                ? 0
+                : std::min(bounds.width() / 2, subMetrics.horizontalAdvance(subtitle) + 14);
+        const QRect titleRect(bounds.left(), bounds.top(), bounds.width() - subWidth,
+                              bounds.height());
+        const QFontMetrics titleMetrics(titleFont);
+        painter->setFont(titleFont);
+        painter->setPen(opt.state.testFlag(QStyle::State_Selected)
+                            ? opt.palette.color(QPalette::HighlightedText)
+                            : opt.palette.color(QPalette::Text));
+        painter->drawText(titleRect, Qt::AlignLeft | Qt::AlignVCenter,
+                          titleMetrics.elidedText(title, Qt::ElideRight, titleRect.width()));
+        if (!subtitle.isEmpty()) {
+            const QRect subRect(titleRect.right(), bounds.top(), subWidth, bounds.height());
+            painter->setFont(subFont);
+            painter->setPen(opt.palette.color(QPalette::PlaceholderText));
+            painter->drawText(subRect, Qt::AlignRight | Qt::AlignVCenter,
+                              subMetrics.elidedText(subtitle, Qt::ElideRight, subRect.width()));
+        }
+        if (opt.state.testFlag(QStyle::State_HasFocus) && opt.widget) {
+            QStyleOptionFocusRect focusOpt;
+            focusOpt.QStyleOption::operator=(opt);
+            focusOpt.rect = opt.rect;
+            opt.widget->style()->drawPrimitive(QStyle::PE_FrameFocusRect, &focusOpt, painter,
+                                               opt.widget);
+        }
+        painter->restore();
+    }
+    QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        return {QStyledItemDelegate::sizeHint(option, index).width(),
+                std::max(36, option.fontMetrics.height() + 16)};
+    }
+};
+
 QLabel* textLabel(const QString& text, QWidget* parent, const char* role = nullptr) {
     auto* label = new QLabel(text, parent);
     label->setTextFormat(Qt::PlainText);
@@ -77,8 +160,8 @@ class RecentList final : public QListWidget {
         setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         setUniformItemSizes(true);
         setAlternatingRowColors(true);
+        setItemDelegate(new RecentGameDelegate(this));
         setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-        setStyleSheet(QStringLiteral("QListView::item { padding: 5px 10px; }"));
         connect(model(), &QAbstractItemModel::modelReset, this, [this] { updateGeometry(); });
         connect(model(), &QAbstractItemModel::rowsInserted, this, [this] { updateGeometry(); });
     }
@@ -89,13 +172,17 @@ class RecentList final : public QListWidget {
     }
 };
 
-QHBoxLayout* informationRow(QWidget* section, const QString& heading, QLabel*& detail) {
+QHBoxLayout* informationRow(QWidget* section, const QString& iconName, const QString& heading,
+                            QLabel*& detail) {
     auto* row = new QHBoxLayout(section);
-    row->setContentsMargins(0, 8, 0, 8);
-    row->setSpacing(14);
+    row->setContentsMargins(0, 6, 0, 6);
+    row->setSpacing(12);
+    if (!iconName.isEmpty()) {
+        row->addWidget(new SectionIcon(iconName, section), 0, Qt::AlignTop);
+    }
     auto* description = new QVBoxLayout;
-    description->setSpacing(3);
-    description->addWidget(textLabel(heading, section, "heading"));
+    description->setSpacing(2);
+    description->addWidget(textLabel(heading, section, "strong"));
     detail = textLabel({}, section, "secondary");
     description->addWidget(detail);
     row->addLayout(description, 1);
@@ -116,8 +203,11 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent) {
 
     auto* intro = new QFrame(content);
     intro->setObjectName(QStringLiteral("homeIntro"));
+    intro->setFrameShape(QFrame::NoFrame);
+    setPanelSurface(*intro);
     auto* hero = new QHBoxLayout(intro);
-    hero->setContentsMargins(18, 12, 18, 14);
+    hero->setContentsMargins(20, 14, 20, 16);
+    hero->setSpacing(16);
     auto* introText = new QVBoxLayout;
     introText->setSpacing(8);
     introText->addWidget(textLabel(tr("Review your games"), intro, "title"));
@@ -128,17 +218,22 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent) {
     hero->addLayout(introText, 1);
     emptyArt_ = new QLabel(intro);
     emptyArt_->setPixmap(QIcon(QStringLiteral(":/pieces/Chess_nlt45.svg"))
-                             .pixmap(QSize(56, 56), devicePixelRatioF()));
+                             .pixmap(QSize(52, 52), devicePixelRatioF()));
     emptyArt_->hide();
-    hero->addWidget(emptyArt_, 0, Qt::AlignTop);
+    hero->addWidget(emptyArt_, 0, Qt::AlignVCenter);
     column->addWidget(intro);
 
-    resume_ = new QFrame(content);
-    resume_->setObjectName(QStringLiteral("homeContinue"));
-    auto* resumeLayout = informationRow(resume_, tr("Continue"), resumeDetail_);
-    resumeLayout->setContentsMargins(12, 10, 12, 10);
+    auto* resumeFrame = new QFrame(content);
+    resumeFrame->setObjectName(QStringLiteral("homeContinue"));
+    resumeFrame->setFrameShape(QFrame::NoFrame);
+    setPanelSurface(*resumeFrame);
+    resume_ = resumeFrame;
+    auto* resumeLayout =
+        informationRow(resumeFrame, QStringLiteral("play"), tr("Continue"), resumeDetail_);
+    resumeLayout->setContentsMargins(14, 10, 14, 10);
     resumeAction_ = new QPushButton(resume_);
     resumeAction_->setObjectName(QStringLiteral("homeResumeReview"));
+    setIcon(*resumeAction_, QStringLiteral("play"));
     resumeLayout->addWidget(resumeAction_, 0, Qt::AlignVCenter);
     column->addWidget(resume_);
     resume_->hide();
@@ -148,14 +243,19 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent) {
     recentSection_ = new QWidget(content);
     auto* recentLayout = new QVBoxLayout(recentSection_);
     recentLayout->setContentsMargins(0, 4, 0, 4);
-    recentLayout->setSpacing(8);
+    recentLayout->setSpacing(6);
     auto* recentHeader = new QHBoxLayout;
+    recentHeader->setSpacing(8);
     recentHeader->addWidget(textLabel(tr("Recent games"), recentSection_, "heading"), 1);
     auto* games = new QPushButton(tr("Open Games"), recentSection_);
+    setQuietAction(*games);
+    setIcon(*games, QStringLiteral("chevron-right"));
     connect(games, &QPushButton::clicked, this, &HomePage::gamesRequested);
     openRecent_ = new QPushButton(tr("Open selected game"), recentSection_);
     openRecent_->setObjectName(QStringLiteral("homeOpenRecent"));
+    setIcon(*openRecent_, QStringLiteral("play"));
     retryRecent_ = new QPushButton(tr("Retry loading games"), recentSection_);
+    setIcon(*retryRecent_, QStringLiteral("refresh"));
     recentHeader->addWidget(retryRecent_);
     recentHeader->addWidget(openRecent_);
     recentHeader->addWidget(games);
@@ -174,22 +274,28 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent) {
     auto* supporting = new QWidget(content);
     supporting->setObjectName(QStringLiteral("homeLibraryStatus"));
     auto* supportingLayout = new QVBoxLayout(supporting);
-    supportingLayout->setContentsMargins(0, 0, 0, 0);
-    supportingLayout->setSpacing(5);
+    supportingLayout->setContentsMargins(0, 4, 0, 0);
+    supportingLayout->setSpacing(2);
     puzzleSection_ = new QWidget(supporting);
-    auto* puzzleRow = informationRow(puzzleSection_, tr("Puzzles"), puzzleDetail_);
+    auto* puzzleRow =
+        informationRow(puzzleSection_, QStringLiteral("puzzle"), tr("Puzzles"), puzzleDetail_);
     puzzleDetail_->setObjectName(QStringLiteral("homePuzzleSummary"));
     auto* puzzles = new QPushButton(tr("Open Puzzles"), puzzleSection_);
     puzzles->setObjectName(QStringLiteral("homeOpenPuzzles"));
+    setQuietAction(*puzzles);
+    setIcon(*puzzles, QStringLiteral("chevron-right"));
     puzzleRow->addWidget(puzzles, 0, Qt::AlignVCenter);
     connect(puzzles, &QPushButton::clicked, this, &HomePage::puzzlesRequested);
     supportingLayout->addWidget(puzzleSection_);
     puzzleSection_->hide();
     engineSection_ = new QWidget(supporting);
-    auto* engineRow = informationRow(engineSection_, tr("Review engine"), engineDetail_);
+    auto* engineRow = informationRow(engineSection_, QStringLiteral("engine"), tr("Review engine"),
+                                     engineDetail_);
     engineDetail_->setObjectName(QStringLiteral("homeEngineStatus"));
     auto* settings = new QPushButton(tr("Engine Settings"), engineSection_);
     settings->setObjectName(QStringLiteral("homeEngineSettings"));
+    setQuietAction(*settings);
+    setIcon(*settings, QStringLiteral("chevron-right"));
     engineRow->addWidget(settings, 0, Qt::AlignVCenter);
     connect(settings, &QPushButton::clicked, this, &HomePage::settingsRequested);
     supportingLayout->addWidget(engineSection_);
@@ -201,22 +307,26 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent) {
 void HomePage::installImports(app::ImportController& imports, QAction& file, QAction& paste,
                               QAction& link) {
     auto* buttons = new QHBoxLayout;
+    buttons->setSpacing(8);
     auto* fileButton = new ImportDropButton(imports, this);
     fileButton->setObjectName(QStringLiteral("homeImportButton"));
     fileButton->setDefaultAction(&file);
     fileButton->setText(tr("Review a game"));
-    fileButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    fileButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     setPrimaryAction(*fileButton);
+    setIcon(*fileButton, QStringLiteral("import"));
     connect(&file, &QAction::changed, fileButton,
             [fileButton] { fileButton->setText(tr("Review a game")); });
     buttons->addWidget(fileButton);
     auto* pasteButton = new QToolButton(this);
     pasteButton->setDefaultAction(&paste);
-    pasteButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    pasteButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    setIcon(*pasteButton, QStringLiteral("paste"));
     buttons->addWidget(pasteButton);
     auto* linkButton = new QToolButton(this);
     linkButton->setDefaultAction(&link);
-    linkButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    linkButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    setIcon(*linkButton, QStringLiteral("link"));
     buttons->addWidget(linkButton);
     buttons->addStretch();
     entry_->addLayout(buttons);

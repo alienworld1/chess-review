@@ -53,6 +53,54 @@
 #include <array>
 
 namespace chess_review::ui {
+class ClassificationBadge final : public QWidget {
+  public:
+    explicit ClassificationBadge(QWidget* parent) : QWidget(parent) { setFixedSize(26, 26); }
+    void setClassification(std::optional<review::Classification> value) {
+        if (classification_ != value) {
+            classification_ = value;
+            setVisible(classification_.has_value());
+            update();
+        }
+    }
+
+  protected:
+    void paintEvent(QPaintEvent*) override {
+        if (!classification_) {
+            return;
+        }
+        QPainter painter(this);
+        paintClassificationBadge(painter, QRectF(rect()).adjusted(1, 1, -1, -1), *classification_);
+    }
+
+  private:
+    std::optional<review::Classification> classification_;
+};
+
+class PlayerSwatch final : public QWidget {
+  public:
+    explicit PlayerSwatch(QWidget* parent) : QWidget(parent) { setFixedSize(11, 11); }
+    void setWhite(bool white) {
+        if (white_ != white) {
+            white_ = white;
+            update();
+        }
+    }
+
+  protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(
+            QPen(QColor(white_ ? QStringLiteral("#9aa6b4") : QStringLiteral("#525e6e")), 1.0));
+        painter.setBrush(QColor(white_ ? QStringLiteral("#f5f4ef") : QStringLiteral("#262d36")));
+        painter.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 2.5, 2.5);
+    }
+
+  private:
+    bool white_ = true;
+};
+
 namespace {
 void updateOpeningLabel(QLabel& label, const QString& text) {
     label.setText(text);
@@ -292,28 +340,35 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     setObjectName(QStringLiteral("reviewPage"));
     auto& navigation = controller_.navigation();
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
     auto* header = new QHBoxLayout;
+    header->setSpacing(10);
     auto* back = new QPushButton(tr("Back to Games"), this);
     back->setObjectName(QStringLiteral("reviewBack"));
+    setQuietAction(*back);
+    setIcon(*back, QStringLiteral("arrow-left"));
     header->addWidget(back);
     game_ = new QLabel(this);
     game_->setTextFormat(Qt::PlainText);
     game_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     auto* gameHeading = new QVBoxLayout;
-    gameHeading->setSpacing(2);
+    gameHeading->setSpacing(1);
     gameHeading->addWidget(game_);
     headerOpening_ = new QLabel(this);
     headerOpening_->setObjectName(QStringLiteral("reviewHeaderOpening"));
     headerOpening_->setTextFormat(Qt::PlainText);
     headerOpening_->setWordWrap(true);
     headerOpening_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    setTextRole(*headerOpening_, "secondary");
+    setTextRole(*headerOpening_, "caption");
     headerOpening_->hide();
     gameHeading->addWidget(headerOpening_);
     header->addLayout(gameHeading, 1);
     setTextRole(*game_, "heading");
     auto* overviewButton = new QPushButton(tr("Summary"), this);
     overviewButton->setObjectName(QStringLiteral("reviewSummaryButton"));
+    setQuietAction(*overviewButton);
+    setIcon(*overviewButton, QStringLiteral("summary"));
     header->addWidget(overviewButton);
     connect(overviewButton, &QPushButton::clicked, this, [this] {
         controller_.exploration().returnToGame();
@@ -322,12 +377,17 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     });
     exportPgn_ = new QPushButton(tr("Export PGN…"), this);
     exportPgn_->setObjectName(QStringLiteral("reviewExportPgn"));
+    setQuietAction(*exportPgn_);
+    setIcon(*exportPgn_, QStringLiteral("export"));
     header->addWidget(exportPgn_);
     connect(exportPgn_, &QPushButton::clicked, this, &ReviewPage::savePgn);
     auto* options = new QToolButton(this);
     options->setObjectName(QStringLiteral("reviewOptions"));
     options->setText(tr("Review options"));
+    options->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     options->setPopupMode(QToolButton::InstantPopup);
+    setQuietAction(*options);
+    setIcon(*options, QStringLiteral("more"));
     auto* optionsMenu = new QMenu(options);
     options->setMenu(optionsMenu);
     header->addWidget(options);
@@ -340,11 +400,19 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     auto* left = new QWidget(splitter_);
     auto* boardLayout = new QVBoxLayout(left);
     boardLayout->setContentsMargins(0, 0, 0, 0);
+    boardLayout->setSpacing(6);
+    auto* topRow = new QHBoxLayout;
+    topRow->setContentsMargins(28, 0, 0, 0);
+    topRow->setSpacing(6);
+    topSwatch_ = new PlayerSwatch(left);
+    topRow->addWidget(topSwatch_);
     topPlayer_ = new QLabel(left);
     topPlayer_->setObjectName(QStringLiteral("reviewTopPlayer"));
     topPlayer_->setTextFormat(Qt::PlainText);
     topPlayer_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    boardLayout->addWidget(topPlayer_);
+    setTextRole(*topPlayer_, "strong");
+    topRow->addWidget(topPlayer_, 1);
+    boardLayout->addLayout(topRow);
     auto* boardFrame = new QWidget(left);
     boardFrame->setMinimumHeight(248);
     boardFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
@@ -358,21 +426,30 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     evaluation_ = new EvaluationBarWidget(*board_, boardFrame);
     evaluation_->setObjectName(QStringLiteral("reviewEvaluationBar"));
     boardLayout->addWidget(boardFrame, 1);
+    auto* bottomRow = new QHBoxLayout;
+    bottomRow->setContentsMargins(28, 0, 0, 0);
+    bottomRow->setSpacing(6);
+    bottomSwatch_ = new PlayerSwatch(left);
+    bottomRow->addWidget(bottomSwatch_);
     bottomPlayer_ = new QLabel(left);
     bottomPlayer_->setObjectName(QStringLiteral("reviewBottomPlayer"));
     bottomPlayer_->setTextFormat(Qt::PlainText);
     bottomPlayer_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    boardLayout->addWidget(bottomPlayer_);
+    setTextRole(*bottomPlayer_, "strong");
+    bottomRow->addWidget(bottomPlayer_, 1);
+    boardLayout->addLayout(bottomRow);
     previewLabel_ = new QLabel(left);
     previewLabel_->setObjectName(QStringLiteral("reviewPreview"));
     previewLabel_->setWordWrap(true);
-    setTextRole(*previewLabel_, "secondary");
+    setTextRole(*previewLabel_, "caption");
     boardLayout->addWidget(previewLabel_);
     auto* actions = new QHBoxLayout;
+    actions->setSpacing(4);
     actions->addStretch();
     const auto button = [this, actions](const QString& text, const QString& name) {
         auto* result = new QPushButton(text, this);
         result->setObjectName(name);
+        setQuietAction(*result);
         actions->addWidget(result);
         return result;
     };
@@ -380,19 +457,16 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     previousMove_ = button(tr("Previous"), QStringLiteral("reviewPreviousMove"));
     nextMove_ = button(tr("Next"), QStringLiteral("reviewNextMove"));
     lastMove_ = button(tr("End"), QStringLiteral("reviewLastMove"));
-    const auto navigationIcon = [](QPushButton* control, QStyle::StandardPixmap icon) {
-        const auto label = control->text();
-        control->setAccessibleName(label);
-        control->setToolTip(label);
-        setNavigationIcon(*control, icon);
-        control->setText({});
-        control->setFixedWidth(44);
+    const auto navigationIcon = [](QPushButton* control, const QString& iconName) {
+        setIconOnly(*control, iconName);
+        control->setFixedWidth(36);
     };
-    navigationIcon(firstMove_, QStyle::SP_MediaSkipBackward);
-    navigationIcon(previousMove_, QStyle::SP_ArrowLeft);
-    navigationIcon(nextMove_, QStyle::SP_ArrowRight);
-    navigationIcon(lastMove_, QStyle::SP_MediaSkipForward);
+    navigationIcon(firstMove_, QStringLiteral("skip-start"));
+    navigationIcon(previousMove_, QStringLiteral("chevron-left"));
+    navigationIcon(nextMove_, QStringLiteral("chevron-right"));
+    navigationIcon(lastMove_, QStringLiteral("skip-end"));
     auto* flip = button(tr("Flip Board"), QStringLiteral("reviewFlipBoard"));
+    setIcon(*flip, QStringLiteral("flip"));
     actions->addStretch();
     boardLayout->addLayout(actions);
     connect(firstMove_, &QPushButton::clicked, &controller_.exploration(),
@@ -494,6 +568,20 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
         const auto position = navigation.positionFor(node);
         return position && *position > 0 ? reviewMoveColor(navigation.move(*position)) : QColor{};
     });
+    timeline_->setMoveClassification(
+        [&navigation](chess::NodeId node) -> std::optional<review::Classification> {
+            const auto position = navigation.positionFor(node);
+            if (!position || *position == 0) {
+                return std::nullopt;
+            }
+            const auto* move = navigation.move(*position);
+            return move && move->classification ? move->classification->label : std::nullopt;
+        });
+    timeline_->setMoveKeyMoment([&navigation](chess::NodeId node) {
+        const auto position = navigation.positionFor(node);
+        return position && *position > 0 && navigation.keyMoment(*position);
+    });
+    timeline_->setMaximumHeight(104);
     for (auto* control : {firstMove_, previousMove_, nextMove_, lastMove_, flip}) {
         control->installEventFilter(this);
     }
@@ -507,43 +595,54 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     right->setMinimumWidth(300);
     scroll->setWidget(right);
     auto* rightRoot = new QVBoxLayout(right);
-    rightRoot->setContentsMargins(8, 12, 8, 12);
-    rightRoot->setSpacing(16);
+    rightRoot->setContentsMargins(4, 4, 8, 8);
+    rightRoot->setSpacing(12);
     summaryPanel_ = new QWidget(right);
     summaryPanel_->setObjectName(QStringLiteral("reviewOverviewPanel"));
+    setPanelSurface(*summaryPanel_);
     auto* overviewLayout = new QVBoxLayout(summaryPanel_);
-    overviewLayout->setContentsMargins(0, 0, 0, 0);
-    overviewLayout->setSpacing(16);
-    auto* summaryTitle = new QLabel(tr("Your game at a glance"), summaryPanel_);
+    overviewLayout->setContentsMargins(18, 16, 18, 16);
+    overviewLayout->setSpacing(10);
+    auto* summaryTitle = new QLabel(tr("Game Review"), summaryPanel_);
     setTextRole(*summaryTitle, "heading");
     overviewLayout->addWidget(summaryTitle);
     resultValue_ = new QLabel(summaryPanel_);
     resultValue_->setTextFormat(Qt::PlainText);
+    resultValue_->setWordWrap(true);
+    setTextRole(*resultValue_, "secondary");
     overviewLayout->addWidget(resultValue_);
     summaryOpening_ = new QLabel(summaryPanel_);
     summaryOpening_->setObjectName(QStringLiteral("reviewSummaryOpening"));
     summaryOpening_->setTextFormat(Qt::PlainText);
     summaryOpening_->setWordWrap(true);
     summaryOpening_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    setTextRole(*summaryOpening_, "secondary");
     summaryOpening_->hide();
     overviewLayout->addWidget(summaryOpening_);
-    auto* metrics = new QGridLayout;
-    const auto metric = [this, metrics](const QString& title, const char* name, int column) {
-        auto* value = new QLabel(QStringLiteral("—"), summaryPanel_);
+    auto* metrics = new QHBoxLayout;
+    metrics->setSpacing(10);
+    const auto metric = [this, metrics](const QString& title, const char* name) {
+        auto* tile = new QWidget(summaryPanel_);
+        setSubtleSurface(*tile);
+        auto* tileLayout = new QVBoxLayout(tile);
+        tileLayout->setContentsMargins(12, 10, 12, 10);
+        tileLayout->setSpacing(2);
+        auto* value = new QLabel(QStringLiteral("—"), tile);
         value->setObjectName(QString::fromLatin1(name));
         setTextRole(*value, "metric");
-        metrics->addWidget(value, 0, column);
-        auto* label = new QLabel(title, summaryPanel_);
-        setTextRole(*label, "secondary");
-        metrics->addWidget(label, 1, column);
+        tileLayout->addWidget(value);
+        auto* label = new QLabel(title, tile);
+        setTextRole(*label, "caption");
+        tileLayout->addWidget(label);
+        metrics->addWidget(tile, 1);
         return value;
     };
-    accuracyValue_ = metric(tr("Accuracy"), "reviewAccuracyValue", 0);
+    accuracyValue_ = metric(tr("Accuracy"), "reviewAccuracyValue");
     accuracyValue_->setWordWrap(true);
-    momentsValue_ = metric(tr("Key moments"), "reviewMomentsValue", 1);
+    momentsValue_ = metric(tr("Key moments"), "reviewMomentsValue");
     coverageValue_ = new QLabel(summaryPanel_);
     coverageValue_->setWordWrap(true);
-    setTextRole(*coverageValue_, "secondary");
+    setTextRole(*coverageValue_, "caption");
     overviewLayout->addLayout(metrics);
     overviewLayout->addWidget(coverageValue_);
     classificationCounts_ = new QTableWidget(0, 2, summaryPanel_);
@@ -556,16 +655,22 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
                                                                     QHeaderView::ResizeToContents);
     classificationCounts_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     classificationCounts_->setSelectionMode(QAbstractItemView::NoSelection);
+    classificationCounts_->setFocusPolicy(Qt::NoFocus);
     classificationCounts_->setShowGrid(false);
-    classificationCounts_->setMaximumHeight(280);
+    classificationCounts_->setIconSize(QSize(18, 18));
+    setFlatSurface(*classificationCounts_);
+    classificationCounts_->setMaximumHeight(240);
     overviewLayout->addWidget(classificationCounts_);
     summaryState_ = new QLabel(summaryPanel_);
     summaryState_->setObjectName(QStringLiteral("reviewSummaryState"));
     summaryState_->setWordWrap(true);
+    setTextRole(*summaryState_, "caption");
+    summaryState_->hide();
     overviewLayout->addWidget(summaryState_);
     startGuided_ = new QPushButton(tr("Start review"), summaryPanel_);
     startGuided_->setObjectName(QStringLiteral("startGuidedReview"));
     setPrimaryAction(*startGuided_);
+    setIcon(*startGuided_, QStringLiteral("play"));
     overviewLayout->addWidget(startGuided_);
     connect(startGuided_, &QPushButton::clicked, this, [this] {
         guiding_ = true;
@@ -579,66 +684,94 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     rightRoot->addWidget(lesson_);
     auto* rightLayout = new QVBoxLayout(lesson_);
     rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(16);
-    auto* momentRow = new QHBoxLayout;
-    rail_ = new QFrame(right);
+    rightLayout->setSpacing(12);
+    auto* coachCard = new QWidget(lesson_);
+    setPanelSurface(*coachCard);
+    auto* momentRow = new QHBoxLayout(coachCard);
+    momentRow->setContentsMargins(14, 14, 16, 14);
+    momentRow->setSpacing(12);
+    rail_ = new QFrame(coachCard);
     rail_->setFixedWidth(4);
     rail_->setAutoFillBackground(true);
     momentRow->addWidget(rail_);
     auto* moment = new QVBoxLayout;
-    headline_ = new QLabel(right);
+    moment->setSpacing(8);
+    auto* classRow = new QHBoxLayout;
+    classRow->setSpacing(8);
+    badge_ = new ClassificationBadge(coachCard);
+    classRow->addWidget(badge_);
+    headline_ = new QLabel(coachCard);
     headline_->setObjectName(QStringLiteral("reviewMomentHeadline"));
     headline_->setTextFormat(Qt::PlainText);
     headline_->setWordWrap(true);
-    auto headingFont = headline_->font();
-    headingFont.setBold(true);
-    headline_->setFont(headingFont);
     setTextRole(*headline_, "heading");
-    moment->addWidget(headline_);
-    auto* classRow = new QHBoxLayout;
-    classification_ = new QLabel(right);
+    classRow->addWidget(headline_);
+    classification_ = new QLabel(coachCard);
     classification_->setObjectName(QStringLiteral("reviewClassification"));
     setTextRole(*classification_, "badge");
     classRow->addWidget(classification_);
-    availability_ = new QLabel(right);
-    availability_->setObjectName(QStringLiteral("reviewAvailability"));
-    setTextRole(*availability_, "secondary");
-    classRow->addWidget(availability_);
     classRow->addStretch();
+    availability_ = new QLabel(coachCard);
+    availability_->setObjectName(QStringLiteral("reviewAvailability"));
+    setTextRole(*availability_, "caption");
+    classRow->addWidget(availability_);
     moment->addLayout(classRow);
-    explanation_ = new QLabel(right);
+    explanation_ = new QLabel(coachCard);
     explanation_->setObjectName(QStringLiteral("reviewMomentExplanation"));
     explanation_->setTextFormat(Qt::PlainText);
     explanation_->setWordWrap(true);
     explanation_->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     setTextRole(*explanation_, "lesson");
     moment->addWidget(explanation_);
-    alternative_ = new QLabel(right);
+    alternativeBox_ = new QWidget(coachCard);
+    setSubtleSurface(*alternativeBox_);
+    auto* altLayout = new QHBoxLayout(alternativeBox_);
+    altLayout->setContentsMargins(12, 8, 12, 8);
+    alternative_ = new QLabel(alternativeBox_);
     alternative_->setObjectName(QStringLiteral("reviewAlternative"));
     alternative_->setTextFormat(Qt::PlainText);
-    moment->addWidget(alternative_);
-    impact_ = new QLabel(right);
+    setTextRole(*alternative_, "strong");
+    altLayout->addWidget(alternative_, 1);
+    moment->addWidget(alternativeBox_);
+    explorationBox_ = new QWidget(coachCard);
+    setSubtleSurface(*explorationBox_);
+    auto* expStatusLayout = new QVBoxLayout(explorationBox_);
+    expStatusLayout->setContentsMargins(12, 8, 12, 8);
+    explorationStatus_ = new QLabel(explorationBox_);
+    explorationStatus_->setObjectName(QStringLiteral("reviewExplorationStatus"));
+    explorationStatus_->setTextFormat(Qt::PlainText);
+    explorationStatus_->setWordWrap(true);
+    explorationStatus_->installEventFilter(this);
+    expStatusLayout->addWidget(explorationStatus_);
+    moment->addWidget(explorationBox_);
+    impact_ = new QLabel(coachCard);
     impact_->setWordWrap(true);
     setTextRole(*impact_, "secondary");
     momentRow->addLayout(moment, 1);
-    rightLayout->addLayout(momentRow);
-    chessDetailsToggle_ = new QPushButton(tr("More about this move"), right);
+    rightLayout->addWidget(coachCard);
+    chessDetailsToggle_ = new QPushButton(tr("More about this move"), lesson_);
     chessDetailsToggle_->setObjectName(QStringLiteral("reviewChessDetailsToggle"));
     chessDetailsToggle_->setCheckable(true);
-    chessDetails_ = new QWidget(right);
+    setQuietAction(*chessDetailsToggle_);
+    setIcon(*chessDetailsToggle_, QStringLiteral("chevron-down"));
+    chessDetails_ = new QWidget(lesson_);
+    setSubtleSurface(*chessDetails_);
     auto* chessLayout = new QVBoxLayout(chessDetails_);
-    chessLayout->setContentsMargins(0, 0, 0, 0);
+    chessLayout->setContentsMargins(12, 10, 12, 10);
+    chessLayout->setSpacing(8);
     chessLayout->addWidget(impact_);
     connect(chessDetailsToggle_, &QPushButton::toggled, chessDetails_, &QWidget::setVisible);
     chessDetails_->hide();
-    comparison_ = new QWidget(right);
+    comparison_ = new QWidget(chessDetails_);
     comparison_->setObjectName(QStringLiteral("reviewComparison"));
     auto* comparisonLayout = new QVBoxLayout(comparison_);
     comparisonLayout->setContentsMargins(0, 0, 0, 0);
+    comparisonLayout->setSpacing(6);
     comparisonStatus_ = new QLabel(comparison_);
     comparisonStatus_->setObjectName(QStringLiteral("reviewComparisonStatus"));
     comparisonStatus_->setTextFormat(Qt::PlainText);
     comparisonStatus_->setWordWrap(true);
+    setTextRole(*comparisonStatus_, "caption");
     comparisonLayout->addWidget(comparisonStatus_);
     comparisonRows_ = new QTableView(comparison_);
     comparisonRows_->setObjectName(QStringLiteral("reviewComparisonRows"));
@@ -657,8 +790,8 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     comparisonRows_->setSelectionBehavior(QAbstractItemView::SelectRows);
     comparisonRows_->setSelectionMode(QAbstractItemView::SingleSelection);
     comparisonRows_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    comparisonRows_->setMinimumHeight(180);
-    comparisonRows_->setMaximumHeight(360);
+    comparisonRows_->setMinimumHeight(160);
+    comparisonRows_->setMaximumHeight(320);
     comparisonLayout->addWidget(comparisonRows_);
     const auto replayComparison = [this](const QModelIndex& index) {
         const int line = comparisonModel_->line(index.row());
@@ -674,35 +807,61 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
                 }
             });
     chessLayout->addWidget(comparison_);
-    candidates_ = new QComboBox(right);
+    candidates_ = new QComboBox(chessDetails_);
     candidates_->setObjectName(QStringLiteral("reviewCandidates"));
     candidates_->setAccessibleName(tr("Saved candidate continuations and root evaluations"));
     candidates_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     candidates_->setMinimumContentsLength(12);
     chessLayout->addWidget(candidates_);
-    explorationStatus_ = new QLabel(right);
-    explorationStatus_->setObjectName(QStringLiteral("reviewExplorationStatus"));
-    explorationStatus_->setTextFormat(Qt::PlainText);
-    explorationStatus_->setWordWrap(true);
-    explorationStatus_->installEventFilter(this);
-    rightLayout->addWidget(explorationStatus_);
-    auto* explorationActions = new QGridLayout;
-    const auto action = [right, explorationActions](const QString& text, const QString& name,
-                                                    int row, int column) {
-        auto* control = new QPushButton(text, right);
+    auto* keyActions = new QHBoxLayout;
+    keyActions->setSpacing(8);
+    previousMoment_ = new QPushButton(tr("Previous moment"), lesson_);
+    nextMoment_ = new QPushButton(tr("Continue"), lesson_);
+    setIcon(*previousMoment_, QStringLiteral("chevron-left"));
+    setPrimaryAction(*nextMoment_);
+    setIcon(*nextMoment_, QStringLiteral("chevron-right"));
+    previousMoment_->setObjectName(QStringLiteral("reviewPreviousMoment"));
+    nextMoment_->setObjectName(QStringLiteral("reviewNextMoment"));
+    keyActions->addWidget(previousMoment_);
+    keyActions->addWidget(nextMoment_, 1);
+    rightLayout->addLayout(keyActions);
+    auto* secondaryGroup = new QVBoxLayout;
+    secondaryGroup->setSpacing(6);
+    auto* primaryExploreRow = new QHBoxLayout;
+    primaryExploreRow->setSpacing(8);
+    auto* extraExploreRow = new QHBoxLayout;
+    extraExploreRow->setSpacing(8);
+    auto* retryRow = new QHBoxLayout;
+    retryRow->setSpacing(8);
+    const auto action = [this](const QString& text, const QString& name, const QString& icon) {
+        auto* control = new QPushButton(text, lesson_);
         control->setObjectName(name);
-        explorationActions->addWidget(control, row, column);
+        setIcon(*control, icon);
         return control;
     };
-    showLine_ = action(tr("Show Line"), QStringLiteral("reviewShowLine"), 0, 0);
-    tryAgain_ = action(tr("Try Again"), QStringLiteral("reviewTryAgain"), 0, 1);
-    analyze_ = action(tr("Analyze Position"), QStringLiteral("reviewAnalyzePosition"), 1, 0);
-    reloadExploration_ =
-        action(tr("Reload candidates"), QStringLiteral("reviewReloadCandidates"), 1, 1);
-    returnGame_ = action(tr("Return to Game"), QStringLiteral("reviewReturnToGame"), 2, 0);
-    hint_ = action(tr("Hint"), QStringLiteral("reviewHint"), 3, 0);
-    reveal_ = action(tr("Show Solution"), QStringLiteral("reviewShowSolution"), 3, 1);
-    rightLayout->addLayout(explorationActions);
+    tryAgain_ = action(tr("Try Again"), QStringLiteral("reviewTryAgain"), QStringLiteral("retry"));
+    showLine_ = action(tr("Show Line"), QStringLiteral("reviewShowLine"), QStringLiteral("line"));
+    analyze_ = action(tr("Analyze Position"), QStringLiteral("reviewAnalyzePosition"),
+                      QStringLiteral("analyze"));
+    reloadExploration_ = action(tr("Reload candidates"), QStringLiteral("reviewReloadCandidates"),
+                                QStringLiteral("refresh"));
+    returnGame_ = action(tr("Return to Game"), QStringLiteral("reviewReturnToGame"),
+                         QStringLiteral("arrow-left"));
+    hint_ = action(tr("Hint"), QStringLiteral("reviewHint"), QStringLiteral("hint"));
+    setPrimaryAction(*hint_);
+    reveal_ =
+        action(tr("Show Solution"), QStringLiteral("reviewShowSolution"), QStringLiteral("eye"));
+    primaryExploreRow->addWidget(tryAgain_, 1);
+    primaryExploreRow->addWidget(showLine_, 1);
+    extraExploreRow->addWidget(analyze_, 1);
+    extraExploreRow->addWidget(returnGame_, 1);
+    extraExploreRow->addWidget(reloadExploration_, 1);
+    retryRow->addWidget(hint_, 1);
+    retryRow->addWidget(reveal_, 1);
+    secondaryGroup->addLayout(retryRow);
+    secondaryGroup->addLayout(primaryExploreRow);
+    secondaryGroup->addLayout(extraExploreRow);
+    rightLayout->addLayout(secondaryGroup);
     auto& exploration = controller_.exploration();
     connect(showLine_, &QPushButton::clicked, this,
             [this] { controller_.exploration().showLine(candidates_->currentIndex()); });
@@ -728,15 +887,6 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     connect(analyze_, &QPushButton::clicked, this, &ReviewPage::analyzeRequested);
     connect(&exploration, &app::ReviewExplorationController::changed, this,
             &ReviewPage::updateNavigation);
-    auto* keyActions = new QHBoxLayout;
-    previousMoment_ = new QPushButton(tr("Previous moment"), right);
-    nextMoment_ = new QPushButton(tr("Continue"), right);
-    setPrimaryAction(*nextMoment_);
-    previousMoment_->setObjectName(QStringLiteral("reviewPreviousMoment"));
-    nextMoment_->setObjectName(QStringLiteral("reviewNextMoment"));
-    keyActions->addWidget(previousMoment_);
-    keyActions->addWidget(nextMoment_);
-    rightLayout->addLayout(keyActions);
     connect(previousMoment_, &QPushButton::clicked, &navigation,
             &app::ReviewNavigationController::previousMoment);
     connect(nextMoment_, &QPushButton::clicked, this, [this] {
@@ -747,7 +897,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
             updateSummary();
         }
     });
-    rightLayout->addWidget(chessDetailsToggle_);
+    rightLayout->addWidget(chessDetailsToggle_, 0, Qt::AlignLeft);
     rightLayout->addWidget(chessDetails_);
     const auto section = [this, right, rightRoot, optionsMenu](const QString& title,
                                                                bool expanded) {
@@ -765,7 +915,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
         } else {
             auto* dialog = new QDialog(this);
             dialog->setWindowTitle(title);
-            dialog->resize(720, 560);
+            dialog->resize(760, 620);
             auto* dialogLayout = new QVBoxLayout(dialog);
             content = new QWidget(dialog);
             dialogLayout->addWidget(content, 1);
@@ -782,8 +932,10 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     setupToggle_ = setupSection.first;
     setupToggle_->setObjectName(QStringLiteral("reviewSetupAction"));
     setup_ = setupSection.second;
+    setPanelSurface(*setup_);
     auto* setupLayout = new QVBoxLayout(setup_);
-    setupLayout->setContentsMargins(0, 0, 0, 0);
+    setupLayout->setContentsMargins(18, 16, 18, 16);
+    setupLayout->setSpacing(12);
     auto* setupTitle = new QLabel(tr("Let’s review your game"), setup_);
     setTextRole(*setupTitle, "heading");
     setupLayout->addWidget(setupTitle);
@@ -804,6 +956,8 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     auto* engineOptions = new QPushButton(tr("Engine and review options"), setup_);
     engineOptions->setObjectName(QStringLiteral("reviewEngineOptions"));
     engineOptions->setCheckable(true);
+    setQuietAction(*engineOptions);
+    setIcon(*engineOptions, QStringLiteral("chevron-down"));
     setupLayout->addWidget(engineOptions, 0, Qt::AlignLeft);
     auto* advanced = new QWidget(setup_);
     auto* advancedForm = new QFormLayout(advanced);
@@ -824,23 +978,31 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     reason_ = new QLabel(setup_);
     reason_->setTextFormat(Qt::PlainText);
     reason_->setWordWrap(true);
+    setTextRole(*reason_, "secondary");
     setupLayout->addWidget(reason_);
+    auto* setupActions = new QHBoxLayout;
+    setupActions->setSpacing(8);
     start_ = new QPushButton(tr("Analyze game"), setup_);
     start_->setObjectName(QStringLiteral("runReview"));
     setPrimaryAction(*start_);
-    setupLayout->addWidget(start_);
+    setIcon(*start_, QStringLiteral("play"));
+    setupActions->addWidget(start_, 1);
     auto* settings = new QPushButton(tr("Set up engine…"), setup_);
-    setupLayout->addWidget(settings);
+    setQuietAction(*settings);
+    setIcon(*settings, QStringLiteral("engine"));
+    setupActions->addWidget(settings);
+    setupLayout->addLayout(setupActions);
     connect(settings, &QPushButton::clicked, this, &ReviewPage::settingsRequested);
     cancel_ = new QPushButton(tr("Cancel review"), right);
     cancel_->setObjectName(QStringLiteral("cancelReview"));
-    rightRoot->addWidget(cancel_);
+    setIcon(*cancel_, QStringLiteral("stop"));
+    rightRoot->addWidget(cancel_, 0, Qt::AlignLeft);
     status_ = new QLabel(this);
     status_->setObjectName(QStringLiteral("reviewStatus"));
     status_->setAccessibleName(tr("Review progress"));
     status_->setTextFormat(Qt::PlainText);
     status_->setWordWrap(true);
-    setTextRole(*status_, "secondary");
+    setTextRole(*status_, "caption");
     layout->addWidget(status_);
     progress_ = new QProgressBar(this);
     progress_->setObjectName(QStringLiteral("reviewProgress"));
@@ -966,13 +1128,14 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     moves_->setSelectionBehavior(QAbstractItemView::SelectRows);
     moves_->setSelectionMode(QAbstractItemView::SingleSelection);
     moves_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    moves_->setMinimumHeight(140);
     moves_->horizontalHeader()->setStretchLastSection(true);
-    movesLayout->addWidget(moves_);
+    movesLayout->addWidget(moves_, 1);
     details_ = new QPlainTextEdit(movesTab);
     details_->setObjectName(QStringLiteral("reviewMoveDetails"));
     details_->setAccessibleName(tr("Selected move evidence and rationale"));
     details_->setReadOnly(true);
-    movesLayout->addWidget(details_);
+    movesLayout->addWidget(details_, 1);
     auto* paging = new QHBoxLayout;
     previousMoves_ = new QPushButton(tr("Previous moves"), movesTab);
     nextMoves_ = new QPushButton(tr("Next moves"), movesTab);
@@ -1120,6 +1283,7 @@ void ReviewPage::updateSummary() {
         summaryState_->setText(state.overviewError.isEmpty()
                                    ? tr("Preparing your review…")
                                    : tr("The summary could not be loaded."));
+        summaryState_->setVisible(true);
         return;
     }
     const auto& overview = *state.overview;
@@ -1147,8 +1311,8 @@ void ReviewPage::updateSummary() {
                                 : QStringLiteral("—");
     };
     const bool both = overview.reviewBothSides;
-    resultValue_->setText(both ? tr("Reviewing both players\nResult: %1").arg(overview.result)
-                               : tr("Reviewing %2 (%1)\nResult: %3")
+    resultValue_->setText(both ? tr("Reviewing both players · Result: %1").arg(overview.result)
+                               : tr("Reviewing %2 (%1) · Result: %3")
                                      .arg(sideText(state.run->selectedSide),
                                           state.run->selectedSide == chess::Color::White
                                               ? controller_.navigation().whitePlayer()
@@ -1169,6 +1333,10 @@ void ReviewPage::updateSummary() {
         classificationCounts_->horizontalHeader()->setSectionResizeMode(
             2, QHeaderView::ResizeToContents);
     }
+    auto countFont = classificationCounts_->font();
+    countFont.setWeight(QFont::DemiBold);
+    const auto countBadgeSize = std::max(18, classificationCounts_->fontMetrics().height() + 2);
+    classificationCounts_->setIconSize(QSize(countBadgeSize, countBadgeSize));
     for (std::size_t i = 0; i < side.counts.size(); ++i) {
         if ((both ? white.counts[i] + black.counts[i] : side.counts[i]) == 0) {
             continue;
@@ -1178,23 +1346,31 @@ void ReviewPage::updateSummary() {
         result.label = label;
         const int row = classificationCounts_->rowCount();
         classificationCounts_->insertRow(row);
-        classificationCounts_->setItem(row, 0,
-                                       new QTableWidgetItem(app::classificationSymbol(label) +
-                                                            QLatin1Char(' ') +
-                                                            app::classificationText(result)));
         classificationCounts_->setItem(
-            row, 1, new QTableWidgetItem(QString::number(both ? white.counts[i] : side.counts[i])));
+            row, 0,
+            new QTableWidgetItem(
+                QIcon(classificationPixmap(label, countBadgeSize, devicePixelRatioF())),
+                app::classificationText(result)));
+        auto* firstCount =
+            new QTableWidgetItem(QString::number(both ? white.counts[i] : side.counts[i]));
+        firstCount->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        firstCount->setFont(countFont);
+        classificationCounts_->setItem(row, 1, firstCount);
         if (both) {
-            classificationCounts_->setItem(row, 2,
-                                           new QTableWidgetItem(QString::number(black.counts[i])));
+            auto* blackCount = new QTableWidgetItem(QString::number(black.counts[i]));
+            blackCount->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            blackCount->setFont(countFont);
+            classificationCounts_->setItem(row, 2, blackCount);
         }
     }
     classificationCounts_->setVisible(classificationCounts_->rowCount() > 0);
+    classificationCounts_->horizontalHeader()->setVisible(both);
+    const int rowHeight = std::max(28, classificationCounts_->fontMetrics().height() + 12);
+    classificationCounts_->verticalHeader()->setDefaultSectionSize(rowHeight);
+    const int headerHeight =
+        both ? classificationCounts_->horizontalHeader()->sizeHint().height() : 0;
     classificationCounts_->setFixedHeight(
-        std::min(280, classificationCounts_->horizontalHeader()->height() +
-                          classificationCounts_->rowCount() *
-                              classificationCounts_->verticalHeader()->defaultSectionSize() +
-                          4));
+        std::min(240, headerHeight + classificationCounts_->rowCount() * rowHeight + 4));
     summaryState_->setText(
         !state.overviewError.isEmpty() ? tr("Summary update failed. Showing the previous results.")
         : state.overview->revision != state.run->revision ? tr("Updating analysis")
@@ -1205,6 +1381,7 @@ void ReviewPage::updateSummary() {
             ? tr("Some moves could not be assessed. Accuracy covers analyzed moves only.")
         : stable < evaluated ? tr("Some move assessments are preliminary.")
                              : QString{});
+    summaryState_->setVisible(!summaryState_->text().isEmpty());
 }
 void ReviewPage::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
@@ -1530,6 +1707,8 @@ void ReviewPage::updateNavigation() {
     }
     board_->setState(controller_.exploration().board());
     const bool black = nav.board().blackAtBottom;
+    topSwatch_->setWhite(black);
+    bottomSwatch_->setWhite(!black);
     const auto white = nav.whitePlayer().isEmpty() ? tr("White") : nav.whitePlayer();
     const auto blackPlayer = nav.blackPlayer().isEmpty() ? tr("Black") : nav.blackPlayer();
     topPlayer_->setText(black ? white : blackPlayer);
@@ -1587,11 +1766,12 @@ void ReviewPage::updateNavigation() {
     }
     const auto presentation = app::presentReviewMoment(move, nav.selected(), state.active);
     headline_->setText(presentation.move);
-    classification_->setText(presentation.symbol + QLatin1Char(' ') + presentation.classification);
+    const std::optional<review::Classification> classLabel =
+        move && move->classification ? move->classification->label : std::nullopt;
+    badge_->setClassification(classLabel);
+    classification_->setText(presentation.classification);
     classification_->setVisible(!presentation.classification.isEmpty());
-    const int classificationId = move && move->classification && move->classification->label
-                                     ? static_cast<int>(*move->classification->label)
-                                     : -1;
+    const int classificationId = classLabel ? static_cast<int>(*classLabel) : -1;
     if (classification_->property("classification").toInt() != classificationId ||
         !classification_->property("classification").isValid()) {
         classification_->setProperty("classification", classificationId);
@@ -1604,7 +1784,7 @@ void ReviewPage::updateNavigation() {
     alternative_->setText(presentation.alternative.isEmpty()
                               ? QString{}
                               : tr("Stronger move: %1").arg(presentation.alternative));
-    alternative_->setVisible(!presentation.alternative.isEmpty());
+    alternativeBox_->setVisible(!presentation.alternative.isEmpty());
     impact_->setText(presentation.impact);
     const auto detail = move ? app::reviewMoveDetails(*move) : QString{};
     if (details_->toPlainText() != detail) {
@@ -1657,9 +1837,16 @@ void ReviewPage::updateExploration() {
         headline_->setText(tr("Find a stronger move"));
     }
     explanation_->setVisible(!hidden);
+    if (hidden) {
+        badge_->setClassification(std::nullopt);
+    }
+    QPalette railPalette;
+    railPalette.setColor(QPalette::Window, hidden ? palette().color(QPalette::Mid)
+                                                  : reviewMoveColor(exploration.moment()));
+    rail_->setPalette(railPalette);
     classification_->setVisible(!hidden && !classification_->text().trimmed().isEmpty());
     availability_->setVisible(!hidden && !availability_->text().isEmpty());
-    alternative_->setVisible(!hidden && !alternative_->text().isEmpty());
+    alternativeBox_->setVisible(!hidden && !alternative_->text().isEmpty());
     if (hidden) {
         classification_->clear();
         availability_->clear();
@@ -1750,6 +1937,10 @@ void ReviewPage::updateExploration() {
                                    controller_.navigation().selected() > 0);
     returnGame_->setVisible(exploration.active());
     returnGame_->setText(hidden ? tr("Cancel practice") : tr("Return to Game"));
+    const QString returnIcon = hidden ? QStringLiteral("close") : QStringLiteral("arrow-left");
+    if (returnGame_->property("themeIcon").toString() != returnIcon) {
+        setIcon(*returnGame_, returnIcon);
+    }
     hint_->setVisible(hidden);
     hint_->setEnabled(state.mode == app::ExplorationMode::Retry && !state.pendingBoard &&
                       state.hintLevel != review::RetryHintLevel::Destination);
@@ -1770,7 +1961,7 @@ void ReviewPage::updateExploration() {
             QAccessible::updateAccessibility(&announcement);
         }
     }
-    explorationStatus_->setVisible(!status.isEmpty());
+    explorationBox_->setVisible(!status.isEmpty());
     if (hidden && !retryBoardFocused_ && board_->state().interactive && isVisible()) {
         retryBoardFocused_ = true;
         board_->setFocus(Qt::OtherFocusReason);

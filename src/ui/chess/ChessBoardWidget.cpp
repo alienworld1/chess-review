@@ -236,7 +236,7 @@ void ChessBoardWidget::paintEvent(QPaintEvent*) {
             }
             if (preferences_.coordinates) {
                 painter.setPen(
-                    QColor(light ? QStringLiteral("#55655c") : QStringLiteral("#34493b")));
+                    QColor(light ? QStringLiteral("#55655c") : QStringLiteral("#e8f0e8")));
                 auto font = painter.font();
                 font.setPixelSize(std::clamp(static_cast<int>(side * .18), 9, 14));
                 painter.setFont(font);

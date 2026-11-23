@@ -4,6 +4,11 @@
 #include <QColor>
 #include <QTableView>
 #include <functional>
+#include <optional>
+
+namespace chess_review::review {
+enum class Classification;
+}
 
 namespace chess_review::ui {
 class TimelineModel;
@@ -19,6 +24,9 @@ class MoveTimeline : public QTableView {
     void setMoveDescription(std::function<QString(chess::NodeId)> description);
     void setMoveMarker(std::function<QString(chess::NodeId)> marker);
     void setMoveAccent(std::function<QColor(chess::NodeId)> accent);
+    void setMoveClassification(
+        std::function<std::optional<review::Classification>(chess::NodeId)> classification);
+    void setMoveKeyMoment(std::function<bool(chess::NodeId)> keyMoment);
     void setHoverPreview(bool enabled);
     std::optional<app::NavigationTarget> targetAt(const QPoint& point) const;
   signals:

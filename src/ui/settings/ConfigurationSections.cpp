@@ -1,4 +1,5 @@
 #include "app/ReviewConfiguration.h"
+#include "ui/Theme.h"
 #include "ui/settings/EngineSettingsPage.h"
 #include <QCheckBox>
 #include <QComboBox>
@@ -45,11 +46,15 @@ QLabel* text(QWidget* parent, const QString& value = {}) {
 void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configuration) {
     auto* preferencesPage = new QWidget(sections_);
     auto* preferencesPageLayout = new QVBoxLayout(preferencesPage);
+    preferencesPageLayout->setContentsMargins(0, 10, 0, 0);
     auto* scroll = new QScrollArea(preferencesPage);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     auto* basic = new QWidget(scroll);
+    basic->setMaximumWidth(780);
     auto* basicLayout = new QVBoxLayout(basic);
+    basicLayout->setContentsMargins(16, 10, 16, 10);
+    basicLayout->setSpacing(12);
     scroll->setWidget(basic);
     preferencesPageLayout->addWidget(scroll, 1);
     sections_->addTab(preferencesPage, tr("&Review preferences"));
@@ -63,6 +68,7 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     quality->addItems({tr("Fast"), tr("Standard"), tr("Thorough")});
     reviewForm->addRow(tr("&Default quality"), quality);
     auto* description = text(review);
+    setTextRole(*description, "secondary");
     reviewForm->addRow(description);
     auto* lines = new QSpinBox(review);
     lines->setRange(1, 256);
@@ -87,9 +93,11 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     classificationPreset->setPlaceholderText(tr("Custom"));
     classificationPreset->addItems({tr("Standard"), tr("More sensitive"), tr("Less sensitive")});
     thresholdsForm->addRow(tr("Classification &preset"), classificationPreset);
-    thresholdsForm->addRow(
+    auto* classificationHint =
         text(classification, tr("Enter expected-score loss from 0 to 1. For example, 0.05 "
-                                "means a loss of 5 percentage points.")));
+                                "means a loss of 5 percentage points."));
+    setTextRole(*classificationHint, "secondary");
+    thresholdsForm->addRow(classificationHint);
     auto* inaccuracy = new QLineEdit(classification);
     auto* mistake = new QLineEdit(classification);
     auto* blunder = new QLineEdit(classification);
@@ -119,9 +127,11 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     cpuThreads->setSpecialValueText(tr("Automatic"));
     resourceForm->addRow(tr("Engine &workers"), workers);
     resourceForm->addRow(tr("Total CPU &threads"), cpuThreads);
-    resourceForm->addRow(
+    auto* resourceHint =
         text(resources, tr("Each worker uses the selected engine’s Threads and "
-                           "Hash settings. Reconnect the engine to apply changes.")));
+                           "Hash settings. Reconnect the engine to apply changes."));
+    setTextRole(*resourceHint, "secondary");
+    resourceForm->addRow(resourceHint);
     basicLayout->addWidget(resources);
 
     auto* preferences = new QGroupBox(tr("Application"), basic);
@@ -145,15 +155,20 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     basicLayout->addWidget(preferences);
     auto* basicHelp = text(basic, tr("Use Advanced to customize preset budgets or classification "
                                      "thresholds. Saving here may reformat config.toml."));
+    setTextRole(*basicHelp, "secondary");
     basicLayout->addWidget(basicHelp);
     basicLayout->addStretch();
     auto* basicStatus = text(preferencesPage);
     basicStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    setTextRole(*basicStatus, "secondary");
     preferencesPageLayout->addWidget(basicStatus);
     auto* basicActions = new QHBoxLayout;
     auto* apply = new QPushButton(tr("&Save preferences"), preferencesPage);
     apply->setObjectName(QStringLiteral("saveReviewPreferences"));
+    setPrimaryAction(*apply);
+    setIcon(*apply, QStringLiteral("save"));
     auto* reset = new QPushButton(tr("Discard changes"), preferencesPage);
+    setQuietAction(*reset);
     basicActions->addWidget(apply);
     basicActions->addWidget(reset);
     basicActions->addStretch();
@@ -161,10 +176,14 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
 
     auto* advanced = new QWidget(sections_);
     auto* advancedLayout = new QVBoxLayout(advanced);
+    advancedLayout->setContentsMargins(16, 14, 16, 14);
+    advancedLayout->setSpacing(10);
     sections_->addTab(advanced, tr("&Advanced"));
-    advancedLayout->addWidget(
+    auto* advancedHint =
         text(advanced, tr("Edit config.toml and validate it before saving. Review settings are "
-                          "captured when a review starts.")));
+                          "captured when a review starts."));
+    setTextRole(*advancedHint, "secondary");
+    advancedLayout->addWidget(advancedHint);
     auto* location = new QLineEdit(advanced);
     location->setReadOnly(true);
     location->setAccessibleName(tr("Configuration file location"));
@@ -179,15 +198,20 @@ void EngineSettingsPage::installConfiguration(app::ReviewConfiguration& configur
     advancedLayout->addWidget(editor, 1);
     auto* buttons = new QHBoxLayout;
     auto* reload = new QPushButton(tr("&Reload from disk"), advanced);
+    setIcon(*reload, QStringLiteral("refresh"));
     auto* validate = new QPushButton(tr("&Validate TOML"), advanced);
     validate->setObjectName(QStringLiteral("validateToml"));
     auto* save = new QPushButton(tr("&Save TOML"), advanced);
     save->setObjectName(QStringLiteral("saveToml"));
+    setPrimaryAction(*save);
+    setIcon(*save, QStringLiteral("save"));
     buttons->addWidget(reload);
     buttons->addWidget(validate);
     buttons->addWidget(save);
     buttons->addStretch();
     auto* reference = new QPushButton(tr("Configuration &reference…"), advanced);
+    setQuietAction(*reference);
+    setIcon(*reference, QStringLiteral("info"));
     buttons->addWidget(reference);
     advancedLayout->addLayout(buttons);
     auto* report = new QPlainTextEdit(advanced);

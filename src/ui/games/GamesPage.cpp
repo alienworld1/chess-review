@@ -11,6 +11,7 @@
 #include <QDialogButtonBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEvent>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QLabel>
@@ -30,6 +31,8 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <array>
+#include <functional>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -69,6 +72,22 @@ void configureTable(QTableView& table) {
     table.horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     table.horizontalHeader()->setStretchLastSection(true);
 }
+class PaletteRefreshFilter final : public QObject {
+  public:
+    PaletteRefreshFilter(std::function<void()> callback, QObject* parent)
+        : QObject(parent), callback_(std::move(callback)) {}
+
+  protected:
+    bool eventFilter(QObject*, QEvent* event) override {
+        if (event->type() == QEvent::PaletteChange) {
+            callback_();
+        }
+        return false;
+    }
+
+  private:
+    std::function<void()> callback_;
+};
 } // namespace
 
 class LibraryTableModel final : public QAbstractTableModel {
@@ -202,27 +221,43 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     setObjectName(QStringLiteral("gamesPage"));
     setAcceptDrops(true);
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
+    auto* headerRow = new QHBoxLayout;
+    headerRow->setSpacing(8);
     auto* heading = new QLabel(tr("Games"), this);
     setTextRole(*heading, "title");
-    layout->addWidget(heading);
-    auto* toolbar = new QHBoxLayout;
-    for (auto* action : {&fileAction, &pasteAction, &linkAction}) {
-        auto* button = new QToolButton(this);
-        button->setDefaultAction(action);
-        button->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        toolbar->addWidget(button);
-    }
+    headerRow->addWidget(heading);
+    headerRow->addStretch();
     refresh_ = new QPushButton(tr("Refresh"), this);
     refresh_->setObjectName(QStringLiteral("refreshGames"));
-    toolbar->addWidget(refresh_);
+    setQuietAction(*refresh_);
+    setIcon(*refresh_, QStringLiteral("refresh"));
+    headerRow->addWidget(refresh_);
     auto* statistics = new QPushButton(tr("Library Statistics…"), this);
     statistics->setObjectName(QStringLiteral("libraryStatisticsButton"));
+    setQuietAction(*statistics);
+    setIcon(*statistics, QStringLiteral("summary"));
     connect(statistics, &QPushButton::clicked, this, &GamesPage::showStatistics);
-    toolbar->addWidget(statistics);
+    headerRow->addWidget(statistics);
+    layout->addLayout(headerRow);
+
+    auto* toolbar = new QHBoxLayout;
+    toolbar->setSpacing(8);
+    const std::array importIcons{"import", "paste", "link"};
+    const std::array importActions{&fileAction, &pasteAction, &linkAction};
+    for (std::size_t i = 0; i < importActions.size(); ++i) {
+        auto* button = new QToolButton(this);
+        button->setDefaultAction(importActions[i]);
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        setIcon(*button, QString::fromLatin1(importIcons[i]));
+        toolbar->addWidget(button);
+    }
     toolbar->addStretch();
     layout->addLayout(toolbar);
 
     auto* searchBar = new QHBoxLayout;
+    searchBar->setSpacing(8);
     search_ = new QLineEdit(this);
     search_->setObjectName(QStringLiteral("gameSearch"));
     search_->setAccessibleName(tr("Search players"));
@@ -230,14 +265,24 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     search_->setClearButtonEnabled(true);
     search_->setAcceptDrops(false);
     search_->setMaxLength(persistence::GameLibraryQuery::maxSearchLength);
+    auto* searchIcon = new QAction(search_);
+    const auto updateSearchIcon = [searchIcon, this] {
+        const auto color = palette().color(QPalette::PlaceholderText);
+        searchIcon->setIcon(themedIcon(QStringLiteral("search"), color, color));
+    };
+    updateSearchIcon();
+    search_->addAction(searchIcon, QLineEdit::LeadingPosition);
+    search_->installEventFilter(new PaletteRefreshFilter(updateSearchIcon, search_));
     searchBar->addWidget(search_, 1);
     toggleFilters_ = new QPushButton(tr("Filters"), this);
     toggleFilters_->setObjectName(QStringLiteral("toggleGameFilters"));
     toggleFilters_->setCheckable(true);
+    setIcon(*toggleFilters_, QStringLiteral("filter"));
     searchBar->addWidget(toggleFilters_);
     togglePreview_ = new QPushButton(tr("Details"), this);
     togglePreview_->setObjectName(QStringLiteral("toggleGamePreview"));
     togglePreview_->setCheckable(true);
+    setIcon(*togglePreview_, QStringLiteral("board"));
     searchBar->addWidget(togglePreview_);
     layout->addLayout(searchBar);
     auto* find = new QShortcut(QKeySequence::Find, this);
@@ -303,18 +348,23 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     });
 
     auto* actions = new QHBoxLayout;
-    open_ = new QPushButton(tr("Open in Analyze"), this);
-    open_->setObjectName(QStringLiteral("openGameButton"));
-    open_->setToolTip(tr("Select a saved game, then open its moves and variations."));
-    actions->addWidget(open_);
+    actions->setSpacing(8);
     review_ = new QPushButton(tr("Review…"), this);
     review_->setObjectName(QStringLiteral("reviewGameButton"));
     setPrimaryAction(*review_);
+    setIcon(*review_, QStringLiteral("play"));
     actions->addWidget(review_);
-    actions->addStretch();
+    open_ = new QPushButton(tr("Open in Analyze"), this);
+    open_->setObjectName(QStringLiteral("openGameButton"));
+    open_->setToolTip(tr("Select a saved game, then open its moves and variations."));
+    setIcon(*open_, QStringLiteral("analyze"));
+    actions->addWidget(open_);
     remove_ = new QPushButton(tr("Delete game…"), this);
     remove_->setObjectName(QStringLiteral("deleteGameButton"));
+    setQuietAction(*remove_);
+    setIcon(*remove_, QStringLiteral("trash"));
     actions->addWidget(remove_);
+    actions->addStretch();
     connect(remove_, &QPushButton::clicked, this, &GamesPage::confirmDeletion);
     connect(review_, &QPushButton::clicked, this, [this] {
         if (const auto id = libraryModel_->gameId(games_->currentIndex().row());
@@ -329,6 +379,7 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     libraryStatus_->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                             Qt::TextSelectableByKeyboard);
     libraryStatus_->setObjectName(QStringLiteral("libraryStatus"));
+    setTextRole(*libraryStatus_, "caption");
     layout->addWidget(libraryStatus_);
     deletionStatus_ = new QLabel(this);
     deletionStatus_->setObjectName(QStringLiteral("gameDeletionStatus"));
@@ -345,7 +396,7 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     games_->setModel(libraryModel_);
     configureTable(*games_);
     games_->horizontalHeader()->setStretchLastSection(false);
-    games_->horizontalHeader()->setMinimumSectionSize(82);
+    games_->horizontalHeader()->setMinimumSectionSize(60);
     games_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     games_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     connect(games_, &QTableView::doubleClicked, this, &GamesPage::requestOpen);
@@ -358,17 +409,18 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
         updateOpenAction();
         updatePreviewVisibility();
     });
-    games_->setColumnWidth(2, 82);
-    games_->setColumnWidth(6, 120);
+    games_->setColumnWidth(2, 72);
+    games_->setColumnWidth(3, 88);
+    games_->setColumnWidth(6, 100);
     games_->setColumnHidden(5, true);
     games_->setColumnHidden(4, true);
     games_->setShowGrid(false);
-    games_->verticalHeader()->setDefaultSectionSize(36);
-    games_->setColumnWidth(7, 110);
+    games_->verticalHeader()->setDefaultSectionSize(38);
+    games_->setColumnWidth(7, 92);
     // Keep review results visible before secondary metadata on laptop displays.
     games_->horizontalHeader()->moveSection(games_->horizontalHeader()->visualIndex(6), 3);
     games_->horizontalHeader()->moveSection(games_->horizontalHeader()->visualIndex(7), 4);
-    games_->setColumnWidth(LibraryTableModel::openingColumn, 160);
+    games_->setColumnWidth(LibraryTableModel::openingColumn, 130);
     games_->setColumnWidth(5, 200);
     games_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(games_, &QTableView::customContextMenuRequested, this, [this](const QPoint& point) {
@@ -390,15 +442,18 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     content->addWidget(games_, 1);
     previewPane_ = new QWidget(this);
     previewPane_->setObjectName(QStringLiteral("selectedGamePreview"));
-    previewPane_->setFixedWidth(252);
+    previewPane_->setFixedWidth(268);
+    setPanelSurface(*previewPane_);
     auto* previewLayout = new QVBoxLayout(previewPane_);
-    previewLayout->setContentsMargins(6, 0, 0, 0);
+    previewLayout->setContentsMargins(14, 14, 14, 14);
+    previewLayout->setSpacing(10);
     previewHeading_ = new QLabel(tr("Game details"), previewPane_);
     setTextRole(*previewHeading_, "heading");
     previewLayout->addWidget(previewHeading_);
     previewStatus_ = new QLabel(previewPane_);
     previewStatus_->setTextFormat(Qt::PlainText);
     previewStatus_->setWordWrap(true);
+    setTextRole(*previewStatus_, "caption");
     previewLayout->addWidget(previewStatus_);
     board_ = new ChessBoardWidget(previewPane_);
     board_->setObjectName(QStringLiteral("gamePreviewBoard"));
@@ -411,21 +466,34 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     metadata_->setObjectName(QStringLiteral("gameMetadata"));
     metadata_->setAccessibleName(tr("Selected game metadata"));
     metadata_->setReadOnly(true);
+    metadata_->setFrameShape(QFrame::NoFrame);
+    setFlatSurface(*metadata_);
     metadata_->setMinimumHeight(45);
     previewLayout->addWidget(metadata_, 1);
+    previewLayout->addStretch(0);
     content->addWidget(previewPane_);
-    auto* paging = new QHBoxLayout;
     previous_ = new QPushButton(tr("Previous page"), this);
     next_ = new QPushButton(tr("Next page"), this);
     previous_->setObjectName(QStringLiteral("previousGames"));
     next_->setObjectName(QStringLiteral("nextGames"));
+    setQuietAction(*previous_);
+    setQuietAction(*next_);
+    setIcon(*previous_, QStringLiteral("chevron-left"));
+    setIcon(*next_, QStringLiteral("chevron-right"));
+    auto* paging = new QHBoxLayout;
+    paging->setSpacing(8);
     paging->addWidget(previous_);
     paging->addWidget(next_);
     paging->addStretch();
     layout->addLayout(paging);
     layout->addLayout(actions);
-    auto* progress = new QHBoxLayout;
-    importStatus_ = new QLabel(this);
+    auto* importBar = new QWidget(this);
+    importBar->setObjectName(QStringLiteral("importProgressBar"));
+    setSubtleSurface(*importBar);
+    auto* progress = new QHBoxLayout(importBar);
+    progress->setContentsMargins(12, 8, 12, 8);
+    progress->setSpacing(8);
+    importStatus_ = new QLabel(importBar);
     importStatus_->setTextFormat(Qt::PlainText);
     importStatus_->setWordWrap(true);
     importStatus_->setObjectName(QStringLiteral("importStatus"));
@@ -433,13 +501,17 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     importStatus_->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                            Qt::TextSelectableByKeyboard);
     progress->addWidget(importStatus_, 1);
-    cancel_ = new QPushButton(tr("Cancel import"), this);
+    cancel_ = new QPushButton(tr("Cancel import"), importBar);
     cancel_->setObjectName(QStringLiteral("cancelImport"));
+    setIcon(*cancel_, QStringLiteral("stop"));
     progress->addWidget(cancel_);
-    layout->insertLayout(2, progress);
-    report_ = new QPushButton(tr("Import report"), this);
+    report_ = new QPushButton(tr("Import report"), importBar);
     report_->setObjectName(QStringLiteral("importReportButton"));
+    setQuietAction(*report_);
+    setIcon(*report_, QStringLiteral("info"));
     progress->addWidget(report_);
+    layout->insertWidget(1, importBar);
+    importBar->hide();
     setTabOrder(refresh_, importStatus_);
     setTabOrder(importStatus_, cancel_);
     setTabOrder(cancel_, report_);
@@ -712,6 +784,7 @@ void GamesPage::confirmDeletion() {
 void GamesPage::updateImport() {
     reportDialog_->sync();
     const bool hasResults = !imports_.files().empty();
+    importStatus_->parentWidget()->setVisible(hasResults);
     importStatus_->setVisible(hasResults);
     report_->setVisible(hasResults);
     cancel_->setVisible(imports_.busy());

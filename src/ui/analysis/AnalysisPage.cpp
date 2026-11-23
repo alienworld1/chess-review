@@ -40,6 +40,8 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     : QWidget(parent), controller_(controller) {
     setObjectName(QStringLiteral("analyzePage"));
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
     notice_ = new QLabel(this);
     notice_->setObjectName(QStringLiteral("analysisGameInfo"));
     notice_->setTextFormat(Qt::PlainText);
@@ -48,8 +50,11 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     layout->addWidget(notice_);
     auto* commands = new QHBoxLayout;
     commands->setObjectName(QStringLiteral("analysisCommands"));
+    commands->setSpacing(8);
     auto* reset = new QPushButton(tr("New Analysis"), this);
     reset->setObjectName(QStringLiteral("newAnalysisButton"));
+    setCompactAction(*reset);
+    setIcon(*reset, QStringLiteral("plus"));
     const auto updateReset = [this, reset] {
         const bool game = controller_.activeTab() > 0;
         reset->setText(game ? tr("Scratch Analysis") : tr("New Analysis"));
@@ -72,12 +77,19 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     commands->addWidget(reset);
     auto* flip = new QPushButton(tr("Flip Board"), this);
     flip->setObjectName(QStringLiteral("flipBoardButton"));
+    setQuietAction(*flip);
+    setCompactAction(*flip);
+    setIcon(*flip, QStringLiteral("flip"));
     connect(flip, &QPushButton::clicked, &controller_, &app::AnalysisController::flip);
     commands->addWidget(flip);
     auto* options = new QToolButton(this);
     options->setObjectName(QStringLiteral("boardOptionsButton"));
     options->setText(tr("Board Options"));
+    options->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     options->setPopupMode(QToolButton::InstantPopup);
+    setQuietAction(*options);
+    setCompactAction(*options);
+    setIcon(*options, QStringLiteral("more"));
     auto* menu = new QMenu(options);
     auto* position = menu->addAction(tr("Set Position from FEN…"));
     position->setObjectName(QStringLiteral("setAnalysisPosition"));
@@ -214,10 +226,12 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     auto* boardLayout = new QVBoxLayout(boardPane);
     boardLayout_ = boardLayout;
     boardLayout->setContentsMargins(0, 0, 0, 0);
+    boardLayout->setSpacing(4);
     layout->addWidget(splitter_, 1);
     topPlayer_ = new QLabel(boardPane);
     topPlayer_->setTextFormat(Qt::PlainText);
     topPlayer_->setAlignment(Qt::AlignHCenter);
+    setTextRole(*topPlayer_, "strong");
     boardLayout->addWidget(topPlayer_);
     board_ = new ChessBoardWidget(boardPane);
     board_->setMinimumSize(248, 248);
@@ -225,19 +239,25 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     bottomPlayer_ = new QLabel(this);
     bottomPlayer_->setTextFormat(Qt::PlainText);
     bottomPlayer_->setAlignment(Qt::AlignHCenter);
+    setTextRole(*bottomPlayer_, "strong");
     boardLayout->addWidget(bottomPlayer_);
     status_ = new QLabel(this);
     status_->setObjectName(QStringLiteral("analysisStatus"));
     status_->setTextFormat(Qt::PlainText);
     status_->setWordWrap(true);
     status_->setAccessibleName(tr("Analysis status"));
+    setTextRole(*status_, "caption");
     boardLayout->addWidget(status_);
     auto* navigationWidget = new QWidget(boardPane);
     auto* navigation = new QHBoxLayout(navigationWidget);
     navigation->setContentsMargins(0, 0, 0, 0);
+    navigation->setSpacing(4);
+    navigation->addStretch();
     const auto addNavigation = [this, navigation, navigationWidget](const QString& text,
                                                                     auto method) {
         auto* button = new QPushButton(text, navigationWidget);
+        setQuietAction(*button);
+        setCompactAction(*button);
         connect(button, &QPushButton::clicked, &controller_, method);
         const auto refreshButton = [this, button, method] {
             const bool backward = method == &app::AnalysisController::previous ||
@@ -252,6 +272,7 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     addNavigation(tr("Previous"), &app::AnalysisController::previous);
     addNavigation(tr("Next"), &app::AnalysisController::next);
     addNavigation(tr("End"), &app::AnalysisController::end);
+    navigation->addStretch();
     boardLayout->addWidget(navigationWidget);
 
     const auto addShortcut = [this, navigationWidget](Qt::Key key, auto method) {
@@ -266,22 +287,34 @@ AnalysisPage::AnalysisPage(app::AnalysisController& controller, QWidget* parent)
     timeline_ = new MoveTimelineView(controller_, boardPane);
     boardLayout->addWidget(timeline_);
     notation_ = new QWidget(splitter_);
+    setPanelSurface(*notation_);
     auto* notationLayout = new QVBoxLayout(notation_);
-    notationLayout->setContentsMargins(0, 0, 0, 0);
+    notationLayout->setContentsMargins(12, 10, 12, 12);
+    notationLayout->setSpacing(8);
     auto* notationCommands = new QHBoxLayout;
+    notationCommands->setSpacing(6);
     edit_ = new QPushButton(tr("Edit Note…"), notation_);
     edit_->setObjectName(QStringLiteral("editAnalysisNote"));
+    setQuietAction(*edit_);
+    setIcon(*edit_, QStringLiteral("note"));
     variations_ = new QPushButton(tr("Variations"), notation_);
     variations_->setObjectName(QStringLiteral("analysisVariationActions"));
+    setQuietAction(*variations_);
+    setIcon(*variations_, QStringLiteral("variations"));
     save_ = new QPushButton(tr("Save PGN…"), notation_);
     save_->setObjectName(QStringLiteral("saveAnalysisPgn"));
     save_->setToolTip(tr("Save a PGN copy with the current lines, notes, and board markings."));
+    setQuietAction(*save_);
+    setIcon(*save_, QStringLiteral("save"));
     notationCommands->addWidget(edit_);
     notationCommands->addWidget(variations_);
     notationCommands->addStretch();
     notationCommands->addWidget(save_);
     notationLayout->addLayout(notationCommands);
     tree_ = new GameTreeView(controller_, notation_);
+    tree_->setFrameShape(QFrame::NoFrame);
+    tree_->setMinimumHeight(64);
+    setFlatSurface(*tree_);
     notationLayout->addWidget(tree_, 1);
     notes_ = new QPlainTextEdit(notation_);
     notes_->setObjectName(QStringLiteral("positionNotes"));
@@ -498,6 +531,8 @@ void AnalysisPage::installReviewNavigation() {
     auto* back = new QPushButton(tr("Back to Review"), this);
     back->setObjectName(QStringLiteral("backToReview"));
     back->setToolTip(tr("Return to the review position (Alt+Left)."));
+    setQuietAction(*back);
+    setIcon(*back, QStringLiteral("arrow-left"));
     header->addWidget(back, 0, Qt::AlignVCenter);
     auto* context = new QVBoxLayout;
     context->setSpacing(2);
