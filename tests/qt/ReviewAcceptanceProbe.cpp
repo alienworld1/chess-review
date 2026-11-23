@@ -292,7 +292,7 @@ void run(ui::MainWindow& window) {
         activate(window, "registerEngine");
         until([&] { return !settings.state().listing && settings.state().profiles.size() == 1; },
               "engine registered");
-        render(window, QStringLiteral("settings"), "registerEngine");
+        render(window, QStringLiteral("settings"), "chooseEngine");
         child<QAction>(window, "pastePgnAction")->trigger();
         auto* editor = child<QPlainTextEdit>(window, "pastePgnEditor");
         QFile pgn(input);
