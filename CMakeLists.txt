@@ -212,6 +212,49 @@ qt_add_resources(chess_review_ui "settings_reference"
     BASE "docs"
     FILES docs/config.example.toml
 )
+qt_add_resources(chess_review_ui "icons"
+    PREFIX "/icons"
+    BASE "assets/icons"
+    FILES
+        assets/icons/analyze.svg
+        assets/icons/arrow-left.svg
+        assets/icons/board.svg
+        assets/icons/chevron-down.svg
+        assets/icons/chevron-left.svg
+        assets/icons/chevron-right.svg
+        assets/icons/close.svg
+        assets/icons/deepen.svg
+        assets/icons/engine.svg
+        assets/icons/export.svg
+        assets/icons/eye.svg
+        assets/icons/filter.svg
+        assets/icons/flip.svg
+        assets/icons/games.svg
+        assets/icons/hint.svg
+        assets/icons/home.svg
+        assets/icons/import.svg
+        assets/icons/info.svg
+        assets/icons/line.svg
+        assets/icons/link.svg
+        assets/icons/more.svg
+        assets/icons/note.svg
+        assets/icons/paste.svg
+        assets/icons/pause.svg
+        assets/icons/play.svg
+        assets/icons/plus.svg
+        assets/icons/puzzle.svg
+        assets/icons/refresh.svg
+        assets/icons/retry.svg
+        assets/icons/save.svg
+        assets/icons/search.svg
+        assets/icons/settings.svg
+        assets/icons/skip-end.svg
+        assets/icons/skip-start.svg
+        assets/icons/stop.svg
+        assets/icons/summary.svg
+        assets/icons/trash.svg
+        assets/icons/variations.svg
+)
 qt_add_resources(chess_review_ui "pieces"
     PREFIX "/pieces"
     BASE "assets/pieces/cburnett"
