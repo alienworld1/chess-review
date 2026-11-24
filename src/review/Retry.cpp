@@ -200,6 +200,7 @@ std::optional<RetryHint> retryHint(const chess::Position& root, const MoveEviden
         for (const auto& fact : newer) {
             if (fact.kind != kind || fact.source != FactSource::Best ||
                 fact.beneficiary != root.sideToMove() ||
+                (kind == TacticalKind::HangingPiece && fact.linePlies > 1) ||
                 ((kind == TacticalKind::Promotion || kind == TacticalKind::Exchange ||
                   kind == TacticalKind::Material) &&
                  !fact.retainedOpportunity)) {

@@ -4,6 +4,7 @@
 #include "persistence/GameRepository.h"
 #include "review/Classification.h"
 #include "review/Comparison.h"
+#include "review/Explanation.h"
 #include "review/Intelligence.h"
 #include "review/Retry.h"
 #include "review/Review.h"
@@ -123,6 +124,7 @@ struct ReviewMove {
     std::optional<double> accuracyLoss;
     review::SpecialAssessment special;
     std::vector<review::TacticalFact> tacticalFacts;
+    std::optional<review::MoveExplanation> explanation;
     std::array<std::int64_t, 4> stabilityEvidenceIds{};
     std::array<review::AnalysisStrength, 4> stabilityStrength;
     review::StabilityAssessment stability;

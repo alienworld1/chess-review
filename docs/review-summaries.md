@@ -305,14 +305,20 @@ threshold-only priorities. All targets use the existing bounded stronger stages;
 no new automatic verification pass is added. Insufficient evidence retains the
 ordinary result, even after processing finishes.
 
-Tactical explanations use legal replay of at most 16 plies. Supported facts include
-material and exchange consequences, undefended-piece captures, immediate promotions,
-and conservative direct checking forks. An exchange requires an actual rook/minor
-trade, not merely a two-pawn change. En passant and underpromotion use the chess
-adapter. Generic material language identifies a consequence **along the saved
-continuation**, rather than claiming every defence is forced. A terminal replay
-can prove checkmate in that position; deeper engine mate predictions do not prove
-all possible defences. No exhaustive mate prover is included.
+Move explanations derive from verified board facts on the actual before/after
+positions (such as immediate checkmate, mate signals, pawn promotions, safe
+forks, captures of undefended pieces, recaptures, immediate exchange or
+material wins, pins, saving or defending threatened pieces, direct threats,
+discovered attacks, castling, equal piece trades, check evasions, checks, and
+piece development) together with short, retained tactical consequences in the
+saved continuation (at most 5–6 plies). Distant undefended-piece artifacts from
+deep continuations are not surfaced, and moves without a dominant concrete theme
+use concise generic phrasing. For error moves, explanations prioritize allowed
+or missed mates, immediate hanging or lost pieces, allowed forks or promotions,
+missed immediate tactics, and short retained line losses or missed gains. A
+terminal replay can prove checkmate in that position; deeper engine mate
+predictions do not prove all possible defences. No exhaustive mate prover is
+included.
 
 The selected move updates in place from committed evidence. Direct fork actors and
 targets receive board highlights when they belong to the displayed original move.

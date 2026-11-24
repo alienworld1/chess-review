@@ -189,6 +189,15 @@ TEST_CASE("Retry idea hints require matching concrete witnesses in both passes",
     const auto fallback = retryHint(root, shortPass, longPass, {});
     REQUIRE(fallback);
     CHECK(fallback->idea == RetryIdea::General);
+
+    // Deep-PV hanging pieces (ply > 1) never trigger a HangingPiece retry hint.
+    const auto deepPos =
+        std::get<chess::Position>(chess::Position::fromFen("r6k/8/8/3q4/8/8/P7/K2R4 w - - 0 1"));
+    const auto deepHanging = hintEvidence(deepPos, {"d1d2", "d5d6", "d2d6"}, "a1b1", false);
+    const auto deepVerify = hintEvidence(deepPos, {"d1d2", "d5d6", "d2d6"}, "a1b1", true);
+    const auto deepHint = retryHint(deepPos, deepHanging, deepVerify, {});
+    REQUIRE(deepHint);
+    CHECK(deepHint->idea == RetryIdea::General);
 }
 TEST_CASE("Retry hints use corrected tactical rules without rewriting historical evidence",
           "[unit][review][retry]") {

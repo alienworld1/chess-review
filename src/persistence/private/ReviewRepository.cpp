@@ -2,6 +2,7 @@
 #include "engine/EffectiveSearch.h"
 #include "persistence/private/ReviewCodec.h"
 #include "persistence/private/StorageSession.h"
+#include "review/Explanation.h"
 #include <QJsonArray>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -1828,6 +1829,9 @@ LoadReviewMovesResult readMovePage(QSqlDatabase& db, const StoredReview& run,
             if (row.positionIndex <= bookPlies(run)) {
                 review::applyBookClassification(result);
             }
+            const auto& explanationPair = chosen ? chosen->pair : quickPair;
+            row.explanation =
+                review::explainMove(*position, explanationPair, result, row.tacticalFacts);
             // Full PVs remain in selected exploration snapshots, not timeline pages.
             for (auto& fact : row.tacticalFacts) {
                 fact.line.clear();

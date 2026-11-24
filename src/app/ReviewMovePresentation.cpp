@@ -25,6 +25,207 @@ QString pieceText(chess::PieceType type) {
     }
     return {};
 }
+QString piecePluralText(chess::PieceType type) {
+    switch (type) {
+    case chess::PieceType::Pawn:
+        return QObject::tr("pawns");
+    case chess::PieceType::Knight:
+        return QObject::tr("knights");
+    case chess::PieceType::Bishop:
+        return QObject::tr("bishops");
+    case chess::PieceType::Rook:
+        return QObject::tr("rooks");
+    case chess::PieceType::Queen:
+        return QObject::tr("queens");
+    case chess::PieceType::King:
+        return QObject::tr("kings");
+    }
+    return {};
+}
+QString squareName(const std::optional<chess::Square>& square) {
+    return square ? QString::fromStdString(square->name()) : QString{};
+}
+QString explanationText(const review::MoveExplanation& e, const persistence::ReviewMove& move) {
+    using review::ExplanationKind;
+    const QString side =
+        e.beneficiary == chess::Color::White ? QObject::tr("White") : QObject::tr("Black");
+    switch (e.kind) {
+    case ExplanationKind::Generic:
+        return {};
+    case ExplanationKind::DeliversCheckmate:
+        return QObject::tr("Delivers checkmate!");
+    case ExplanationKind::LeadsToMate:
+        return e.checksKing ? QObject::tr("Gives check and continues a forced checkmate.")
+                            : QObject::tr("Sets up a forced checkmate.");
+    case ExplanationKind::PromotesPawn:
+        return QObject::tr("Promotes the pawn to a %1.").arg(pieceText(e.actor));
+    case ExplanationKind::ForksPieces:
+        if (e.checksKing && e.secondaryPiece && e.secondarySquare) {
+            return QObject::tr("Forks the king and the %1 on %2.")
+                .arg(pieceText(*e.secondaryPiece), squareName(e.secondarySquare));
+        }
+        if (e.targetPiece && e.square && e.secondaryPiece && e.secondarySquare) {
+            return QObject::tr("Forks the %1 on %2 and the %3 on %4.")
+                .arg(pieceText(*e.targetPiece), squareName(e.square), pieceText(*e.secondaryPiece),
+                     squareName(e.secondarySquare));
+        }
+        return QObject::tr("Forks two pieces.");
+    case ExplanationKind::CapturesFreePiece:
+        if (e.targetPiece && e.square) {
+            return QObject::tr("Captures an undefended %1 on %2.")
+                .arg(pieceText(*e.targetPiece), squareName(e.square));
+        }
+        return {};
+    case ExplanationKind::Recaptures:
+        if (e.square && e.targetPiece && *e.targetPiece != chess::PieceType::Pawn) {
+            return QObject::tr("Recaptures the %1 on %2.")
+                .arg(pieceText(*e.targetPiece), squareName(e.square));
+        }
+        if (e.square) {
+            return QObject::tr("Recaptures on %1.").arg(squareName(e.square));
+        }
+        return {};
+    case ExplanationKind::WinsExchangeImmediate:
+        return e.square ? QObject::tr("Wins the exchange on %1.").arg(squareName(e.square))
+                        : QString{};
+    case ExplanationKind::WinsMaterialImmediate:
+        if (e.targetPiece && e.square) {
+            return QObject::tr("Wins the %1 on %2.")
+                .arg(pieceText(*e.targetPiece), squareName(e.square));
+        }
+        return {};
+    case ExplanationKind::WinsExchangeInLine:
+        return QObject::tr("In this move’s analyzed continuation, %1 wins the exchange.").arg(side);
+    case ExplanationKind::WinsMaterialInLine:
+        return QObject::tr("In this move’s analyzed continuation, %1 wins material.").arg(side);
+    case ExplanationKind::CreatesPin:
+        if (e.targetPiece && e.square && e.secondaryPiece) {
+            return QObject::tr("Pins the %1 on %2 to the %3.")
+                .arg(pieceText(*e.targetPiece), squareName(e.square), pieceText(*e.secondaryPiece));
+        }
+        return {};
+    case ExplanationKind::SavesPiece:
+        return QObject::tr("Moves the %1 to safety.").arg(pieceText(e.actor));
+    case ExplanationKind::DefendsPiece:
+        if (e.targetPiece && e.square) {
+            return QObject::tr("Defends the %1 on %2.")
+                .arg(pieceText(*e.targetPiece), squareName(e.square));
+        }
+        return {};
+    case ExplanationKind::CreatesThreat:
+        if (e.targetPiece && e.square) {
+            return e.undefended ? QObject::tr("Threatens the undefended %1 on %2.")
+                                      .arg(pieceText(*e.targetPiece), squareName(e.square))
+                                : QObject::tr("Threatens the %1 on %2.")
+                                      .arg(pieceText(*e.targetPiece), squareName(e.square));
+        }
+        return {};
+    case ExplanationKind::CreatesDiscoveredAttack:
+        if (e.targetPiece && e.square) {
+            return e.undefended ? QObject::tr("Uncovers an attack on the undefended %1 on %2.")
+                                      .arg(pieceText(*e.targetPiece), squareName(e.square))
+                                : QObject::tr("Uncovers an attack on the %1 on %2.")
+                                      .arg(pieceText(*e.targetPiece), squareName(e.square));
+        }
+        return {};
+    case ExplanationKind::Castles:
+        return QObject::tr("Castles to bring the king to safety.");
+    case ExplanationKind::TradesPieces:
+        if (e.targetPiece && e.square) {
+            if (e.actor == *e.targetPiece) {
+                return QObject::tr("Trades %1 on %2.")
+                    .arg(piecePluralText(e.actor), squareName(e.square));
+            }
+            return QObject::tr("Trades a %1 for a %2 on %3.")
+                .arg(pieceText(e.actor), pieceText(*e.targetPiece), squareName(e.square));
+        }
+        return {};
+    case ExplanationKind::EscapesCheck:
+        return e.blocksCheck ? QObject::tr("Blocks the check.")
+                             : QObject::tr("Moves the king out of check.");
+    case ExplanationKind::GivesCheck:
+        return QObject::tr("Gives check, forcing a response.");
+    case ExplanationKind::DevelopsPiece:
+        return e.central ? QObject::tr("Develops the %1 toward the center.").arg(pieceText(e.actor))
+                         : QObject::tr("Develops the %1.").arg(pieceText(e.actor));
+    case ExplanationKind::AllowsMate:
+        return !move.bestSan.isEmpty()
+                   ? QObject::tr("This allows a forced checkmate; %1 was needed.").arg(move.bestSan)
+                   : QObject::tr("This allows a forced checkmate.");
+    case ExplanationKind::MissesMate:
+        if (move.classification && move.classification->label == review::Classification::Miss) {
+            return !move.bestSan.isEmpty()
+                       ? QObject::tr("This misses a forced checkmate; %1 was winning.")
+                             .arg(move.bestSan)
+                       : QObject::tr("This misses a forced checkmate.");
+        }
+        return !move.bestSan.isEmpty()
+                   ? QObject::tr("This lets a forced checkmate slip away; %1 was winning.")
+                         .arg(move.bestSan)
+                   : QObject::tr("This lets a forced checkmate slip away.");
+    case ExplanationKind::HangsPiece:
+        if (e.targetPiece && e.square) {
+            return QObject::tr("Leaves the %1 on %2 undefended.")
+                .arg(pieceText(*e.targetPiece), squareName(e.square));
+        }
+        return {};
+    case ExplanationKind::FailsToSavePiece:
+        if (e.targetPiece && e.square) {
+            return QObject::tr("Fails to save the %1 on %2.")
+                .arg(pieceText(*e.targetPiece), squareName(e.square));
+        }
+        return {};
+    case ExplanationKind::LosesPieceImmediate:
+        if (e.targetPiece && e.square) {
+            return QObject::tr("Loses the %1 on %2.")
+                .arg(pieceText(*e.targetPiece), squareName(e.square));
+        }
+        return {};
+    case ExplanationKind::AllowsExchangeImmediate:
+        return e.square ? QObject::tr("Allows the opponent to win the exchange on %1.")
+                              .arg(squareName(e.square))
+                        : QString{};
+    case ExplanationKind::AllowsFork:
+        return e.square ? QObject::tr("Allows a %1 fork on %2.")
+                              .arg(pieceText(e.actor), squareName(e.square))
+                        : QString{};
+    case ExplanationKind::AllowsPromotion:
+        return e.square ? QObject::tr("Allows the opponent to promote a pawn on %1.")
+                              .arg(squareName(e.square))
+                        : QString{};
+    case ExplanationKind::MissesFreePiece:
+        if (e.targetPiece && e.square) {
+            return !move.bestSan.isEmpty()
+                       ? QObject::tr("Misses capturing an undefended %1 on %2; %3 was better.")
+                             .arg(pieceText(*e.targetPiece), squareName(e.square), move.bestSan)
+                       : QObject::tr("Misses capturing an undefended %1 on %2.")
+                             .arg(pieceText(*e.targetPiece), squareName(e.square));
+        }
+        return {};
+    case ExplanationKind::MissesFork:
+        return !move.bestSan.isEmpty() ? QObject::tr("Misses a fork with %1.").arg(move.bestSan)
+                                       : QObject::tr("Misses a fork.");
+    case ExplanationKind::MissesPromotion:
+        return !move.bestSan.isEmpty()
+                   ? QObject::tr("Misses a pawn promotion with %1.").arg(move.bestSan)
+                   : QObject::tr("Misses a pawn promotion.");
+    case ExplanationKind::LosesExchangeInLine:
+        return QObject::tr("In this move’s analyzed continuation, %1 wins the exchange.").arg(side);
+    case ExplanationKind::LosesMaterialInLine:
+        return QObject::tr("In this move’s analyzed continuation, %1 wins material.").arg(side);
+    case ExplanationKind::MissesExchangeInLine:
+        return !move.bestSan.isEmpty()
+                   ? QObject::tr("In the stronger continuation (%1), %2 wins the exchange.")
+                         .arg(move.bestSan, side)
+                   : QObject::tr("In the stronger continuation, %1 wins the exchange.").arg(side);
+    case ExplanationKind::MissesMaterialInLine:
+        return !move.bestSan.isEmpty()
+                   ? QObject::tr("In the stronger continuation (%1), %2 wins material.")
+                         .arg(move.bestSan, side)
+                   : QObject::tr("In the stronger continuation, %1 wins material.").arg(side);
+    }
+    return {};
+}
 QString specialStatus(review::SpecialStatus status) {
     switch (status) {
     case review::SpecialStatus::NotCandidate:
@@ -318,54 +519,6 @@ ReviewMomentPresentation presentReviewMoment(const persistence::ReviewMove* move
         view.explanation = QObject::tr("This move follows a line in the bundled opening book.");
         return view;
     }
-    const auto factContext = [&](const review::TacticalFact& fact) -> QString {
-        const auto square = QString::fromStdString(fact.square.name());
-        const auto side =
-            fact.beneficiary == chess::Color::White ? QObject::tr("White") : QObject::tr("Black");
-        const auto context = fact.source == review::FactSource::Best
-                                 ? QObject::tr("In the stronger continuation, ")
-                                 : QObject::tr("In this move’s analyzed continuation, ");
-        switch (fact.kind) {
-        case review::TacticalKind::HangingPiece:
-            return context + QObject::tr("an undefended piece on %1 can be captured.").arg(square);
-        case review::TacticalKind::Fork:
-            return context + QObject::tr("the %1 on %2 gives check and attacks two pieces.")
-                                 .arg(fact.modelVersion == 1 && fact.actor == chess::PieceType::Pawn
-                                          ? QObject::tr("piece")
-                                          : pieceText(fact.actor),
-                                      square);
-        case review::TacticalKind::Material:
-            return context +
-                   QObject::tr("%1 gains %2 pawns of material.").arg(side).arg(fact.material);
-        case review::TacticalKind::Exchange:
-            return context + QObject::tr("%1 wins a rook for a minor piece.").arg(side);
-        case review::TacticalKind::Checkmate:
-            return context + QObject::tr("the line ends in checkmate. Other defences may differ.");
-        case review::TacticalKind::Promotion:
-            return context + QObject::tr("%1 promotes to a %2.").arg(side, pieceText(fact.actor));
-        case review::TacticalKind::Sacrifice:
-            return context +
-                   QObject::tr("%1 gives up material before the tactical resolution.").arg(side);
-        }
-        return {};
-    };
-    const auto mateBefore =
-        move->rawBefore.score && move->rawBefore.score->kind == review::ScoreKind::Mate
-            ? std::optional(*move->rawBefore.score)
-            : std::nullopt;
-    const auto mateAfter =
-        move->rawAfter.score && move->rawAfter.score->kind == review::ScoreKind::Mate
-            ? std::optional(*move->rawAfter.score)
-            : std::nullopt;
-    const bool mateAfterForMover =
-        mateAfter &&
-        ((move->rawAfter.perspective == move->mover) ? mateAfter->value > 0 : mateAfter->value < 0);
-    const bool mateBeforeForMover =
-        mateBefore && ((move->rawBefore.perspective == move->mover) ? mateBefore->value > 0
-                                                                    : mateBefore->value < 0);
-    const bool mateAfterAgainstMover =
-        mateAfter &&
-        ((move->rawAfter.perspective == move->mover) ? mateAfter->value < 0 : mateAfter->value > 0);
     if (result.label == review::Classification::Brilliant) {
         const auto* sac = [&]() -> const review::TacticalFact* {
             for (const auto& f : move->special.witnesses) {
@@ -398,42 +551,46 @@ ReviewMomentPresentation presentReviewMoment(const persistence::ReviewMove* move
             view.explanation = QObject::tr(
                 "A critical, hard-to-find move that stands clearly above every alternative.");
         }
-    } else if (result.label == review::Classification::Miss) {
-        if (mateBeforeForMover && !mateAfterForMover) {
-            view.explanation = !move->bestSan.isEmpty()
-                                   ? QObject::tr("This misses a forced checkmate; %1 was winning.")
-                                         .arg(move->bestSan)
-                                   : QObject::tr("This misses a forced checkmate.");
-        } else if (!move->bestSan.isEmpty()) {
-            view.explanation =
-                QObject::tr("This misses a winning tactical chance with %1.").arg(move->bestSan);
-        }
-    } else if (result.label == review::Classification::Blunder ||
-               result.label == review::Classification::Mistake ||
-               result.label == review::Classification::Inaccuracy) {
-        if (mateAfterAgainstMover && !move->bestSan.isEmpty()) {
-            view.explanation =
-                QObject::tr("This allows a forced checkmate; %1 was needed.").arg(move->bestSan);
-        } else if (mateBeforeForMover && !mateAfterForMover && !move->bestSan.isEmpty()) {
-            view.explanation =
-                QObject::tr("This lets a forced checkmate slip away; %1 was winning.")
-                    .arg(move->bestSan);
-        }
-    }
-    if (view.explanation.isEmpty()) {
-        // Explain one verified fact. A fact in an engine line is not a claim about every defence.
-        for (const auto& fact : move->tacticalFacts) {
-            if (fact.source == review::FactSource::Best && result.playedMoveRank == 1) {
-                continue;
+    } else if (result.ruleId == "forced.best.v3") {
+        view.explanation = QObject::tr("This is the only legal move.");
+    } else if (move->explanation && move->explanation->kind != review::ExplanationKind::Generic) {
+        view.explanation = explanationText(*move->explanation, *move);
+    } else if (!move->explanation) {
+        const auto mateBefore =
+            move->rawBefore.score && move->rawBefore.score->kind == review::ScoreKind::Mate
+                ? std::optional(*move->rawBefore.score)
+                : std::nullopt;
+        const auto mateAfter =
+            move->rawAfter.score && move->rawAfter.score->kind == review::ScoreKind::Mate
+                ? std::optional(*move->rawAfter.score)
+                : std::nullopt;
+        const bool mateAfterForMover =
+            mateAfter && ((move->rawAfter.perspective == move->mover) ? mateAfter->value > 0
+                                                                      : mateAfter->value < 0);
+        const bool mateBeforeForMover =
+            mateBefore && ((move->rawBefore.perspective == move->mover) ? mateBefore->value > 0
+                                                                        : mateBefore->value < 0);
+        const bool mateAfterAgainstMover =
+            mateAfter && ((move->rawAfter.perspective == move->mover) ? mateAfter->value < 0
+                                                                      : mateAfter->value > 0);
+        if (result.label == review::Classification::Miss) {
+            if (mateBeforeForMover && !mateAfterForMover) {
+                view.explanation =
+                    !move->bestSan.isEmpty()
+                        ? QObject::tr("This misses a forced checkmate; %1 was winning.")
+                              .arg(move->bestSan)
+                        : QObject::tr("This misses a forced checkmate.");
             }
-            if (fact.source == review::FactSource::Played &&
-                fact.kind == review::TacticalKind::Material && fact.beneficiary != move->mover &&
-                result.label && !review::isError(*result.label)) {
-                continue;
-            }
-            view.explanation = factContext(fact);
-            if (!view.explanation.isEmpty()) {
-                break;
+        } else if (result.label == review::Classification::Blunder ||
+                   result.label == review::Classification::Mistake ||
+                   result.label == review::Classification::Inaccuracy) {
+            if (mateAfterAgainstMover && !move->bestSan.isEmpty()) {
+                view.explanation = QObject::tr("This allows a forced checkmate; %1 was needed.")
+                                       .arg(move->bestSan);
+            } else if (mateBeforeForMover && !mateAfterForMover && !move->bestSan.isEmpty()) {
+                view.explanation =
+                    QObject::tr("This lets a forced checkmate slip away; %1 was winning.")
+                        .arg(move->bestSan);
             }
         }
     }
@@ -443,6 +600,12 @@ ReviewMomentPresentation presentReviewMoment(const persistence::ReviewMove* move
                 QObject::tr("There isn’t enough reliable analysis to assess this move.");
         } else if (result.ruleId == "forced.best.v3") {
             view.explanation = QObject::tr("This is the only legal move.");
+        } else if (*result.label == review::Classification::Miss) {
+            view.explanation =
+                !move->bestSan.isEmpty()
+                    ? QObject::tr("This misses a winning tactical chance with %1.")
+                          .arg(move->bestSan)
+                    : QObject::tr("Compare this move with the engine’s continuation.");
         } else if (result.playedMoveRank == 1) {
             view.explanation = QObject::tr("This is the strongest move in the position.");
         } else if (*result.label == review::Classification::Excellent) {

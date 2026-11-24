@@ -100,14 +100,79 @@ class ReviewNavigationTest final : public QObject {
         persistence::ReviewMove move{};
         move.classification = review::ClassificationResult{};
         move.classification->label = review::Classification::Mistake;
-        review::TacticalFact fact;
-        fact.kind = review::TacticalKind::Material;
-        fact.source = review::FactSource::Best;
-        fact.material = 3;
-        move.tacticalFacts = {fact};
+        review::MoveExplanation explanation;
+        explanation.kind = review::ExplanationKind::MissesMaterialInLine;
+        explanation.beneficiary = chess::Color::White;
+        explanation.material = 3;
+        move.explanation = explanation;
         const auto view = app::presentReviewMoment(&move, 1, false);
         QVERIFY(view.explanation.contains(QStringLiteral("In the stronger continuation")));
         QVERIFY(!view.explanation.contains(QStringLiteral("forced")));
+    }
+    void presentationRendersGroundedThemesWithoutSpuriousUndefendedPieces() {
+        persistence::ReviewMove move{};
+        move.classification = review::ClassificationResult{};
+        move.classification->label = review::Classification::Excellent;
+        move.bestSan = QStringLiteral("e3");
+
+        review::TacticalFact artifact;
+        artifact.kind = review::TacticalKind::HangingPiece;
+        artifact.source = review::FactSource::Played;
+        artifact.square = *chess::Square::fromName("e4");
+        artifact.linePlies = 6;
+        move.tacticalFacts = {artifact};
+
+        review::MoveExplanation exp;
+        exp.kind = review::ExplanationKind::DevelopsPiece;
+        exp.actor = chess::PieceType::Knight;
+        exp.square = *chess::Square::fromName("c3");
+        exp.central = true;
+        move.explanation = exp;
+        const auto nc3 = app::presentReviewMoment(&move, 9, false);
+        QVERIFY(!nc3.explanation.contains(QStringLiteral("undefended")));
+        QCOMPARE(nc3.explanation, QStringLiteral("Develops the knight toward the center."));
+
+        exp = {};
+        exp.kind = review::ExplanationKind::Generic;
+        move.explanation = exp;
+        const auto f4 = app::presentReviewMoment(&move, 31, false);
+        QCOMPARE(f4.explanation,
+                 QStringLiteral("A strong move, nearly as good as the engine’s top choice."));
+
+        exp = {};
+        exp.kind = review::ExplanationKind::Recaptures;
+        exp.targetPiece = chess::PieceType::Knight;
+        exp.square = *chess::Square::fromName("c3");
+        move.explanation = exp;
+        QCOMPARE(app::presentReviewMoment(&move, 21, false).explanation,
+                 QStringLiteral("Recaptures the knight on c3."));
+
+        exp = {};
+        exp.kind = review::ExplanationKind::CreatesThreat;
+        exp.targetPiece = chess::PieceType::Knight;
+        exp.square = *chess::Square::fromName("f6");
+        move.explanation = exp;
+        QCOMPARE(app::presentReviewMoment(&move, 3, false).explanation,
+                 QStringLiteral("Threatens the knight on f6."));
+
+        move.classification->label = review::Classification::Blunder;
+        exp = {};
+        exp.kind = review::ExplanationKind::HangsPiece;
+        exp.targetPiece = chess::PieceType::Rook;
+        exp.square = *chess::Square::fromName("d4");
+        move.explanation = exp;
+        QCOMPARE(app::presentReviewMoment(&move, 15, false).explanation,
+                 QStringLiteral("Leaves the rook on d4 undefended."));
+
+        move.classification->label = review::Classification::Great;
+        move.explanation = review::MoveExplanation{};
+        QVERIFY(
+            app::presentReviewMoment(&move, 17, false)
+                .explanation.contains(QStringLiteral("stands clearly above every alternative")));
+
+        move.classification->label = review::Classification::Brilliant;
+        QVERIFY(app::presentReviewMoment(&move, 19, false)
+                    .explanation.contains(QStringLiteral("brilliant sacrifice")));
     }
     void tacticalPresentationNeverDrawsFutureLineSquaresOnTheGameBoard() {
         persistence::ReviewMove move{};
