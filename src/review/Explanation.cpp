@@ -310,16 +310,20 @@ std::optional<MoveExplanation> detectFork(const chess::Position& before, chess::
     if (count < 2 || !hasNewTarget) {
         return std::nullopt;
     }
-    std::sort(targets.begin(), targets.begin() + static_cast<std::ptrdiff_t>(count),
-              [](const Target& a, const Target& b) {
-                  if (a.isKing != b.isKing) {
-                      return a.isKing;
-                  }
-                  if (pieceValue(a.type) != pieceValue(b.type)) {
-                      return pieceValue(a.type) > pieceValue(b.type);
-                  }
-                  return a.undefended && !b.undefended;
-              });
+    std::partial_sort(targets.begin(), targets.begin() + 2,
+                      targets.begin() + static_cast<std::ptrdiff_t>(count),
+                      [](const Target& a, const Target& b) {
+                          if (a.isKing != b.isKing) {
+                              return a.isKing;
+                          }
+                          if (pieceValue(a.type) != pieceValue(b.type)) {
+                              return pieceValue(a.type) > pieceValue(b.type);
+                          }
+                          if (a.undefended != b.undefended) {
+                              return a.undefended;
+                          }
+                          return a.square.index() < b.square.index();
+                      });
     MoveExplanation result;
     result.kind = ExplanationKind::ForksPieces;
     result.beneficiary = mover;
@@ -348,7 +352,7 @@ std::optional<MoveExplanation> detectPin(const chess::Position& before, chess::M
         {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}}};
     std::optional<MoveExplanation> best;
     int bestRank = -1;
-    for (const auto dir : allDirs) {
+    for (const auto& dir : allDirs) {
         if (!sliderMatchesDirection(moved->type, dir)) {
             continue;
         }

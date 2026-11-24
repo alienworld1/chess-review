@@ -213,7 +213,7 @@ TEST_CASE("Positive tactical and positional themes are accurately identified",
             CHECK(exp.secondarySquare == sq("d8"));
         }
 
-        const auto safeFork = position("2r3q1/7k/8/5N2/8/8/8/K7 w - - 0 1");
+        const auto safeFork = position("2r3q1/7k/2r5/5N2/8/8/8/K7 w - - 0 1");
         {
             const auto pair = makePair(safeFork, "f5e7", "f5e7", "c8c7");
             const auto cls = makeClass(Classification::Best, safeFork, "f5e7");
@@ -223,7 +223,7 @@ TEST_CASE("Positive tactical and positional themes are accurately identified",
             CHECK(exp.targetPiece == chess::PieceType::Queen);
             CHECK(exp.square == sq("g8"));
             CHECK(exp.secondaryPiece == chess::PieceType::Rook);
-            CHECK(exp.secondarySquare == sq("c8"));
+            CHECK(exp.secondarySquare == sq("c6"));
         }
 
         // Rook on f8 captures f7 knight safely, so Nf7+ is not a valid fork.
