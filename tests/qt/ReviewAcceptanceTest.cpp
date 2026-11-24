@@ -97,10 +97,15 @@ Result launch(const QTemporaryDir& root, const QString& mode, const QString& pgn
                 process.waitForFinished(5000) && process.exitStatus() == QProcess::CrashExit;
         }
     } else {
-        const int timeout = !engine.isEmpty() ? 360000
-                            : qEnvironmentVariableIsEmpty("CHESS_REVIEW_ACCEPTANCE_RENDER_DIR")
-                                ? 120000
-                                : 240000;
+        int timeout = 120'000;
+        if (!engine.isEmpty()) {
+            timeout = 360'000;
+        } else if (mode == QStringLiteral("complete")) {
+            // Leave time for probe setup, summary checks and clean shutdown.
+            timeout = review_acceptance::completeReviewTimeoutMs + 60'000;
+        } else if (!qEnvironmentVariableIsEmpty("CHESS_REVIEW_ACCEPTANCE_RENDER_DIR")) {
+            timeout = 240'000;
+        }
         result.normal = process.waitForFinished(timeout) &&
                         process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
     }

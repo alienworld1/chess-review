@@ -467,8 +467,21 @@ void run(ui::MainWindow& window) {
         until([&] { return child<ui::ReviewPage>(window, "reviewPage")->isVisible(); },
               "return to task");
     }
-    until([&] { return !review.taskState().busy; }, "review finished",
-          real.isEmpty() ? 90000 : 300000);
+    const int reviewTimeout = !real.isEmpty() ? 300'000
+                              : mode == QStringLiteral("complete")
+                                  ? review_acceptance::completeReviewTimeoutMs
+                                  : 90'000;
+    if (!QTest::qWaitFor([&] { return !review.taskState().busy; }, reviewTimeout)) {
+        const auto& state = review.taskState();
+        report({{"event", "review_timeout"},
+                {"elapsed_ms", elapsed.elapsed()},
+                {"completed", state.run ? state.run->completedPositions : 0},
+                {"total", state.run ? state.run->totalPositions : 0},
+                {"refinement_done", state.refinementDone},
+                {"refinement_total", state.refinementTotal},
+                {"searches", searches}});
+        require(false, "review finished");
+    }
     QObject::disconnect(cancelConnection);
     QObject::disconnect(searchConnection);
     QObject::disconnect(attemptConnection);

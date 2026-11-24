@@ -17,6 +17,9 @@
 #include <variant>
 
 namespace review_acceptance {
+// Completing every refinement on the 60-ply fixture takes longer under sanitizers.
+inline constexpr int completeReviewTimeoutMs = 240'000;
+
 inline std::shared_ptr<const chess_review::pgn::PgnDocument> readGame(const QString& path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
