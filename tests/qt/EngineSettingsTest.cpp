@@ -282,7 +282,7 @@ class EngineSettingsTest final : public QObject {
         QVERIFY(value);
         QCOMPARE(value->text(), QStringLiteral("1"));
         value->setText(QStringLiteral("2"));
-        QTest::keyClick(value, Qt::Key_Return);
+        QTest::keyPress(value, Qt::Key_Return);
         QTRY_COMPARE(
             controller.state().profiles.front().optionOverrides.value(QStringLiteral("threads")),
             QStringLiteral("2"));
@@ -349,7 +349,7 @@ class EngineSettingsTest final : public QObject {
             sections->findChild<QComboBox*>(QStringLiteral("classificationPreset"));
         QVERIFY(bothSides && threshold && classification);
         QCOMPARE(classification->currentIndex(), 0);
-        QTest::keyClick(classification, Qt::Key_Down);
+        QTest::keyPress(classification, Qt::Key_Down);
         QCOMPARE(classification->currentIndex(), 1);
         QCOMPARE(threshold->text(), QStringLiteral("0.04"));
         apply->click();

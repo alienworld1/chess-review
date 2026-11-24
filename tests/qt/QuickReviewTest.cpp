@@ -2620,7 +2620,7 @@ class QuickReviewTest final : public QObject {
         QCOMPARE(linked.board().pieces, linkedEdited);
         QVERIFY(!f.window.findChild<QMessageBox*>(QStringLiteral("discardAnalysisDialog")));
         auto* backToReview = f.window.findChild<QPushButton*>(QStringLiteral("backToReview"));
-        QTest::keyClick(backToReview, Qt::Key_Left, Qt::AltModifier);
+        QTest::keyPress(backToReview, Qt::Key_Left, Qt::AltModifier);
         QTRY_VERIFY(analyzePosition->isVisible());
         QTRY_VERIFY(!exploration.state().pendingBoard);
         QCOMPARE(exploration.state().mode, app::ExplorationMode::Line);

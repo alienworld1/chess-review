@@ -155,7 +155,7 @@ TEST_CASE("Summary facts select chronological errors and actual mate transitions
     CHECK(both.add(opponent).selected);
     const auto next = both.add(player);
     CHECK(next.selected);
-    CHECK_FALSE(next.opponentContext);
+    CHECK(!next.opponentContext.has_value());
     CHECK(both.finish().keyMoments == 2);
     SummaryBuilder mates(Color::White);
     SummaryMoveFacts move;
