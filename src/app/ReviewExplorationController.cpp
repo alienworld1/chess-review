@@ -301,11 +301,30 @@ void ReviewExplorationController::publish() {
                          evidence_->move.positionIndex == target_.position;
     const auto* c =
         evidence_ && evidence_->move.classification ? &*evidence_->move.classification : nullptr;
-    state_.canRetry = current && c && c->stable && c->label && review::isError(*c->label) &&
-                      evidence_->deep && evidence_->verified && evidence_->retryHint &&
-                      evidence_->move.mover == run_->selectedSide && !state_.loading &&
-                      !workerBusy_ && !sandbox_.busy() && search_.isNull() && cacheRead_.isNull() &&
-                      !hidesSolution();
+    const bool retrySide = evidence_ && run_ &&
+                           (evidence_->run.settings.configuration.ui.reviewBothSides ||
+                            evidence_->move.mover == run_->selectedSide);
+    const bool retryEvidence =
+        evidence_ && evidence_->retryHint &&
+        ((c && c->stable && evidence_->deep && evidence_->verified) || evidence_->preliminary);
+    state_.canRetry = current && c && c->label && review::isError(*c->label) && retryEvidence &&
+                      retrySide && !state_.loading && !workerBusy_ && !sandbox_.busy() &&
+                      search_.isNull() && cacheRead_.isNull() && !hidesSolution();
+    if (state_.canRetry) {
+        state_.retryToolTip =
+            tr("Restore the position before this move and try to find a stronger choice.");
+    } else if (state_.loading) {
+        state_.retryToolTip = tr("Loading move evidence…");
+    } else if (!c || !c->label) {
+        state_.retryToolTip = tr("Try Again becomes available once this move is analyzed.");
+    } else if (!review::isError(*c->label)) {
+        state_.retryToolTip =
+            tr("Try Again is available on Inaccuracy, Mistake, Blunder, and Miss moves.");
+    } else if (!retrySide) {
+        state_.retryToolTip = tr("Try Again is available on your side’s error moves.");
+    } else {
+        state_.retryToolTip = tr("Try Again is currently unavailable for this move.");
+    }
     state_.canAnalyze =
         run_ && (state_.mode == ExplorationMode::Game
                      ? !navigation_.pending() && !navigation_.previewing() && navigation_.position()
@@ -583,7 +602,12 @@ void ReviewExplorationController::tryAgain() {
     state_.pendingBoard = true;
     displayedBoard_.interactive = false;
     displayedBoard_.annotations.clear();
-    state_.message = tr("Find a stronger move. You can request a hint or show the solution.");
+    const bool verifiedRetry = evidence->deep.has_value() && evidence->verified.has_value();
+    state_.message =
+        verifiedRetry
+            ? tr("Find a stronger move. You can request a hint or show the solution.")
+            : tr("Find a stronger move (preliminary analysis). You can request a hint or show "
+                 "the solution.");
     sandbox_.openPosition(evidence->before);
     if (closing_ || generation != generation_) {
         return;
@@ -679,35 +703,53 @@ void ReviewExplorationController::grade(chess::Move move) {
     session_ = settings_.state().runtime.session;
     const auto generation = generation_;
     workerBusy_ = true;
-    worker_.start([this, evidence, discovery, overrides, matching, generation, move] {
+    const bool verifiedRetry = evidence->deep.has_value() && evidence->verified.has_value();
+    worker_.start([this, evidence, discovery, overrides, matching, generation, move,
+                   verifiedRetry] {
         review::RetryResult grade;
         std::optional<engine::AnalysisRequest> request;
         std::optional<engine::CacheQuery> query;
         QString error;
         try {
             const auto& config = evidence->run.settings.configuration.values;
-            grade = review::gradeRetry(*evidence->before, move, *evidence->deep,
-                                       *evidence->verified, config);
+            if (verifiedRetry) {
+                grade = review::gradeRetry(*evidence->before, move, *evidence->deep,
+                                           *evidence->verified, config);
+            } else if (evidence->preliminary) {
+                grade = review::gradeRetry(*evidence->before, move, *evidence->preliminary, config);
+            }
             if (!grade.grade) {
                 auto child = *evidence->before;
-                if (std::holds_alternative<chess::Error>(child.play(move))) {
+                if (!verifiedRetry && !evidence->preliminary) {
+                    error = tr("Move evaluation could not be prepared.");
+                } else if (std::holds_alternative<chess::Error>(child.play(move))) {
                     error = tr("The attempted move is unavailable.");
                 } else if (child.legalMoves().empty()) {
                     const auto terminal = review::terminalEvidence(child);
-                    grade = review::gradeRetry(*evidence->before, move, *evidence->deep,
-                                               *evidence->verified, config, &terminal, &terminal);
+                    grade =
+                        verifiedRetry
+                            ? review::gradeRetry(*evidence->before, move, *evidence->deep,
+                                                 *evidence->verified, config, &terminal, &terminal)
+                            : review::gradeRetry(*evidence->before, move, *evidence->preliminary,
+                                                 config, &terminal);
                 } else if (!matching || !discovery) {
                     error = tr("Connect the original review engine in Settings, then try this move "
                                "again.");
                 } else {
                     const auto identity = engine::quickReviewFingerprint(*discovery, overrides);
-                    if (const auto* fingerprint = std::get_if<engine::EngineFingerprint>(&identity);
-                        fingerprint && *fingerprint == evidence->run.settings.fingerprint) {
+                    const auto& budgets =
+                        config.budgets[static_cast<std::size_t>(evidence->run.summary.quality)];
+                    const auto stageNodes =
+                        verifiedRetry ? std::optional{budgets.deepeningNodes}
+                                      : review::stageBudget(budgets, evidence->move.stage);
+                    if (!stageNodes) {
+                        error = tr("Move evaluation could not be prepared.");
+                    } else if (const auto* fingerprint =
+                                   std::get_if<engine::EngineFingerprint>(&identity);
+                               fingerprint && *fingerprint == evidence->run.settings.fingerprint) {
                         request = engine::AnalysisRequest{};
                         request->position = std::move(child);
-                        request->limit = engine::NodeLimit{
-                            config.budgets[static_cast<std::size_t>(evidence->run.summary.quality)]
-                                .deepeningNodes};
+                        request->limit = engine::NodeLimit{*stageNodes};
                         request->wantWdl = true;
                         query = engine::CacheQuery{
                             request->position.context(), *fingerprint, request->limit, 1, true, {}};
@@ -772,62 +814,70 @@ void ReviewExplorationController::evaluateChild(engine::AnalysisResult result, b
     const auto deep = deepChild_;
     const auto move = *attempted_;
     const bool verification = verifying_;
+    const bool verifiedRetry = evidence->deep.has_value() && evidence->verified.has_value();
     workerBusy_ = true;
-    worker_.start(
-        [this, generation, evidence, deep, move, verification, cached, result = std::move(result)] {
-            std::optional<review::PositionEvidence> child;
-            review::RetryResult grade;
-            try {
-                const auto adapted = analysis::reviewEvidence(result);
-                if (const auto* record = std::get_if<analysis::ReviewEvidenceRecord>(&adapted);
-                    record && result.evidence.provenance &&
-                    result.evidence.provenance->fingerprint == evidence->run.settings.fingerprint) {
-                    child = record->evidence;
-                    if (verification && deep) {
-                        grade = review::gradeRetry(
-                            *evidence->before, move, *evidence->deep, *evidence->verified,
-                            evidence->run.settings.configuration.values, &*deep, &*child);
+    worker_.start([this, generation, evidence, deep, move, verification, verifiedRetry, cached,
+                   result = std::move(result)] {
+        std::optional<review::PositionEvidence> child;
+        review::RetryResult grade;
+        try {
+            const auto adapted = analysis::reviewEvidence(result);
+            if (const auto* record = std::get_if<analysis::ReviewEvidenceRecord>(&adapted);
+                record && result.evidence.provenance &&
+                result.evidence.provenance->fingerprint == evidence->run.settings.fingerprint) {
+                child = record->evidence;
+                if (!verifiedRetry) {
+                    if (evidence->preliminary) {
+                        grade = review::gradeRetry(*evidence->before, move, *evidence->preliminary,
+                                                   evidence->run.settings.configuration.values,
+                                                   &*child);
                     }
+                } else if (verification && deep) {
+                    grade = review::gradeRetry(
+                        *evidence->before, move, *evidence->deep, *evidence->verified,
+                        evidence->run.settings.configuration.values, &*deep, &*child);
                 }
-            } catch (const std::exception&) {
-                child.reset();
             }
-            // A dominating cache hit can already be as strong as the saved verification
-            // budget. Use a fresh first pass rather than guaranteeing an incomparable pair.
-            const auto verificationBudget =
-                evidence->run.settings.configuration.values
-                    .budgets[static_cast<std::size_t>(evidence->run.summary.quality)]
-                    .verificationNodes;
-            const bool freshFirst = cached && (!child || !child->strength.nodes ||
-                                               *child->strength.nodes >= verificationBudget);
-            QMetaObject::invokeMethod(
-                this,
-                [this, generation, verification, freshFirst, child = std::move(child),
-                 grade]() mutable {
-                    workerBusy_ = false;
-                    if (closing_ || generation != generation_) {
-                        finishClose();
-                        publish();
-                        return;
-                    }
-                    if (freshFirst) {
-                        scheduleChild();
-                        return;
-                    }
-                    if (!child || verification) {
-                        showGrade(grade);
-                        return;
-                    }
-                    deepChild_ = std::move(child);
-                    verifying_ = true;
-                    prepared_->limit = engine::NodeLimit{
-                        evidence_->run.settings.configuration.values
-                            .budgets[static_cast<std::size_t>(evidence_->run.summary.quality)]
-                            .verificationNodes};
+        } catch (const std::exception&) {
+            child.reset();
+        }
+        // A dominating cache hit can already be as strong as the saved verification
+        // budget. Use a fresh first pass rather than guaranteeing an incomparable pair.
+        const auto verificationBudget =
+            evidence->run.settings.configuration.values
+                .budgets[static_cast<std::size_t>(evidence->run.summary.quality)]
+                .verificationNodes;
+        const bool freshFirst =
+            verifiedRetry && cached &&
+            (!child || !child->strength.nodes || *child->strength.nodes >= verificationBudget);
+        QMetaObject::invokeMethod(
+            this,
+            [this, generation, verification, verifiedRetry, freshFirst, child = std::move(child),
+             grade]() mutable {
+                workerBusy_ = false;
+                if (closing_ || generation != generation_) {
+                    finishClose();
+                    publish();
+                    return;
+                }
+                if (freshFirst) {
                     scheduleChild();
-                },
-                Qt::QueuedConnection);
-        });
+                    return;
+                }
+                if (!verifiedRetry || !child || verification) {
+                    showGrade(grade);
+                    return;
+                }
+                deepChild_ = std::move(child);
+                verifying_ = true;
+                prepared_->limit = engine::NodeLimit{
+                    evidence_->run.settings.configuration.values
+                        .budgets[static_cast<std::size_t>(evidence_->run.summary.quality)]
+                        .verificationNodes};
+                scheduleChild();
+            },
+            Qt::QueuedConnection);
+    });
 }
 void ReviewExplorationController::showGrade(review::RetryResult result) {
     const QScopedValueRollback notification(notifying_, true);

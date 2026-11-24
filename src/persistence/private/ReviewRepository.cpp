@@ -2454,10 +2454,7 @@ StorageSession::loadReviewExploration(ReviewId id, std::int64_t revision, int in
     }
     if (out->move.classification->stable) {
         for (auto stage : out->move.comparisonStages) {
-            auto result =
-                refinedPair(database_, run, *root,
-                            game.document->originalMainline()[static_cast<std::size_t>(index - 1)],
-                            index, stage);
+            auto result = refinedPair(database_, run, *root, played, index, stage);
             if (const auto* e = std::get_if<ReviewError>(&result)) {
                 return *e;
             }
@@ -2470,6 +2467,18 @@ StorageSession::loadReviewExploration(ReviewId id, std::int64_t revision, int in
         }
         out->retryHint =
             review::retryHint(*root, *out->deep, *out->verified, run.settings.configuration.values);
+    } else if (out->move.classification->label &&
+               review::isError(*out->move.classification->label)) {
+        auto result = refinedPair(database_, run, *root, played, index, out->move.stage);
+        if (const auto* e = std::get_if<ReviewError>(&result)) {
+            return *e;
+        }
+        auto pair = std::get<std::optional<RefinedPair>>(std::move(result));
+        if (pair) {
+            out->preliminary = std::move(pair->pair);
+            out->retryHint =
+                review::retryHint(*root, *out->preliminary, run.settings.configuration.values);
+        }
     }
     if (!tx.commit()) {
         return storage();

@@ -60,7 +60,9 @@ stronger alternative when available.
 - **Continue** advances through important moments in chronological order.
   **Finish review** returns to the summary.
 - **Try Again** restores the position before your decision and hides the solution.
-  It is available for your stable errors, including verified missed opportunities.
+  It is available for your error moves—including preliminary results graded against
+  the move's best saved analysis stage and verified missed opportunities—and for both
+  sides when reviewing both sides.
   Play any legal candidate: **Best** and objectively equivalent **Strong** moves
   receive credit, followed by a brief success state and a return to the lesson.
   **Okay** or **Try Again** gives feedback and resets the decision position.

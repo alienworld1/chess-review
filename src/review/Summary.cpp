@@ -641,7 +641,8 @@ EscalationStop escalationStop(bool selected, const StabilityAssessment& stabilit
 StabilityAssessment assessStability(const ClassificationResult& deep,
                                     const ClassificationResult& verified,
                                     const MoveEvidence& deepPair, const MoveEvidence& verifiedPair,
-                                    const RefinementConfig& config, std::uint32_t modelVersion) {
+                                    const RefinementConfig& config, std::uint32_t modelVersion,
+                                    bool checkThresholds) {
     StabilityAssessment out;
     out.reason = StabilityReason::Insufficient;
     out.modelVersion = modelVersion;
@@ -710,7 +711,7 @@ StabilityAssessment assessStability(const ClassificationResult& deep,
         out.reason = StabilityReason::ScoreDrift;
         return out;
     }
-    if (modelVersion >= 2) {
+    if (modelVersion >= 2 && checkThresholds) {
         const auto a = deep.modelVersion >= 3 ? deep.loss : accuracyLoss(deepPair);
         const auto b = verified.modelVersion >= 3 ? verified.loss : accuracyLoss(verifiedPair);
         const std::uint32_t requiredClassModel = modelVersion >= 4 ? 3U : 2U;

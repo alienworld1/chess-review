@@ -23,10 +23,18 @@ struct RetryResult {
                                      const Configuration& configuration,
                                      const PositionEvidence* deepChild = nullptr,
                                      const PositionEvidence* verifiedChild = nullptr);
+// Single-pass preliminary grading from the move's best available evidence stage.
+[[nodiscard]] RetryResult gradeRetry(const chess::Position& root, chess::Move attempted,
+                                     const MoveEvidence& evidence,
+                                     const Configuration& configuration,
+                                     const PositionEvidence* child = nullptr);
 // Session-only teaching projection. Revalidates both passes using current tactical rules;
 // it never changes the captured review interpretation or grading policy.
 [[nodiscard]] std::optional<RetryHint> retryHint(const chess::Position& root,
                                                  const MoveEvidence& deep,
                                                  const MoveEvidence& verified,
+                                                 const Configuration& configuration);
+[[nodiscard]] std::optional<RetryHint> retryHint(const chess::Position& root,
+                                                 const MoveEvidence& evidence,
                                                  const Configuration& configuration);
 } // namespace chess_review::review

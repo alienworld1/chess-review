@@ -8,8 +8,29 @@ struct MeasuredGap {
     double value;
     std::optional<int> ticks;
 };
+bool prefersV2Model(const MoveEvidence& evidence) {
+    return (evidence.beforeEvaluation.expected &&
+            evidence.beforeEvaluation.expected->modelVersion >= 2) ||
+           (evidence.before.evaluation.score &&
+            evidence.before.evaluation.score->kind == ScoreKind::Mate);
+}
+bool hasPositiveNodes(const PositionEvidence& evidence) {
+    return evidence.terminal || (evidence.strength.nodes && *evidence.strength.nodes > 0);
+}
+std::optional<RetryHint> baseRetryHint(const chess::Position& root,
+                                       const PositionEvidence& before) {
+    if (before.candidates.empty() || before.candidates.front().continuation.empty()) {
+        return {};
+    }
+    const auto best = before.candidates.front().continuation.front();
+    const auto piece = root.pieceAt(best.from);
+    if (!piece) {
+        return {};
+    }
+    return RetryHint{RetryIdea::General, best, piece->type};
+}
 int expectedTicks(const PositionEvidence& evidence, const ExpectedScore& score, chess::Color side) {
-    if (score.source == ConversionSource::Terminal) {
+    if (score.source == ConversionSource::Terminal || score.source == ConversionSource::Mate) {
         return static_cast<int>(score.value * 2000);
     }
     const auto& wdl = *evidence.evaluation.wdl;
@@ -65,17 +86,14 @@ RetryResult gradeRetry(const chess::Position& root, chess::Move attempted, const
         deep.before.engineIdentity != verified.before.engineIdentity) {
         return {};
     }
-    const bool useV2 =
-        (deep.beforeEvaluation.expected && deep.beforeEvaluation.expected->modelVersion >= 2) ||
-        (deep.before.evaluation.score && deep.before.evaluation.score->kind == ScoreKind::Mate) ||
-        (verified.before.evaluation.score &&
-         verified.before.evaluation.score->kind == ScoreKind::Mate);
+    const bool useV2 = prefersV2Model(deep) || prefersV2Model(verified);
     const std::uint32_t classModel = useV2 ? 3U : 2U;
     const std::uint32_t expectedModel = useV2 ? 2U : 1U;
+    const std::uint32_t stabilityModel = useV2 ? 4U : 1U;
     const auto d = classify(root, deep, config.classification, config.conversion, classModel);
     const auto v = classify(root, verified, config.classification, config.conversion, classModel);
-    if (!assessStability(d, v, deep, verified, config.refinement, 1).stable || !d.bestMove ||
-        !v.bestMove) {
+    if (!assessStability(d, v, deep, verified, config.refinement, stabilityModel, false).stable ||
+        !d.bestMove || !v.bestMove) {
         return {};
     }
     std::optional<MeasuredGap> dg, vg;
@@ -90,7 +108,7 @@ RetryResult gradeRetry(const chess::Position& root, chess::Move attempted, const
         // classify owns the exact-WDL subtraction and best-move conflict rules.
         const auto dc = classify(root, dp, config.classification, config.conversion, classModel);
         const auto vc = classify(root, vp, config.classification, config.conversion, classModel);
-        if (!assessStability(dc, vc, dp, vp, config.refinement, 1).stable) {
+        if (!assessStability(dc, vc, dp, vp, config.refinement, stabilityModel, false).stable) {
             return {};
         }
         const auto measure = [](const MoveEvidence& pair, const ClassificationResult& result) {
@@ -128,21 +146,50 @@ RetryResult gradeRetry(const chess::Position& root, chess::Move attempted, const
     }
     return {b, vg->value};
 }
+RetryResult gradeRetry(const chess::Position& root, chess::Move attempted,
+                       const MoveEvidence& evidence, const Configuration& config,
+                       const PositionEvidence* child) {
+    if (!root.isLegal(attempted) || !hasPositiveNodes(evidence.before) ||
+        !hasPositiveNodes(evidence.after) || (child && !hasPositiveNodes(*child))) {
+        return {};
+    }
+    const bool useV2 = prefersV2Model(evidence);
+    const std::uint32_t classModel = useV2 ? 3U : 2U;
+    const std::uint32_t expectedModel = useV2 ? 2U : 1U;
+    const auto original =
+        classify(root, evidence, config.classification, config.conversion, classModel);
+    if (original.issue || !original.bestMove || !original.label) {
+        return {};
+    }
+    std::optional<MeasuredGap> gap;
+    if (child) {
+        const auto paired = pairEvidence(root, attempted, evidence.before, *child,
+                                         config.conversion, expectedModel);
+        if (paired.issue) {
+            return {};
+        }
+        const auto classified =
+            classify(root, paired, config.classification, config.conversion, classModel);
+        if (classified.issue || !classified.loss) {
+            return {};
+        }
+        gap = MeasuredGap{*classified.loss, {}};
+    } else {
+        gap = candidateGap(evidence.before, attempted, config.conversion, expectedModel);
+    }
+    if (!gap || !std::isfinite(gap->value) || gap->value < 0) {
+        return {};
+    }
+    return {grade(gap->value, attempted == *original.bestMove, config.classification), gap->value};
+}
 std::optional<RetryHint> retryHint(const chess::Position& root, const MoveEvidence& deep,
                                    const MoveEvidence& verified, const Configuration& config) {
-    if (verified.before.candidates.empty() ||
-        verified.before.candidates.front().continuation.empty()) {
+    const auto base = baseRetryHint(root, verified.before);
+    if (!base ||
+        gradeRetry(root, base->bestMove, deep, verified, config).grade != RetryGrade::Best) {
         return {};
     }
-    const auto best = verified.before.candidates.front().continuation.front();
-    if (gradeRetry(root, best, deep, verified, config).grade != RetryGrade::Best) {
-        return {};
-    }
-    const auto piece = root.pieceAt(best.from);
-    if (!piece) {
-        return {};
-    }
-    RetryHint hint{RetryIdea::General, best, piece->type};
+    auto hint = *base;
     const auto older = tacticalFacts(root, deep, config);
     const auto newer = tacticalFacts(root, verified, config);
     // Explicit priority makes the idea independent of detector output order. Matching
@@ -194,5 +241,13 @@ std::optional<RetryHint> retryHint(const chess::Position& root, const MoveEviden
         }
     }
     return hint;
+}
+std::optional<RetryHint> retryHint(const chess::Position& root, const MoveEvidence& evidence,
+                                   const Configuration& config) {
+    const auto base = baseRetryHint(root, evidence.before);
+    if (!base || gradeRetry(root, base->bestMove, evidence, config).grade != RetryGrade::Best) {
+        return {};
+    }
+    return base;
 }
 } // namespace chess_review::review

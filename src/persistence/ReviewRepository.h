@@ -207,6 +207,7 @@ struct ReviewExploration {
     review::PositionEvidence evidence;
     std::optional<review::MoveEvidence> deep;
     std::optional<review::MoveEvidence> verified;
+    std::optional<review::MoveEvidence> preliminary;
     std::optional<review::RetryHint> retryHint;
     std::vector<QString> candidateSans;
     // Root PVs stay in evidence; only the played-plus-reply line needs separate storage.

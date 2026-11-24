@@ -37,6 +37,7 @@ struct ExplorationState {
     review::RetryHintLevel hintLevel = review::RetryHintLevel::None;
     QStringList hints;
     QString notice;
+    QString retryToolTip;
     QStringList candidates;
     QStringList candidateNames;
     QString comparisonStatus;

@@ -2126,6 +2126,7 @@ void ReviewPage::updateExploration() {
     }
     tryAgain_->setVisible(!hidden);
     tryAgain_->setEnabled(state.canRetry);
+    tryAgain_->setToolTip(state.retryToolTip);
     analyze_->setVisible(!hidden);
     analyze_->setEnabled(state.canAnalyze);
     reloadExploration_->setVisible(!hidden && !state.loading && state.candidates.empty());

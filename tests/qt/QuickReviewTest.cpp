@@ -4955,6 +4955,163 @@ class QuickReviewTest final : public QObject {
         QVERIFY(progress);
         QCOMPARE(progress->value(), 3);
     }
+    void preliminaryErrorAllowsSinglePassRetry() {
+        Fixture f({}, {}, {}, false);
+        const std::string pgn =
+            "1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. Nc3 Nf6 5. d3 d6 6. Bg5 h6 7. Bh4 g5 *";
+        QVERIFY(f.seed(pgn, true));
+        auto pos = std::get<chess::Position>(f.document->tree.position(f.document->tree.rootId()));
+        const auto& moves = f.document->originalMainline();
+        std::vector<int> expectedRefinement;
+        int selectedMoves = 0;
+        for (int i = 0; i < static_cast<int>(moves.size()); ++i) {
+            if (moves[static_cast<std::size_t>(i)] != pos.legalMoves().front() &&
+                selectedMoves < 6) {
+                ++selectedMoves;
+                const int moveIndex = i + 1;
+                for (const int idx : {moveIndex - 1, moveIndex}) {
+                    if (std::find(expectedRefinement.begin(), expectedRefinement.end(), idx) ==
+                        expectedRefinement.end()) {
+                        expectedRefinement.push_back(idx);
+                    }
+                }
+            }
+            QVERIFY(std::holds_alternative<std::monostate>(
+                pos.play(moves[static_cast<std::size_t>(i)])));
+        }
+        // Position 14 (7... g5) must remain outside Fast's 6-move refinement cap as a Quick
+        // blunder.
+        QVERIFY(std::find(expectedRefinement.begin(), expectedRefinement.end(), 14) ==
+                expectedRefinement.end());
+        const auto fastLimits = review::Configuration{}.budgets[0];
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true, {}, 0, 0, false, RetryScript::None, expectedRefinement, {}, {}, 0, {}, {},
+                 false, false, fastLimits);
+        f.run(review::Quality::Fast);
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        QVERIFY2(review.state().error.isEmpty(), qPrintable(review.state().error));
+        QCOMPARE(review.state().run->status, review::JobStatus::Complete);
+        auto& exploration = review.exploration();
+        review.selectMoment(14);
+        QTRY_VERIFY(!exploration.state().loading && exploration.state().canRetry);
+        const auto* row = review.navigation().move(14);
+        QVERIFY(row && row->classification &&
+                row->classification->label == review::Classification::Blunder);
+        QVERIFY(!row->classification->stable);
+        QCOMPARE(row->stage, review::EvidenceStage::Quick);
+        auto* retryButton = f.window.findChild<QPushButton*>(QStringLiteral("reviewTryAgain"));
+        QVERIFY(retryButton);
+        QVERIFY(retryButton->isEnabled());
+        QVERIFY(!retryButton->toolTip().isEmpty());
+
+        retryButton->click();
+        QTRY_VERIFY(exploration.board().interactive);
+        QVERIFY(exploration.state().message.contains(QStringLiteral("preliminary analysis")));
+        exploration.hint();
+        QCOMPARE(exploration.state().hints.size(), 1);
+
+        // First test an unknown legal move graded with a single Quick-budget search (50,000 nodes).
+        auto retryRoot = *review.navigation().position();
+        QVERIFY(retryRoot.undo());
+        const auto best = retryRoot.legalMoves().front();
+        const auto altMove = retryRoot.legalMoves().at(1);
+        auto childPos = retryRoot;
+        QVERIFY(std::holds_alternative<std::monostate>(childPos.play(altMove)));
+        engine::Capabilities capabilities;
+        capabilities.supportsMultiPv = true;
+        capabilities.options.push_back(
+            {QStringLiteral("MultiPV"), engine::OptionType::Spin, QStringLiteral("1"), 1, 3, {}});
+        engine::AnalysisRequest request;
+        request.id = QUuid::createUuid();
+        request.position = childPos;
+        request.wantWdl = true;
+        request.limit = engine::NodeLimit{fastLimits.quickScanNodes};
+        const auto prepared =
+            std::get<engine::PreparedSearch>(engine::prepareSearch(request, capabilities));
+        const auto childBest = std::get<std::string>(childPos.uci(childPos.legalMoves().front()));
+        QJsonArray retrySteps{
+            engine_test::step(
+                QStringLiteral("uci"),
+                {engine_test::write(QStringLiteral(
+                    "id name Test engine\nid author Tests\noption name MultiPV type spin default "
+                    "1 min 1 max 3\nuciok\n"))}),
+            ready()};
+        for (const auto& command : prepared.options.split('\n')) {
+            if (!command.isEmpty()) {
+                retrySteps.append(engine_test::step(QString::fromUtf8(command), {}));
+            }
+        }
+        retrySteps.append(engine_test::step(QStringLiteral("ucinewgame"), {}));
+        retrySteps.append(ready());
+        retrySteps.append(engine_test::step(QString::fromUtf8(prepared.position).trimmed(), {}));
+        retrySteps.append(engine_test::step(
+            QStringLiteral("go nodes %1").arg(fastLimits.quickScanNodes),
+            {engine_test::write(
+                QStringLiteral("info depth 7 nodes %1 score cp -195 pv %2\nbestmove %2\n")
+                    .arg(fastLimits.quickScanNodes)
+                    .arg(QString::fromStdString(childBest)))}));
+        retrySteps.append(ready());
+        retrySteps.append(quit());
+        f.startup.engines().disconnectEngine();
+        QTRY_COMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Disconnected);
+        engine::ValidatorTestAccess::configure(
+            f.supervisor(),
+            engine_test::scenario(f.directory.filePath(QStringLiteral("prelim_retry.json")),
+                                  retrySteps),
+            1000);
+        QVERIFY(f.startup.engines().connectEngine(f.profileId));
+        QTRY_COMPARE(f.startup.engines().state().runtime.phase, engine::RuntimePhase::Ready);
+        QSignalSpy searches(&f.supervisor(), &engine::EngineSupervisor::scheduledFinished);
+        exploration.attemptMove(altMove, exploration.board().revision);
+        QTRY_COMPARE(exploration.state().mode, app::ExplorationMode::Success);
+        QCOMPARE(searches.size(), 1);
+        QTRY_COMPARE(exploration.state().mode, app::ExplorationMode::Game);
+
+        // Playing the rank-1 candidate succeeds without any engine search.
+        QTRY_VERIFY(exploration.state().canRetry);
+        exploration.tryAgain();
+        QTRY_VERIFY(exploration.board().interactive);
+        exploration.attemptMove(best, exploration.board().revision);
+        QTRY_COMPARE(exploration.state().mode, app::ExplorationMode::Success);
+        QCOMPARE(searches.size(), 1);
+    }
+    void retryBothSidesAllowsOpponentError_data() {
+        QTest::addColumn<bool>("bothSides");
+        QTest::newRow("selected-side-only") << false;
+        QTest::newRow("both-sides") << true;
+    }
+    void retryBothSidesAllowsOpponentError() {
+        QFETCH(bool, bothSides);
+        QTemporaryFile config;
+        QVERIFY(config.open());
+        QVERIFY(config.write(bothSides ? "[review]\nbothSides=true\n"
+                                       : "[review]\nbothSides=false\n") > 0);
+        QVERIFY(config.flush());
+        Fixture f({}, config.fileName());
+        QVERIFY(f.seed("1. e4 e5 *", true));
+        f.script(0, -1, 0, false, false, QStringLiteral("cp 200"), QStringLiteral("Test engine"), 0,
+                 true);
+        f.run(); // Selected side is Black; move 1 (1. e4) is White's error.
+        QVERIFY(f.done());
+        auto& review = f.startup.reviewGame();
+        auto& exploration = review.exploration();
+        review.selectMoment(1);
+        QTRY_VERIFY(!exploration.state().loading &&
+                    exploration.state().mode == app::ExplorationMode::Game);
+        QTRY_VERIFY(!exploration.state().candidates.empty());
+        auto* retryButton = f.window.findChild<QPushButton*>(QStringLiteral("reviewTryAgain"));
+        QVERIFY(retryButton);
+        QCOMPARE(exploration.state().canRetry, bothSides);
+        QCOMPARE(retryButton->isEnabled(), bothSides);
+        if (bothSides) {
+            exploration.tryAgain();
+            QTRY_VERIFY(exploration.board().interactive);
+            QCOMPARE(exploration.state().mode, app::ExplorationMode::Retry);
+        } else {
+            QVERIFY(retryButton->toolTip().contains(QStringLiteral("your side")));
+        }
+    }
 };
 QTEST_MAIN(QuickReviewTest)
 #include "QuickReviewTest.moc"

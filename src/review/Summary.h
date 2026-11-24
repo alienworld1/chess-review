@@ -182,7 +182,8 @@ struct StabilityAssessment {
 [[nodiscard]] StabilityAssessment
 assessStability(const ClassificationResult& deep, const ClassificationResult& verified,
                 const MoveEvidence& deepPair, const MoveEvidence& verifiedPair,
-                const RefinementConfig& config, std::uint32_t modelVersion = stabilityModelVersion);
+                const RefinementConfig& config, std::uint32_t modelVersion = stabilityModelVersion,
+                bool checkThresholds = true);
 [[nodiscard]] std::optional<double> accuracyLoss(const MoveEvidence& validatedPair);
 // Independent of classification thresholds. Missing/invalid loss is excluded, never zero-filled.
 [[nodiscard]] std::optional<double> moveAccuracy(std::optional<double> loss,

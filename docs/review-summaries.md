@@ -39,9 +39,9 @@ new-policy decisions do not depend on the platform's extended floating-point pre
 Older saved runs retain their captured stability and scheduling rules, including
 when resumed. Start a new run to use the new policy. Historical policy-8 arithmetic
 can differ across platforms with different extended precision; start a new run to
-reconfirm its labels after moving the database between such platforms. Retry
-exercises retain their existing grading rules; provisional original moves cannot
-start an exercise.
+reconfirm its labels after moving the database between such platforms. Verified retry
+exercises retain their existing two-pass grading rules; preliminary error moves can
+also start an exercise graded against the move's best saved analysis stage.
 
 Moves with only quick-scan evidence and unresolved results remain provisional.
 Finishing the planned work does not mean every move is stable. There are no unbounded refinement retries.

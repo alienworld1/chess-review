@@ -267,3 +267,138 @@ TEST_CASE("Retry hints reject corrupted raw evidence instead of trusting derived
         CHECK(!retryHint(root, deep, bad, {}));
     }
 }
+TEST_CASE("Policy 14 CP retries allow bounded position drift when loss drift is stable",
+          "[unit][review][retry]") {
+    const auto root = chess::Position::initial();
+    const auto played = parsed(root, "e2e4");
+    const auto best = parsed(root, "g1f3");
+    const auto second = parsed(root, "d2d4");
+    const auto unknown = parsed(root, "b1c3");
+    auto afterPlayed = root;
+    REQUIRE(std::holds_alternative<std::monostate>(afterPlayed.play(played)));
+    auto afterUnknown = root;
+    REQUIRE(std::holds_alternative<std::monostate>(afterUnknown.play(unknown)));
+
+    const auto makeCp = [&](const chess::Position& pos, int cp, const char* uci,
+                            const char* attempt, std::uint64_t nodes) {
+        PositionEvidence e;
+        e.position = pos.context();
+        e.complete = true;
+        e.engineIdentity = "engine";
+        e.attemptIdentity = attempt;
+        e.strength = {12, nodes, {}};
+        e.evaluation = {pos.sideToMove(), RawScore{ScoreKind::Centipawns, cp}, std::nullopt};
+        e.candidates = {{1, e.evaluation, {parsed(pos, uci)}, e.strength}};
+        return e;
+    };
+
+    const Configuration cfg; // Policy 14 default: preferWdl = false
+    auto db = makeCp(root, 100, "g1f3", "db", 1000000);
+    auto d2 = db.evaluation;
+    d2.score = RawScore{ScoreKind::Centipawns, 95};
+    db.candidates.push_back({2, d2, {second}, db.strength});
+    auto da = makeCp(afterPlayed, 100, "g8f6", "da", 1000000);
+    const auto deep = pairEvidence(root, played, db, da, cfg.conversion, 2);
+
+    // Verified before drifts +3.06% expected score (> 2%, <= 4% CP tolerance) while loss
+    // changes by less than 0.1%.
+    auto vb = makeCp(root, 135, "g1f3", "vb", 5000000);
+    auto v2 = vb.evaluation;
+    v2.score = RawScore{ScoreKind::Centipawns, 130};
+    vb.candidates.push_back({2, v2, {second}, vb.strength});
+    auto va = makeCp(afterPlayed, 65, "g8f6", "va", 5000000);
+    const auto verified = pairEvidence(root, played, vb, va, cfg.conversion, 2);
+
+    const auto hint = retryHint(root, deep, verified, cfg);
+    REQUIRE(hint);
+    CHECK(hint->bestMove == best);
+    CHECK(gradeRetry(root, best, deep, verified, cfg).grade == RetryGrade::Best);
+    CHECK(gradeRetry(root, second, deep, verified, cfg).grade == RetryGrade::Strong);
+
+    const auto dc = makeCp(afterUnknown, -95, "g8f6", "dc", 1000000);
+    const auto vc = makeCp(afterUnknown, -130, "g8f6", "vc", 5000000);
+    CHECK(gradeRetry(root, unknown, deep, verified, cfg, &dc, &vc).grade == RetryGrade::Strong);
+}
+TEST_CASE("Preliminary single-pass retry grades candidates, children, terminal mates, and hints",
+          "[unit][review][retry]") {
+    const auto root = chess::Position::initial();
+    const auto played = parsed(root, "e2e4");
+    auto afterPlayed = root;
+    REQUIRE(std::holds_alternative<std::monostate>(afterPlayed.play(played)));
+
+    const Configuration cfg; // Policy 14 default: preferWdl = false
+    auto before = proof(root, 600, "g1f3", "qb", 50000);
+    before.evaluation.score = RawScore{ScoreKind::Centipawns, 200};
+    before.candidates.front().evaluation = before.evaluation;
+    auto candStrong = before.evaluation;
+    candStrong.score = RawScore{ScoreKind::Centipawns, 195};
+    before.candidates.push_back({2, candStrong, {parsed(root, "d2d4")}, before.strength});
+    auto candOkay = before.evaluation;
+    candOkay.score = RawScore{ScoreKind::Centipawns, 150};
+    before.candidates.push_back({3, candOkay, {parsed(root, "c2c4")}, before.strength});
+    auto candBad = before.evaluation;
+    candBad.score = RawScore{ScoreKind::Centipawns, 50};
+    before.candidates.push_back({4, candBad, {parsed(root, "a2a3")}, before.strength});
+
+    auto after = proof(afterPlayed, 400, "e7e5", "qa", 50000);
+    after.evaluation.score =
+        RawScore{ScoreKind::Centipawns, 200}; // +200 for Black = -200 for White
+    after.candidates.front().evaluation = after.evaluation;
+    const auto evidence = pairEvidence(root, played, before, after, cfg.conversion, 2);
+
+    const auto hint = retryHint(root, evidence, cfg);
+    REQUIRE(hint);
+    CHECK(hint->idea == RetryIdea::General);
+    CHECK(hint->bestMove == parsed(root, "g1f3"));
+    CHECK(hint->piece == chess::PieceType::Knight);
+
+    CHECK(gradeRetry(root, parsed(root, "g1f3"), evidence, cfg).grade == RetryGrade::Best);
+    CHECK(gradeRetry(root, parsed(root, "d2d4"), evidence, cfg).grade == RetryGrade::Strong);
+    CHECK(gradeRetry(root, parsed(root, "c2c4"), evidence, cfg).grade == RetryGrade::Okay);
+    CHECK(gradeRetry(root, parsed(root, "a2a3"), evidence, cfg).grade == RetryGrade::TryAgain);
+    CHECK(!gradeRetry(root, parsed(root, "b1c3"), evidence, cfg).grade);
+
+    auto afterUnknown = root;
+    const auto unknown = parsed(root, "b1c3");
+    REQUIRE(std::holds_alternative<std::monostate>(afterUnknown.play(unknown)));
+    auto child = proof(afterUnknown, 500, "e7e5", "qc", 50000);
+    child.evaluation.score = RawScore{ScoreKind::Centipawns, -195}; // +195 for White
+    child.candidates.front().evaluation = child.evaluation;
+    CHECK(gradeRetry(root, unknown, evidence, cfg, &child).grade == RetryGrade::Strong);
+    child.evaluation.score = RawScore{ScoreKind::Centipawns, 200}; // -200 for White
+    child.candidates.front().evaluation = child.evaluation;
+    CHECK(gradeRetry(root, unknown, evidence, cfg, &child).grade == RetryGrade::TryAgain);
+
+    // Corrupt evidence fails closed.
+    auto badNodes = evidence;
+    badNodes.before.strength.nodes = 0;
+    CHECK(!retryHint(root, badNodes, cfg));
+    CHECK(!gradeRetry(root, parsed(root, "g1f3"), badNodes, cfg).grade);
+
+    auto wrongEngineChild = child;
+    wrongEngineChild.engineIdentity = "other";
+    CHECK(!gradeRetry(root, unknown, evidence, cfg, &wrongEngineChild).grade);
+
+    // Terminal checkmate child grades cleanly without an engine search.
+    const auto mateRoot = std::get<chess::Position>(
+        chess::Position::fromFen("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1"));
+    const auto mateMove = parsed(mateRoot, "d1d8");
+    const auto blunderMove = parsed(mateRoot, "g1f1");
+    auto mateBefore = proof(mateRoot, 1000, "d1d8", "mb", 50000);
+    mateBefore.evaluation.score = RawScore{ScoreKind::Mate, 1};
+    mateBefore.candidates.front().evaluation = mateBefore.evaluation;
+    auto afterBlunder = mateRoot;
+    REQUIRE(std::holds_alternative<std::monostate>(afterBlunder.play(blunderMove)));
+    auto mateAfter = proof(afterBlunder, 500, "g8f8", "ma", 50000);
+    mateAfter.evaluation.score = RawScore{ScoreKind::Centipawns, 0};
+    mateAfter.candidates.front().evaluation = mateAfter.evaluation;
+    const auto mateEvidence =
+        pairEvidence(mateRoot, blunderMove, mateBefore, mateAfter, cfg.conversion, 2);
+    auto afterMate = mateRoot;
+    REQUIRE(std::holds_alternative<std::monostate>(afterMate.play(mateMove)));
+    const auto terminalMate = terminalEvidence(afterMate);
+    const auto mateResult = gradeRetry(mateRoot, mateMove, mateEvidence, cfg, &terminalMate);
+    REQUIRE(mateResult.grade);
+    CHECK(*mateResult.grade == RetryGrade::Best);
+    CHECK(*mateResult.gap == Catch::Approx(0.0));
+}
