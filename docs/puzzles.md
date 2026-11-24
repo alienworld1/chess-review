@@ -5,10 +5,11 @@ on your computer. There are no due dates, streaks, or required training sequence
 
 ## Generate puzzles from a review
 
-After a review finishes, the app looks for meaningful mistakes and missed
-opportunities by the selected player. You can start reviewing immediately; puzzle
-preparation is a separate background task. Completed older reviews offer
-**Generate Puzzles** on their summary.
+After a review finishes, the app looks for instructive mistakes, missed
+opportunities, and standout tactical, mating, or defensive moves by the reviewed
+player(s). You can start reviewing immediately; puzzle preparation is a separate
+background task. Completed older reviews offer **Generate Puzzles** on their
+summary.
 
 The app considers up to six ranked positions and keeps at most two generated
 puzzles per game. It prefers concrete tactics, missed mates, retained material

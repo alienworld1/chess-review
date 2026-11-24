@@ -110,7 +110,8 @@ PuzzleAlternativeResult evaluatePuzzleAlternative(const PuzzleAlternative& attem
     if (!originalRoot) {
         return {};
     }
-    puzzles::Definition definition{childContext, puzzles::Origin::Manual, d.definition.policy};
+    puzzles::Definition definition{childContext, puzzles::Origin::Manual, d.definition.policy,
+                                   d.definition.modelVersion};
     definition.policy.rootMinimumNodes = 0;
     const puzzles::ContinuationGoal goal{
         d.solution.goal, solver, puzzles::material(*originalRoot, solver),

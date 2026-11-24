@@ -2069,6 +2069,7 @@ StorageSession::rankPuzzlePositions(ReviewId id, std::int64_t revision) {
     }
     std::vector<RankedPuzzlePosition> ranked;
     review::ScanAssessment preceding;
+    const bool bothSides = run->settings.configuration.ui.reviewBothSides;
     for (int offset = 0; offset < run->summary.totalPositions - 1; offset += 50) {
         const auto pageResult =
             readMovePage(database_, *run, game, *position, offset, 50, &preceding);
@@ -2078,22 +2079,70 @@ StorageSession::rankPuzzlePositions(ReviewId id, std::int64_t revision) {
         }
         for (const auto& move : page->moves) {
             preceding = move.quickScan;
-            if (move.mover != run->summary.selectedSide) {
+            if (!bothSides && move.mover != run->summary.selectedSide) {
                 continue;
             }
-            const bool loss =
-                move.stability.stable && move.classification && move.classification->label &&
-                review::isError(*move.classification->label) && move.classification->loss &&
+            if (move.classification && move.classification->label &&
+                *move.classification->label == review::Classification::Book) {
+                continue;
+            }
+            const auto label = move.classification ? move.classification->label : std::nullopt;
+            const bool isSpecial = label && (*label == review::Classification::Brilliant ||
+                                             *label == review::Classification::Great);
+            const bool isError =
+                label && review::isError(*label) && move.classification->loss &&
                 *move.classification->loss >=
                     run->settings.configuration.values.classification.inaccuracyLoss;
             const bool mate = move.rawBefore.score &&
                               move.rawBefore.score->kind == review::ScoreKind::Mate &&
                               move.rawBefore.score->value > 0;
-            if (loss || mate) {
-                ranked.push_back(
-                    {move.positionIndex, mate ? 0 : (!move.tacticalFacts.empty() ? 1 : 2),
-                     move.classification && move.classification->loss ? *move.classification->loss
-                                                                      : 0});
+            const bool hasBestTactic = std::any_of(
+                move.tacticalFacts.begin(), move.tacticalFacts.end(), [&](const auto& f) {
+                    if (f.source != review::FactSource::Best || f.beneficiary != move.mover) {
+                        return false;
+                    }
+                    return f.kind == review::TacticalKind::Checkmate ||
+                           f.kind == review::TacticalKind::Fork ||
+                           f.kind == review::TacticalKind::Sacrifice ||
+                           f.kind == review::TacticalKind::Promotion ||
+                           f.kind == review::TacticalKind::Exchange ||
+                           (f.kind == review::TacticalKind::HangingPiece && f.material >= 3) ||
+                           (f.kind == review::TacticalKind::Material && f.material >= 2);
+                });
+            const bool hasPlayedTactic = std::any_of(
+                move.tacticalFacts.begin(), move.tacticalFacts.end(), [&](const auto& f) {
+                    if (f.source != review::FactSource::Played || f.beneficiary != move.mover) {
+                        return false;
+                    }
+                    return f.kind == review::TacticalKind::Checkmate ||
+                           f.kind == review::TacticalKind::Fork ||
+                           f.kind == review::TacticalKind::Sacrifice ||
+                           f.kind == review::TacticalKind::Promotion ||
+                           f.kind == review::TacticalKind::Exchange ||
+                           (f.kind == review::TacticalKind::HangingPiece && f.material >= 3) ||
+                           (f.kind == review::TacticalKind::Material && f.material >= 2);
+                });
+            const bool opponentBlundered =
+                move.quickScan.opportunityLoss &&
+                *move.quickScan.opportunityLoss >=
+                    run->settings.configuration.values.classification.inaccuracyLoss;
+            if (mate) {
+                const double distanceScore =
+                    100.0 -
+                    static_cast<double>(std::min<std::int64_t>(99, move.rawBefore.score->value)) +
+                    (isError ? 100.0 : 0.0);
+                ranked.push_back({move.positionIndex, 0, distanceScore});
+            } else if (isSpecial || (isError && (*label == review::Classification::Miss ||
+                                                 hasBestTactic || opponentBlundered))) {
+                const double score = isSpecial ? 1.0 + move.special.alternativeGap.value_or(0.0)
+                                               : move.classification->loss.value_or(0.0);
+                ranked.push_back({move.positionIndex, 1, score});
+            } else if (!isError && (hasPlayedTactic || hasBestTactic || opponentBlundered)) {
+                const double score = move.quickScan.opportunityLoss.value_or(0.0) +
+                                     move.special.alternativeGap.value_or(0.0);
+                ranked.push_back({move.positionIndex, 2, score});
+            } else if (isError) {
+                ranked.push_back({move.positionIndex, 3, *move.classification->loss});
             }
         }
     }

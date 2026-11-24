@@ -50,6 +50,7 @@ struct PuzzleJob {
     std::vector<PuzzleId> accepted;
     bool reusedExisting = false;
     std::vector<PuzzleId> available; // Read projection of still-present accepted puzzles.
+    std::uint32_t modelVersion = puzzles::modelVersion;
 };
 struct PuzzleCheckpoint {
     PuzzleJob job;
@@ -63,6 +64,7 @@ struct PuzzleJobSummary {
     int current = 0;
     int total = 0;
     int saved = 0;
+    std::uint32_t modelVersion = puzzles::modelVersion;
 };
 using LoadPuzzleResult = std::variant<std::shared_ptr<const StoredPuzzle>, ReviewError>;
 using ListPuzzlesResult = std::variant<PuzzlePage, ReviewError>;

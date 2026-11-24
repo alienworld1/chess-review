@@ -1,5 +1,6 @@
 #include "engine/AnalysisCache.h"
 #include "persistence/private/PuzzleCodec.h"
+#include "persistence/private/ReviewCodec.h"
 #include "persistence/private/StorageSession.h"
 #include <QCryptographicHash>
 #include <QSqlError>
@@ -144,9 +145,43 @@ bool findAvailablePuzzles(QSqlDatabase& db, PuzzleJob& job) {
 struct PuzzleSource {
     chess::Position before;
     ReviewMove move;
-    review::MoveEvidence deep;
-    review::MoveEvidence verified;
+    std::optional<review::MoveEvidence> older;
+    review::MoveEvidence latest;
 };
+std::variant<review::MoveEvidence, ReviewError>
+loadStagePair(StorageSession& storage, const StoredReview& run, int index,
+              review::EvidenceStage stage, std::optional<chess::Position>& root) {
+    const auto b = storage.loadReviewEvidence(run.summary.id, index - 1, stage);
+    const auto a = storage.loadReviewEvidence(run.summary.id, index, stage);
+    const auto* before = std::get_if<StoredReviewEvidence>(&b);
+    const auto* after = std::get_if<StoredReviewEvidence>(&a);
+    if (!before || !after) {
+        return error(ReviewErrorCode::Unavailable);
+    }
+    auto restored = engine::restorePosition(before->evidence.position);
+    const auto* position = std::get_if<chess::Position>(&restored);
+    if (!position || after->evidence.position.moves.empty()) {
+        return error(ReviewErrorCode::InvalidRecord);
+    }
+    root = *position;
+    auto old = before->evidence;
+    auto next = after->evidence;
+    // Storage has qualified each exact effective fingerprint; normalize only
+    // MultiPV width for interpreting a before/after pair, as review itself does.
+    if (!old.terminal) {
+        old.engineIdentity = run.settings.fingerprint.digest.toHex().toStdString();
+    }
+    if (!next.terminal) {
+        next.engineIdentity = run.settings.fingerprint.digest.toHex().toStdString();
+    }
+    auto paired =
+        review::pairEvidence(*position, after->evidence.position.moves.back(), std::move(old),
+                             std::move(next), run.settings.configuration.values.conversion);
+    if (paired.issue && paired.issue != review::EvidenceIssue::MateClaim) {
+        return error(ReviewErrorCode::Unavailable);
+    }
+    return paired;
+}
 std::variant<PuzzleSource, ReviewError> readSource(StorageSession& storage, const StoredReview& run,
                                                    int index) {
     const auto pageResult =
@@ -156,41 +191,33 @@ std::variant<PuzzleSource, ReviewError> readSource(StorageSession& storage, cons
         return page ? error(ReviewErrorCode::InvalidRecord) : std::get<ReviewError>(pageResult);
     }
     const auto& move = page->moves.front();
-    std::array<review::MoveEvidence, 2> pairs;
     std::optional<chess::Position> root;
-    for (std::size_t i = 0; i < 2; ++i) {
-        const auto stage = move.comparisonStages[i];
-        const auto b = storage.loadReviewEvidence(run.summary.id, index - 1, stage);
-        const auto a = storage.loadReviewEvidence(run.summary.id, index, stage);
-        const auto* before = std::get_if<StoredReviewEvidence>(&b);
-        const auto* after = std::get_if<StoredReviewEvidence>(&a);
-        if (!before || !after) {
-            return error(ReviewErrorCode::Unavailable);
+    if (move.stage >= review::EvidenceStage::Verification) {
+        auto olderResult = loadStagePair(storage, run, index, move.comparisonStages[0], root);
+        auto latestResult = loadStagePair(storage, run, index, move.comparisonStages[1], root);
+        const auto* olderPair = std::get_if<review::MoveEvidence>(&olderResult);
+        const auto* latestPair = std::get_if<review::MoveEvidence>(&latestResult);
+        if (olderPair && latestPair && root) {
+            return PuzzleSource{std::move(*root), move, *olderPair, *latestPair};
         }
-        auto restored = engine::restorePosition(before->evidence.position);
-        const auto* position = std::get_if<chess::Position>(&restored);
-        if (!position || after->evidence.position.moves.empty()) {
-            return error(ReviewErrorCode::InvalidRecord);
+        if (const auto* err = std::get_if<ReviewError>(&olderResult);
+            err && err->code != ReviewErrorCode::Unavailable) {
+            return *err;
         }
-        root = *position;
-        auto old = before->evidence;
-        auto next = after->evidence;
-        // Storage has qualified each exact effective fingerprint; normalize only
-        // MultiPV width for interpreting a before/after pair, as review itself does.
-        if (!old.terminal) {
-            old.engineIdentity = run.settings.fingerprint.digest.toHex().toStdString();
-        }
-        if (!next.terminal) {
-            next.engineIdentity = run.settings.fingerprint.digest.toHex().toStdString();
-        }
-        pairs[i] =
-            review::pairEvidence(*position, after->evidence.position.moves.back(), std::move(old),
-                                 std::move(next), run.settings.configuration.values.conversion);
-        if (pairs[i].issue && pairs[i].issue != review::EvidenceIssue::MateClaim) {
-            return error(ReviewErrorCode::Unavailable);
+        if (const auto* err = std::get_if<ReviewError>(&latestResult);
+            err && err->code != ReviewErrorCode::Unavailable) {
+            return *err;
         }
     }
-    return PuzzleSource{std::move(*root), move, std::move(pairs[0]), std::move(pairs[1])};
+    auto singleResult = loadStagePair(storage, run, index, move.stage, root);
+    if (const auto* err = std::get_if<ReviewError>(&singleResult)) {
+        return *err;
+    }
+    if (!root) {
+        return error(ReviewErrorCode::InvalidRecord);
+    }
+    return PuzzleSource{std::move(*root), move, std::nullopt,
+                        std::get<review::MoveEvidence>(std::move(singleResult))};
 }
 bool missedMate(const PuzzleSource& e) {
     const auto missed = [](const review::MoveEvidence& p) {
@@ -202,8 +229,23 @@ bool missedMate(const PuzzleSource& e) {
                 (after && after->bound == review::Bound::Exact &&
                  !(after->kind == review::ScoreKind::Mate && after->value < 0)));
     };
-    return e.deep.before.attemptIdentity != e.verified.before.attemptIdentity && missed(e.deep) &&
-           missed(e.verified);
+    if (e.older) {
+        return e.older->before.attemptIdentity != e.latest.before.attemptIdentity &&
+               missed(*e.older) && missed(e.latest);
+    }
+    return missed(e.latest);
+}
+puzzles::CandidateContext candidateContextFor(const PuzzleSource& e,
+                                              const review::Configuration& reviewConfig) {
+    const auto label = e.move.classification ? e.move.classification->label : std::nullopt;
+    const bool isError = label && review::isError(*label) && e.move.classification->loss &&
+                         *e.move.classification->loss >= reviewConfig.classification.inaccuracyLoss;
+    const bool isSpecial = label && (*label == review::Classification::Brilliant ||
+                                     *label == review::Classification::Great);
+    const bool opponentBlundered =
+        e.move.quickScan.opportunityLoss &&
+        *e.move.quickScan.opportunityLoss >= reviewConfig.classification.inaccuracyLoss;
+    return {isError, isSpecial, opponentBlundered};
 }
 } // namespace
 ListPuzzlesResult StorageSession::listPuzzles(std::int64_t offset, int limit,
@@ -333,7 +375,8 @@ ListPuzzleJobsResult StorageSession::listPuzzleJobs(std::int64_t offset, int lim
     }
     QSqlQuery q(database_);
     QString sql = QStringLiteral(
-        "SELECT id,source_review_id,status,current_position,candidate_count,saved_count, "
+        "SELECT id,source_review_id,status,current_position,candidate_count,saved_count,"
+        "substr(CAST(document AS BLOB),1,33554433),"
         "typeof(id)='integer' AND typeof(status)='integer' AND typeof(current_position)='integer' "
         "AND typeof(candidate_count)='integer' AND typeof(saved_count)='integer' "
         "AND (source_review_id IS NULL OR typeof(source_review_id)='integer') FROM puzzle_jobs ");
@@ -353,16 +396,26 @@ ListPuzzleJobsResult StorageSession::listPuzzleJobs(std::int64_t offset, int lim
     std::vector<PuzzleJobSummary> jobs;
     while (q.next()) {
         const int status = q.value(2).toInt();
-        if (!q.value(6).toBool() || q.value(0).toLongLong() <= 0 || status < 0 || status > 4 ||
+        if (!q.value(7).toBool() || q.value(0).toLongLong() <= 0 || status < 0 || status > 4 ||
             q.value(3).toInt() < 0 || q.value(4).toInt() < q.value(3).toInt() ||
             q.value(4).toInt() > 6 || q.value(5).toInt() < 0 || q.value(5).toInt() > 2) {
             return error(ReviewErrorCode::InvalidRecord);
+        }
+        std::uint32_t modelVersion = 1;
+        if (q.value(6).typeId() == QMetaType::QByteArray) {
+            if (const auto doc = readReviewDocument(q.value(6).toByteArray(), maxPuzzleJobBytes)) {
+                const int parsed = (*doc)["modelVersion"].toInt(1);
+                if (parsed >= 1 &&
+                    puzzles::supportsModelVersion(static_cast<std::uint32_t>(parsed))) {
+                    modelVersion = static_cast<std::uint32_t>(parsed);
+                }
+            }
         }
         jobs.push_back(
             {q.value(0).toLongLong(),
              q.value(1).isNull() ? std::nullopt : std::optional<ReviewId>(q.value(1).toLongLong()),
              static_cast<PuzzleJobStatus>(status), q.value(3).toInt(), q.value(4).toInt(),
-             q.value(5).toInt()});
+             q.value(5).toInt(), modelVersion});
     }
     return q.lastError().isValid() ? ListPuzzleJobsResult(error()) : ListPuzzleJobsResult(jobs);
 }
@@ -379,7 +432,23 @@ SavePuzzleJobResult StorageSession::preparePuzzleJob(ReviewId id,
     if (existing.next()) {
         const auto jobId = existing.value(0).toLongLong();
         existing.finish();
-        return loadPuzzleJob(jobId);
+        auto loadedJob = loadPuzzleJob(jobId);
+        const auto* existingJob = std::get_if<PuzzleJob>(&loadedJob);
+        if (existingJob && existingJob->status == PuzzleJobStatus::Complete &&
+            existingJob->accepted.empty() && existingJob->modelVersion < puzzles::modelVersion) {
+            Transaction tx(database_, usable_);
+            if (!tx.begin()) {
+                return error();
+            }
+            QSqlQuery remove(database_);
+            if (!exec(remove, QStringLiteral("DELETE FROM puzzle_jobs WHERE id=?"),
+                      {static_cast<qlonglong>(jobId)}) ||
+                !tx.commit()) {
+                return error();
+            }
+        } else {
+            return loadedJob;
+        }
     }
     if (existing.lastError().isValid()) {
         return error();
@@ -401,6 +470,7 @@ SavePuzzleJobResult StorageSession::preparePuzzleJob(ReviewId id,
     }
     PuzzleJob job;
     job.reviewId = id;
+    job.modelVersion = puzzles::modelVersion;
     for (const auto& candidate : std::get<std::vector<RankedPuzzlePosition>>(ranked)) {
         if (job.candidates.size() == 6) {
             break;
@@ -413,25 +483,24 @@ SavePuzzleJobResult StorageSession::preparePuzzleJob(ReviewId id,
             }
             return std::get<ReviewError>(explored);
         }
-        if (!e->move.stability.stable && !missedMate(*e)) {
-            continue;
-        }
-        if (candidate.priority == 0 && !missedMate(*e)) {
-            continue;
-        }
         PuzzleDocument d;
         d.definition.position = e->before.context();
         d.definition.origin = puzzles::Origin::Generated;
+        d.definition.modelVersion = puzzles::modelVersion;
         d.definition.policy.review = run->settings.configuration.values;
         d.definition.policy.review.openings = {};
         config::applyPuzzleLimits(d.definition.policy, settings);
         const auto& budgets = d.definition.policy.review.budgets;
         d.definition.policy.baselineNodes =
             budgets[static_cast<std::size_t>(run->summary.quality)].verificationNodes;
-        const auto a = e->deep.before.strength.nodes.value_or(0);
-        const auto b = e->verified.before.strength.nodes.value_or(0);
-        d.definition.policy.rootMinimumNodes = std::max(a, b);
-        if (!puzzles::candidateGoal(e->before, e->deep, e->verified, d.definition.policy)) {
+        const auto a = e->older ? e->older->before.strength.nodes.value_or(0) : 0;
+        const auto b = e->latest.before.strength.nodes.value_or(0);
+        const auto maxNodes = std::max(a, b);
+        d.definition.policy.rootMinimumNodes =
+            std::min(maxNodes, d.definition.policy.baselineNodes * 2);
+        const auto context = candidateContextFor(*e, run->settings.configuration.values);
+        if (!puzzles::candidateGoal(e->before, e->older ? &*e->older : nullptr, e->latest,
+                                    d.definition.policy, context)) {
             continue;
         }
         d.fingerprint = run->settings.fingerprint;
@@ -468,7 +537,7 @@ SavePuzzleJobResult StorageSession::checkpointPuzzleJob(PuzzleCheckpoint checkpo
         const auto* run = std::get_if<StoredReview>(&loaded);
         auto sourcePolicy = d.definition.policy.review;
         if (run) {
-            // Puzzle policy v1 stores only the review settings used for chess evaluation.
+            // Puzzle policy stores only the review settings used for chess evaluation.
             sourcePolicy.openings = run->settings.configuration.values.openings;
         }
         if (!run || run->summary.status != review::JobStatus::Complete ||
@@ -479,29 +548,28 @@ SavePuzzleJobResult StorageSession::checkpointPuzzleJob(PuzzleCheckpoint checkpo
         }
         const auto explored = readSource(*this, *run, *d.sourcePosition);
         const auto* e = std::get_if<PuzzleSource>(&explored);
-        if (!e || e->before.context() != d.definition.position ||
-            e->move.mover != run->summary.selectedSide) {
+        const bool allowedSide = run->settings.configuration.ui.reviewBothSides ||
+                                 (e && e->move.mover == run->summary.selectedSide);
+        if (!e || e->before.context() != d.definition.position || !allowedSide) {
             return error(ReviewErrorCode::InvalidInput);
         }
-        const auto& move = e->move;
-        const bool missed =
-            move.stability.stable && move.classification && move.classification->label &&
-            review::isError(*move.classification->label) && move.classification->loss &&
-            *move.classification->loss >= d.definition.policy.review.classification.inaccuracyLoss;
-        if (!missed && !missedMate(*e)) {
-            return error(ReviewErrorCode::InvalidInput);
-        }
-        const auto goal =
-            puzzles::candidateGoal(e->before, e->deep, e->verified, d.definition.policy);
-        // A stronger search can change the lesson or find that the played move works.
-        // Checkpoint the verification either way, but publish only a confirmed lesson.
+        const auto context = candidateContextFor(*e, d.definition.policy.review);
+        const bool isMissedMate = missedMate(*e);
+        const auto goal = puzzles::candidateGoal(e->before, e->older ? &*e->older : nullptr,
+                                                 e->latest, d.definition.policy, context);
         if (!goal) {
             return error(ReviewErrorCode::InvalidInput);
         }
-        confirmedLesson =
-            *goal == d.solution.goal && !d.solution.nodes.empty() &&
-            std::ranges::none_of(d.solution.nodes.front().moves,
-                                 [&](const auto& edge) { return edge.move == e->deep.playedMove; });
+        const bool playedAccepted =
+            !d.solution.nodes.empty() &&
+            std::ranges::any_of(d.solution.nodes.front().moves, [&](const auto& edge) {
+                return edge.move == e->latest.playedMove;
+            });
+        // A stronger search can change the lesson or find that a blunder actually works, or
+        // reveal that a played tactic was unsound. Publish only a confirmed lesson.
+        const bool errorSource = context.isError || isMissedMate;
+        confirmedLesson = !d.solution.nodes.empty() && d.solution.goal != puzzles::Goal::Practice &&
+                          (errorSource ? !playedAccepted : playedAccepted);
     }
     Transaction tx(database_, usable_);
     if (!tx.begin()) {

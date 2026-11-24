@@ -211,7 +211,7 @@ QJsonObject documentObject(const PuzzleDocument& d) {
         history.append(QString::fromStdString(std::get<std::string>(uci)));
     }
     return {{"formatVersion", 1},
-            {"modelVersion", static_cast<int>(puzzles::modelVersion)},
+            {"modelVersion", static_cast<int>(d.definition.modelVersion)},
             {"origin", static_cast<int>(d.definition.origin)},
             {"initial", context.provenance == chess::RootProvenance::InitialPosition},
             {"rootFen", QString::fromStdString(context.rootFen)},
@@ -226,7 +226,9 @@ QJsonObject documentObject(const PuzzleDocument& d) {
             {"solution", solution(d.solution)}};
 }
 std::optional<PuzzleDocument> readDocument(const QJsonObject& o) {
-    if (o["formatVersion"].toInt(-1) != 1 || o["modelVersion"].toInt(-1) != 1 ||
+    const int modelVersion = o["modelVersion"].toInt(-1);
+    if (o["formatVersion"].toInt(-1) != 1 || modelVersion < 1 ||
+        !puzzles::supportsModelVersion(static_cast<std::uint32_t>(modelVersion)) ||
         !o["initial"].isBool() || !o["history"].isArray() || !o["passes"].isArray() ||
         o["rootFen"].toString().size() > 256 || o["history"].toArray().size() > 20000 ||
         o["passes"].toArray().size() > 192) {
@@ -258,7 +260,8 @@ std::optional<PuzzleDocument> readDocument(const QJsonObject& o) {
         return {};
     }
     PuzzleDocument d;
-    d.definition = {position->context(), static_cast<puzzles::Origin>(origin), *p};
+    d.definition = {position->context(), static_cast<puzzles::Origin>(origin), *p,
+                    static_cast<std::uint32_t>(modelVersion)};
     d.fingerprint = *engine;
     d.engineProfileId = static_cast<std::int64_t>(*profile);
     for (const auto& [key, target] :
@@ -328,7 +331,8 @@ std::optional<PuzzleDocument> decodePuzzle(const QByteArray& bytes) {
 QByteArray encodePuzzleJob(const PuzzleJob& job) {
     if (job.candidates.size() > 6 || job.accepted.size() > 2 || job.current < 0 ||
         job.current > static_cast<int>(job.candidates.size()) || job.revision < 0 ||
-        static_cast<int>(job.status) < 0 || static_cast<int>(job.status) > 4) {
+        static_cast<int>(job.status) < 0 || static_cast<int>(job.status) > 4 ||
+        !puzzles::supportsModelVersion(job.modelVersion)) {
         return {};
     }
     QJsonArray candidates, accepted;
@@ -346,6 +350,7 @@ QByteArray encodePuzzleJob(const PuzzleJob& job) {
         accepted.append(number(static_cast<std::uint64_t>(id)));
     }
     const auto bytes = reviewDocument({{"formatVersion", 1},
+                                       {"modelVersion", static_cast<int>(job.modelVersion)},
                                        {"reusedExisting", job.reusedExisting},
                                        {"candidates", candidates},
                                        {"accepted", accepted},
@@ -359,7 +364,13 @@ std::optional<PuzzleJob> decodePuzzleJob(const QByteArray& bytes) {
         (*o)["candidates"].toArray().size() > 6 || (*o)["accepted"].toArray().size() > 2) {
         return {};
     }
+    const int modelVersion = (*o)["modelVersion"].toInt(1);
+    if (modelVersion < 1 ||
+        !puzzles::supportsModelVersion(static_cast<std::uint32_t>(modelVersion))) {
+        return {};
+    }
     PuzzleJob job;
+    job.modelVersion = static_cast<std::uint32_t>(modelVersion);
     job.reusedExisting = (*o)["reusedExisting"].toBool();
     job.current = (*o)["current"].toInt(-1);
     for (const auto& item : (*o)["candidates"].toArray()) {

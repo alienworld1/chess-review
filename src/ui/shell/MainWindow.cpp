@@ -537,11 +537,17 @@ void MainWindow::installPuzzles(app::PuzzleController& puzzles,
             const bool resumable =
                 same && saved.generation &&
                 saved.generation->status != persistence::PuzzleJobStatus::Complete;
+            const bool outdatedEmpty =
+                same && saved.generation &&
+                saved.generation->status == persistence::PuzzleJobStatus::Complete &&
+                saved.generation->saved == 0 &&
+                saved.generation->modelVersion < puzzles::modelVersion;
             generate->setText(!loading && !saved.error.isEmpty() ? tr("Retry loading puzzles")
                               : resumable                        ? tr("Resume puzzle generation")
                                                                  : tr("Generate Puzzles"));
-            generate->setEnabled(ready && !loading && !generation.state().active &&
-                                 (!saved.error.isEmpty() || !saved.generation || resumable));
+            generate->setEnabled(
+                ready && !loading && !generation.state().active &&
+                (!saved.error.isEmpty() || !saved.generation || resumable || outdatedEmpty));
         };
         connect(generate, &QPushButton::clicked, this, [this, &puzzles, &generation, update] {
             const auto& run = reviewController_->state().run;

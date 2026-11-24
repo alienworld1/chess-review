@@ -8,9 +8,12 @@
 #include <vector>
 
 namespace chess_review::puzzles {
-inline constexpr std::uint32_t modelVersion = 1;
+inline constexpr std::uint32_t modelVersion = 2;
+[[nodiscard]] constexpr bool supportsModelVersion(std::uint32_t version) {
+    return version == 1 || version == 2;
+}
 enum class Origin { Generated, Manual };
-enum class Goal { Practice, Mate, Material, Defence };
+enum class Goal { Practice, Mate, Material, Defence, Tactic };
 enum class Outcome { Pending, Accepted, Rejected, Insufficient };
 struct Policy {
     review::Configuration review;
@@ -27,6 +30,7 @@ struct Definition {
     chess::PositionContext position;
     Origin origin = Origin::Manual;
     Policy policy;
+    std::uint32_t modelVersion = puzzles::modelVersion;
     bool operator==(const Definition&) const = default;
 };
 struct Edge {
@@ -87,8 +91,18 @@ enum class AlternativeGrade { Strong, TryAgain, Unavailable };
                                                 const review::PositionEvidence& olderChild,
                                                 const review::PositionEvidence& newerChild);
 [[nodiscard]] bool validPolicy(const Policy& policy);
-// Cheap teaching eligibility from already qualified review pairs. A large loss
+struct CandidateContext {
+    bool isError = false;
+    bool isSpecial = false;
+    bool opponentBlundered = false;
+};
+// Cheap teaching eligibility from qualified review evidence. A large loss
 // alone is not a candidate; independent deeper verification is still required.
+[[nodiscard]] std::optional<Goal> candidateGoal(const chess::Position& root,
+                                                const review::MoveEvidence* older,
+                                                const review::MoveEvidence& newer,
+                                                const Policy& policy,
+                                                CandidateContext context = {});
 [[nodiscard]] std::optional<Goal> candidateGoal(const chess::Position& root,
                                                 const review::MoveEvidence& older,
                                                 const review::MoveEvidence& newer,

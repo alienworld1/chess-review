@@ -12,7 +12,8 @@ persistence::PuzzleJobSummary summary(const persistence::PuzzleJob& job) {
             job.status,
             job.current,
             static_cast<int>(job.candidates.size()),
-            static_cast<int>(job.accepted.size())};
+            static_cast<int>(job.accepted.size()),
+            job.modelVersion};
 }
 } // namespace
 PuzzleGenerationController::PuzzleGenerationController(persistence::Database& database,

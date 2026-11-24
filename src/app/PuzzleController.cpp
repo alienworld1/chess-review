@@ -486,6 +486,9 @@ void PuzzleController::resetBoard() {
     case puzzles::Goal::Practice:
         state_.message = tr("Find the best continuation.");
         break;
+    case puzzles::Goal::Tactic:
+        state_.message = tr("Find the winning tactic.");
+        break;
     }
     workerBusy_ = true;
     const auto puzzle = puzzle_;
