@@ -53,7 +53,7 @@ QString outcomeText(const app::ImportItem& item) {
     return std::get<persistence::GameError>(item.outcome).message;
 }
 QString diagnosticText(const pgn::Diagnostic& diagnostic) {
-    auto text = QObject::tr("%1 — line %2, byte column %3, byte offset %4")
+    auto text = QObject::tr("%1 (line %2, column %3, offset %4)")
                     .arg(QString::fromStdString(diagnostic.message))
                     .arg(diagnostic.location.line)
                     .arg(diagnostic.location.column)
@@ -122,7 +122,7 @@ class ImportTableModel final : public QAbstractTableModel {
                    file.message;
         }
         const auto& item = file.items[*gameIndex];
-        auto text = tr("%1 — game %2").arg(file.name).arg(item.ordinal);
+        auto text = tr("%1 (game %2)").arg(file.name).arg(item.ordinal);
         if (!item.title.isEmpty()) {
             text += u'\n' + item.title;
         }

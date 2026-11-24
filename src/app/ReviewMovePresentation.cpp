@@ -440,18 +440,17 @@ QString reviewRetryHint(const review::RetryHint& hint, review::RetryHintLevel le
         return QObject::tr("Check your opponent’s threats, then look at checks, captures, and "
                            "the safety of your pieces.");
     case review::RetryIdea::Checkmate:
-        return QObject::tr("Look for mating threats. An analyzed continuation ends in checkmate; "
-                           "other defences may differ.");
+        return QObject::tr("Look for a checkmate threat.");
     case review::RetryIdea::Fork:
-        return QObject::tr("Look for a check that also attacks other pieces in the analyzed line.");
+        return QObject::tr("Look for a check that forks another piece.");
     case review::RetryIdea::HangingPiece:
-        return QObject::tr("Look for an undefended piece to capture in the analyzed line.");
+        return QObject::tr("Look for an undefended piece to capture.");
     case review::RetryIdea::Promotion:
-        return QObject::tr("Look for a promotion opportunity supported by the analyzed line.");
+        return QObject::tr("Look for a way to promote a pawn.");
     case review::RetryIdea::Exchange:
-        return QObject::tr("Look for a way to win a rook for a minor piece in the analyzed line.");
+        return QObject::tr("Look for a way to win the exchange.");
     case review::RetryIdea::Material:
-        return QObject::tr("Look for a material gain supported by the analyzed line.");
+        return QObject::tr("Look for a tactic that wins material.");
     }
     return {};
 }
@@ -512,8 +511,7 @@ ReviewMomentPresentation presentReviewMoment(const persistence::ReviewMove* move
         view.alternative = move->bestSan;
     }
     if (result.loss) {
-        view.impact = QObject::tr("Expected-score loss: %1 percentage points")
-                          .arg(*result.loss * 100, 0, 'f', 1);
+        view.impact = QObject::tr("Expected score drop: %1%").arg(*result.loss * 100, 0, 'f', 1);
     }
     if (result.label == review::Classification::Book) {
         view.explanation = QObject::tr("This move follows a line in the bundled opening book.");

@@ -2297,9 +2297,11 @@ class QuickReviewTest final : public QObject {
         QCOMPARE(exploration.state().length, 3);
         QVERIFY(!exploration.state().playing);
         QVERIFY(preview->isVisible());
-        QCOMPARE(preview->text(), QStringLiteral("Line preview: move 0 of 3"));
+        QCOMPARE(preview->text(), QStringLiteral("Line preview · 3 moves"));
         QVERIFY(linePreview->isVisible());
-        QCOMPARE(lineStep->text(), QStringLiteral("Move 0 of 3"));
+        QCOMPARE(lineStep->text(), QStringLiteral("Start · 3 moves"));
+        auto* expStatus = f.window.findChild<QLabel*>(QStringLiteral("reviewExplorationStatus"));
+        QVERIFY(expStatus && expStatus->isHidden());
         QVERIFY(lineMoves->isVisible());
         QCOMPARE(exploration.state().lineMoves.size(), 3);
         QCOMPARE(exploration.board().annotations.size(), std::size_t{1});
@@ -2792,9 +2794,8 @@ class QuickReviewTest final : public QObject {
         const auto best = root.legalMoves().front();
         // A demonstrated weak alternative is graded without starting another search.
         exploration.attemptMove(root.legalMoves()[2], board->state().revision);
-        QTRY_VERIFY(
-            exploration.state().mode == app::ExplorationMode::Retry &&
-            exploration.state().message.contains(QStringLiteral("too much expected score")));
+        QTRY_VERIFY(exploration.state().mode == app::ExplorationMode::Retry &&
+                    exploration.state().message.contains(QStringLiteral("stronger move")));
         QTRY_VERIFY(board->state().interactive);
         QCOMPARE(exploration.state().hints, hints);
         QVERIFY(status->text().contains(idea));
@@ -5111,6 +5112,44 @@ class QuickReviewTest final : public QObject {
         } else {
             QVERIFY(retryButton->toolTip().contains(QStringLiteral("your side")));
         }
+    }
+    void arrowKeysAnimateMovesRespectingDisplayOption() {
+        Fixture f;
+        QVERIFY(f.seed("1. e4 e5 2. Nf3 Nc6 *", true));
+        f.script();
+        f.run();
+        QVERIFY(f.done());
+        f.window.findChild<QPushButton*>(QStringLiteral("reviewTaskStatus"))->click();
+        f.window.resize(1100, 720);
+        f.window.show();
+        auto& review = f.startup.reviewGame();
+        review.selectMoment(1);
+        QTRY_VERIFY(review.navigation().displayed() == 1 && !review.navigation().pending());
+        auto* board = f.window.findChild<ui::ChessBoardWidget*>(QStringLiteral("reviewBoard"));
+        auto* animAction = f.window.findChild<QAction*>(QStringLiteral("boardAnimationAction"));
+        QVERIFY(board && animAction);
+        QVERIFY(animAction->isChecked());
+        QTRY_VERIFY(board->isVisible());
+        board->setFocus();
+        QTest::keyPress(board, Qt::Key_Right);
+        QTest::keyRelease(board, Qt::Key_Right);
+        QTRY_VERIFY(review.navigation().displayed() == 2 && board->isAnimating());
+        // Same-revision non-interactive updates (e.g. evidence refresh) must not abort animation.
+        board->setState(board->state());
+        QVERIFY(board->isAnimating());
+        QTRY_VERIFY(!board->isAnimating());
+
+        QTest::keyPress(board, Qt::Key_Left);
+        QTest::keyRelease(board, Qt::Key_Left);
+        QTRY_VERIFY(review.navigation().displayed() == 1 && board->isAnimating());
+        QTRY_VERIFY(!board->isAnimating());
+
+        animAction->trigger();
+        QVERIFY(!animAction->isChecked());
+        QTest::keyPress(board, Qt::Key_Right);
+        QTest::keyRelease(board, Qt::Key_Right);
+        QTRY_COMPARE(review.navigation().displayed(), 2);
+        QVERIFY(!board->isAnimating());
     }
 };
 QTEST_MAIN(QuickReviewTest)

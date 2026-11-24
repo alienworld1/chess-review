@@ -522,7 +522,7 @@ void EngineSettingsPage::updateRuntime() {
     if (verbose_ && state.runtime.discovery) {
         const auto& value = *state.runtime.discovery;
         const auto yesNo = [](bool supported) { return supported ? tr("Yes") : tr("No"); };
-        status += tr("\nAdvertised support — MultiPV: %1; WDL: %2; Threads: %3; Hash: %4")
+        status += tr("\nCapabilities: MultiPV %1 · WDL %2 · Threads %3 · Hash %4")
                       .arg(yesNo(value.capabilities.supportsMultiPv),
                            yesNo(value.capabilities.supportsWdl),
                            yesNo(value.capabilities.supportsThreads),

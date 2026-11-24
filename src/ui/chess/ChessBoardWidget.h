@@ -20,6 +20,9 @@ class ChessBoardWidget final : public QWidget {
     void setAnnotationColor(int color);
     void animateMove(chess::Move move);
     void flashMove(chess::Move move, bool success);
+    bool isAnimating() const {
+        return animatedMove_.has_value() && animation_.state() == QAbstractAnimation::Running;
+    }
     const app::BoardViewState& state() const { return state_; }
     QRectF boardRect() const;
     QRectF squareRect(chess::Square square) const;
@@ -57,6 +60,7 @@ class ChessBoardWidget final : public QWidget {
   private:
     void rebuildPieces();
     bool isCaptureDestination(chess::Square square) const;
+    void cancelInteraction();
     void cancelTransient();
     void proposeMove(chess::Square from, chess::Square to, bool dropped = false);
     int gestureColor(Qt::KeyboardModifiers modifiers) const;

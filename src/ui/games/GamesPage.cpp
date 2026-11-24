@@ -12,6 +12,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QEvent>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QLabel>
@@ -20,9 +21,10 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QMimeData>
-#include <QPlainTextEdit>
+#include <QPainter>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QShortcut>
 #include <QSignalBlocker>
@@ -42,14 +44,14 @@ namespace {
 QString completionText(app::ImportBatchStatus status, bool hasErrors) {
     switch (status) {
     case app::ImportBatchStatus::Completed:
-        return hasErrors ? QObject::tr("Import completed with errors.")
-                         : QObject::tr("Import completed.");
+        return hasErrors ? QObject::tr("Import completed with errors")
+                         : QObject::tr("Import completed");
     case app::ImportBatchStatus::Cancelled:
-        return QObject::tr("Import cancelled.");
+        return QObject::tr("Import cancelled");
     case app::ImportBatchStatus::Failed:
-        return QObject::tr("Import stopped after a failure.");
+        return QObject::tr("Import stopped after a failure");
     case app::ImportBatchStatus::GameLimitReached:
-        return QObject::tr("Import stopped: batch game limit reached.");
+        return QObject::tr("Import stopped: batch game limit reached");
     case app::ImportBatchStatus::Idle:
     case app::ImportBatchStatus::Running:
         return {};
@@ -88,6 +90,59 @@ class PaletteRefreshFilter final : public QObject {
   private:
     std::function<void()> callback_;
 };
+
+class GamePlayerSwatch final : public QWidget {
+  public:
+    GamePlayerSwatch(bool white, QWidget* parent) : QWidget(parent), white_(white) {
+        setFixedSize(10, 10);
+    }
+
+  protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(
+            QPen(QColor(white_ ? QStringLiteral("#9aa6b4") : QStringLiteral("#525e6e")), 1.0));
+        painter.setBrush(QColor(white_ ? QStringLiteral("#f5f4ef") : QStringLiteral("#262d36")));
+        painter.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 2.5, 2.5);
+    }
+
+  private:
+    bool white_;
+};
+
+bool isMeaningfulTag(const QString& value) {
+    const auto trimmed = value.trimmed();
+    return !trimmed.isEmpty() && trimmed != QLatin1String("?") && trimmed != QLatin1String("-") &&
+           trimmed != QLatin1String("????.??.??");
+}
+
+QLabel* detailValueLabel(const QString& text, QWidget* parent, const char* role = nullptr) {
+    auto* label = new QLabel(text, parent);
+    label->setTextFormat(Qt::PlainText);
+    label->setWordWrap(true);
+    label->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    if (role) {
+        setTextRole(*label, role);
+    }
+    return label;
+}
+
+void addDetailRow(QGridLayout& grid, QWidget* parent, const QString& labelText,
+                  const QString& valueText, const char* valueRole = nullptr,
+                  const QString& toolTip = {}) {
+    const int row = grid.rowCount();
+    auto* label = new QLabel(labelText, parent);
+    label->setTextFormat(Qt::PlainText);
+    setTextRole(*label, "caption");
+    auto* value = detailValueLabel(valueText, parent, valueRole);
+    if (!toolTip.isEmpty()) {
+        value->setToolTip(QStringLiteral("<qt>%1</qt>").arg(toolTip.toHtmlEscaped()));
+    }
+    grid.addWidget(label, row, 0, Qt::AlignLeft | Qt::AlignTop);
+    grid.addWidget(value, row, 1);
+}
 } // namespace
 
 class LibraryTableModel final : public QAbstractTableModel {
@@ -132,7 +187,16 @@ class LibraryTableModel final : public QAbstractTableModel {
                 return controller_.reviewStatus(row.id).toHtmlEscaped();
             }
             if (index.column() == 7) {
-                return controller_.reviewAccuracy(row.id).toHtmlEscaped();
+                const auto accuracy = controller_.reviewAccuracy(row.id);
+                if (accuracy == QStringLiteral("—")) {
+                    return {};
+                }
+                const auto side = controller_.reviewedSide(row.id);
+                const auto tip =
+                    side ? tr("%1 (%2)").arg(accuracy, *side == chess::Color::White ? tr("White")
+                                                                                    : tr("Black"))
+                         : accuracy;
+                return tip.toHtmlEscaped();
             }
             if (row.metadataError) {
                 return tr("Game ID %1: %2")
@@ -155,16 +219,23 @@ class LibraryTableModel final : public QAbstractTableModel {
             return controller_.reviewStatus(row.id);
         }
         if (index.column() == 7) {
+            const auto accuracy = controller_.reviewAccuracy(row.id);
+            if (accuracy == QStringLiteral("—")) {
+                return QString{};
+            }
             const auto side = controller_.reviewedSide(row.id);
-            return controller_.reviewAccuracy(row.id) +
-                   (side ? (*side == chess::Color::White ? tr(" · White") : tr(" · Black"))
-                         : QString{});
+            return side ? tr("%1 (%2)").arg(accuracy,
+                                            *side == chess::Color::White ? tr("W") : tr("B"))
+                        : accuracy;
         }
         const QStringList values{row.white,    row.black,       row.result,
                                  row.playedAt, row.timeControl, row.importedAt};
         auto value = values.at(index.column());
         if (index.column() == 2 && value == u"*") {
             return tr("No result");
+        }
+        if ((index.column() == 3 || index.column() == 4) && !isMeaningfulTag(value)) {
+            return QString{};
         }
         if (value.isEmpty()) {
             value = tr("Unknown");
@@ -347,24 +418,18 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
         updatePreviewVisibility();
     });
 
-    auto* actions = new QHBoxLayout;
-    actions->setSpacing(8);
     review_ = new QPushButton(tr("Review…"), this);
     review_->setObjectName(QStringLiteral("reviewGameButton"));
     setPrimaryAction(*review_);
     setIcon(*review_, QStringLiteral("play"));
-    actions->addWidget(review_);
     open_ = new QPushButton(tr("Open in Analyze"), this);
     open_->setObjectName(QStringLiteral("openGameButton"));
-    open_->setToolTip(tr("Select a saved game, then open its moves and variations."));
+    open_->setToolTip(tr("Open the selected game in Analyze."));
     setIcon(*open_, QStringLiteral("analyze"));
-    actions->addWidget(open_);
-    remove_ = new QPushButton(tr("Delete game…"), this);
+    remove_ = new QPushButton(tr("Delete…"), this);
     remove_->setObjectName(QStringLiteral("deleteGameButton"));
     setQuietAction(*remove_);
     setIcon(*remove_, QStringLiteral("trash"));
-    actions->addWidget(remove_);
-    actions->addStretch();
     connect(remove_, &QPushButton::clicked, this, &GamesPage::confirmDeletion);
     connect(review_, &QPushButton::clicked, this, [this] {
         if (const auto id = libraryModel_->gameId(games_->currentIndex().row());
@@ -409,18 +474,18 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
         updateOpenAction();
         updatePreviewVisibility();
     });
-    games_->setColumnWidth(2, 72);
-    games_->setColumnWidth(3, 88);
-    games_->setColumnWidth(6, 100);
+    games_->setColumnWidth(2, 86);
+    games_->setColumnWidth(3, 94);
+    games_->setColumnWidth(6, 110);
     games_->setColumnHidden(5, true);
     games_->setColumnHidden(4, true);
     games_->setShowGrid(false);
     games_->verticalHeader()->setDefaultSectionSize(38);
-    games_->setColumnWidth(7, 92);
+    games_->setColumnWidth(7, 116);
     // Keep review results visible before secondary metadata on laptop displays.
     games_->horizontalHeader()->moveSection(games_->horizontalHeader()->visualIndex(6), 3);
     games_->horizontalHeader()->moveSection(games_->horizontalHeader()->visualIndex(7), 4);
-    games_->setColumnWidth(LibraryTableModel::openingColumn, 130);
+    games_->setColumnWidth(LibraryTableModel::openingColumn, 165);
     games_->setColumnWidth(5, 200);
     games_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(games_, &QTableView::customContextMenuRequested, this, [this](const QPoint& point) {
@@ -442,51 +507,56 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     content->addWidget(games_, 1);
     previewPane_ = new QWidget(this);
     previewPane_->setObjectName(QStringLiteral("selectedGamePreview"));
-    previewPane_->setFixedWidth(268);
+    previewPane_->setFixedWidth(296);
     setPanelSurface(*previewPane_);
     auto* previewLayout = new QVBoxLayout(previewPane_);
     previewLayout->setContentsMargins(14, 14, 14, 14);
     previewLayout->setSpacing(10);
+    auto* previewHeader = new QHBoxLayout;
+    previewHeader->setSpacing(8);
     previewHeading_ = new QLabel(tr("Game details"), previewPane_);
     setTextRole(*previewHeading_, "heading");
-    previewLayout->addWidget(previewHeading_);
+    previewHeader->addWidget(previewHeading_, 1);
     previewStatus_ = new QLabel(previewPane_);
     previewStatus_->setTextFormat(Qt::PlainText);
-    previewStatus_->setWordWrap(true);
     setTextRole(*previewStatus_, "caption");
-    previewLayout->addWidget(previewStatus_);
+    previewHeader->addWidget(previewStatus_);
+    previewLayout->addLayout(previewHeader);
     board_ = new ChessBoardWidget(previewPane_);
     board_->setObjectName(QStringLiteral("gamePreviewBoard"));
-    board_->setAccessibleName(tr("Final mainline position"));
+    board_->setAccessibleName(tr("Final position"));
     board_->setFocusPolicy(Qt::NoFocus);
     board_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    board_->setFixedSize(180, 180);
+    board_->setFixedSize(184, 184);
     previewLayout->addWidget(board_, 0, Qt::AlignHCenter);
-    metadata_ = new QPlainTextEdit(previewPane_);
+    metadata_ = new QScrollArea(previewPane_);
     metadata_->setObjectName(QStringLiteral("gameMetadata"));
-    metadata_->setAccessibleName(tr("Selected game metadata"));
-    metadata_->setReadOnly(true);
+    metadata_->setAccessibleName(tr("Selected game details"));
+    metadata_->setWidgetResizable(true);
     metadata_->setFrameShape(QFrame::NoFrame);
+    metadata_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    metadata_->viewport()->setAutoFillBackground(false);
     setFlatSurface(*metadata_);
-    metadata_->setMinimumHeight(45);
+    metadata_->setMinimumHeight(80);
     previewLayout->addWidget(metadata_, 1);
-    previewLayout->addStretch(0);
     content->addWidget(previewPane_);
-    previous_ = new QPushButton(tr("Previous page"), this);
-    next_ = new QPushButton(tr("Next page"), this);
+    previous_ = new QPushButton(tr("Previous"), this);
+    next_ = new QPushButton(tr("Next"), this);
     previous_->setObjectName(QStringLiteral("previousGames"));
     next_->setObjectName(QStringLiteral("nextGames"));
     setQuietAction(*previous_);
     setQuietAction(*next_);
     setIcon(*previous_, QStringLiteral("chevron-left"));
     setIcon(*next_, QStringLiteral("chevron-right"));
-    auto* paging = new QHBoxLayout;
-    paging->setSpacing(8);
-    paging->addWidget(previous_);
-    paging->addWidget(next_);
-    paging->addStretch();
-    layout->addLayout(paging);
-    layout->addLayout(actions);
+    auto* footer = new QHBoxLayout;
+    footer->setSpacing(8);
+    footer->addWidget(review_);
+    footer->addWidget(open_);
+    footer->addWidget(remove_);
+    footer->addStretch();
+    footer->addWidget(previous_);
+    footer->addWidget(next_);
+    layout->addLayout(footer);
     auto* importBar = new QWidget(this);
     importBar->setObjectName(QStringLiteral("importProgressBar"));
     setSubtleSurface(*importBar);
@@ -516,6 +586,11 @@ GamesPage::GamesPage(app::ImportController& imports, app::GameLibraryController&
     setTabOrder(importStatus_, cancel_);
     setTabOrder(cancel_, report_);
     setTabOrder(report_, search_);
+    setTabOrder(games_, review_);
+    setTabOrder(review_, open_);
+    setTabOrder(open_, remove_);
+    setTabOrder(remove_, previous_);
+    setTabOrder(previous_, next_);
     reportDialog_ = new ImportReportDialog(imports, this);
     connect(report_, &QPushButton::clicked, reportDialog_, &QDialog::show);
     connect(reportDialog_, &ImportReportDialog::openRequested, this, &GamesPage::openRequested);
@@ -625,7 +700,7 @@ void GamesPage::resizeEvent(QResizeEvent* event) {
     updatePreviewVisibility();
 }
 void GamesPage::updatePreviewVisibility() {
-    const bool expanded = previewPreference_.value_or(width() >= 930);
+    const bool expanded = previewPreference_.value_or(width() >= 960);
     togglePreview_->setChecked(expanded);
     previewPane_->setVisible(expanded);
     library_.selectPreview(expanded ? selectedGame_ : std::nullopt);
@@ -640,72 +715,203 @@ void GamesPage::updatePreview() {
     metadata_->setVisible(show);
     if (!show) {
         displayedPreview_.reset();
+        displayedMetadataSignature_.clear();
         previewHeading_->setText(tr("Game details"));
         previewStatus_->setText(!library_.previewError().isEmpty() ? library_.previewError()
-                                : library_.previewLoading()
-                                    ? tr("Loading game details…")
-                                    : tr("Select a game to see its final position and details."));
+                                : library_.previewLoading()        ? tr("Loading game details…")
+                                                            : tr("Select a game to view details."));
+        previewStatus_->setVisible(true);
         return;
     }
     const auto& game = preview->summary;
-    if (displayedPreview_ != game.id) {
+    const bool gameChanged = displayedPreview_ != game.id;
+    if (gameChanged) {
         displayedPreview_ = game.id;
         app::BoardViewState board;
         board.pieces = preview->board.pieces;
         board.sideToMove = preview->board.sideToMove;
         board.lastMove = preview->lastMove;
-        previewHeading_->setText(preview->plies > 0 ? tr("Final mainline position")
+        previewHeading_->setText(preview->plies > 0 ? tr("Final position")
                                                     : tr("Starting position"));
         board.positionDescription = previewHeading_->text();
         board_->setState(board);
+        const auto fullMoves = (preview->plies + 1) / 2;
         previewStatus_->setText(
-            preview->plies == 1
-                ? tr("After 1 half-move")
-                : (preview->plies ? tr("After %1 half-moves").arg(preview->plies) : QString{}));
-        metadata_->clear();
+            preview->plies > 0 ? (fullMoves == 1 ? tr("1 move") : tr("%1 moves").arg(fullMoves))
+                               : QString{});
+        previewStatus_->setVisible(!previewStatus_->text().isEmpty());
     }
-    QStringList lines;
-    const auto field = [&lines](const QString& label, const QString& value) {
-        if (!value.isEmpty()) {
-            lines.append(QObject::tr("%1 — %2").arg(label, value));
-        }
-    };
+    const auto whiteName = isMeaningfulTag(game.white) ? game.white : tr("White");
+    const auto blackName = isMeaningfulTag(game.black) ? game.black : tr("Black");
+    const auto resultText = game.result == u"*" ? tr("No result") : game.result;
+    const auto reviewStatus = library_.reviewStatus(game.id);
+    const auto reviewedSide = library_.reviewedSide(game.id);
+    const auto rawAccuracy = library_.reviewAccuracy(game.id);
+    const auto accuracyText =
+        reviewedSide && rawAccuracy != QStringLiteral("—")
+            ? tr("%1 (%2)").arg(rawAccuracy,
+                                *reviewedSide == chess::Color::White ? tr("White") : tr("Black"))
+            : QString{};
+    const auto resolvedOpening = openingText(game.opening);
     const auto imported = QDateTime::fromString(game.importedAt, Qt::ISODateWithMs).toLocalTime();
-    field(tr("White"), game.white.isEmpty() ? tr("Unknown") : game.white);
-    field(tr("Black"), game.black.isEmpty() ? tr("Unknown") : game.black);
-    field(tr("Result"), game.result == u"*" ? tr("No result") : game.result);
-    field(tr("Played"), game.playedAt);
-    field(tr("Time control"), game.timeControl);
-    field(tr("Opening"), openingText(game.opening));
-    field(tr("PGN opening"), preview->openingTag);
-    field(tr("PGN ECO"), preview->ecoTag);
-    field(tr("Review"), library_.reviewStatus(game.id));
-    if (const auto side = library_.reviewedSide(game.id)) {
-        field(*side == chess::Color::White ? tr("White accuracy") : tr("Black accuracy"),
-              library_.reviewAccuracy(game.id));
-    }
-    field(tr("Event"), preview->event);
-    field(tr("Site"), preview->site);
-    field(tr("Round"), preview->round);
-    field(tr("Imported"), QLocale().toString(imported, QLocale::ShortFormat));
+    const auto importedText =
+        imported.isValid() ? QLocale().toString(imported, QLocale::ShortFormat) : QString{};
     const auto& source = preview->source;
-    field(tr("Source"), source.type == u"paste"       ? tr("Pasted PGN")
-                        : source.type == u"file"      ? tr("Local PGN file")
-                        : source.type == u"lichess"   ? QStringLiteral("Lichess")
-                        : source.type == u"chess.com" ? QStringLiteral("Chess.com")
-                                                      : source.type);
-    if (!source.uri.isEmpty()) {
-        const QUrl uri(source.uri);
-        field(tr("Source location"),
-              source.type == u"file" && uri.isLocalFile() ? uri.toLocalFile() : source.uri);
-    }
-    if (game.metadataTruncated) {
-        lines.append(tr("Long metadata fields are shortened in this preview."));
-    }
-    const auto text = lines.join(u'\n');
-    if (metadata_->toPlainText() != text) {
-        const auto scroll = metadata_->verticalScrollBar()->value();
-        metadata_->setPlainText(text);
+    const auto sourceText = source.type == u"paste"       ? tr("Pasted PGN")
+                            : source.type == u"file"      ? tr("Local file")
+                            : source.type == u"lichess"   ? QStringLiteral("Lichess")
+                            : source.type == u"chess.com" ? QStringLiteral("Chess.com")
+                                                          : source.type;
+    const QUrl uri(source.uri);
+    const auto sourceLocation =
+        source.uri.isEmpty()
+            ? QString{}
+            : (source.type == u"file" && uri.isLocalFile() ? uri.toLocalFile() : source.uri);
+    const QString signature =
+        QStringList{QString::number(game.id),
+                    whiteName,
+                    blackName,
+                    resultText,
+                    reviewStatus,
+                    accuracyText,
+                    resolvedOpening,
+                    preview->openingTag,
+                    preview->ecoTag,
+                    game.playedAt,
+                    game.timeControl,
+                    preview->event,
+                    preview->site,
+                    preview->round,
+                    sourceText,
+                    sourceLocation,
+                    importedText,
+                    game.metadataTruncated ? QStringLiteral("1") : QStringLiteral("0"),
+                    verbose_ ? QStringLiteral("v") : QStringLiteral("c")}
+            .join(QChar(0x1f));
+    if (displayedMetadataSignature_ != signature) {
+        const int scroll = gameChanged ? 0 : metadata_->verticalScrollBar()->value();
+        displayedMetadataSignature_ = signature;
+        auto* body = new QWidget(metadata_);
+        body->setAutoFillBackground(false);
+        auto* bodyLayout = new QVBoxLayout(body);
+        bodyLayout->setContentsMargins(0, 2, 4, 2);
+        bodyLayout->setSpacing(10);
+
+        auto* playersLayout = new QVBoxLayout;
+        playersLayout->setSpacing(4);
+        const auto addPlayerRow = [body, playersLayout](bool white, const QString& name) {
+            auto* row = new QHBoxLayout;
+            row->setSpacing(8);
+            row->addWidget(new GamePlayerSwatch(white, body), 0, Qt::AlignVCenter);
+            row->addWidget(detailValueLabel(name, body, "strong"), 1);
+            playersLayout->addLayout(row);
+        };
+        addPlayerRow(true, whiteName);
+        addPlayerRow(false, blackName);
+        if (isMeaningfulTag(resultText)) {
+            auto* resultRow = new QHBoxLayout;
+            resultRow->setSpacing(8);
+            auto* resultLabel = new QLabel(tr("Result"), body);
+            setTextRole(*resultLabel, "caption");
+            resultRow->addWidget(resultLabel);
+            resultRow->addWidget(detailValueLabel(resultText, body, "strong"), 1);
+            playersLayout->addLayout(resultRow);
+        }
+        bodyLayout->addLayout(playersLayout);
+
+        auto* reviewBox = new QWidget(body);
+        setSubtleSurface(*reviewBox);
+        auto* reviewGrid = new QGridLayout(reviewBox);
+        reviewGrid->setContentsMargins(10, 8, 10, 8);
+        reviewGrid->setHorizontalSpacing(10);
+        reviewGrid->setVerticalSpacing(4);
+        reviewGrid->setColumnStretch(1, 1);
+        addDetailRow(*reviewGrid, reviewBox, tr("Review"), reviewStatus);
+        if (!accuracyText.isEmpty()) {
+            addDetailRow(*reviewGrid, reviewBox, tr("Accuracy"), accuracyText, "strong");
+        }
+        bodyLayout->addWidget(reviewBox);
+
+        auto* infoWidget = new QWidget(body);
+        infoWidget->setAutoFillBackground(false);
+        auto* infoGrid = new QGridLayout(infoWidget);
+        infoGrid->setContentsMargins(0, 0, 0, 0);
+        infoGrid->setHorizontalSpacing(10);
+        infoGrid->setVerticalSpacing(4);
+        infoGrid->setColumnStretch(1, 1);
+        if (!resolvedOpening.isEmpty()) {
+            addDetailRow(*infoGrid, infoWidget, tr("Opening"), resolvedOpening);
+            if (verbose_) {
+                if (isMeaningfulTag(preview->openingTag) &&
+                    preview->openingTag != resolvedOpening) {
+                    addDetailRow(*infoGrid, infoWidget, tr("PGN opening"), preview->openingTag);
+                }
+                if (isMeaningfulTag(preview->ecoTag) &&
+                    !resolvedOpening.contains(preview->ecoTag)) {
+                    addDetailRow(*infoGrid, infoWidget, tr("PGN ECO"), preview->ecoTag);
+                }
+            }
+        } else {
+            if (isMeaningfulTag(preview->openingTag)) {
+                addDetailRow(*infoGrid, infoWidget, tr("Opening"), preview->openingTag);
+            }
+            if (isMeaningfulTag(preview->ecoTag) &&
+                (!isMeaningfulTag(preview->openingTag) || verbose_)) {
+                addDetailRow(*infoGrid, infoWidget, tr("ECO"), preview->ecoTag);
+            }
+        }
+        if (isMeaningfulTag(game.playedAt)) {
+            addDetailRow(*infoGrid, infoWidget, tr("Played"), game.playedAt);
+        }
+        if (isMeaningfulTag(game.timeControl)) {
+            addDetailRow(*infoGrid, infoWidget, tr("Time"), game.timeControl);
+        }
+        if (isMeaningfulTag(preview->event)) {
+            addDetailRow(*infoGrid, infoWidget, tr("Event"), preview->event);
+        }
+        if (isMeaningfulTag(preview->site)) {
+            addDetailRow(*infoGrid, infoWidget, tr("Site"), preview->site);
+        }
+        if (isMeaningfulTag(preview->round)) {
+            addDetailRow(*infoGrid, infoWidget, tr("Round"), preview->round);
+        }
+        if (infoGrid->rowCount() > 0) {
+            bodyLayout->addWidget(makeSeparator(body));
+            bodyLayout->addWidget(infoWidget);
+        } else {
+            delete infoWidget;
+        }
+
+        auto* sourceWidget = new QWidget(body);
+        sourceWidget->setAutoFillBackground(false);
+        auto* sourceGrid = new QGridLayout(sourceWidget);
+        sourceGrid->setContentsMargins(0, 0, 0, 0);
+        sourceGrid->setHorizontalSpacing(10);
+        sourceGrid->setVerticalSpacing(4);
+        sourceGrid->setColumnStretch(1, 1);
+        if (!sourceText.isEmpty()) {
+            addDetailRow(*sourceGrid, sourceWidget, tr("Source"), sourceText, "secondary",
+                         sourceLocation);
+        }
+        if (verbose_ && !sourceLocation.isEmpty()) {
+            addDetailRow(*sourceGrid, sourceWidget, tr("Location"), sourceLocation, "secondary");
+        }
+        if (!importedText.isEmpty()) {
+            addDetailRow(*sourceGrid, sourceWidget, tr("Imported"), importedText, "secondary");
+        }
+        if (sourceGrid->rowCount() > 0) {
+            bodyLayout->addWidget(makeSeparator(body));
+            bodyLayout->addWidget(sourceWidget);
+        } else {
+            delete sourceWidget;
+        }
+
+        if (game.metadataTruncated) {
+            bodyLayout->addWidget(detailValueLabel(tr("Long fields are shortened in this preview."),
+                                                   body, "caption"));
+        }
+        bodyLayout->addStretch();
+        metadata_->setWidget(body);
         metadata_->verticalScrollBar()->setValue(scroll);
     }
     previewPane_->layout()->activate();
@@ -715,6 +921,8 @@ void GamesPage::showStatistics() {
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowTitle(tr("Library Statistics"));
     auto* layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(12);
     auto* status = new QLabel(dialog);
     status->setObjectName(QStringLiteral("libraryStatisticsStatus"));
     status->setTextFormat(Qt::PlainText);
@@ -845,7 +1053,11 @@ void GamesPage::updateImport() {
     }
     importStatus_->setText(status);
 }
-void GamesPage::setVerbose(bool verbose) { reportDialog_->setVerbose(verbose); }
+void GamesPage::setVerbose(bool verbose) {
+    verbose_ = verbose;
+    reportDialog_->setVerbose(verbose);
+    updatePreview();
+}
 
 void GamesPage::setBoardDisplayOptions(bool coordinates, bool animation) {
     board_->setDisplayOptions(coordinates, animation);

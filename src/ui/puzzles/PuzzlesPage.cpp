@@ -118,9 +118,8 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
     setIcon(*refresh_, QStringLiteral("refresh"));
     headerRow->addWidget(refresh_);
     libraryLayout->addLayout(headerRow);
-    libraryNotice_ =
-        label(libraryPage, tr("Save positions from Analysis or generate puzzles from a completed "
-                              "review. Choose any puzzle whenever you wish."));
+    libraryNotice_ = label(
+        libraryPage, tr("Generate puzzles from a reviewed game, or save positions from Analyze."));
     libraryNotice_->setObjectName(QStringLiteral("puzzleLibraryStatus"));
     setTextRole(*libraryNotice_, "secondary");
     libraryLayout->addWidget(libraryNotice_);
@@ -282,6 +281,8 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
     connect(board_, &ChessBoardWidget::nextRequested, &controller_, &app::PuzzleController::next);
     connect(&controller_, &app::PuzzleController::moveFeedback, board_,
             &ChessBoardWidget::flashMove);
+    connect(&controller_, &app::PuzzleController::moveAnimated, board_,
+            &ChessBoardWidget::animateMove);
     connect(&controller_, &app::PuzzleController::changed, this, &PuzzlesPage::refresh);
     connect(&generation_, &app::PuzzleGenerationController::changed, this,
             &PuzzlesPage::refreshGeneration);
@@ -378,8 +379,7 @@ void PuzzlesPage::refresh() {
                             : rows_.empty()
                                 ? tr("No puzzles saved yet. Generate puzzles from a completed "
                                      "review, or save a position from Analysis.")
-                                : tr("Choose any puzzle whenever you wish. Solutions stay hidden "
-                                     "until you solve or reveal them."));
+                                : tr("Select a puzzle to practice."));
     std::vector<persistence::PuzzleJobId> jobIds;
     for (const auto& job : state.interrupted) {
         jobIds.push_back(job.id);

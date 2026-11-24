@@ -38,13 +38,13 @@ QString reviewStatusText(JobStatus status) {
     case JobStatus::Deriving:
         return QObject::tr("Updating summary");
     case JobStatus::Complete:
-        return QObject::tr("Analysis finished");
+        return QObject::tr("Reviewed");
     case JobStatus::Partial:
         return QObject::tr("Incomplete");
     case JobStatus::Cancelled:
         return QObject::tr("Cancelled");
     case JobStatus::Interrupted:
-        return QObject::tr("Paused after closing");
+        return QObject::tr("Paused");
     case JobStatus::Failed:
         return QObject::tr("Failed");
     }

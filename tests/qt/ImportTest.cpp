@@ -27,6 +27,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QTabBar>
@@ -56,6 +57,15 @@ bool waitForBatch(app::ImportController& controller) {
     deadline.start(15'000);
     loop.exec();
     return !controller.busy();
+}
+QString metadataText(const QScrollArea& metadata) {
+    QStringList parts;
+    for (const auto* label : metadata.findChildren<QLabel*>()) {
+        if (!label->text().isEmpty()) {
+            parts << label->text();
+        }
+    }
+    return parts.join(u'\n');
 }
 struct Fixture {
     QTemporaryDir directory;
@@ -929,8 +939,9 @@ void ImportTest::librarySearchPreviewAndDeletion() {
     window.resize(1360, 850);
     window.show();
     QTRY_VERIFY(imports.available());
-    QString batch = QStringLiteral(
-        "[White \"Élodie\"]\n[Black \"Rivera\"]\n[Event \"Club final\"]\n\n1. e4 e5 1-0\n\n");
+    QString batch =
+        QStringLiteral("[White \"Élodie\"]\n[Black \"Rivera\"]\n[Event \"Club final\"]\n"
+                       "[Round \"?\"]\n[ECO \"C20\"]\n\n1. e4 e5 1-0\n\n");
     for (int i = 0; i < 51; ++i) {
         batch += QStringLiteral("[White \"Player %1\"]\n\n1. d4 *\n\n").arg(i);
     }
@@ -939,7 +950,7 @@ void ImportTest::librarySearchPreviewAndDeletion() {
     auto* table = window.findChild<QTableView*>(QStringLiteral("gamesTable"));
     auto* search = window.findChild<QLineEdit*>(QStringLiteral("gameSearch"));
     auto* result = window.findChild<QComboBox*>(QStringLiteral("gameResultFilter"));
-    auto* metadata = window.findChild<QPlainTextEdit*>(QStringLiteral("gameMetadata"));
+    auto* metadata = window.findChild<QScrollArea*>(QStringLiteral("gameMetadata"));
     auto* board = window.findChild<ui::ChessBoardWidget*>(QStringLiteral("gamePreviewBoard"));
     auto* status = window.findChild<QLabel*>(QStringLiteral("libraryStatus"));
     auto* remove = window.findChild<QPushButton*>(QStringLiteral("deleteGameButton"));
@@ -956,7 +967,12 @@ void ImportTest::librarySearchPreviewAndDeletion() {
     if (!detailsToggle->isChecked()) {
         detailsToggle->click();
     }
-    QTRY_VERIFY(metadata->toPlainText().contains(QStringLiteral("Club final")));
+    QTRY_VERIFY(metadataText(*metadata).contains(QStringLiteral("Club final")));
+    QTRY_VERIFY(metadataText(*metadata).contains(QStringLiteral("King's Pawn Game")));
+    const auto details = metadataText(*metadata);
+    QVERIFY(!details.contains(QStringLiteral("—")));
+    QVERIFY(!details.contains(QStringLiteral("Round")));
+    QVERIFY(!details.contains(QStringLiteral("PGN ECO")));
     QVERIFY(board->isVisible());
     QVERIFY(board->state().lastMove);
     QCOMPARE(board->state().lastMove->to.name(), std::string("e5"));
@@ -1050,7 +1066,7 @@ void ImportTest::layouts() {
     QVERIFY(previewToggle);
     if (previewToggle->isChecked()) {
         auto* board = page.findChild<ui::ChessBoardWidget*>(QStringLiteral("gamePreviewBoard"));
-        auto* metadata = page.findChild<QPlainTextEdit*>(QStringLiteral("gameMetadata"));
+        auto* metadata = page.findChild<QScrollArea*>(QStringLiteral("gameMetadata"));
         QTRY_VERIFY_WITH_TIMEOUT(board->isVisible() &&
                                      board->mapTo(&page, QPoint(0, board->height())).y() <=
                                          metadata->mapTo(&page, QPoint{}).y(),

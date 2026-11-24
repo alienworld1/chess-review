@@ -175,7 +175,7 @@ class ReviewComparisonModel final : public QAbstractTableModel {
             section > 2) {
             return {};
         }
-        return QStringList{tr("Move"), tr("Expected score"), tr("Replay")}.at(section);
+        return QStringList{tr("Move"), tr("Score"), tr("Line")}.at(section);
     }
     QVariant data(const QModelIndex& index, int role) const override {
         if (!index.isValid() || index.row() < 0 || index.row() >= rowCount() ||
@@ -392,6 +392,10 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     options->setMenu(optionsMenu);
     header->addWidget(options);
     layout->addLayout(header);
+    for (auto* control : {static_cast<QWidget*>(back), static_cast<QWidget*>(overviewButton),
+                          static_cast<QWidget*>(exportPgn_), static_cast<QWidget*>(options)}) {
+        control->installEventFilter(this);
+    }
     connect(back, &QPushButton::clicked, this, &ReviewPage::backRequested);
     splitter_ = new QSplitter(Qt::Horizontal, this);
     splitter_->setObjectName(QStringLiteral("reviewSplitter"));
@@ -536,14 +540,14 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
             });
     connect(timeline_, &MoveTimeline::previewCleared, &navigation,
             &app::ReviewNavigationController::clearPreview);
-    connect(timeline_, &MoveTimeline::previousRequested, &navigation,
-            &app::ReviewNavigationController::previous);
-    connect(timeline_, &MoveTimeline::nextRequested, &navigation,
-            &app::ReviewNavigationController::next);
-    connect(timeline_, &MoveTimeline::beginningRequested, &navigation,
-            &app::ReviewNavigationController::beginning);
-    connect(timeline_, &MoveTimeline::endRequested, &navigation,
-            &app::ReviewNavigationController::end);
+    connect(timeline_, &MoveTimeline::previousRequested, &controller_.exploration(),
+            &app::ReviewExplorationController::previous);
+    connect(timeline_, &MoveTimeline::nextRequested, &controller_.exploration(),
+            &app::ReviewExplorationController::next);
+    connect(timeline_, &MoveTimeline::beginningRequested, &controller_.exploration(),
+            &app::ReviewExplorationController::beginning);
+    connect(timeline_, &MoveTimeline::endRequested, &controller_.exploration(),
+            &app::ReviewExplorationController::end);
     timeline_->setMoveDescription([&navigation](chess::NodeId node) {
         const auto position = navigation.positionFor(node);
         if (!position || *position == 0) {
@@ -673,6 +677,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     startGuided_->setObjectName(QStringLiteral("startGuidedReview"));
     setPrimaryAction(*startGuided_);
     setIcon(*startGuided_, QStringLiteral("play"));
+    startGuided_->installEventFilter(this);
     overviewLayout->addWidget(startGuided_);
     connect(startGuided_, &QPushButton::clicked, this, [this] {
         guiding_ = true;
@@ -938,7 +943,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
         }
     });
     for (auto* control : {showLine_, tryAgain_, returnGame_, analyze_, previousMoment_, nextMoment_,
-                          chessDetailsToggle_}) {
+                          chessDetailsToggle_, hint_, reveal_, reloadExploration_}) {
         control->installEventFilter(this);
     }
     connect(candidates_, &QComboBox::activated, this, [this](int index) {
@@ -1117,11 +1122,11 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
                     QAccessible::updateAccessibility(&announcement);
                 }
             });
-    auto* keySection = section(tr("Chronological key moments"), false).second;
+    auto* keySection = section(tr("Key moments"), false).second;
     auto* keyLayout = new QVBoxLayout(keySection);
     moments_ = new QTableView(keySection);
     moments_->setObjectName(QStringLiteral("reviewKeyMoments"));
-    moments_->setAccessibleName(tr("Chronological key moments"));
+    moments_->setAccessibleName(tr("Key moments"));
     momentsModel_ = new ReviewMovesModel(this);
     moments_->setModel(momentsModel_);
     moments_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -1459,9 +1464,8 @@ void ReviewPage::updateSummary() {
         : state.active ? tr("Analysis continues. You can start reviewing now.")
         : state.run->status != review::JobStatus::Complete
             ? tr("Review incomplete. Your progress is saved.")
-        : evaluated < total
-            ? tr("Some moves could not be assessed. Accuracy covers analyzed moves only.")
-        : stable < evaluated ? tr("Some move assessments are preliminary.")
+        : evaluated < total  ? tr("Accuracy covers analyzed moves only.")
+        : stable < evaluated ? tr("Some moves are preliminary.")
                              : QString{});
     summaryState_->setVisible(!summaryState_->text().isEmpty());
 }
@@ -1829,7 +1833,7 @@ void ReviewPage::updateNavigation() {
     const auto evaluationDescription =
         verbose_ ? evaluation.description
         : evaluation.whiteExpected
-            ? tr("White expected score: %1%%2\nNot a win probability.")
+            ? tr("White expected score: %1%%2")
                   .arg(*evaluation.whiteExpected * 100, 0, 'f', 1)
                   .arg(evaluation.approximate ? tr(" (approximate)") : QString{})
             : tr("Evaluation unavailable");
@@ -1840,7 +1844,6 @@ void ReviewPage::updateNavigation() {
                            : nav.previewing()                  ? tr("Preview")
                            : nav.pending()                     ? tr("Loading move…")
                                                                : QString{});
-    previewLabel_->setVisible(!previewLabel_->text().isEmpty());
     if (nav.selected() != lastPosition_) {
         ++readingRestoreGeneration_;
         lastPosition_ = nav.selected();
@@ -1892,7 +1895,7 @@ void ReviewPage::updateNavigation() {
     explanation_->setText(presentation.explanation);
     alternative_->setText(presentation.alternative.isEmpty()
                               ? QString{}
-                              : tr("Stronger move: %1").arg(presentation.alternative));
+                              : tr("Best move: %1").arg(presentation.alternative));
     alternativeBox_->setVisible(!presentation.alternative.isEmpty());
     impact_->setText(presentation.impact);
     const auto detail = move ? app::reviewMoveDetails(*move) : QString{};
@@ -1973,14 +1976,15 @@ void ReviewPage::updateExploration() {
         evaluation_->setExpectedScore(std::nullopt, {});
         previewLabel_->setText(
             state.pendingBoard ? tr("Loading exploration position…")
-            : line             ? tr("Line preview: move %1 of %2").arg(state.step).arg(state.length)
+            : line             ? (state.step == 0
+                                      ? (state.length == 1 ? tr("Line preview · 1 move")
+                                                           : tr("Line preview · %1 moves").arg(state.length))
+                                      : tr("Line preview: move %1 of %2").arg(state.step).arg(state.length))
                                : tr("Practice position"));
-        previewLabel_->setVisible(true);
     }
-    board_->setToolTip(
-        hidden ? tr("Play one legal move to try again.")
-        : line ? tr("Candidate preview. Use Previous and Next to step through the line.")
-               : tr("Read-only original game. Use the timeline to select a moment."));
+    board_->setToolTip(hidden ? tr("Play one legal move to try again.")
+                       : line ? tr("Use Left/Right or the line controls to step through the moves.")
+                              : tr("Use Left/Right or click a move below to navigate the game."));
     timeline_->setHoverPreview(!exploration.active());
     timeline_->setVisible(!hidden);
     for (const auto& [toggle, content] : sections_) {
@@ -1999,7 +2003,7 @@ void ReviewPage::updateExploration() {
     const auto* currentMoment = exploration.moment();
     const auto comparisonStatus = verbose_ ? state.comparisonStatus
                                   : currentMoment && currentMoment->alternatives.needsEvidence()
-                                      ? tr("Alternative comparisons are preliminary.")
+                                      ? tr("Preliminary comparison.")
                                       : QString{};
     comparisonStatus_->setText(hidden ? QString{} : comparisonStatus);
     comparisonStatus_->setVisible(!hidden && !comparisonStatus.isEmpty());
@@ -2065,8 +2069,10 @@ void ReviewPage::updateExploration() {
         lineMoves_->clear();
         lineMoves_->hide();
     } else {
-        lineStepLabel_->setText(state.pendingBoard
-                                    ? tr("Loading line…")
+        lineStepLabel_->setText(state.pendingBoard ? tr("Loading line…")
+                                : state.step == 0
+                                    ? (state.length == 1 ? tr("Start · 1 move")
+                                                         : tr("Start · %1 moves").arg(state.length))
                                     : tr("Move %1 of %2").arg(state.step).arg(state.length));
         if (state.lineMoves.isEmpty()) {
             lineMoves_->clear();
@@ -2142,8 +2148,10 @@ void ReviewPage::updateExploration() {
     hint_->setEnabled(state.mode == app::ExplorationMode::Retry && !state.pendingBoard &&
                       state.hintLevel != review::RetryHintLevel::Destination);
     reveal_->setVisible(hidden);
-    auto status = state.loading ? tr("Loading continuation…")
-                                : (exploration.active() || verbose_ ? state.message : QString{});
+    const bool showMessage =
+        verbose_ || (exploration.active() && state.mode != app::ExplorationMode::Line);
+    auto status =
+        state.loading ? tr("Loading continuation…") : (showMessage ? state.message : QString{});
     if (hidden && !state.hints.isEmpty()) {
         status += QStringLiteral("\n\n") + state.hints.join(QLatin1Char('\n'));
     }

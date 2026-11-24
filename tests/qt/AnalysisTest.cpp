@@ -298,6 +298,17 @@ void AnalysisTest::dropSettlement() {
         QVERIFY(pendingImage.pixelColor(to) != QColor(QStringLiteral("#e9e1d0")));
     } else {
         QVERIFY(firstFrame != finalFrame);
+        auto nonInteractive = accepted;
+        nonInteractive.interactive = false;
+        board.setState(nonInteractive);
+        board.animateMove(move("e2", "e4"));
+        QVERIFY(board.isAnimating());
+        board.setState(nonInteractive);
+        QVERIFY(board.isAnimating());
+        auto nextRevision = nonInteractive;
+        ++nextRevision.revision;
+        board.setState(nextRevision);
+        QVERIFY(!board.isAnimating());
     }
     // A rejected drag clears the preview and restores the actual position.
     board.setState(initial);

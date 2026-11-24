@@ -28,6 +28,14 @@ ReviewNavigationController::ReviewNavigationController(persistence::Database& da
             refreshBoard();
         }
     });
+    connect(&replay_, &AnalysisController::navigationAnimationRequested, this,
+            [this](chess::Move move) {
+                const bool animate = allowAnimation_;
+                allowAnimation_ = false;
+                if (animate && !closing_ && !opening_ && !previewing() && !pending()) {
+                    emit moveAnimated(move);
+                }
+            });
     connect(&replay_, &AnalysisController::failed, this, [this](const QString& error) {
         opening_ = false;
         ready_ = false;
@@ -78,7 +86,7 @@ void ReviewNavigationController::clear() {
     board_ = {};
     gameAnnotations_.clear();
     error_.clear();
-    userNavigated_ = entryChosen_ = false;
+    userNavigated_ = entryChosen_ = allowAnimation_ = false;
     publish();
 }
 void ReviewNavigationController::open(const persistence::StoredGame& game) {
@@ -116,7 +124,7 @@ void ReviewNavigationController::bind(const std::optional<persistence::ReviewSum
     if (replaced) {
         ++session_;
         preview_.reset();
-        userNavigated_ = entryChosen_ = false;
+        userNavigated_ = entryChosen_ = allowAnimation_ = false;
         selected_ = 0;
         if (run) {
             replay_.setOrientation(run->selectedSide == chess::Color::Black);
@@ -139,6 +147,7 @@ void ReviewNavigationController::navigate(int position, bool user) {
         return;
     }
     userNavigated_ = userNavigated_ || user;
+    allowAnimation_ = user && position != displayed_;
     selected_ = position;
     preview_.reset();
     const auto session = session_;
@@ -168,6 +177,7 @@ void ReviewNavigationController::preview(ReviewTarget target) {
     if (!valid(target) || preview_ == target.position) {
         return;
     }
+    allowAnimation_ = false;
     preview_ = target.position;
     requestEvidence(target.position, false);
     dispatch();
@@ -178,6 +188,7 @@ void ReviewNavigationController::clearPreview() {
     if (!preview_) {
         return;
     }
+    allowAnimation_ = false;
     preview_.reset();
     dispatch();
     publish();

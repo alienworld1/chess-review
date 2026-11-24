@@ -375,9 +375,9 @@ void HomePage::installLibrary(app::GameLibraryController& library) {
                                        : empty          ? tr("Imported games will appear here.")
                                                         : library.listError());
                 emptyArt_->setVisible(empty);
-                entryHint_->setText(empty ? tr("Import a game you played to review key moments and "
-                                               "find what you could play next time.")
-                                          : tr("Open a PGN file or paste a game to review it."));
+                entryHint_->setText(
+                    empty ? tr("Import a game to review key moments and find stronger moves.")
+                          : tr("Open a PGN file or paste a game to review it."));
             });
     recentSection_->show();
     recent_->hide();
@@ -463,10 +463,9 @@ void HomePage::installEngines(app::EngineSettingsController& engines) {
         } else if (!state.listError.isEmpty()) {
             status = tr("Could not load registered engines. Open Engine Settings for details.");
         } else if (state.defaultProfileId) {
-            status = tr("Disconnected · Starts when you begin a review");
+            status = tr("Disconnected · Starts automatically");
         } else {
-            status = tr(
-                "Add an engine to analyze games. You can import games and open saved reviews now.");
+            status = tr("Add an engine in Settings to analyze games.");
         }
         engineDetail_->setText(
             state.defaultProfileId ? tr("Default: %1 · %2").arg(preferred, status) : status);
@@ -610,7 +609,7 @@ void HomePage::installRecovery(app::ReviewGameController& review) {
                 auto* item = new QListWidgetItem(
                     run.metadataError
                         ? tr("%1\nSaved review could not be read.").arg(title)
-                        : tr("%1 — %2\n%3 · %4 of %5 positions saved")
+                        : tr("%1 (%2)\n%3 · %4/%5 positions")
                               .arg(title,
                                    run.selectedSide == chess::Color::White ? tr("White")
                                                                            : tr("Black"),

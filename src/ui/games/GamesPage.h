@@ -10,7 +10,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
-class QPlainTextEdit;
+class QScrollArea;
 class QTableView;
 class QTimer;
 namespace chess_review::ui {
@@ -68,7 +68,9 @@ class GamesPage final : public QWidget {
     ChessBoardWidget* board_;
     QLabel* previewHeading_;
     QLabel* previewStatus_;
-    QPlainTextEdit* metadata_;
+    QScrollArea* metadata_;
+    QString displayedMetadataSignature_;
+    bool verbose_ = false;
     QTimer* searchTimer_;
     std::optional<bool> previewPreference_;
     std::optional<persistence::GameId> selectedGame_;

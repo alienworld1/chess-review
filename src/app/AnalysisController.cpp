@@ -527,7 +527,7 @@ void AnalysisController::startReset(ResetRequest reset) {
                 replacement.white = playerName(game.summary.white);
                 replacement.black = playerName(game.summary.black);
                 replacement.description =
-                    tr("%1 — %2 | Result: %3")
+                    tr("%1 vs %2 · %3")
                         .arg(replacement.white, replacement.black, game.summary.result);
             } else if (reset.position) {
                 const auto context = reset.position->context();

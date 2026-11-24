@@ -63,9 +63,7 @@ void EvaluationBarWidget::setEvaluation(const app::EngineLinePresentation& line)
     alignWithBoard();
     whiteShare_ = line.whiteShare;
     const auto value = line.evaluation.isEmpty() ? tr("Unavailable") : line.evaluation;
-    setToolTip(tr("White perspective: %1\nVisual scale: −10 to +10 pawns; mate fills the bar.\n"
-                  "The bar is unavailable for missing or bounded scores.")
-                   .arg(value));
+    setToolTip(tr("White perspective: %1").arg(value));
     setAccessibleDescription(tr("White perspective: %1").arg(value));
     update();
 }
@@ -373,7 +371,7 @@ void EngineAnalysisPanel::refresh() {
         const auto ply = controller_.previewPly();
         const auto size = static_cast<int>(preview->moves.size());
         const auto previewText =
-            tr("Preview at ply %1 of %2 (%3)").arg(ply).arg(size).arg(preview->pv.left(4096));
+            tr("Preview move %1 of %2: %3").arg(ply).arg(size).arg(preview->pv.left(4096));
         previewStatus_->setText(
             QFontMetrics(previewStatus_->font())
                 .elidedText(previewText, Qt::ElideRight, std::max(pv_->width(), 160)));

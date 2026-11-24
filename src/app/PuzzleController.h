@@ -82,6 +82,7 @@ class PuzzleController final : public QObject {
     void close();
   signals:
     void changed();
+    void moveAnimated(chess_review::chess::Move move);
     void moveFeedback(chess_review::chess::Move move, bool success);
     void analysisRequested();
     void reviewSummaryChanged();

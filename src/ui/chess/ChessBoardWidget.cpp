@@ -89,16 +89,13 @@ void ChessBoardWidget::setState(const app::BoardViewState& state) {
         state.revision != state_.revision || state.blackAtBottom != state_.blackAtBottom;
     const auto pending = pendingDrop_;
     const bool sameOrientation = state.blackAtBottom == state_.blackAtBottom;
-    if (changedPosition || !state.interactive) {
+    if (changedPosition) {
         cancelTransient();
-        if (pending && sameOrientation) {
-            if (state.revision == pending->revision) {
-                // Keep the visual drop in place while the controller validates it.
-                pendingDrop_ = pending;
-            } else if (state.lastMove == pending->move) {
-                settledDrop_ = pending->move;
-            }
+        if (pending && sameOrientation && state.lastMove == pending->move) {
+            settledDrop_ = pending->move;
         }
+    } else if (!state.interactive) {
+        cancelInteraction();
     }
     const auto oldSelection = state_.selection;
     state_ = state;
@@ -337,7 +334,9 @@ void ChessBoardWidget::paintEvent(QPaintEvent*) {
     }
 }
 void ChessBoardWidget::resizeEvent(QResizeEvent* event) {
-    cancelTransient();
+    cancelInteraction();
+    pendingDrop_.reset();
+    settledDrop_.reset();
     QWidget::resizeEvent(event);
     rebuildPieces();
 }
@@ -359,19 +358,22 @@ bool ChessBoardWidget::event(QEvent* event) {
     }
     return QWidget::event(event);
 }
-void ChessBoardWidget::cancelTransient() {
+void ChessBoardWidget::cancelInteraction() {
     ++gestureRevision_;
     pressedSquare_.reset();
     dragging_ = false;
     rightGesture_ = false;
     arrowStart_.reset();
+    if (promotion_) {
+        promotion_->close();
+    }
+}
+void ChessBoardWidget::cancelTransient() {
+    cancelInteraction();
     animation_.stop();
     animatedMove_.reset();
     pendingDrop_.reset();
     settledDrop_.reset();
-    if (promotion_) {
-        promotion_->close();
-    }
     update();
 }
 void ChessBoardWidget::animateMove(chess::Move move) {
@@ -383,6 +385,7 @@ void ChessBoardWidget::animateMove(chess::Move move) {
     const bool dropped = settledDrop_ == move;
     settledDrop_.reset();
     if (!dropped && preferences_.animation && isVisible()) {
+        animation_.stop();
         animatedMove_ = move;
         animation_.start();
     }
@@ -637,7 +640,9 @@ void ChessBoardWidget::hideEvent(QHideEvent* event) {
 void ChessBoardWidget::focusOutEvent(QFocusEvent* event) {
     // Promotion transfers focus to its popup; preserve it until choice or dismissal.
     if (!promotion_) {
-        cancelTransient();
+        cancelInteraction();
+        pendingDrop_.reset();
+        update();
     }
     QWidget::focusOutEvent(event);
 }

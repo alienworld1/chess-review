@@ -28,6 +28,12 @@ PuzzleController::PuzzleController(persistence::Database& database,
     connect(&reply_, &QTimer::timeout, this, &PuzzleController::advance);
     connect(&reads_, &QTimer::timeout, this, [this] { refresh(offset_, filter_); });
     connect(&board_, &AnalysisController::changed, this, &PuzzleController::publish);
+    connect(&board_, &AnalysisController::navigationAnimationRequested, this,
+            [this](chess::Move move) {
+                if (!closing_ && state_.revealed) {
+                    emit moveAnimated(move);
+                }
+            });
     connect(&board_, &AnalysisController::moveAccepted, this, [this](chess::Move move) {
         if (!pendingMove_ || closing_) {
             return;
@@ -39,6 +45,7 @@ PuzzleController::PuzzleController(persistence::Database& database,
         if (accepted.solverMove) {
             emit moveFeedback(move, true);
         }
+        emit moveAnimated(move);
         publish();
     });
     connect(&board_, &AnalysisController::failed, this, [this](const QString& message) {
@@ -576,7 +583,7 @@ void PuzzleController::reveal() {
         index = edge.next;
     }
     board_.openLine(root_, revealedLine_, 0);
-    state_.message = tr("Solution revealed. Step through the verified line, or retry.");
+    state_.message = tr("Solution revealed. Step through the moves or retry.");
     publish();
 }
 bool PuzzleController::canStepBack() const {
@@ -618,12 +625,12 @@ void PuzzleController::advance() {
     const auto& n = puzzle_->document.solution.nodes[node_];
     if (n.complete) {
         state_.complete = true;
-        state_.message = tr("Solved. You found a verified continuation.");
+        state_.message = tr("Puzzle solved!");
     } else if (n.path.size() % 2 == 1 && !n.moves.empty()) {
         play(n.moves.front(), false);
         return;
     } else {
-        state_.message = tr("Good move. Continue the idea.");
+        state_.message = tr("Good move! Keep going.");
     }
     publish();
 }
@@ -642,7 +649,7 @@ void PuzzleController::attemptMove(chess::Move move, std::uint64_t revision) {
     alternative_ = std::make_shared<PuzzleAlternative>(PuzzleAlternative{
         puzzle_, board_.position(), move, static_cast<int>(n.path.size() / 2), {}});
     state_.grading = true;
-    state_.message = tr("Checking your continuation…");
+    state_.message = tr("Checking your move…");
     analysisJob_ = QUuid::createUuid();
     evaluateAlternative();
 }
@@ -718,7 +725,7 @@ void PuzzleController::evaluateAlternative() {
                     const auto edge = puzzle_->document.solution.nodes[node_].moves.back();
                     alternative_.reset();
                     state_.grading = false;
-                    state_.message = tr("Strong alternative. Continue the idea.");
+                    state_.message = tr("Good alternative! Keep going.");
                     play(edge, true);
                     return;
                 } else if (result.grade == puzzles::AlternativeGrade::TryAgain) {

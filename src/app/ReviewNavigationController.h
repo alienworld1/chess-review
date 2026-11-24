@@ -59,6 +59,7 @@ class ReviewNavigationController final : public QObject {
     bool drained() const { return replayClosed_ && previewEvidence_.drained() && !notifying_; }
   signals:
     void changed();
+    void moveAnimated(chess_review::chess::Move move);
     void selectionCommitted(int position);
     void closed();
 
@@ -93,6 +94,7 @@ class ReviewNavigationController final : public QObject {
     bool opening_ = false;
     bool userNavigated_ = false;
     bool entryChosen_ = false;
+    bool allowAnimation_ = false;
     bool closing_ = false;
     bool notifying_ = false;
     bool closeQueued_ = false;

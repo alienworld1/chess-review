@@ -40,6 +40,12 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
     });
     connect(&navigation_, &ReviewNavigationController::changed, this,
             &ReviewExplorationController::synchronize);
+    connect(&navigation_, &ReviewNavigationController::moveAnimated, this,
+            [this](chess::Move move) {
+                if (!closing_ && !active()) {
+                    emit moveAnimated(move);
+                }
+            });
     connect(&sandbox_, &AnalysisController::navigationAnimationRequested, this,
             [this](chess::Move move) {
                 if (!closing_ && state_.mode == ExplorationMode::Line) {
@@ -206,15 +212,13 @@ ReviewExplorationController::ReviewExplorationController(persistence::Database& 
                                            : QString{})
                             : tr("evaluation unavailable");
                     state_.candidateNames << evidence_->candidateSans[i];
-                    state_.candidates << tr("%1: %2\nRoot: %3\n%4")
+                    state_.candidates << tr("%1: %2\n%3")
                                              .arg(candidate.rank)
-                                             .arg(evidence_->candidateSans[i], evaluation,
-                                                  tr("saved root evaluation"));
+                                             .arg(evidence_->candidateSans[i], evaluation);
                 }
                 if (!evidence_->playedContinuation.empty()) {
                     state_.candidateNames << tr("%1 (played)").arg(evidence_->move.san);
-                    state_.candidates
-                        << tr("Played: %1\nSaved after-move continuation").arg(evidence_->move.san);
+                    state_.candidates << tr("Played: %1").arg(evidence_->move.san);
                 }
                 state_.comparisonStatus = comparisonReasonText(evidence_->move.alternatives.reason);
                 if (evidence_->move.alternatives.needsEvidence()) {
@@ -311,8 +315,7 @@ void ReviewExplorationController::publish() {
                       retrySide && !state_.loading && !workerBusy_ && !sandbox_.busy() &&
                       search_.isNull() && cacheRead_.isNull() && !hidesSolution();
     if (state_.canRetry) {
-        state_.retryToolTip =
-            tr("Restore the position before this move and try to find a stronger choice.");
+        state_.retryToolTip = tr("Try to find a better move from this position.");
     } else if (state_.loading) {
         state_.retryToolTip = tr("Loading move evidence…");
     } else if (!c || !c->label) {
@@ -331,8 +334,7 @@ void ReviewExplorationController::publish() {
                      : state_.mode == ExplorationMode::Line && !state_.pendingBoard &&
                            !sandbox_.busy() && sandbox_.position());
     state_.notice = active() && evidence_ && !current
-                        ? tr("Earlier checkpoint pinned for this exploration. Return to Game loads "
-                             "current evidence.")
+                        ? tr("Analysis updated. Return to Game to see the latest results.")
                         : QString{};
     emit changed();
 }
@@ -461,11 +463,9 @@ void ReviewExplorationController::openLine(int candidate) {
     if (closing_ || generation != generation_) {
         return;
     }
-    state_.message =
-        candidate < static_cast<int>(evidence->evidence.candidates.size())
-            ? tr("Candidate continuation\nevaluation belongs to its root, not each position.")
-            : tr("Played-move continuation\nthe saved evaluation belongs to the position after "
-                 "the played move, not each replayed position.");
+    state_.message = candidate < static_cast<int>(evidence->evidence.candidates.size())
+                         ? tr("Engine line from before this move.")
+                         : tr("Continuation after the played move.");
     publish();
 }
 void ReviewExplorationController::navigateStep(int position) {
@@ -603,11 +603,8 @@ void ReviewExplorationController::tryAgain() {
     displayedBoard_.interactive = false;
     displayedBoard_.annotations.clear();
     const bool verifiedRetry = evidence->deep.has_value() && evidence->verified.has_value();
-    state_.message =
-        verifiedRetry
-            ? tr("Find a stronger move. You can request a hint or show the solution.")
-            : tr("Find a stronger move (preliminary analysis). You can request a hint or show "
-                 "the solution.");
+    state_.message = verifiedRetry ? tr("Find a better move.")
+                                   : tr("Find a better move (preliminary analysis).");
     sandbox_.openPosition(evidence->before);
     if (closing_ || generation != generation_) {
         return;
@@ -689,7 +686,7 @@ void ReviewExplorationController::grade(chess::Move move) {
     }
     state_.mode = ExplorationMode::Grading;
     displayedBoard_.interactive = false;
-    state_.message = tr("Checking your move… Cancel or Show Solution remains available.");
+    state_.message = tr("Checking your move…");
     attempted_ = move;
     verifying_ = false;
     deepChild_.reset();
@@ -883,22 +880,20 @@ void ReviewExplorationController::showGrade(review::RetryResult result) {
     const QScopedValueRollback notification(notifying_, true);
     const auto generation = generation_;
     if (!result.grade) {
-        state_.message = tr(
-            "Unable to grade: sufficient comparable evidence is unavailable. You can try again.");
+        state_.message = tr("Unable to grade this move right now. Try another move.");
     } else {
         switch (*result.grade) {
         case review::RetryGrade::Best:
-            state_.message = tr("Best — well found.");
+            state_.message = tr("Best move! Well found.");
             break;
         case review::RetryGrade::Strong:
-            state_.message = tr("Strong — this move preserves equivalent quality.");
+            state_.message = tr("Strong move! Just as good as the best line.");
             break;
         case review::RetryGrade::Okay:
-            state_.message = tr("Okay — look for a stronger move. Try again.");
+            state_.message = tr("Playable, but there’s a stronger move. Try again.");
             break;
         case review::RetryGrade::TryAgain:
-            state_.message = tr("Try again — this move gives up too much expected score "
-                                "compared with the supported best move.");
+            state_.message = tr("Not quite. Look for a stronger move.");
             break;
         }
     }
