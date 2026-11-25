@@ -970,9 +970,12 @@ std::optional<Goal> candidateGoal(const chess::Position& root, const review::Mov
     if (!bestB) {
         return {};
     }
-    const auto bestA = a ? value(a->before.evaluation, policy.review.conversion) : std::nullopt;
-    if (a && !bestA) {
-        return {};
+    std::optional<Value> bestA;
+    if (a) {
+        bestA = value(a->before.evaluation, policy.review.conversion);
+        if (!bestA) {
+            return {};
+        }
     }
     if (bestB->mate > 0 && (!bestA || bestA->mate > 0)) {
         if (context.isError || bestB->mateDistance <= policy.maximumPlayerMoves) {
