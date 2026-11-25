@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.chess_review.chess-review</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>chess-review</name>
+  <summary>Local desktop chess game review, analysis, and puzzle trainer</summary>
+  <url type="homepage">https://github.com/alienworld1/chess-review</url>
+  <developer id="io.github.alienworld1">
+    <name>chess-review contributors</name>
+  </developer>
+  <description>
+    <p>
+      chess-review is a local-first Linux desktop chess review workspace built for
+      use with your own trusted external UCI chess engine.
+    </p>
+    <p>
+      Import PGN games into a local SQLite library, inspect key moments with traceable
+      engine evidence, explore lines on an interactive analysis board, and solve
+      tactical puzzles generated from reviewed positions.
+    </p>
+  </description>
+  <launchable type="desktop-id">chess-review.desktop</launchable>
+  <provides>
+    <binary>chess-review</binary>
+  </provides>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="1.0.0" date="2026-11-25" />
+  </releases>
+</component>

@@ -2,5 +2,6 @@ AGENTS.md
 agent-docs
 
 /build/
+/dist/
 /.tools/
 /CMakeUserPresets.json

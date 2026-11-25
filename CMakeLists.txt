@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(chess_review VERSION 0.1.0 LANGUAGES CXX)
+project(chess_review VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -291,6 +291,42 @@ set_target_properties(chess_review_app PROPERTIES
 )
 target_link_libraries(chess_review_app PRIVATE chess_review_ui chess_review_app_paths)
 chess_review_apply_options(chess_review_app)
+if(UNIX AND NOT APPLE)
+    set_target_properties(chess_review_app PROPERTIES
+        INSTALL_RPATH "$ORIGIN/../lib"
+        BUILD_WITH_INSTALL_RPATH FALSE
+    )
+endif()
+
+include(GNUInstallDirs)
+install(TARGETS chess_review_app RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(UNIX AND NOT APPLE)
+    install(FILES packaging/linux/chess-review.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    install(FILES packaging/linux/io.github.chess_review.chess-review.metainfo.xml
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+    install(FILES packaging/linux/chess-review.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+    install(FILES packaging/linux/chess-review.png
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps)
+    install(FILES THIRD_PARTY_NOTICES.md
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/chess-review)
+    install(FILES assets/pieces/cburnett/LICENSE.txt
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/chess-review
+        RENAME cburnett-LICENSE.txt)
+    install(FILES assets/pieces/cburnett/provenance.json
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/chess-review
+        RENAME cburnett-provenance.json)
+    install(FILES third_party/chess-library/LICENSE
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/chess-review
+        RENAME chess-library-LICENSE)
+    install(FILES third_party/chess-openings/COPYING.txt
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/chess-review
+        RENAME chess-openings-COPYING.txt)
+    install(FILES third_party/tomlplusplus/LICENSE
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/chess-review
+        RENAME tomlplusplus-LICENSE)
+endif()
 
 include(CTest)
 if(BUILD_TESTING)

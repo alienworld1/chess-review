@@ -49,7 +49,7 @@ jobs:
       - name: Install build and Qt tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang-18 clang-format-18 clang-tidy-18 libgl1-mesa-dev libxkbcommon-x11-0 libxcb-cursor0 libegl1
+          sudo apt-get install -y ninja-build clang-18 clang-format-18 clang-tidy-18 libgl1-mesa-dev libxkbcommon-x11-0 libxcb-cursor0 libegl1 desktop-file-utils appstream
           python3 -m venv "$RUNNER_TEMP/aqt"
           "$RUNNER_TEMP/aqt/bin/pip" install aqtinstall==3.3.0
           "$RUNNER_TEMP/aqt/bin/aqt" install-qt linux desktop '${{ matrix.qt }}' linux_gcc_64 -O "$RUNNER_TEMP/Qt" --archives qtbase icu qtsvg
@@ -75,6 +75,11 @@ jobs:
       - name: Formatting
         if: matrix.tooling
         run: find src tests -type f \( -name '*.cpp' -o -name '*.h' \) -exec clang-format-18 --dry-run --Werror {} +
+      - name: Validate Linux packaging metadata
+        if: matrix.tooling
+        run: |
+          desktop-file-validate packaging/linux/chess-review.desktop
+          appstreamcli validate --no-net packaging/linux/io.github.chess_review.chess-review.metainfo.xml
       - name: Static analysis
         if: matrix.analysis
         run: find src tests -type f -name '*.cpp' -print0 | xargs -0 -r -n 1 -P 2 clang-tidy-18 -p build/dev

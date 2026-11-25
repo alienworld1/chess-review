@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=chess-review
+GenericName=Chess Game Review
+Comment=Local desktop chess game review, analysis, and tactical puzzles
+Exec=chess-review
+Icon=chess-review
+Terminal=false
+Categories=Game;BoardGame;
+StartupNotify=true
+StartupWMClass=chess-review
