@@ -4,7 +4,9 @@
 #include <QString>
 #include <QThreadPool>
 #include <memory>
+#include <optional>
 #include <stop_token>
+#include <vector>
 
 namespace chess_review::app {
 inline constexpr std::size_t maxImportReportWarnings = 1000;
@@ -56,8 +58,19 @@ class GameImportService final : public QObject {
 
   private:
     struct ParseState;
+    struct PendingBatchItem {
+        std::size_t ordinal = 0;
+        pgn::SourceRange range{};
+        std::vector<pgn::Diagnostic> warnings{};
+        std::size_t suppressedWarnings = 0;
+        QString title{};
+    };
     void next();
-    void parsed(pgn::PgnOutcome outcome);
+    void parsedChunk(std::vector<pgn::PgnDocument> games, std::optional<pgn::PgnOutcome> trailing);
+    void handleTrailing(pgn::PgnOutcome outcome);
+    void handleInsertOutcome(const PendingBatchItem& meta,
+                             const persistence::InsertGameResult& result);
+    void advanceAfterInsert();
     void finish(ImportStatus status);
     void finishClose();
     persistence::Database& database_;
@@ -67,12 +80,11 @@ class GameImportService final : public QObject {
     ImportBudget budget_;
     ImportReport report_;
     persistence::RequestId storageRequest_;
+    std::vector<PendingBatchItem> pendingItems_;
+    std::optional<pgn::PgnOutcome> trailingOutcome_;
     std::size_t ordinal_ = 0;
-    pgn::SourceRange range_{};
-    std::vector<pgn::Diagnostic> warnings_;
-    QString title_;
-    std::size_t suppressedWarnings_ = 0;
     std::size_t retainedWarnings_ = 0;
+    bool firstGamePending_ = true;
     bool active_ = false;
     bool closing_ = false;
     bool closed_ = false;

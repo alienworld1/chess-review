@@ -107,6 +107,7 @@ using LibraryStatisticsResult = std::variant<LibraryStatistics, GameError>;
 using ResolveGameOpeningResult = std::variant<std::optional<OpeningResolution>, GameError>;
 } // namespace chess_review::persistence
 Q_DECLARE_METATYPE(chess_review::persistence::InsertGameResult)
+Q_DECLARE_METATYPE(std::vector<chess_review::persistence::InsertGameResult>)
 Q_DECLARE_METATYPE(chess_review::persistence::LoadGameResult)
 Q_DECLARE_METATYPE(chess_review::persistence::GamePreviewResult)
 Q_DECLARE_METATYPE(chess_review::persistence::DeleteGameResult)

@@ -155,6 +155,7 @@ class GameRepositoryTest final : public QObject {
     void openingCacheFailureKeepsGamesAvailable();
     void libraryQueriesAndPreview();
     void deleteGameAndDependencies();
+    void largeMultiGameImportAndQueryPerformance();
 };
 void GameRepositoryTest::libraryQueriesAndPreview() {
     QTemporaryDir directory;
@@ -944,6 +945,99 @@ void GameRepositoryTest::legacyTextUpgradePreservesGames() {
         current.insertGame(*document("[White \"Alice\"]\n\n*"), {})));
     const QDir backups(directory.filePath(QStringLiteral("backups")));
     QCOMPARE(backups.entryList({QStringLiteral("*.sqlite3")}, QDir::Files).size(), 1);
+}
+void GameRepositoryTest::largeMultiGameImportAndQueryPerformance() {
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
+    AsyncStorage storage;
+    QSignalSpy ready(&storage.database, &Database::ready);
+    storage.database.initialize(path);
+    QTRY_COMPARE(ready.count(), 1);
+
+    std::string pgn;
+    pgn.reserve(128 * 1024);
+    const std::array results{"1-0", "0-1", "1/2-1/2", "*"};
+    for (int i = 0; i < 1000; ++i) {
+        const char* result = results[static_cast<std::size_t>(i % 4)];
+        pgn += "[Event \"Batch\"]\n[White \"Player" + std::to_string(i) + "\"]\n[Black \"Opp" +
+               std::to_string(i) + "\"]\n[Date \"2026.01." + (i % 28 < 9 ? "0" : "") +
+               std::to_string((i % 28) + 1) + "\"]\n[Result \"" + result +
+               "\"]\n\n1. e4 e5 2. Nf3 Nc6 " + result + "\n\n";
+    }
+
+    int ticks = 0;
+    QTimer heartbeat;
+    connect(&heartbeat, &QTimer::timeout, &heartbeat, [&] { ++ticks; });
+    heartbeat.start(5);
+
+    QSignalSpy finished(&storage.importer, &app::GameImportService::finished);
+    QElapsedTimer importClock;
+    importClock.start();
+    storage.importer.importText(QUuid::createUuid(), pgn);
+    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 30000);
+    const qint64 importMs = importClock.elapsed();
+    heartbeat.stop();
+
+    const auto report = qvariant_cast<app::ImportReport>(finished.at(0).at(0));
+    QCOMPARE(report.status, app::ImportStatus::Completed);
+    QCOMPARE(report.items.size(), std::size_t(1000));
+    for (const auto& item : report.items) {
+        QVERIFY(std::holds_alternative<Inserted>(item.outcome));
+    }
+    QVERIFY(ticks > 0);
+
+    // Second pass of the identical 1,000-game PGN must detect all duplicates cleanly.
+    QElapsedTimer dupClock;
+    dupClock.start();
+    storage.importer.importText(QUuid::createUuid(), std::move(pgn));
+    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 2, 30000);
+    const qint64 duplicateMs = dupClock.elapsed();
+    const auto dupReport = qvariant_cast<app::ImportReport>(finished.at(1).at(0));
+    QCOMPARE(dupReport.status, app::ImportStatus::Completed);
+    QCOMPARE(dupReport.items.size(), std::size_t(1000));
+    for (const auto& item : dupReport.items) {
+        QVERIFY(std::holds_alternative<Duplicate>(item.outcome));
+    }
+
+    // Importing must never create automatic reviews or analysis records.
+    QSignalSpy statsSpy(&storage.database, &Database::libraryStatisticsLoaded);
+    storage.database.loadLibraryStatistics(QUuid::createUuid());
+    QTRY_COMPARE(statsSpy.count(), 1);
+    const auto stats =
+        std::get<LibraryStatistics>(qvariant_cast<LibraryStatisticsResult>(statsSpy.front().at(1)));
+    QCOMPARE(stats.games, std::int64_t(1000));
+    QCOMPARE(stats.reviewedGames, std::int64_t(0));
+    QCOMPARE(stats.completedReviews, std::int64_t(0));
+    QCOMPARE(stats.puzzles, std::int64_t(0));
+
+    // Verify indexed result filter, player search, and recent sort queries.
+    QSignalSpy listed(&storage.database, &Database::gamesListed);
+    QElapsedTimer queryClock;
+    queryClock.start();
+    GameLibraryQuery filterQuery;
+    filterQuery.result = GameResultFilter::WhiteWin;
+    storage.database.listGames(QUuid::createUuid(), 0, 50, filterQuery);
+    QTRY_COMPARE(listed.count(), 1);
+    const auto whiteWins =
+        std::get<std::vector<GameSummary>>(qvariant_cast<ListGamesResult>(listed.at(0).at(1)));
+    QCOMPARE(whiteWins.size(), std::size_t(50));
+    for (const auto& row : whiteWins) {
+        QCOMPARE(row.result, QStringLiteral("1-0"));
+    }
+
+    GameLibraryQuery searchQuery;
+    searchQuery.players = QStringLiteral("Player777");
+    storage.database.listGames(QUuid::createUuid(), 0, 50, searchQuery);
+    QTRY_COMPARE(listed.count(), 2);
+    const auto match =
+        std::get<std::vector<GameSummary>>(qvariant_cast<ListGamesResult>(listed.at(1).at(1)));
+    QCOMPARE(match.size(), std::size_t(1));
+    QCOMPARE(match.front().white, QStringLiteral("Player777"));
+    const qint64 queryMs = queryClock.elapsed();
+
+    qInfo("1000-game import: %lld ms, 1000-game duplicate pass: %lld ms, queries: %lld ms",
+          static_cast<long long>(importMs), static_cast<long long>(duplicateMs),
+          static_cast<long long>(queryMs));
 }
 int main(int argc, char* argv[]) {
     const TestEnvironment environment;

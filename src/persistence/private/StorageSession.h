@@ -16,6 +16,8 @@ class QLockFile;
 
 namespace chess_review::persistence::detail {
 
+struct EncodedGame;
+
 // Construct, initialize, and destroy on one storage thread. Owns the write connection.
 class StorageSession final {
   public:
@@ -62,6 +64,9 @@ class StorageSession final {
     ListEnginesResult listEngines(std::int64_t offset, int limit);
 
     InsertGameResult insertGame(const pgn::PgnDocument& document, const GameSource& source);
+    std::vector<InsertGameResult>
+    insertGameBatch(std::span<const std::shared_ptr<const pgn::PgnDocument>> documents,
+                    const GameSource& source);
     LoadGameResult loadGame(GameId id, bool includeOpening = false);
     ListGamesResult listGames(std::int64_t offset, int limit, const GameLibraryQuery& filter = {});
     LibraryStatisticsResult loadLibraryStatistics();
@@ -90,7 +95,12 @@ class StorageSession final {
     std::optional<OpeningResolution> recognizeOpening(const pgn::PgnDocument& document,
                                                       const openings::BookConfig* book = nullptr);
     void readOpeningCache(std::span<GameSummary> games);
-    void writeOpeningCache(GameId id, const OpeningResolution& opening);
+    bool writeOpeningCache(GameId id, const OpeningResolution& opening);
+    void saveOpeningCache(GameId id, const OpeningResolution& opening);
+    InsertGameResult insertGameInTransaction(const EncodedGame& game, const GameSummary& metadata,
+                                             const std::optional<OpeningResolution>& opening,
+                                             const GameSource& source,
+                                             std::vector<GameId>& newlyValidated);
     diagnostics::Logger* logger_;
     bool openingIndexLoaded_ = false;
     bool openingCacheUsable_ = true;

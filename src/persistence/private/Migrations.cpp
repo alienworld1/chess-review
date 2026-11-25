@@ -52,7 +52,8 @@ const std::vector<Migration>& migrations() {
         enginesMigration(),         analysisMigration(),   reviewsMigration(),
         classificationsMigration(), refinementMigration(), reviewWorkspaceMigration(),
         escalationMigration(),      puzzlesMigration(),    openingsMigration(),
-        puzzleIdsMigration(),       gameIdsMigration(),    engineSettingsMigration()};
+        puzzleIdsMigration(),       gameIdsMigration(),    engineSettingsMigration(),
+        queryIndexesMigration()};
     return registry;
 }
 

@@ -56,23 +56,40 @@ GameImportService::GameImportService(Database& database, QObject* parent)
     pool_.setMaxThreadCount(1);
     connect(&database_, &Database::gameInserted, this,
             [this](RequestId request, const InsertGameResult& result) {
+                if (!active_ || request != storageRequest_ || request.isNull() ||
+                    pendingItems_.size() != 1) {
+                    return;
+                }
+                storageRequest_ = {};
+                const auto meta = std::move(pendingItems_.front());
+                pendingItems_.clear();
+                handleInsertOutcome(meta, result);
+                if (std::holds_alternative<GameError>(result)) {
+                    finish(ImportStatus::Failed);
+                } else {
+                    advanceAfterInsert();
+                }
+            });
+    connect(&database_, &Database::gamesInserted, this,
+            [this](RequestId request, const std::vector<InsertGameResult>& results) {
                 if (!active_ || request != storageRequest_ || request.isNull()) {
                     return;
                 }
                 storageRequest_ = {};
-                ImportOutcome outcome =
-                    std::visit([](const auto& value) -> ImportOutcome { return value; }, result);
-                report_.items.push_back({ordinal_, std::move(outcome), range_, std::move(warnings_),
-                                         suppressedWarnings_, std::move(title_)});
-                emit progress(report_.request, report_.items.back());
-                if (std::holds_alternative<GameError>(result)) {
-                    finish(ImportStatus::Failed);
-                } else if (parse_->mode == ImportMode::OneCompletedGame) {
-                    finish(parse_->stop.stop_requested() ? ImportStatus::Cancelled
-                                                         : ImportStatus::Completed);
-                } else {
-                    next();
+                const auto metas = std::exchange(pendingItems_, {});
+                const auto count = std::min(results.size(), metas.size());
+                for (std::size_t i = 0; i < count; ++i) {
+                    handleInsertOutcome(metas[i], results[i]);
+                    if (std::holds_alternative<GameError>(results[i])) {
+                        finish(ImportStatus::Failed);
+                        return;
+                    }
                 }
+                if (results.size() != metas.size()) {
+                    finish(ImportStatus::Failed);
+                    return;
+                }
+                advanceAfterInsert();
             });
 }
 GameImportService::~GameImportService() {
@@ -98,6 +115,9 @@ void GameImportService::importText(RequestId request, std::string bytes, GameSou
     }
     ordinal_ = 0;
     retainedWarnings_ = 0;
+    firstGamePending_ = true;
+    pendingItems_.clear();
+    trailingOutcome_.reset();
     active_ = true;
     report_ = {request, ImportStatus::Completed, {}};
     source_ = std::move(source);
@@ -110,12 +130,39 @@ void GameImportService::next() {
         finish(ImportStatus::Cancelled);
         return;
     }
-    pool_.start([this, state = parse_] {
+    const std::size_t maxChunk =
+        (parse_->mode == ImportMode::OneCompletedGame || firstGamePending_) ? 1 : 32;
+    firstGamePending_ = false;
+    pool_.start([this, state = parse_, maxChunk] {
         try {
-            auto outcome = state->read();
+            std::vector<pgn::PgnDocument> games;
+            std::optional<pgn::PgnOutcome> trailing;
+            games.reserve(maxChunk);
+            std::size_t chunkBytes = 0;
+            constexpr std::size_t maxChunkBytes = 4 * 1024 * 1024;
+            for (std::size_t i = 0; i < maxChunk; ++i) {
+                if (state->stop.stop_requested()) {
+                    trailing = pgn::Cancelled{};
+                    break;
+                }
+                auto outcome = state->read();
+                if (auto* doc = std::get_if<pgn::PgnDocument>(&outcome)) {
+                    chunkBytes += doc->originalText.size();
+                    games.push_back(std::move(*doc));
+                    if (state->mode == ImportMode::OneCompletedGame ||
+                        chunkBytes >= maxChunkBytes) {
+                        break;
+                    }
+                } else {
+                    trailing = std::move(outcome);
+                    break;
+                }
+            }
             QMetaObject::invokeMethod(
                 this,
-                [this, outcome = std::move(outcome)]() mutable { parsed(std::move(outcome)); },
+                [this, games = std::move(games), trailing = std::move(trailing)]() mutable {
+                    parsedChunk(std::move(games), std::move(trailing));
+                },
                 Qt::QueuedConnection);
         } catch (const std::exception&) {
             QMetaObject::invokeMethod(
@@ -131,49 +178,69 @@ void GameImportService::next() {
         }
     });
 }
-void GameImportService::parsed(pgn::PgnOutcome outcome) {
+void GameImportService::parsedChunk(std::vector<pgn::PgnDocument> games,
+                                    std::optional<pgn::PgnOutcome> trailing) {
     if (parse_->stop.stop_requested()) {
         finish(ImportStatus::Cancelled);
         return;
     }
-    if (auto* document = std::get_if<pgn::PgnDocument>(&outcome)) {
+    if (games.empty()) {
+        if (trailing) {
+            handleTrailing(std::move(*trailing));
+        } else {
+            finish(ImportStatus::Completed);
+        }
+        return;
+    }
+    const auto playerName = [](const std::string& value) {
+        auto text =
+            QString::fromUtf8(value.data(),
+                              static_cast<qsizetype>(std::min<std::size_t>(value.size(), 640)))
+                .left(160);
+        if (!text.isEmpty() && text.back().isHighSurrogate()) {
+            text.chop(1);
+        }
+        return text.simplified();
+    };
+    pendingItems_.clear();
+    pendingItems_.reserve(games.size());
+    std::vector<std::shared_ptr<const pgn::PgnDocument>> documents;
+    documents.reserve(games.size());
+    for (auto& document : games) {
         QString white = tr("White");
         QString black = tr("Black");
-        const auto playerName = [](const std::string& value) {
-            auto text =
-                QString::fromUtf8(value.data(),
-                                  static_cast<qsizetype>(std::min<std::size_t>(value.size(), 640)))
-                    .left(160);
-            if (!text.isEmpty() && text.back().isHighSurrogate()) {
-                text.chop(1);
-            }
-            return text.simplified();
-        };
-        for (const auto& tag : document->tags) {
+        for (const auto& tag : document.tags) {
             if (tag.name == "White") {
                 white = playerName(tag.value);
             } else if (tag.name == "Black") {
                 black = playerName(tag.value);
             }
         }
-        title_ = tr("%1 vs %2").arg(white, black);
-        ordinal_ = document->ordinal;
+        ordinal_ = document.ordinal;
         report_.attemptedGames = ordinal_;
-        range_ = document->range;
         const auto retained =
-            std::min(document->warnings.size(), budget_.warnings - retainedWarnings_);
-        suppressedWarnings_ = document->suppressedWarnings + document->warnings.size() - retained;
-        // Fresh storage bounds capacity too, including the zero-retained case.
-        warnings_ = std::vector<pgn::Diagnostic>(document->warnings.begin(),
-                                                 document->warnings.begin() +
-                                                     static_cast<std::ptrdiff_t>(retained));
+            std::min(document.warnings.size(), budget_.warnings - retainedWarnings_);
+        const auto suppressed = document.suppressedWarnings + document.warnings.size() - retained;
+        std::vector<pgn::Diagnostic> warnings(document.warnings.begin(),
+                                              document.warnings.begin() +
+                                                  static_cast<std::ptrdiff_t>(retained));
         retainedWarnings_ += retained;
-        storageRequest_ = QUuid::createUuid();
-        database_.insertGame(storageRequest_,
-                             std::make_shared<const pgn::PgnDocument>(std::move(*document)),
-                             source_);
-        emit savingGame(report_.request, ordinal_);
-    } else if (const auto* failure = std::get_if<pgn::PgnFailure>(&outcome)) {
+        pendingItems_.push_back({ordinal_, document.range, std::move(warnings), suppressed,
+                                 tr("%1 vs %2").arg(white, black)});
+        documents.push_back(std::make_shared<const pgn::PgnDocument>(std::move(document)));
+    }
+    trailingOutcome_ = std::move(trailing);
+    storageRequest_ = QUuid::createUuid();
+    const auto firstOrdinal = pendingItems_.front().ordinal;
+    if (documents.size() == 1) {
+        database_.insertGame(storageRequest_, std::move(documents.front()), source_);
+    } else {
+        database_.insertGameBatch(storageRequest_, std::move(documents), source_);
+    }
+    emit savingGame(report_.request, firstOrdinal);
+}
+void GameImportService::handleTrailing(pgn::PgnOutcome outcome) {
+    if (const auto* failure = std::get_if<pgn::PgnFailure>(&outcome)) {
         ordinal_ = failure->ordinal;
         report_.attemptedGames = std::min(ordinal_, budget_.games);
         report_.gameLimitReached = ordinal_ > budget_.games;
@@ -188,6 +255,30 @@ void GameImportService::parsed(pgn::PgnOutcome outcome) {
         finish(ImportStatus::Cancelled);
     } else {
         finish(parse_->stop.stop_requested() ? ImportStatus::Cancelled : ImportStatus::Completed);
+    }
+}
+void GameImportService::handleInsertOutcome(const PendingBatchItem& meta,
+                                            const InsertGameResult& result) {
+    ImportOutcome outcome =
+        std::visit([](const auto& value) -> ImportOutcome { return value; }, result);
+    report_.items.push_back({meta.ordinal, std::move(outcome), meta.range, meta.warnings,
+                             meta.suppressedWarnings, meta.title});
+    emit progress(report_.request, report_.items.back());
+}
+void GameImportService::advanceAfterInsert() {
+    if (parse_->stop.stop_requested()) {
+        finish(ImportStatus::Cancelled);
+        return;
+    }
+    if (trailingOutcome_) {
+        auto trailing = std::exchange(trailingOutcome_, std::nullopt);
+        handleTrailing(std::move(*trailing));
+        return;
+    }
+    if (parse_->mode == ImportMode::OneCompletedGame) {
+        finish(ImportStatus::Completed);
+    } else {
+        next();
     }
 }
 void GameImportService::cancel() {

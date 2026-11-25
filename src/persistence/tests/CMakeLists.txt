@@ -5,6 +5,7 @@ chess_review_add_qt_test(persistence_tests persistence INTEGRATION
 chess_review_add_qt_test(game_repository_tests game_repository INTEGRATION
     SOURCES GameRepositoryTest.cpp
     LIBRARIES chess_review_startup Qt6::Sql)
+set_tests_properties(game_repository PROPERTIES TIMEOUT 90)
 
 chess_review_add_qt_test(engine_repository_tests engine_repository INTEGRATION
     SOURCES EngineRepositoryTest.cpp

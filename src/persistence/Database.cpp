@@ -9,6 +9,7 @@
 #include <QThread>
 #include <QTimer>
 #include <exception>
+#include <span>
 #include <type_traits>
 #include <utility>
 
@@ -142,6 +143,20 @@ class StorageWorker final : public QObject {
                                QStringLiteral("Review storage could not complete the request.")};
         }
     }
+    std::vector<InsertGameResult>
+    insertBatch(std::span<const std::shared_ptr<const pgn::PgnDocument>> documents,
+                const GameSource& source) {
+        if (!session_) {
+            return {GameError{GameErrorCode::Unavailable,
+                              QStringLiteral("Game storage is unavailable.")}};
+        }
+        try {
+            return session_->insertGameBatch(documents, source);
+        } catch (const std::exception&) {
+            return {GameError{GameErrorCode::Storage,
+                              QStringLiteral("Game storage could not complete the request.")}};
+        }
+    }
     void close() {
         session_.reset();
         if (logger_) {
@@ -175,6 +190,7 @@ struct Database::Impl {
 
 Database::Database(QObject* parent) : QObject(parent), impl_(std::make_unique<Impl>()) {
     qRegisterMetaType<DatabaseError>();
+    qRegisterMetaType<std::vector<InsertGameResult>>();
     impl_->thread.setObjectName(QStringLiteral("storage"));
 }
 
@@ -265,6 +281,29 @@ void Database::insertGame(RequestId request, std::shared_ptr<const pgn::PgnDocum
                 [this, request, result] {
                     --impl_->pending;
                     emit gameInserted(request, result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+void Database::insertGameBatch(RequestId request,
+                               std::vector<std::shared_ptr<const pgn::PgnDocument>> documents,
+                               GameSource source) {
+    if (auto error = acceptRequest()) {
+        QTimer::singleShot(0, this, [this, request, error = *error] {
+            emit gamesInserted(request, std::vector<InsertGameResult>{error});
+        });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->worker,
+        [this, request, documents = std::move(documents), source = std::move(source)] {
+            auto results = impl_->worker->insertBatch(documents, source);
+            QMetaObject::invokeMethod(
+                this,
+                [this, request, results = std::move(results)] {
+                    --impl_->pending;
+                    emit gamesInserted(request, results);
                 },
                 Qt::QueuedConnection);
         },

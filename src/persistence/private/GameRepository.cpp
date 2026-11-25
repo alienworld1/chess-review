@@ -229,9 +229,9 @@ void StorageSession::readOpeningCache(std::span<GameSummary> games) {
     }
 }
 
-void StorageSession::writeOpeningCache(GameId id, const OpeningResolution& opening) {
+bool StorageSession::writeOpeningCache(GameId id, const OpeningResolution& opening) {
     if (!openingCacheUsable_) {
-        return;
+        return false;
     }
     QSqlQuery query(database_);
     const auto write = [&] {
@@ -254,7 +254,24 @@ void StorageSession::writeOpeningCache(GameId id, const OpeningResolution& openi
     if (!write()) {
         openingCacheUsable_ = false;
         qWarning("The game opening cache could not be written.");
+        return false;
     }
+    return true;
+}
+
+void StorageSession::saveOpeningCache(GameId id, const OpeningResolution& opening) {
+    if (!openingCacheUsable_ || schemaVersion_ < 12) {
+        return;
+    }
+    QSqlQuery savepoint(database_);
+    if (!savepoint.exec(QStringLiteral("SAVEPOINT opening_cache"))) {
+        openingCacheUsable_ = false;
+        return;
+    }
+    if (!writeOpeningCache(id, opening)) {
+        savepoint.exec(QStringLiteral("ROLLBACK TO opening_cache"));
+    }
+    savepoint.exec(QStringLiteral("RELEASE opening_cache"));
 }
 
 bool StorageSession::refreshGameValidationCache() {
@@ -283,26 +300,11 @@ bool StorageSession::refreshGameValidationCache() {
     return true;
 }
 
-InsertGameResult StorageSession::insertGame(const pgn::PgnDocument& document,
-                                            const GameSource& source) {
-    if (!usable_) {
-        return storageError();
-    }
-    if (source.type.size() > 128 || source.uri.size() > 64 * 1024 ||
-        source.type.contains(QChar::Null) || source.uri.contains(QChar::Null) ||
-        !source.type.isValidUtf16() || !source.uri.isValidUtf16()) {
-        return invalid();
-    }
-    auto encoded = encodeGame(document);
-    if (const auto* error = std::get_if<GameError>(&encoded)) {
-        return *error;
-    }
-    const auto& game = std::get<EncodedGame>(encoded);
-    const auto metadata = gameMetadata(document);
-    Transaction transaction(database_, usable_);
-    if (!transaction.begin()) {
-        return storageError();
-    }
+InsertGameResult
+StorageSession::insertGameInTransaction(const EncodedGame& game, const GameSummary& metadata,
+                                        const std::optional<OpeningResolution>& opening,
+                                        const GameSource& source,
+                                        std::vector<GameId>& newlyValidated) {
     QSqlQuery query(database_);
     if (!query.prepare(QStringLiteral("SELECT id, substr(CAST(identity AS BLOB),1,1048577), "
                                       "identity_version FROM games WHERE content_hash=?"))) {
@@ -321,21 +323,14 @@ InsertGameResult StorageSession::insertGame(const pgn::PgnDocument& document,
         if (!refreshGameValidationCache()) {
             return storageError();
         }
-        const bool cached = validatedGames_.contains(id);
+        const bool cached = validatedGames_.contains(id) ||
+                            std::ranges::find(newlyValidated, id) != newlyValidated.end();
         if (!cached) {
             const auto stored = loadGame(id);
             if (const auto* error = std::get_if<GameError>(&stored)) {
                 return *error;
             }
-        }
-        if (!transaction.commit()) {
-            return storageError();
-        }
-        if (!cached) {
-            if (validatedGames_.size() >= 256) {
-                validatedGames_.clear();
-            }
-            validatedGames_.insert(id);
+            newlyValidated.push_back(id);
         }
         return Duplicate{id};
     }
@@ -376,14 +371,160 @@ InsertGameResult StorageSession::insertGame(const pgn::PgnDocument& document,
     }
     const auto id = query.lastInsertId().toLongLong();
     query.finish();
-    if (id <= 0 || !transaction.commit()) {
+    if (id <= 0) {
         return storageError();
     }
-    if (const auto opening = recognizeOpening(document)) {
-        // This is derived data. A missed cache write must not roll back the saved game.
-        writeOpeningCache(id, *opening);
+    if (opening) {
+        saveOpeningCache(id, *opening);
     }
     return Inserted{id};
+}
+
+InsertGameResult StorageSession::insertGame(const pgn::PgnDocument& document,
+                                            const GameSource& source) {
+    if (!usable_) {
+        return storageError();
+    }
+    if (source.type.size() > 128 || source.uri.size() > 64 * 1024 ||
+        source.type.contains(QChar::Null) || source.uri.contains(QChar::Null) ||
+        !source.type.isValidUtf16() || !source.uri.isValidUtf16()) {
+        return invalid();
+    }
+    auto encoded = encodeGame(document);
+    if (const auto* error = std::get_if<GameError>(&encoded)) {
+        return *error;
+    }
+    const auto& game = std::get<EncodedGame>(encoded);
+    const auto metadata = gameMetadata(document);
+    const auto opening = recognizeOpening(document);
+    Transaction transaction(database_, usable_);
+    if (!transaction.begin()) {
+        return storageError();
+    }
+    std::vector<GameId> newlyValidated;
+    const auto outcome = insertGameInTransaction(game, metadata, opening, source, newlyValidated);
+    if (std::holds_alternative<GameError>(outcome)) {
+        return outcome;
+    }
+    if (!transaction.commit()) {
+        return storageError();
+    }
+    for (const auto id : newlyValidated) {
+        if (validatedGames_.size() >= 256) {
+            validatedGames_.clear();
+        }
+        validatedGames_.insert(id);
+    }
+    return outcome;
+}
+
+std::vector<InsertGameResult>
+StorageSession::insertGameBatch(std::span<const std::shared_ptr<const pgn::PgnDocument>> documents,
+                                const GameSource& source) {
+    if (documents.empty()) {
+        return {};
+    }
+    if (!usable_) {
+        return {storageError()};
+    }
+    if (source.type.size() > 128 || source.uri.size() > 64 * 1024 ||
+        source.type.contains(QChar::Null) || source.uri.contains(QChar::Null) ||
+        !source.type.isValidUtf16() || !source.uri.isValidUtf16()) {
+        return {invalid()};
+    }
+    struct PreparedGame {
+        std::optional<EncodedGame> encoded;
+        GameSummary metadata;
+        std::optional<OpeningResolution> opening;
+        std::optional<GameError> error;
+    };
+    std::vector<PreparedGame> prepared;
+    prepared.reserve(documents.size());
+    for (const auto& doc : documents) {
+        PreparedGame item;
+        if (!doc) {
+            item.error = GameError{GameErrorCode::InvalidSnapshot,
+                                   QStringLiteral("Missing imported snapshot.")};
+            prepared.push_back(std::move(item));
+            break;
+        }
+        auto encoded = encodeGame(*doc);
+        if (const auto* error = std::get_if<GameError>(&encoded)) {
+            item.error = *error;
+            prepared.push_back(std::move(item));
+            break;
+        }
+        item.encoded = std::move(std::get<EncodedGame>(encoded));
+        item.metadata = gameMetadata(*doc);
+        item.opening = recognizeOpening(*doc);
+        prepared.push_back(std::move(item));
+    }
+
+    Transaction transaction(database_, usable_);
+    if (!transaction.begin()) {
+        return {storageError()};
+    }
+    std::vector<InsertGameResult> results;
+    results.reserve(prepared.size());
+    std::vector<GameId> newlyValidated;
+    const auto recordValidated = [&] {
+        for (const auto id : newlyValidated) {
+            if (validatedGames_.size() >= 256) {
+                validatedGames_.clear();
+            }
+            validatedGames_.insert(id);
+        }
+    };
+    QSqlQuery savepoint(database_);
+    for (const auto& item : prepared) {
+        if (item.error) {
+            if (!results.empty()) {
+                if (!transaction.commit()) {
+                    return {storageError()};
+                }
+                recordValidated();
+            }
+            results.push_back(*item.error);
+            return results;
+        }
+        if (!savepoint.exec(QStringLiteral("SAVEPOINT batch_item"))) {
+            if (!results.empty()) {
+                if (!transaction.commit()) {
+                    return {storageError()};
+                }
+                recordValidated();
+            }
+            results.push_back(storageError());
+            return results;
+        }
+        const auto outcome = insertGameInTransaction(*item.encoded, item.metadata, item.opening,
+                                                     source, newlyValidated);
+        if (std::holds_alternative<GameError>(outcome)) {
+            if (!savepoint.exec(QStringLiteral("ROLLBACK TO batch_item")) ||
+                !savepoint.exec(QStringLiteral("RELEASE batch_item"))) {
+                usable_ = false;
+                return {storageError()};
+            }
+            if (!results.empty()) {
+                if (!transaction.commit()) {
+                    return {storageError()};
+                }
+                recordValidated();
+            }
+            results.push_back(outcome);
+            return results;
+        }
+        if (!savepoint.exec(QStringLiteral("RELEASE batch_item"))) {
+            usable_ = false;
+            return {storageError()};
+        }
+        results.push_back(outcome);
+    }
+    if (!transaction.commit()) {
+        return {storageError()};
+    }
+    recordValidated();
+    return results;
 }
 
 LoadGameResult StorageSession::loadGame(GameId id, bool includeOpening) {

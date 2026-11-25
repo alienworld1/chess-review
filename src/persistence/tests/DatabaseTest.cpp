@@ -1,6 +1,9 @@
+#include "PuzzleTestSupport.h"
 #include "TestEnvironment.h"
 
+#include "engine/private/Fingerprint.h"
 #include "persistence/Database.h"
+#include "persistence/private/GameCodec.h"
 #include "persistence/private/Migrations.h"
 #include "persistence/private/PrivateFile.h"
 #include "persistence/private/StorageSession.h"
@@ -10,6 +13,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QSqlDatabase>
 #include <QSqlError>
@@ -32,6 +36,7 @@
 #include <unistd.h>
 #endif
 
+using namespace chess_review;
 using namespace chess_review::persistence;
 using namespace chess_review::persistence::detail;
 
@@ -129,6 +134,7 @@ class DatabaseTest final : public QObject {
     void closeBeforeInitialization();
     void foreignEncodingIsRejectedWithoutChangingData();
     void transformFailureRollsBack();
+    void upgradeChainPreservesDataAndCreatesVerifiedBackups();
 };
 
 void DatabaseTest::storageEventsAreTypedAndTruthful() {
@@ -219,9 +225,9 @@ void DatabaseTest::freshAndRepeatInitialization() {
     QCOMPARE(QSqlDatabase::connectionNames(), connectionsBefore);
     QVERIFY(!initialize(path, migrations()));
     FixtureConnection fixture(path);
-    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")).toInt(), 15);
+    QCOMPARE(fixture.scalar(QStringLiteral("SELECT COUNT(*) FROM schema_migrations")).toInt(), 16);
     QCOMPARE(fixture.scalar(QStringLiteral("SELECT MAX(version) FROM schema_migrations")).toInt(),
-             15);
+             16);
     QCOMPARE(fixture.scalar(QStringLiteral("PRAGMA journal_mode")).toString(),
              QStringLiteral("wal"));
     QCOMPARE(fixture
@@ -834,6 +840,237 @@ void DatabaseTest::transformFailureRollsBack() {
                          "SELECT COUNT(*) FROM sqlite_schema WHERE name='transform_marker'"))
                      .toInt(),
                  0);
+    }
+}
+
+void DatabaseTest::upgradeChainPreservesDataAndCreatesVerifiedBackups() {
+    const auto& allMigrations = migrations();
+    QCOMPARE(allMigrations.back().version, 16);
+    const auto parseDoc = [](const std::string& text) {
+        pgn::PgnReader reader(text);
+        return std::get<pgn::PgnDocument>(reader.next());
+    };
+    const auto makeEngine = [](const QString& path) {
+        engine::ValidatedEngine value;
+        value.executablePath = path;
+        value.executableSha256 = QByteArray(32, 'e');
+        value.reportedName = QStringLiteral("Upgrade Engine");
+        value.lastValidatedAt = QDateTime::currentDateTimeUtc();
+        return value;
+    };
+    const auto verifyBackupAndUpgrade = [&](const QString& dirPath, const QString& dbPath,
+                                            int expectedFromVersion,
+                                            auto&& verifyThroughPublicApi) {
+        Database database;
+        const auto closeDb = qScopeGuard([&] {
+            QSignalSpy closed(&database, &Database::closed);
+            database.close();
+            if (closed.empty()) {
+                QVERIFY(closed.wait(10000));
+            }
+        });
+        QSignalSpy ready(&database, &Database::ready);
+        database.initialize(dbPath);
+        QVERIFY(ready.wait(10000));
+        QCOMPARE(ready.front().at(0).toInt(), 16);
+
+        const QDir backups(dirPath + QStringLiteral("/backups"));
+        const auto files = backups.entryList({QStringLiteral("*.sqlite3")}, QDir::Files);
+        QCOMPARE(files.size(), 1);
+        FixtureConnection backup(backups.filePath(files.front()));
+        QCOMPARE(
+            backup.scalar(QStringLiteral("SELECT MAX(version) FROM schema_migrations")).toInt(),
+            expectedFromVersion);
+        QCOMPARE(backup.scalar(QStringLiteral("PRAGMA integrity_check(1)")).toString(),
+                 QStringLiteral("ok"));
+
+        verifyThroughPublicApi(database);
+    };
+
+    // 1. Schema v2 (legacy v1 game encoding) -> v16
+    {
+        QTemporaryDir dir;
+        const auto dbPath = dir.filePath(QStringLiteral("v2.sqlite3"));
+        const auto doc = parseDoc("[White \"LegacyWhite\"]\n[Black \"LegacyBlack\"]\n\n1. e4 e5 *");
+        {
+            QVERIFY(!initialize(dbPath, std::span(allMigrations).first(2)));
+            FixtureConnection raw(dbPath);
+            const auto encoded = std::get<EncodedGame>(encodeGame(doc, 1));
+            const auto meta = gameMetadata(doc, 1);
+            QString name = QUuid::createUuid().toString();
+            {
+                auto db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
+                db.setDatabaseName(dbPath);
+                QVERIFY(db.open());
+                QSqlQuery q(db);
+                QVERIFY(q.prepare(
+                    QStringLiteral("INSERT INTO games VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")));
+                for (const auto& v : QVariantList{
+                         7, 1, encoded.hash, encoded.identity, encoded.original, encoded.snapshot,
+                         1, meta.white, meta.black, meta.result, meta.playedAt, meta.timeControl,
+                         QStringLiteral("fixture"), QStringLiteral("legacy"),
+                         QStringLiteral("2026-10-20T00:00:00.000Z")}) {
+                    q.addBindValue(v);
+                }
+                QVERIFY(q.exec());
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(name);
+        }
+        verifyBackupAndUpgrade(dir.path(), dbPath, 2, [&](Database& database) {
+            QSignalSpy loaded(&database, &Database::gameLoaded);
+            database.loadGame(QUuid::createUuid(), 7);
+            QVERIFY(loaded.wait(5000));
+            const auto res = qvariant_cast<LoadGameResult>(loaded.front().at(1));
+            QVERIFY(std::holds_alternative<StoredGame>(res));
+            QCOMPARE(std::get<StoredGame>(res).summary.white, QStringLiteral("LegacyWhite"));
+        });
+    }
+
+    // 2. Schema v4 (games + engines) -> v16
+    {
+        QTemporaryDir dir;
+        const auto dbPath = dir.filePath(QStringLiteral("v4.sqlite3"));
+        {
+            StorageSession old;
+            QVERIFY(!old.initialize(dbPath, std::span(allMigrations).first(4), ignoreProgress));
+            QVERIFY(std::holds_alternative<Inserted>(
+                old.insertGame(parseDoc("[White \"V4\"]\n\n1. d4 *"), {})));
+            QVERIFY(std::holds_alternative<RegisteredEngine>(
+                old.registerEngine(makeEngine(QStringLiteral("/opt/v4-engine")))));
+        }
+        verifyBackupAndUpgrade(dir.path(), dbPath, 4, [&](Database& database) {
+            QSignalSpy games(&database, &Database::gamesListed);
+            database.listGames(QUuid::createUuid());
+            QVERIFY(games.wait(5000));
+            const auto list = std::get<std::vector<GameSummary>>(
+                qvariant_cast<ListGamesResult>(games.front().at(1)));
+            QCOMPARE(list.size(), std::size_t(1));
+            QCOMPARE(list.front().white, QStringLiteral("V4"));
+
+            QSignalSpy engines(&database, &Database::enginesListed);
+            database.listEngines(QUuid::createUuid());
+            QVERIFY(engines.wait(5000));
+            const auto engList = std::get<std::vector<engine::EngineProfile>>(
+                qvariant_cast<ListEnginesResult>(engines.front().at(1)));
+            QCOMPARE(engList.size(), std::size_t(1));
+            QCOMPARE(engList.front().engine.executablePath, QStringLiteral("/opt/v4-engine"));
+        });
+    }
+
+    // 3. Schema v10 (active review job) -> v16 (marks job Interrupted & preserves review)
+    ReviewId v10ReviewId = 0;
+    {
+        QTemporaryDir dir;
+        const auto dbPath = dir.filePath(QStringLiteral("v10.sqlite3"));
+        {
+            StorageSession old;
+            QVERIFY(!old.initialize(dbPath, std::span(allMigrations).first(10), ignoreProgress));
+            const auto gameId = std::get<Inserted>(old.insertGame(parseDoc("1. e4 e5 *"), {})).id;
+            const auto eng = makeEngine(QStringLiteral("/opt/v10-engine"));
+            const auto profileId = std::get<RegisteredEngine>(old.registerEngine(eng)).profile.id;
+            CreateReview req;
+            req.gameId = gameId;
+            req.engineProfileId = profileId;
+            req.fingerprint = engine::makeFingerprint(eng, {});
+            req.configuration = *std::get<std::shared_ptr<const config::ValidatedConfiguration>>(
+                config::validate(review::Configuration{}));
+            v10ReviewId = std::get<ReviewSummary>(old.createReview(req)).id;
+        }
+        verifyBackupAndUpgrade(dir.path(), dbPath, 10, [&](Database& database) {
+            QSignalSpy loaded(&database, &Database::reviewLoaded);
+            database.loadReview(QUuid::createUuid(), v10ReviewId);
+            QVERIFY(loaded.wait(5000));
+            const auto res = qvariant_cast<LoadReviewResult>(loaded.front().at(1));
+            QVERIFY(std::holds_alternative<StoredReview>(res));
+            QCOMPARE(std::get<StoredReview>(res).summary.status, review::JobStatus::Interrupted);
+        });
+    }
+
+    // 4. Schema v11 (active puzzle job) -> v16 (marks puzzle job Interrupted)
+    {
+        QTemporaryDir dir;
+        const auto dbPath = dir.filePath(QStringLiteral("v11.sqlite3"));
+        {
+            StorageSession old;
+            QVERIFY(!old.initialize(dbPath, std::span(allMigrations).first(11), ignoreProgress));
+            PuzzleJob job;
+            job.candidates = {puzzle_test::seed()};
+            const auto saved = std::get<PuzzleJob>(old.checkpointPuzzleJob({job, {}}));
+            QCOMPARE(saved.status, PuzzleJobStatus::Running);
+        }
+        verifyBackupAndUpgrade(dir.path(), dbPath, 11, [&](Database& database) {
+            QSignalSpy listed(&database, &Database::puzzleJobsListed);
+            database.listPuzzleJobs(QUuid::createUuid());
+            QVERIFY(listed.wait(5000));
+            const auto jobs = std::get<std::vector<PuzzleJobSummary>>(
+                qvariant_cast<ListPuzzleJobsResult>(listed.front().at(1)));
+            QCOMPARE(jobs.size(), std::size_t(1));
+            QCOMPARE(jobs.front().status, PuzzleJobStatus::Interrupted);
+        });
+    }
+
+    // 5. Schema v14 (monotonic game IDs) -> v16
+    {
+        QTemporaryDir dir;
+        const auto dbPath = dir.filePath(QStringLiteral("v14.sqlite3"));
+        {
+            StorageSession old;
+            QVERIFY(!old.initialize(dbPath, std::span(allMigrations).first(14), ignoreProgress));
+            const auto id = std::get<Inserted>(old.insertGame(parseDoc("1. c4 *"), {})).id;
+            QVERIFY(std::holds_alternative<std::monostate>(old.deleteGame(id)));
+        }
+        verifyBackupAndUpgrade(dir.path(), dbPath, 14, [&](Database& database) {
+            QSignalSpy inserted(&database, &Database::gameInserted);
+            database.insertGame(QUuid::createUuid(),
+                                std::make_shared<const pgn::PgnDocument>(parseDoc("1. Nf3 *")));
+            QVERIFY(inserted.wait(5000));
+            const auto outcome = qvariant_cast<InsertGameResult>(inserted.front().at(1));
+            QVERIFY(std::holds_alternative<Inserted>(outcome));
+            QVERIFY(std::get<Inserted>(outcome).id > 1);
+        });
+    }
+
+    // 6. Schema v15 -> v16 + verify query plan indexes
+    {
+        QTemporaryDir dir;
+        const auto dbPath = dir.filePath(QStringLiteral("v15.sqlite3"));
+        {
+            StorageSession old;
+            QVERIFY(!old.initialize(dbPath, std::span(allMigrations).first(15), ignoreProgress));
+            QVERIFY(std::holds_alternative<Inserted>(
+                old.insertGame(parseDoc("[Result \"1-0\"]\n\n1. e4 1-0"), {})));
+        }
+        verifyBackupAndUpgrade(dir.path(), dbPath, 15, [&](Database&) {
+            FixtureConnection check(dbPath);
+            QString planJobs;
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                            QStringLiteral("plan-check"));
+                db.setDatabaseName(dbPath);
+                QVERIFY(db.open());
+                QSqlQuery q(db);
+                QVERIFY(q.exec(QStringLiteral(
+                    "EXPLAIN QUERY PLAN SELECT count(*) FROM review_jobs JOIN reviews ON "
+                    "reviews.id=review_jobs.review_id WHERE review_jobs.status=9")));
+                while (q.next()) {
+                    planJobs += q.value(3).toString() + u'\n';
+                }
+                QString planGames;
+                QVERIFY(q.exec(
+                    QStringLiteral("EXPLAIN QUERY PLAN SELECT id FROM games WHERE result='1-0' "
+                                   "ORDER BY imported_at DESC, id DESC LIMIT 50")));
+                while (q.next()) {
+                    planGames += q.value(3).toString() + u'\n';
+                }
+                db.close();
+                QVERIFY2(planJobs.contains(QStringLiteral("review_jobs_status")),
+                         qPrintable(planJobs));
+                QVERIFY2(planGames.contains(QStringLiteral("games_result_imported")),
+                         qPrintable(planGames));
+            }
+            QSqlDatabase::removeDatabase(QStringLiteral("plan-check"));
+        });
     }
 }
 

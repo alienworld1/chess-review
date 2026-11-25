@@ -64,6 +64,9 @@ class Database final : public QObject {
     void listEngines(RequestId request, std::int64_t offset = 0, int limit = 50);
     void insertGame(RequestId request, std::shared_ptr<const pgn::PgnDocument> document,
                     GameSource source = {});
+    void insertGameBatch(RequestId request,
+                         std::vector<std::shared_ptr<const pgn::PgnDocument>> documents,
+                         GameSource source = {});
     void loadGame(RequestId request, GameId id);
     void resolveGameOpening(RequestId request, GameId id);
     void listGames(RequestId request, std::int64_t offset = 0, int limit = 50,
@@ -158,6 +161,8 @@ class Database final : public QObject {
     void closed();
     void gameInserted(chess_review::persistence::RequestId request,
                       const chess_review::persistence::InsertGameResult& result);
+    void gamesInserted(chess_review::persistence::RequestId request,
+                       const std::vector<chess_review::persistence::InsertGameResult>& results);
     void gameLoaded(chess_review::persistence::RequestId request,
                     const chess_review::persistence::LoadGameResult& result);
     void gameOpeningResolved(RequestId request, const ResolveGameOpeningResult& result);
