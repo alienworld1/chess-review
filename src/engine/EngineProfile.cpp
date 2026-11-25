@@ -1,12 +1,14 @@
 #include "engine/EngineProfile.h"
 #include "engine/private/OptionCollector.h"
 #include <QDir>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QSet>
 #include <algorithm>
-
+#include <array>
 #include <utility>
 
 namespace chess_review::engine {
@@ -374,5 +376,98 @@ bool validEngine(const ValidatedEngine& engine) {
     }
     const auto decoded = decodeCapabilities(encodeCapabilities(engine.capabilities));
     return decoded && *decoded == engine.capabilities;
+}
+namespace {
+bool matchesKnownEngineName(const QString& fileName) {
+    const auto folded = fileName.toCaseFolded();
+    if (folded.endsWith(QLatin1String(".so")) || folded.endsWith(QLatin1String(".txt")) ||
+        folded.endsWith(QLatin1String(".md")) || folded.endsWith(QLatin1String(".json")) ||
+        folded.endsWith(QLatin1String(".desktop")) || folded.endsWith(QLatin1String(".py")) ||
+        folded.endsWith(QLatin1String(".sh"))) {
+        return false;
+    }
+    static constexpr std::array prefixes{
+        "stockfish", "lc0",        "berserk", "caissa", "clover",  "ethereal", "koivisto",
+        "rubichess", "viridithas", "weiss",   "texel",  "arasanx", "komodo"};
+    for (const auto* raw : prefixes) {
+        const QLatin1StringView prefix(raw);
+        if (folded == prefix) {
+            return true;
+        }
+        if (folded.startsWith(prefix) && folded.size() > prefix.size()) {
+            const QChar next = folded.at(prefix.size());
+            if (next == u'-' || next == u'_' || next.isDigit()) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+} // namespace
+QList<DetectedEngine> detectLocalEngines(const QStringList& extraDirectories,
+                                         bool includeDefaults) {
+    QStringList directories;
+    QSet<QString> seenDirectories;
+    const auto appendDir = [&](const QString& raw) {
+        if (raw.isEmpty() || raw.size() > 4096 || !raw.isValidUtf16() ||
+            raw.contains(QChar::Null)) {
+            return;
+        }
+        const QFileInfo info(raw);
+        if (!info.isAbsolute() || !info.exists() || !info.isDir()) {
+            return;
+        }
+        const auto canonical = info.canonicalFilePath();
+        if (canonical.isEmpty() || seenDirectories.contains(canonical)) {
+            return;
+        }
+        seenDirectories.insert(canonical);
+        directories.append(canonical);
+    };
+    for (const auto& dir : extraDirectories) {
+        appendDir(dir);
+    }
+    if (includeDefaults) {
+        const auto envPath = qEnvironmentVariable("PATH");
+        for (const auto& entry : envPath.split(QDir::listSeparator(), Qt::SkipEmptyParts)) {
+            appendDir(entry);
+        }
+        appendDir(QStringLiteral("/usr/games"));
+        appendDir(QStringLiteral("/usr/bin"));
+        appendDir(QStringLiteral("/usr/local/bin"));
+        appendDir(QDir::home().filePath(QStringLiteral(".local/bin")));
+    }
+
+    QList<DetectedEngine> detected;
+    QSet<QString> seenExecutables;
+    constexpr qsizetype maxDetectedEngines = 32;
+    for (const auto& directory : directories) {
+        if (detected.size() >= maxDetectedEngines) {
+            break;
+        }
+        const QDir dir(directory);
+        const auto entries =
+            dir.entryInfoList(QDir::Files | QDir::Readable | QDir::Executable, QDir::Name);
+        for (const auto& entry : entries) {
+            if (detected.size() >= maxDetectedEngines) {
+                break;
+            }
+            if (!matchesKnownEngineName(entry.fileName())) {
+                continue;
+            }
+            const auto canonical = entry.canonicalFilePath();
+            if (canonical.isEmpty() || canonical.size() > 4096 ||
+                seenExecutables.contains(canonical)) {
+                continue;
+            }
+            const QFileInfo target(canonical);
+            if (!target.isFile() || !target.isReadable() || !target.isExecutable()) {
+                continue;
+            }
+            seenExecutables.insert(canonical);
+            detected.push_back({canonical, entry.fileName()});
+        }
+    }
+    return detected;
 }
 } // namespace chess_review::engine

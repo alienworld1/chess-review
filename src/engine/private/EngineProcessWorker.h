@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QTimer>
 #include <set>
 #include <utility>
@@ -23,6 +24,7 @@ struct ProcessConfiguration {
     int searchResponseMs = 5000;
 };
 PathResult inspectExecutable(const QString& path);
+QProcessEnvironment sanitizedEngineEnvironment(const QProcessEnvironment& source);
 // Single attempt; constructed, used and destroyed on the supervisor event-loop thread.
 class EngineProcessWorker final : public QObject {
     Q_OBJECT

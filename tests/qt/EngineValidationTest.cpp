@@ -429,6 +429,74 @@ class EngineValidationTest final : public QObject {
         QVERIFY(std::holds_alternative<Error>(qvariant_cast<PathResult>(inspected.back()[1])));
 #endif
     }
+    void detectsLocalEnginesWithoutExecution() {
+        QTemporaryDir directory;
+        const auto marker = directory.filePath(QStringLiteral("executed.marker"));
+        const auto writeExec = [&](const QString& name, bool executable) -> QString {
+            const auto path = directory.filePath(name);
+            QFile file(path);
+            if (!file.open(QIODevice::WriteOnly)) {
+                qFatal("Cannot create fake engine fixture");
+            }
+            const QByteArray script =
+                QByteArray("#!/bin/sh\ntouch \"") + marker.toUtf8() + QByteArray("\"\n");
+            if (file.write(script) != script.size()) {
+                qFatal("Cannot write fake engine fixture");
+            }
+            file.close();
+            const auto perms =
+                executable
+                    ? (QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner)
+                    : (QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+            if (!QFile::setPermissions(path, perms)) {
+                qFatal("Cannot set permissions on fake engine fixture");
+            }
+            return path;
+        };
+        const auto stockfish = writeExec(QStringLiteral("stockfish"), true);
+        const auto lc0 = writeExec(QStringLiteral("lc0-v0.31"), true);
+        writeExec(QStringLiteral("berserk"), false);
+        writeExec(QStringLiteral("stockfish.sh"), true);
+        writeExec(QStringLiteral("unrelated-tool"), true);
+        QVERIFY(QFile::link(stockfish, directory.filePath(QStringLiteral("stockfish-16"))));
+
+        const auto found = detectLocalEngines({directory.path()}, false);
+        QCOMPARE(found.size(), 2);
+        QCOMPARE(found[0].path, lc0);
+        QCOMPARE(found[1].path, stockfish);
+        QVERIFY(!QFileInfo::exists(marker));
+    }
+    void missingAndUnreadablePathsDistinguished() {
+        QTemporaryDir directory;
+        engine_test::Validator validator;
+        QSignalSpy inspected(&validator.service, &EngineSupervisor::inspected);
+        validator.service.inspect(QUuid::createUuid(),
+                                  directory.filePath(QStringLiteral("does-not-exist")));
+        QTRY_COMPARE(inspected.size(), 1);
+        const auto missing = qvariant_cast<PathResult>(inspected.back()[1]);
+        QVERIFY(std::holds_alternative<Error>(missing));
+        QCOMPARE(std::get<Error>(missing).code, ErrorCode::Path);
+        QVERIFY(std::get<Error>(missing).message.contains(QStringLiteral("not found")));
+
+        const auto dangling = directory.filePath(QStringLiteral("dangling-link"));
+        QVERIFY(QFile::link(directory.filePath(QStringLiteral("target-missing")), dangling));
+        validator.service.inspect(QUuid::createUuid(), dangling);
+        QTRY_COMPARE(inspected.size(), 2);
+        const auto danglingResult = qvariant_cast<PathResult>(inspected.back()[1]);
+        QVERIFY(std::holds_alternative<Error>(danglingResult));
+        QVERIFY(std::get<Error>(danglingResult).message.contains(QStringLiteral("not found")));
+
+        QFile nonExec(directory.filePath(QStringLiteral("nonexec")));
+        QVERIFY(nonExec.open(QIODevice::WriteOnly));
+        nonExec.close();
+        QVERIFY(nonExec.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+        validator.service.inspect(QUuid::createUuid(), nonExec.fileName());
+        QTRY_COMPARE(inspected.size(), 3);
+        const auto permResult = qvariant_cast<PathResult>(inspected.back()[1]);
+        QVERIFY(std::holds_alternative<Error>(permResult));
+        QVERIFY(std::get<Error>(permResult)
+                    .message.contains(QStringLiteral("readable, executable regular file")));
+    }
 };
 QTEST_GUILESS_MAIN(EngineValidationTest)
 #include "EngineValidationTest.moc"

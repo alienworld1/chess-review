@@ -18,8 +18,11 @@ struct SetEngineOption {
     QString name;
     std::optional<QString> value; // Absence restores the engine default.
 };
+struct RelocateEngine {
+    engine::ValidatedEngine engine;
+};
 using EngineProfileEdit =
-    std::variant<RenameEngine, MakeDefaultEngine, RemoveEngine, SetEngineOption>;
+    std::variant<RenameEngine, MakeDefaultEngine, RemoveEngine, SetEngineOption, RelocateEngine>;
 using EditEngineResult = std::optional<engine::Error>;
 using ListEnginesResult = std::variant<std::vector<engine::EngineProfile>, engine::Error>;
 } // namespace chess_review::persistence

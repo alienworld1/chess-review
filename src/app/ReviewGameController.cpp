@@ -448,6 +448,9 @@ QString ReviewGameController::startBlocker(std::int64_t profileId) const {
                      [profileId](const auto& profile) { return profile.id == profileId; })) {
         return tr("Choose a registered engine. Manage engines in Settings.");
     }
+    if (settings.missingProfiles.contains(profileId)) {
+        return tr("The selected engine executable is missing. Locate or replace it in Settings.");
+    }
     if (engine::runtimeActive(settings.runtime.phase) && settings.runtime.profileId != profileId) {
         return tr("Disconnect the other engine in Settings before running this review.");
     }
@@ -606,7 +609,9 @@ void ReviewGameController::runtimeChanged() {
         prepareIdentity();
     } else if (runtime.phase == engine::RuntimePhase::Failed ||
                runtime.phase == engine::RuntimePhase::Disconnected) {
-        fail(tr("Engine connection ended before review started. Check Settings and try again."),
+        fail(runtime.error ? runtime.error->message
+                           : tr("Engine connection ended before review started. Check Settings "
+                                "and try again."),
              review::JobFailure::Engine);
     }
     publish();

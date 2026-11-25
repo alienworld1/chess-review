@@ -12,6 +12,8 @@ class SupervisorCoordinator final : public QObject {
     Q_OBJECT
   public:
     void inspect(QUuid request, const QString& path);
+    void detectEngines(QUuid request);
+    void checkExecutables(QUuid request, const QList<std::pair<std::int64_t, QString>>& profiles);
     void validate(QUuid request, const QString& path);
     void connectEngine(QUuid session, const EngineProfile& profile, EnginePoolLimits limits);
     void disconnectEngine(QUuid session);
@@ -25,8 +27,12 @@ class SupervisorCoordinator final : public QObject {
     void close();
     void configure(QStringList arguments, int startMs, int handshakeMs, qsizetype outputLimit);
     void configureSearch(int idleMs, int responseMs);
+    void configureDetection(QStringList directories, bool includeDefaults);
   signals:
     void inspected(QUuid request, const chess_review::engine::PathResult& result);
+    void enginesDetected(QUuid request,
+                         const QList<chess_review::engine::DetectedEngine>& candidates);
+    void executablesChecked(QUuid request, const QList<std::int64_t>& missingIds);
     void progress(QUuid request, const QString& message);
     void completed(QUuid request, const chess_review::engine::ValidationResult& result);
     void runtimeChanged(const chess_review::engine::RuntimeState& state);
@@ -83,5 +89,7 @@ class SupervisorCoordinator final : public QObject {
     std::size_t startedWorkers_ = 0;
     bool draining_ = false;
     bool closing_ = false;
+    QStringList detectionDirectories_;
+    bool detectionIncludeDefaults_ = true;
 };
 } // namespace chess_review::engine

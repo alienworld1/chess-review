@@ -81,6 +81,12 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
                                "executable stays where you installed it."));
     setTextRole(*engineHint, "secondary");
     engineTopRow->addWidget(engineHint, 1);
+    detect_ = new QPushButton(tr("&Detect installed"), content);
+    detect_->setObjectName(QStringLiteral("detectEngines"));
+    setIcon(*detect_, QStringLiteral("search"));
+    detect_->setToolTip(
+        tr("Search standard folders for installed UCI chess engines without running them."));
+    engineTopRow->addWidget(detect_, 0, Qt::AlignVCenter);
     browse_ = new QPushButton(tr("&Choose executable…"), content);
     browse_->setObjectName(QStringLiteral("chooseEngine"));
     setIcon(*browse_, QStringLiteral("plus"));
@@ -88,6 +94,31 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
                            "before registering another."));
     engineTopRow->addWidget(browse_, 0, Qt::AlignVCenter);
     layout->addLayout(engineTopRow);
+    detectBox_ = new QWidget(content);
+    detectBox_->setObjectName(QStringLiteral("engineDetectionBox"));
+    setSubtleSurface(*detectBox_);
+    auto* detectLayout = new QVBoxLayout(detectBox_);
+    detectLayout->setContentsMargins(12, 10, 12, 10);
+    detectLayout->setSpacing(8);
+    detectMessage_ = plainLabel(detectBox_);
+    detectMessage_->setObjectName(QStringLiteral("engineDetectMessage"));
+    detectMessage_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    detectLayout->addWidget(detectMessage_);
+    auto* detectRow = new QHBoxLayout;
+    detectRow->setSpacing(8);
+    detected_ = new QComboBox(detectBox_);
+    detected_->setObjectName(QStringLiteral("detectedEngines"));
+    detected_->setAccessibleName(tr("Detected UCI engines"));
+    detected_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    detected_->setMinimumContentsLength(24);
+    selectDetected_ = new QPushButton(tr("&Select"), detectBox_);
+    selectDetected_->setObjectName(QStringLiteral("selectDetectedEngine"));
+    setIcon(*selectDetected_, QStringLiteral("plus"));
+    detectRow->addWidget(detected_, 1);
+    detectRow->addWidget(selectDetected_);
+    detectLayout->addLayout(detectRow);
+    detectBox_->hide();
+    layout->addWidget(detectBox_);
     profiles_ = new QTableWidget(0, 4, content);
     profiles_->setObjectName(QStringLiteral("engineProfiles"));
     profiles_->setAccessibleName(tr("Registered engines"));
@@ -194,7 +225,7 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     pagination->addWidget(next_);
     pagination->addWidget(refresh_);
     pagination->addStretch();
-    layout->insertLayout(2, pagination);
+    layout->insertLayout(3, pagination);
     auto* profileActions = new QHBoxLayout;
     configure_ = new QPushButton(tr("&Options…"), this);
     configure_->setObjectName(QStringLiteral("editEngineOptions"));
@@ -204,6 +235,10 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     setIcon(*rename_, QStringLiteral("note"));
     makeDefault_ = new QPushButton(tr("Set as &default"), this);
     makeDefault_->setObjectName(QStringLiteral("defaultEngine"));
+    locate_ = new QPushButton(tr("&Locate executable…"), this);
+    locate_->setObjectName(QStringLiteral("locateEngine"));
+    locate_->setToolTip(tr("Select the moved executable file for this missing engine profile."));
+    setIcon(*locate_, QStringLiteral("search"));
     remove_ = new QPushButton(tr("Remo&ve…"), this);
     remove_->setObjectName(QStringLiteral("removeEngine"));
     setQuietAction(*remove_);
@@ -211,14 +246,15 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     profileActions->addWidget(configure_);
     profileActions->addWidget(rename_);
     profileActions->addWidget(makeDefault_);
+    profileActions->addWidget(locate_);
     profileActions->addWidget(remove_);
     profileActions->addWidget(inspector_);
     profileActions->addStretch();
-    layout->insertLayout(3, profileActions);
+    layout->insertLayout(4, profileActions);
     profileMessage_ = plainLabel(this);
     profileMessage_->setObjectName(QStringLiteral("engineProfileMessage"));
     profileMessage_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    layout->insertWidget(4, profileMessage_);
+    layout->insertWidget(5, profileMessage_);
     connect(configure_, &QPushButton::clicked, this, &EngineSettingsPage::showOptionEditor);
     connect(makeDefault_, &QPushButton::clicked, this, [this] {
         if (const auto* profile = selectedProfile()) {
@@ -306,6 +342,37 @@ EngineSettingsPage::EngineSettingsPage(app::EngineSettingsController& controller
     regLayout->addLayout(actions);
     layout->addWidget(registrationBox);
     layout->addStretch();
+    connect(detect_, &QPushButton::clicked, &controller_,
+            &app::EngineSettingsController::detectInstalledEngines);
+    connect(selectDetected_, &QPushButton::clicked, this, [this] {
+        const auto selectedPath = detected_->currentData().toString();
+        if (!selectedPath.isEmpty()) {
+            controller_.selectExecutable(selectedPath);
+        }
+    });
+    connect(locate_, &QPushButton::clicked, this, [this] {
+        const auto* profile = selectedProfile();
+        if (locating_ || !profile || !controller_.canEditProfile()) {
+            return;
+        }
+        locatingProfileId_ = profile->id;
+        if (!locatePicker_) {
+            locatePicker_ = new QFileDialog(this, tr("Locate moved UCI engine executable"));
+            locatePicker_->setFileMode(QFileDialog::ExistingFile);
+            connect(locatePicker_, &QFileDialog::fileSelected, this, [this](const QString& file) {
+                if (locatingProfileId_ > 0) {
+                    controller_.relocateProfile(locatingProfileId_, file);
+                }
+            });
+            connect(locatePicker_, &QFileDialog::finished, this, [this] {
+                locating_ = false;
+                updateState();
+            });
+        }
+        locating_ = true;
+        locatePicker_->open();
+        updateState();
+    });
     connect(browse_, &QPushButton::clicked, this, [this] {
         if (picking_) {
             return;
@@ -356,13 +423,37 @@ void EngineSettingsPage::updateState() {
                       state.registration == EngineRegistrationState::Saving ||
                       state.registration == EngineRegistrationState::Closing ||
                       engine::runtimeActive(state.runtime.phase);
-    browse_->setEnabled(state.ready && !busy && !picking_ &&
+    detect_->setEnabled(state.ready && !state.detecting && !busy);
+    browse_->setEnabled(state.ready && !busy && !picking_ && !locating_ &&
                         state.registration != EngineRegistrationState::Inspecting);
     if (!state.ready && picking_) {
         picker_->reject();
     }
+    if (!state.ready && locating_ && locatePicker_) {
+        locatePicker_->reject();
+    }
+    detectMessage_->setText(state.detectMessage);
+    detectMessage_->setVisible(!state.detectMessage.isEmpty());
+    if (shownDetected_ != state.detectedEngines) {
+        shownDetected_ = state.detectedEngines;
+        const QSignalBlocker detectBlock(detected_);
+        detected_->clear();
+        for (const auto& candidate : shownDetected_) {
+            detected_->addItem(
+                tr("%1 (%2)").arg(clippedEngineText(presentedEngineText(candidate.name)),
+                                  clippedEngineText(presentedEngineText(candidate.path))),
+                candidate.path);
+        }
+    }
+    const bool hasDetected = !state.detectedEngines.isEmpty();
+    detected_->setVisible(hasDetected);
+    selectDetected_->setVisible(hasDetected);
+    selectDetected_->setEnabled(state.ready && hasDetected && !busy && !picking_ && !locating_ &&
+                                state.registration != EngineRegistrationState::Inspecting);
+    detectBox_->setVisible(!state.detectMessage.isEmpty() || hasDetected);
     const bool adding = state.registration != EngineRegistrationState::Idle &&
                         state.registration != EngineRegistrationState::Closing;
+    add_->setText(state.relocatingProfileId ? tr("&Validate and locate") : tr("&Validate and add"));
     add_->setVisible(adding);
     cancel_->setVisible(adding);
     add_->setEnabled(state.ready && !busy &&
@@ -396,9 +487,11 @@ void EngineSettingsPage::updateState() {
     refresh_->setVisible(!state.listError.isEmpty());
     updateRuntime();
     if (profilesRevision_ == state.profilesRevision) {
+        updateMissingIndicators();
         return;
     }
     profilesRevision_ = state.profilesRevision;
+    shownMissing_ = state.missingProfiles;
     const auto* selectedValue = selectedProfile();
     const auto selected = selectedValue ? std::optional(selectedValue->id) : std::nullopt;
     const QSignalBlocker blocker(profiles_);
@@ -408,8 +501,10 @@ void EngineSettingsPage::updateState() {
     profiles_->setRowCount(static_cast<int>(state.profiles.size()));
     int row = 0;
     for (const auto& profile : state.profiles) {
+        const bool missing = state.missingProfiles.contains(profile.id);
         const QStringList values{
-            clippedEngineText(presentedEngineText(profile.displayName)),
+            clippedEngineText(presentedEngineText(profile.displayName)) +
+                (missing ? tr(" (Missing)") : QString{}),
             clippedEngineText(presentedEngineText(profile.engine.executablePath)),
             profile.isDefault ? tr("Yes") : QString(),
             profile.engine.lastValidatedAt.toUTC().toString(Qt::ISODateWithMs)};
@@ -421,6 +516,32 @@ void EngineSettingsPage::updateState() {
             profiles_->selectRow(row);
         }
         ++row;
+    }
+    updateDetails();
+}
+void EngineSettingsPage::updateMissingIndicators() {
+    const auto& state = controller_.state();
+    if (shownMissing_ == state.missingProfiles) {
+        return;
+    }
+    shownMissing_ = state.missingProfiles;
+    const QSignalBlocker blocker(profiles_);
+    for (int row = 0; row < profiles_->rowCount(); ++row) {
+        auto* item = profiles_->item(row, 0);
+        if (!item) {
+            continue;
+        }
+        const auto id = item->data(Qt::UserRole).toLongLong();
+        const auto found = std::ranges::find(state.profiles, id, &engine::EngineProfile::id);
+        if (found == state.profiles.end()) {
+            continue;
+        }
+        const bool missing = state.missingProfiles.contains(id);
+        const auto text = clippedEngineText(presentedEngineText(found->displayName)) +
+                          (missing ? tr(" (Missing)") : QString{});
+        if (item->text() != text) {
+            item->setText(text);
+        }
     }
     updateDetails();
 }
@@ -436,6 +557,9 @@ void EngineSettingsPage::updateDetails() {
                     .arg(presentedEngineText(profile->displayName),
                          presentedEngineText(engine.reportedName),
                          presentedEngineText(engine.executablePath));
+    if (controller_.state().missingProfiles.contains(profile->id)) {
+        text += tr("\nStatus: Executable missing at saved path");
+    }
     if (engine.reportedAuthor) {
         text += tr("\nAuthor: %1").arg(presentedEngineText(*engine.reportedAuthor));
     }
@@ -474,6 +598,9 @@ void EngineSettingsPage::updateRuntime() {
                                : tr("Edit supported UCI options, including threads and hash."));
     rename_->setEnabled(canEdit);
     makeDefault_->setEnabled(canEdit && !profile->isDefault);
+    const bool missingSelected = profile && state.missingProfiles.contains(profile->id);
+    locate_->setVisible(missingSelected);
+    locate_->setEnabled(canEdit && missingSelected && !locating_ && !picking_);
     remove_->setEnabled(canEdit);
     inspector_->setEnabled(profile || state.runtime.discovery);
     test_->setEnabled(profile && profile->id == state.runtime.profileId &&

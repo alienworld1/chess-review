@@ -18,11 +18,16 @@ struct EngineSettingsState {
     QString listError;
     QString profileMessage;
     QString testMessage;
+    QString detectMessage;
     bool editing = false;
     bool testing = false;
     bool analyzing = false;
+    bool detecting = false;
     std::vector<engine::EngineProfile> profiles;
+    std::set<std::int64_t> missingProfiles;
+    QList<engine::DetectedEngine> detectedEngines;
     std::optional<std::int64_t> defaultProfileId;
+    std::optional<std::int64_t> relocatingProfileId;
     QString defaultDisplayName;
     std::uint64_t profilesRevision = 0;
     std::int64_t offset = 0;
@@ -43,6 +48,8 @@ class EngineSettingsController final : public QObject {
     const EngineSettingsState& state() const { return state_; }
     void setReady(bool ready);
     void selectExecutable(const QString& path);
+    void relocateProfile(std::int64_t profileId, const QString& path);
+    void detectInstalledEngines();
     void registerSelected();
     void cancel();
     void refresh(std::int64_t offset = 0);
@@ -71,6 +78,9 @@ class EngineSettingsController final : public QObject {
     QUuid listing_;
     QUuid edit_;
     QUuid test_;
+    QUuid detection_;
+    QUuid executableCheck_;
+    std::optional<std::int64_t> pendingRelocationId_;
     std::set<QUuid> analysisAttempts_;
     std::int64_t requestedOffset_ = 0;
     bool closing_ = false;

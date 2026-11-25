@@ -628,6 +628,109 @@ class EngineSettingsTest final : public QObject {
         application.startup.shutdown();
         QTRY_COMPARE_WITH_TIMEOUT(application.startup.state(), app::Lifecycle::Stopped, 5000);
     }
+    void detectsAndLocatesMissingEngine() {
+        QTemporaryDir directory;
+        const auto detectDir = directory.filePath(QStringLiteral("detect"));
+        const auto movedDir = directory.filePath(QStringLiteral("moved"));
+        QVERIFY(QDir().mkpath(detectDir));
+        QVERIFY(QDir().mkpath(movedDir));
+        const auto originalPath = QDir(detectDir).filePath(QStringLiteral("stockfish"));
+        const auto movedPath = QDir(movedDir).filePath(QStringLiteral("stockfish"));
+        QVERIFY(QFile::copy(QString::fromUtf8(FAKE_UCI_ENGINE), originalPath));
+        QVERIFY(QFile::setPermissions(originalPath, QFileDevice::ReadOwner |
+                                                        QFileDevice::WriteOwner |
+                                                        QFileDevice::ExeOwner));
+        // Non-executable file must be ignored by detection.
+        QFile nonExec(QDir(detectDir).filePath(QStringLiteral("lc0")));
+        QVERIFY(nonExec.open(QIODevice::WriteOnly));
+        nonExec.close();
+        QVERIFY(nonExec.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+
+        Application application;
+        auto& controller = application.startup.engines();
+        auto& supervisor = app::EngineControllerTestAccess::validator(controller);
+        engine::ValidatorTestAccess::configureDetection(supervisor, {detectDir}, false);
+        engine::ValidatorTestAccess::configure(
+            supervisor, engine_test::scenario(directory.filePath(QStringLiteral("handshake.json")),
+                                              engine_test::handshake()));
+        application.startup.start(directory.filePath(QStringLiteral("library.sqlite3")));
+        QTRY_VERIFY(controller.state().ready);
+        application.navigation.navigate(app::Destination::Settings);
+        application.window.show();
+
+        auto* detectButton =
+            application.window.findChild<QPushButton*>(QStringLiteral("detectEngines"));
+        auto* detectedCombo =
+            application.window.findChild<QComboBox*>(QStringLiteral("detectedEngines"));
+        auto* selectDetected =
+            application.window.findChild<QPushButton*>(QStringLiteral("selectDetectedEngine"));
+        QVERIFY(detectButton && detectedCombo && selectDetected);
+        detectButton->click();
+        QTRY_COMPARE(detectedCombo->count(), 1);
+        QVERIFY(detectedCombo->currentText().contains(QStringLiteral("stockfish")));
+        selectDetected->click();
+        QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Selected);
+        QCOMPARE(controller.state().selectedPath, QFileInfo(originalPath).canonicalFilePath());
+        // Selection must not silently validate or register the binary.
+        QTest::qWait(60);
+        QVERIFY(controller.state().profiles.empty());
+
+        auto* add = application.window.findChild<QPushButton*>(QStringLiteral("registerEngine"));
+        add->click();
+        QTRY_COMPARE(controller.state().profiles.size(), std::size_t(1));
+        const auto savedId = controller.state().profiles.front().id;
+
+        // Move the binary on disk to simulate an externally moved/missing engine.
+        QVERIFY(QFile::rename(originalPath, movedPath));
+        controller.refresh();
+        QTRY_VERIFY(controller.state().missingProfiles.contains(savedId));
+
+        auto* table = application.window.findChild<QTableWidget*>(QStringLiteral("engineProfiles"));
+        QTRY_VERIFY(table->item(0, 0)->text().contains(QStringLiteral("(Missing)")));
+        table->selectRow(0);
+        auto* details =
+            application.window.findChild<QPlainTextEdit*>(QStringLiteral("engineProfileDetails"));
+        QVERIFY(
+            details->toPlainText().contains(QStringLiteral("Executable missing at saved path")));
+        auto* locate = application.window.findChild<QPushButton*>(QStringLiteral("locateEngine"));
+        QVERIFY(locate && locate->isVisible() && locate->isEnabled());
+        auto* homeEngine =
+            application.window.findChild<QLabel*>(QStringLiteral("homeEngineStatus"));
+        QVERIFY(homeEngine && homeEngine->text().contains(QStringLiteral("Executable missing")));
+
+        // A different binary cannot silently replace the missing profile.
+        const auto differentPath = QDir(movedDir).filePath(QStringLiteral("other-stockfish"));
+        QVERIFY(QFile::copy(movedPath, differentPath));
+        QFile differentFile(differentPath);
+        QVERIFY(differentFile.open(QIODevice::Append));
+        QCOMPARE(differentFile.write("diff"), qint64(4));
+        differentFile.close();
+        QVERIFY(QFile::setPermissions(differentPath, QFileDevice::ReadOwner |
+                                                         QFileDevice::WriteOwner |
+                                                         QFileDevice::ExeOwner));
+        controller.relocateProfile(savedId, differentPath);
+        QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Selected);
+        QCOMPARE(controller.state().relocatingProfileId, std::optional{savedId});
+        QVERIFY(add->text().contains(QStringLiteral("locate")));
+        add->click();
+        QTRY_VERIFY(controller.state().message.contains(QStringLiteral("different engine binary")));
+        QCOMPARE(controller.state().registration, app::EngineRegistrationState::Selected);
+        QVERIFY(!controller.state().relocatingProfileId);
+
+        // Selecting the actual moved binary preserves profile ID and clears missing status.
+        controller.relocateProfile(savedId, movedPath);
+        QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Selected);
+        QCOMPARE(controller.state().relocatingProfileId, std::optional{savedId});
+        add->click();
+        QTRY_VERIFY(!controller.state().missingProfiles.contains(savedId));
+        QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Idle);
+        QCOMPARE(controller.state().profiles.size(), std::size_t(1));
+        QCOMPARE(controller.state().profiles.front().id, savedId);
+        QCOMPARE(controller.state().profiles.front().engine.executablePath,
+                 QFileInfo(movedPath).canonicalFilePath());
+        QTRY_VERIFY(!table->item(0, 0)->text().contains(QStringLiteral("(Missing)")));
+        QVERIFY(!locate->isVisible());
+    }
 };
 int main(int argc, char* argv[]) {
     TestEnvironment environment;

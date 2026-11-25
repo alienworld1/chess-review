@@ -31,6 +31,7 @@ class EngineSettingsPage final : public QWidget {
   private:
     friend class EnginePageTestAccess;
     void updateState();
+    void updateMissingIndicators();
     void updateDetails();
     void updateRuntime();
     void updateOption();
@@ -40,6 +41,7 @@ class EngineSettingsPage final : public QWidget {
     QPushButton* configure_;
     QPushButton* rename_;
     QPushButton* makeDefault_;
+    QPushButton* locate_;
     QPushButton* remove_;
     QPushButton* test_;
     QLabel* profileMessage_;
@@ -48,9 +50,19 @@ class EngineSettingsPage final : public QWidget {
     app::EngineSettingsController& controller_;
     QTableWidget* profiles_;
     QPlainTextEdit* details_;
-    QFileDialog* picker_ = nullptr; // Owned by this widget, reused between selections.
+    QFileDialog* picker_ = nullptr;       // Owned by this widget, reused between selections.
+    QFileDialog* locatePicker_ = nullptr; // Owned by this widget, reused for relocations.
     bool picking_ = false;
+    bool locating_ = false;
+    std::int64_t locatingProfileId_ = 0;
     std::uint64_t profilesRevision_ = 0;
+    std::set<std::int64_t> shownMissing_;
+    QList<engine::DetectedEngine> shownDetected_;
+    QWidget* detectBox_;
+    QLabel* detectMessage_;
+    QComboBox* detected_;
+    QPushButton* selectDetected_;
+    QPushButton* detect_;
     QPlainTextEdit* path_;
     QLabel* message_;
     QLabel* listError_;

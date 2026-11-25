@@ -37,6 +37,12 @@ PathResult resolve(const QString& path) {
         return Error{ErrorCode::Path, QStringLiteral("Choose a valid local executable path.")};
     }
     const QFileInfo file(path);
+    if (!file.exists()) {
+        return Error{ErrorCode::Path,
+                     QStringLiteral("The engine executable was not found at its saved path. "
+                                    "Locate the moved executable or remove this profile and add a "
+                                    "replacement in Settings.")};
+    }
     const auto canonical = file.canonicalFilePath();
     if (canonical.isEmpty() || canonical.size() > 4096 || !file.isFile() || !file.isReadable() ||
         !file.isExecutable()) {
@@ -49,6 +55,24 @@ PathResult resolve(const QString& path) {
 }
 } // namespace
 PathResult inspectExecutable(const QString& path) { return resolve(path); }
+QProcessEnvironment sanitizedEngineEnvironment(const QProcessEnvironment& source) {
+    auto env = source;
+    for (const auto* key :
+         {"APPIMAGE", "APPDIR", "ARGV0", "OWD", "QT_PLUGIN_PATH", "QML2_IMPORT_PATH"}) {
+        env.remove(QString::fromLatin1(key));
+    }
+    const auto origKey = QStringLiteral("CHESS_REVIEW_ORIG_LD_LIBRARY_PATH");
+    if (env.contains(origKey)) {
+        const auto original = env.value(origKey);
+        if (original.isEmpty()) {
+            env.remove(QStringLiteral("LD_LIBRARY_PATH"));
+        } else {
+            env.insert(QStringLiteral("LD_LIBRARY_PATH"), original);
+        }
+        env.remove(origKey);
+    }
+    return env;
+}
 EngineProcessWorker::EngineProcessWorker(AttemptMode mode, ProcessConfiguration configuration,
                                          QObject* parent)
     : QObject(parent), process_(this), timer_(this), chunks_(this), file_(this), searchWatch_(this),
@@ -332,6 +356,8 @@ void EngineProcessWorker::hashChunk() {
     }
     timer_.start(startMs_);
     process_.setProcessChannelMode(QProcess::SeparateChannels);
+    process_.setProcessEnvironment(
+        sanitizedEngineEnvironment(QProcessEnvironment::systemEnvironment()));
     awaitingExit_ = true;
     process_.start(profile_.executablePath, arguments_);
 }

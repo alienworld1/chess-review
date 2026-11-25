@@ -1007,6 +1007,35 @@ class EngineProcessWorkerTest final : public QObject {
         QVERIFY(!terminal.error);
         QCOMPARE(finished.size(), 1);
     }
+    void sanitizesAppImageChildEnvironment() {
+        QProcessEnvironment source;
+        source.insert(QStringLiteral("PATH"), QStringLiteral("/usr/bin:/bin"));
+        source.insert(QStringLiteral("APPIMAGE"), QStringLiteral("/tmp/chess-review.AppImage"));
+        source.insert(QStringLiteral("APPDIR"), QStringLiteral("/tmp/.mount_chess"));
+        source.insert(QStringLiteral("ARGV0"), QStringLiteral("./chess-review.AppImage"));
+        source.insert(QStringLiteral("OWD"), QStringLiteral("/home/user"));
+        source.insert(QStringLiteral("QT_PLUGIN_PATH"),
+                      QStringLiteral("/tmp/.mount_chess/plugins"));
+        source.insert(QStringLiteral("QML2_IMPORT_PATH"), QStringLiteral("/tmp/.mount_chess/qml"));
+        source.insert(QStringLiteral("LD_LIBRARY_PATH"),
+                      QStringLiteral("/tmp/.mount_chess/usr/lib"));
+        source.insert(QStringLiteral("CHESS_REVIEW_ORIG_LD_LIBRARY_PATH"),
+                      QStringLiteral("/opt/custom/lib"));
+
+        const auto restored = sanitizedEngineEnvironment(source);
+        QCOMPARE(restored.value(QStringLiteral("PATH")), QStringLiteral("/usr/bin:/bin"));
+        QCOMPARE(restored.value(QStringLiteral("LD_LIBRARY_PATH")),
+                 QStringLiteral("/opt/custom/lib"));
+        for (const auto* removed : {"APPIMAGE", "APPDIR", "ARGV0", "OWD", "QT_PLUGIN_PATH",
+                                    "QML2_IMPORT_PATH", "CHESS_REVIEW_ORIG_LD_LIBRARY_PATH"}) {
+            QVERIFY(!restored.contains(QString::fromLatin1(removed)));
+        }
+
+        source.insert(QStringLiteral("CHESS_REVIEW_ORIG_LD_LIBRARY_PATH"), QString());
+        const auto cleared = sanitizedEngineEnvironment(source);
+        QVERIFY(!cleared.contains(QStringLiteral("LD_LIBRARY_PATH")));
+        QVERIFY(!cleared.contains(QStringLiteral("CHESS_REVIEW_ORIG_LD_LIBRARY_PATH")));
+    }
 };
 QTEST_GUILESS_MAIN(EngineProcessWorkerTest)
 #include "EngineProcessWorkerTest.moc"

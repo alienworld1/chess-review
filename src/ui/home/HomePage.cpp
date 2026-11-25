@@ -462,6 +462,9 @@ void HomePage::installEngines(app::EngineSettingsController& engines) {
             status = tr("Checking for a review engine…");
         } else if (!state.listError.isEmpty()) {
             status = tr("Could not load registered engines. Open Engine Settings for details.");
+        } else if (state.defaultProfileId &&
+                   state.missingProfiles.contains(*state.defaultProfileId)) {
+            status = tr("Executable missing · Open Engine Settings to locate or replace");
         } else if (state.defaultProfileId) {
             status = tr("Disconnected · Starts automatically");
         } else {

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <utility>
 
 namespace chess_review::engine {
 class ValidatorTestAccess;
@@ -38,6 +39,8 @@ class EngineSupervisor final : public QObject {
     explicit EngineSupervisor(QObject* parent = nullptr);
     ~EngineSupervisor() override;
     void inspect(QUuid request, const QString& path);
+    void detectEngines(QUuid request);
+    void checkExecutables(QUuid request, const QList<std::pair<std::int64_t, QString>>& profiles);
     void validate(QUuid request, const QString& resolvedPath);
     void cancel(); // Validation only; disconnectEngine() cancels runtime startup.
     // Use a fresh non-null session ID per attempt. Accepted sessions last until disconnect,
@@ -59,6 +62,9 @@ class EngineSupervisor final : public QObject {
     void close();
   signals:
     void inspected(QUuid request, const chess_review::engine::PathResult& result);
+    void enginesDetected(QUuid request,
+                         const QList<chess_review::engine::DetectedEngine>& candidates);
+    void executablesChecked(QUuid request, const QList<std::int64_t>& missingIds);
     void progress(QUuid request, const QString& message);
     void completed(QUuid request, const chess_review::engine::ValidationResult& result);
     void runtimeChanged(const chess_review::engine::RuntimeState& state);
@@ -81,6 +87,8 @@ class EngineSupervisor final : public QObject {
     void setTestSearchDeadlines(int idleMs, int responseMs);
     void setTestArguments(QStringList arguments, int startMs, int handshakeMs,
                           qsizetype outputLimit);
+    void setTestDetectionDirectories(QStringList directories, bool includeDefaults);
 };
 } // namespace chess_review::engine
 Q_DECLARE_METATYPE(chess_review::engine::RuntimeState)
+Q_DECLARE_METATYPE(QList<std::int64_t>)

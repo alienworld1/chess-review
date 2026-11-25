@@ -19,6 +19,10 @@ class ValidatorTestAccess {
         validator.setTestArguments({QStringLiteral("--scenario"), scenario}, deadline, deadline,
                                    outputLimit);
     }
+    static void configureDetection(EngineSupervisor& validator, QStringList directories,
+                                   bool includeDefaults = false) {
+        validator.setTestDetectionDirectories(std::move(directories), includeDefaults);
+    }
 };
 } // namespace chess_review::engine
 namespace engine_test {

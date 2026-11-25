@@ -21,6 +21,35 @@ void SupervisorCoordinator::inspect(QUuid request, const QString& path) {
     emit inspected(request, inspectExecutable(path));
 }
 
+void SupervisorCoordinator::detectEngines(QUuid request) {
+    if (closing_) {
+        emit enginesDetected(request, {});
+        return;
+    }
+    emit enginesDetected(request,
+                         detectLocalEngines(detectionDirectories_, detectionIncludeDefaults_));
+}
+
+void SupervisorCoordinator::checkExecutables(
+    QUuid request, const QList<std::pair<std::int64_t, QString>>& profiles) {
+    QList<std::int64_t> missing;
+    if (!closing_) {
+        for (const auto& [id, path] : profiles) {
+            if (std::holds_alternative<Error>(inspectExecutable(path))) {
+                missing.push_back(id);
+            }
+        }
+    }
+    emit executablesChecked(request, missing);
+}
+
+void SupervisorCoordinator::configureDetection(QStringList directories, bool includeDefaults) {
+    if (!closing_) {
+        detectionDirectories_ = std::move(directories);
+        detectionIncludeDefaults_ = includeDefaults;
+    }
+}
+
 void SupervisorCoordinator::validate(QUuid request, const QString& path) {
     if (closing_ || workersRunning()) {
         emit completed(request, unavailable());

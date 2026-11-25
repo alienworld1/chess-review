@@ -36,6 +36,12 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                     return;
                 }
                 state_.runtime = state;
+                if (state.phase == engine::RuntimePhase::Ready) {
+                    state_.missingProfiles.erase(state.profileId);
+                } else if (state.phase == engine::RuntimePhase::Failed && state.error &&
+                           state.error->code == engine::ErrorCode::Path) {
+                    state_.missingProfiles.insert(state.profileId);
+                }
                 if (!engine::runtimeActive(state.phase)) {
                     analysisAttempts_.clear();
                     state_.analyzing = false;
@@ -57,16 +63,71 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                     return;
                 }
                 if (const auto* error = std::get_if<engine::Error>(&result)) {
+                    pendingRelocationId_.reset();
+                    state_.relocatingProfileId.reset();
                     state_.registration = EngineRegistrationState::Idle;
                     state_.message = error->message;
                 } else {
                     state_.selectedPath = std::get<QString>(result);
                     state_.registration = EngineRegistrationState::Selected;
+                    state_.relocatingProfileId = std::exchange(pendingRelocationId_, std::nullopt);
                     state_.message =
-                        QStringLiteral("Validation will run software from this path on your "
-                                       "computer. Only add an executable you trust.");
+                        state_.relocatingProfileId
+                            ? tr("Validation will run software from this path on your computer "
+                                 "to verify it matches the missing engine.")
+                            : QStringLiteral("Validation will run software from this path on your "
+                                             "computer. Only add an executable you trust.");
                 }
                 emit changed();
+            });
+    connect(&supervisor_, &engine::EngineSupervisor::enginesDetected, this,
+            [this](QUuid request, const QList<engine::DetectedEngine>& candidates) {
+                if (closing_ || request != detection_) {
+                    return;
+                }
+                state_.detecting = false;
+                QList<engine::DetectedEngine> available;
+                for (const auto& candidate : candidates) {
+                    const bool registered = std::ranges::any_of(
+                        state_.profiles, [&candidate](const engine::EngineProfile& profile) {
+                            return profile.engine.executablePath == candidate.path;
+                        });
+                    if (!registered) {
+                        available.push_back(candidate);
+                    }
+                }
+                state_.detectedEngines = std::move(available);
+                if (candidates.isEmpty()) {
+                    state_.detectMessage =
+                        tr("No supported UCI engines were found in standard folders. Use Choose "
+                           "executable… to select an engine manually.");
+                } else if (state_.detectedEngines.isEmpty()) {
+                    state_.detectMessage =
+                        tr("All detected UCI engines in standard folders are already registered.");
+                } else {
+                    state_.detectMessage =
+                        tr("Found %n available engine(s). Select one to inspect before adding.",
+                           nullptr, static_cast<int>(state_.detectedEngines.size()));
+                }
+                emit changed();
+            });
+    connect(&supervisor_, &engine::EngineSupervisor::executablesChecked, this,
+            [this](QUuid request, const QList<std::int64_t>& missingIds) {
+                if (closing_ || request != executableCheck_) {
+                    return;
+                }
+                std::set<std::int64_t> missing;
+                for (const auto id : missingIds) {
+                    if (std::ranges::any_of(state_.profiles, [id](const auto& profile) {
+                            return profile.id == id;
+                        })) {
+                        missing.insert(id);
+                    }
+                }
+                if (state_.missingProfiles != missing) {
+                    state_.missingProfiles = std::move(missing);
+                    emit changed();
+                }
             });
     connect(&supervisor_, &engine::EngineSupervisor::progress, this,
             [this](QUuid request, const QString& message) {
@@ -101,6 +162,15 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
             } else if (const auto* error = std::get_if<engine::Error>(&result)) {
                 state_.registration = EngineRegistrationState::Selected;
                 state_.message = error->message;
+            } else if (state_.relocatingProfileId) {
+                saving_ = true;
+                state_.editing = true;
+                edit_ = registration_;
+                state_.registration = EngineRegistrationState::Saving;
+                state_.message = tr("Updating engine location…");
+                database_.editEngine(
+                    edit_, *state_.relocatingProfileId,
+                    persistence::RelocateEngine{std::get<engine::ValidatedEngine>(result)});
             } else {
                 saving_ = true;
                 state_.registration = EngineRegistrationState::Saving;
@@ -174,6 +244,28 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                     ++state_.profilesRevision;
                     state_.offset = requestedOffset_;
                     state_.listError.clear();
+                    state_.detectedEngines.removeIf([this](const engine::DetectedEngine& item) {
+                        return std::ranges::any_of(state_.profiles, [&item](const auto& profile) {
+                            return profile.engine.executablePath == item.path;
+                        });
+                    });
+                    std::erase_if(state_.missingProfiles, [this](std::int64_t id) {
+                        return std::ranges::none_of(state_.profiles, [id](const auto& profile) {
+                            return profile.id == id;
+                        });
+                    });
+                    QList<std::pair<std::int64_t, QString>> checkList;
+                    checkList.reserve(static_cast<qsizetype>(state_.profiles.size()));
+                    for (const auto& profile : state_.profiles) {
+                        checkList.push_back({profile.id, profile.engine.executablePath});
+                    }
+                    if (checkList.isEmpty()) {
+                        executableCheck_ = {};
+                        state_.missingProfiles.clear();
+                    } else {
+                        executableCheck_ = QUuid::createUuid();
+                        supervisor_.checkExecutables(executableCheck_, checkList);
+                    }
                 }
                 emit changed();
             });
@@ -183,6 +275,29 @@ EngineSettingsController::EngineSettingsController(persistence::Database& databa
                     return;
                 }
                 state_.editing = false;
+                if (saving_ && state_.relocatingProfileId) {
+                    saving_ = false;
+                    const auto relocatedId =
+                        std::exchange(state_.relocatingProfileId, std::nullopt);
+                    if (!result) {
+                        state_.missingProfiles.erase(*relocatedId);
+                        state_.profileMessage.clear();
+                        state_.message = tr("Missing engine located and verified.");
+                        if (!closing_) {
+                            state_.registration = EngineRegistrationState::Idle;
+                            state_.selectedPath.clear();
+                            refresh();
+                        }
+                    } else {
+                        state_.message = result->message;
+                        if (!closing_) {
+                            state_.registration = EngineRegistrationState::Selected;
+                        }
+                    }
+                    emit changed();
+                    finishClose();
+                    return;
+                }
                 state_.profileMessage = result ? result->message : tr("Engine profile updated.");
                 if (!result && !closing_) {
                     refresh();
@@ -275,12 +390,41 @@ void EngineSettingsController::selectExecutable(const QString& path) {
         state_.registration == EngineRegistrationState::Validating) {
         return;
     }
+    pendingRelocationId_.reset();
+    state_.relocatingProfileId.reset();
     selection_ = QUuid::createUuid();
     state_.selectedPath.clear();
     state_.registration = EngineRegistrationState::Inspecting;
     state_.message = QStringLiteral("Checking executable path…");
     supervisor_.inspect(selection_, path);
     emit changed();
+}
+void EngineSettingsController::relocateProfile(std::int64_t profileId, const QString& path) {
+    if (closing_ || !state_.ready || saving_ || state_.editing ||
+        engine::runtimeActive(state_.runtime.phase) ||
+        state_.registration == EngineRegistrationState::Validating ||
+        std::ranges::none_of(state_.profiles,
+                             [profileId](const auto& p) { return p.id == profileId; })) {
+        return;
+    }
+    pendingRelocationId_ = profileId;
+    state_.relocatingProfileId.reset();
+    selection_ = QUuid::createUuid();
+    state_.selectedPath.clear();
+    state_.registration = EngineRegistrationState::Inspecting;
+    state_.message = tr("Checking replacement executable path…");
+    supervisor_.inspect(selection_, path);
+    emit changed();
+}
+void EngineSettingsController::detectInstalledEngines() {
+    if (closing_ || !state_.ready || state_.detecting) {
+        return;
+    }
+    detection_ = QUuid::createUuid();
+    state_.detecting = true;
+    state_.detectMessage = tr("Searching standard folders for UCI engines…");
+    emit changed();
+    supervisor_.detectEngines(detection_);
 }
 void EngineSettingsController::registerSelected() {
     if (closing_ || !state_.ready || state_.editing ||
@@ -308,6 +452,8 @@ void EngineSettingsController::cancel() {
         supervisor_.cancel();
     } else {
         selection_ = {};
+        pendingRelocationId_.reset();
+        state_.relocatingProfileId.reset();
         state_.selectedPath.clear();
         state_.registration = EngineRegistrationState::Idle;
         state_.message.clear();

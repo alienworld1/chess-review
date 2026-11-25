@@ -340,6 +340,44 @@ EditEngineResult StorageSession::editEngine(std::int64_t id, const EngineProfile
         // binary installed at the same location can be registered.
         statement = QStringLiteral("UPDATE engines SET archived_path=executable_path, "
                                    "executable_path='archived:' || id, is_default=0 WHERE id=?");
+    } else if (const auto* relocate = std::get_if<RelocateEngine>(&edit)) {
+        if (!engine::validEngine(relocate->engine)) {
+            return invalid();
+        }
+        if (relocate->engine.executableSha256 != profile->engine.executableSha256) {
+            return engine::Error{
+                engine::ErrorCode::Replacement,
+                QStringLiteral("The selected executable is a different engine binary. Remove the "
+                               "missing profile or add this executable as a new engine.")};
+        }
+        if (!query.prepare(QStringLiteral("SELECT EXISTS(SELECT 1 FROM engines WHERE id!=? AND "
+                                          "executable_path=CAST(? AS TEXT))"))) {
+            return storage();
+        }
+        query.addBindValue(key);
+        query.addBindValue(relocate->engine.executablePath.toUtf8());
+        if (!query.exec() || !query.next()) {
+            return storage();
+        }
+        if (query.value(0).toBool()) {
+            return engine::Error{
+                engine::ErrorCode::Replacement,
+                QStringLiteral("Another registered engine already uses this executable path.")};
+        }
+        query.finish();
+        if (!query.prepare(QStringLiteral(
+                "UPDATE engines SET executable_path=CAST(? AS TEXT), last_validated_at=CAST(? AS "
+                "TEXT) WHERE id=? AND archived_path IS NULL"))) {
+            return storage();
+        }
+        query.addBindValue(relocate->engine.executablePath.toUtf8());
+        query.addBindValue(
+            relocate->engine.lastValidatedAt.toUTC().toString(Qt::ISODateWithMs).toUtf8());
+        query.addBindValue(key);
+        if (!query.exec() || query.numRowsAffected() != 1 || !transaction.commit()) {
+            return storage();
+        }
+        return {};
     } else {
         const auto& setting = std::get<SetEngineOption>(edit);
         const auto& capabilities = profile->engine.capabilities;

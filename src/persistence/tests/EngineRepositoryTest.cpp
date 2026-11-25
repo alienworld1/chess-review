@@ -254,6 +254,51 @@ class EngineRepositoryTest final : public QObject {
                            "capabilities_json,option_overrides_json,is_default,created_at,last_"
                            "validated_at FROM engines WHERE id=1")));
     }
+    void relocateProfilePreservesIdentityAndValidatesBinary() {
+        QTemporaryDir directory;
+        const auto path = directory.filePath(QStringLiteral("library.sqlite3"));
+        StorageSession session;
+        QVERIFY(!session.initialize(path, migrations(), ignore));
+        auto first = candidate(QStringLiteral("/old/stockfish"));
+        QVERIFY(!engine::appendOption(
+            first.capabilities, std::get<engine::UciOption>(engine::parseOption(QStringLiteral(
+                                    "option name Threads type spin default 1 min 1 max 16")))));
+        const auto second = candidate(QStringLiteral("/other/engine"), QByteArray("other-binary"));
+        const auto savedFirst = std::get<RegisteredEngine>(session.registerEngine(first)).profile;
+        const auto savedSecond = std::get<RegisteredEngine>(session.registerEngine(second)).profile;
+        QVERIFY(!session.editEngine(savedFirst.id, RenameEngine{QStringLiteral("Primary SF")}));
+        QVERIFY(!session.editEngine(
+            savedFirst.id, SetEngineOption{QStringLiteral("Threads"), QStringLiteral("4")}));
+
+        auto wrongBinary = first;
+        wrongBinary.executablePath = QStringLiteral("/new/wrong");
+        wrongBinary.executableSha256 = second.executableSha256;
+        const auto wrongResult = session.editEngine(savedFirst.id, RelocateEngine{wrongBinary});
+        QVERIFY(wrongResult);
+        QCOMPARE(wrongResult->code, engine::ErrorCode::Replacement);
+
+        auto collidingPath = first;
+        collidingPath.executablePath = savedSecond.engine.executablePath;
+        const auto collisionResult =
+            session.editEngine(savedFirst.id, RelocateEngine{collidingPath});
+        QVERIFY(collisionResult);
+        QCOMPARE(collisionResult->code, engine::ErrorCode::Replacement);
+
+        auto moved = first;
+        moved.executablePath = QStringLiteral("/new/stockfish");
+        moved.lastValidatedAt = first.lastValidatedAt.addSecs(60);
+        QVERIFY(!session.editEngine(savedFirst.id, RelocateEngine{moved}));
+
+        const auto profiles =
+            std::get<std::vector<engine::EngineProfile>>(session.listEngines(0, 50));
+        QCOMPARE(profiles.size(), std::size_t(2));
+        QCOMPARE(profiles[0].id, savedFirst.id);
+        QVERIFY(profiles[0].isDefault);
+        QCOMPARE(profiles[0].displayName, QStringLiteral("Primary SF"));
+        QCOMPARE(profiles[0].optionOverrides.value(QStringLiteral("threads")), QStringLiteral("4"));
+        QCOMPARE(profiles[0].engine.executablePath, QStringLiteral("/new/stockfish"));
+        QCOMPARE(profiles[0].engine.lastValidatedAt, moved.lastValidatedAt);
+    }
 };
 QTEST_GUILESS_MAIN(EngineRepositoryTest)
 #include "EngineRepositoryTest.moc"

@@ -22,6 +22,9 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
     : QObject(parent), impl_(std::make_unique<Impl>()) {
     qRegisterMetaType<PathResult>();
     qRegisterMetaType<ValidationResult>();
+    qRegisterMetaType<DetectedEngine>();
+    qRegisterMetaType<QList<DetectedEngine>>();
+    qRegisterMetaType<QList<std::int64_t>>();
     qRegisterMetaType<RuntimeState>();
     qRegisterMetaType<SearchState>();
     qRegisterMetaType<AnalysisSnapshot>();
@@ -38,6 +41,10 @@ EngineSupervisor::EngineSupervisor(QObject* parent)
             Qt::QueuedConnection);
     connect(impl_->coordinator, &SupervisorCoordinator::inspected, this,
             &EngineSupervisor::inspected, Qt::QueuedConnection);
+    connect(impl_->coordinator, &SupervisorCoordinator::enginesDetected, this,
+            &EngineSupervisor::enginesDetected, Qt::QueuedConnection);
+    connect(impl_->coordinator, &SupervisorCoordinator::executablesChecked, this,
+            &EngineSupervisor::executablesChecked, Qt::QueuedConnection);
     connect(impl_->coordinator, &SupervisorCoordinator::progress, this, &EngineSupervisor::progress,
             Qt::QueuedConnection);
     connect(impl_->coordinator, &SupervisorCoordinator::completed, this,
@@ -190,6 +197,31 @@ void EngineSupervisor::inspect(QUuid request, const QString& path) {
     QMetaObject::invokeMethod(
         impl_->coordinator,
         [coordinator = impl_->coordinator, request, path] { coordinator->inspect(request, path); },
+        Qt::QueuedConnection);
+}
+void EngineSupervisor::detectEngines(QUuid request) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (impl_->closing) {
+        QTimer::singleShot(0, this, [this, request] { emit enginesDetected(request, {}); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->coordinator,
+        [coordinator = impl_->coordinator, request] { coordinator->detectEngines(request); },
+        Qt::QueuedConnection);
+}
+void EngineSupervisor::checkExecutables(QUuid request,
+                                        const QList<std::pair<std::int64_t, QString>>& profiles) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (impl_->closing) {
+        QTimer::singleShot(0, this, [this, request] { emit executablesChecked(request, {}); });
+        return;
+    }
+    QMetaObject::invokeMethod(
+        impl_->coordinator,
+        [coordinator = impl_->coordinator, request, profiles] {
+            coordinator->checkExecutables(request, profiles);
+        },
         Qt::QueuedConnection);
 }
 void EngineSupervisor::validate(QUuid request, const QString& path) {
@@ -351,6 +383,14 @@ void EngineSupervisor::setTestArguments(QStringList arguments, int startMs, int 
         impl_->coordinator,
         [coordinator = impl_->coordinator, arguments = std::move(arguments), startMs, handshakeMs,
          outputLimit] { coordinator->configure(arguments, startMs, handshakeMs, outputLimit); },
+        Qt::QueuedConnection);
+}
+void EngineSupervisor::setTestDetectionDirectories(QStringList directories, bool includeDefaults) {
+    QMetaObject::invokeMethod(
+        impl_->coordinator,
+        [coordinator = impl_->coordinator, directories = std::move(directories), includeDefaults] {
+            coordinator->configureDetection(directories, includeDefaults);
+        },
         Qt::QueuedConnection);
 }
 } // namespace chess_review::engine
