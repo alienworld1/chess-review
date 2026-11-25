@@ -40,12 +40,12 @@ struct Palette {
 Palette themePalette(bool dark) {
     if (dark) {
         return {QColor("#191f2a"), QColor("#222b38"), QColor("#293443"), QColor("#303d4d"),
-                QColor("#284635"), QColor("#eef2f7"), QColor("#a9b6c6"), QColor("#9aa9bb"),
+                QColor("#284635"), QColor("#eef2f7"), QColor("#b2bfd0"), QColor("#a1b0c2"),
                 QColor("#364255"), QColor("#596b80"), QColor("#4cad70"), QColor("#65c486"),
                 QColor("#38985d"), QColor("#101d16"), QColor("#87b8ff")};
     }
     return {QColor("#f4f6f8"), QColor("#ffffff"), QColor("#edf1f5"), QColor("#e7edf1"),
-            QColor("#dfeee4"), QColor("#182230"), QColor("#586577"), QColor("#69788a"),
+            QColor("#dfeee4"), QColor("#182230"), QColor("#4c5869"), QColor("#5a6778"),
             QColor("#d8dee5"), QColor("#adb8c4"), QColor("#27834b"), QColor("#216e40"),
             QColor("#185a32"), QColor("#ffffff"), QColor("#2476ca")};
 }
@@ -386,7 +386,7 @@ QColor classificationColor(std::optional<review::Classification> classification)
     const bool dark = darkTheme();
     switch (*classification) {
     case review::Classification::Brilliant:
-        return QColor(dark ? "#50d2e5" : "#157c8d");
+        return QColor(dark ? "#50d2e5" : "#117484");
     case review::Classification::Great:
         return QColor(dark ? "#79b4f4" : "#286caf");
     case review::Classification::Miss:
@@ -394,7 +394,7 @@ QColor classificationColor(std::optional<review::Classification> classification)
     case review::Classification::Best:
         return QColor(dark ? "#65c486" : "#227843");
     case review::Classification::Excellent:
-        return QColor(dark ? "#62bac8" : "#25808e");
+        return QColor(dark ? "#62bac8" : "#1b7180");
     case review::Classification::Good:
         return QColor(dark ? "#8fcb8a" : "#3f7a3a");
     case review::Classification::Book:
@@ -402,9 +402,9 @@ QColor classificationColor(std::optional<review::Classification> classification)
     case review::Classification::Inaccuracy:
         return QColor(dark ? "#f0c46c" : "#8a5a06");
     case review::Classification::Mistake:
-        return QColor(dark ? "#f2a65e" : "#b45d18");
+        return QColor(dark ? "#f2a65e" : "#a6510e");
     case review::Classification::Blunder:
-        return QColor(dark ? "#f07780" : "#c53d49");
+        return QColor(dark ? "#f07780" : "#bd3340");
     }
     return palette.color(QPalette::Mid);
 }

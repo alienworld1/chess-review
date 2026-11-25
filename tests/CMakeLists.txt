@@ -14,6 +14,10 @@ chess_review_add_qt_test(shell_tests shell INTEGRATION WIDGETS
     SOURCES qt/ShellTest.cpp
     LIBRARIES chess_review_ui)
 
+chess_review_add_qt_test(accessibility_tests accessibility INTEGRATION WIDGETS
+    SOURCES qt/AccessibilityTest.cpp
+    LIBRARIES chess_review_ui Qt6::Svg)
+
 # Exercise the production composition root and QApplication::exec(), with a test-only UI driver.
 qt_add_executable(shell_exit_probe
     "${PROJECT_SOURCE_DIR}/src/main.cpp"

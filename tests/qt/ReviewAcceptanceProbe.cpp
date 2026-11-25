@@ -2,6 +2,7 @@
 #include "ReviewAcceptanceSupport.h"
 #include "app/ReviewMovePresentation.h"
 #include "app/ReviewWorkspaceController.h"
+#include "ui/Theme.h"
 #include "ui/chess/ChessBoardWidget.h"
 #include "ui/chess/MoveTimeline.h"
 #include "ui/review/ReviewPage.h"
@@ -104,21 +105,10 @@ void render(ui::MainWindow& window, const QString& state, const char* primary) {
         return;
     }
     const bool compact = qEnvironmentVariableIsSet("CHESS_REVIEW_ACCEPTANCE_RENDER_COMPACT");
-    const auto originalPalette = qApp->palette();
     const auto originalFont = window.font();
     const auto originalSize = window.size();
     for (const bool dark : {false, true}) {
-        auto palette = originalPalette;
-        if (dark) {
-            palette.setColor(QPalette::Window, QColor(QStringLiteral("#202732")));
-            palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#e5eaf0")));
-            palette.setColor(QPalette::Base, QColor(QStringLiteral("#171e27")));
-            palette.setColor(QPalette::Text, QColor(QStringLiteral("#e5eaf0")));
-            palette.setColor(QPalette::PlaceholderText, QColor(QStringLiteral("#aab4c0")));
-            palette.setColor(QPalette::Button, QColor(QStringLiteral("#303b49")));
-            palette.setColor(QPalette::ButtonText, QColor(QStringLiteral("#e5eaf0")));
-        }
-        qApp->setPalette(palette);
+        ui::setThemeMode(dark ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light);
         for (const bool enlarged : {false, true}) {
             if (compact && enlarged) {
                 continue;
@@ -191,7 +181,7 @@ void render(ui::MainWindow& window, const QString& state, const char* primary) {
             }
         }
     }
-    qApp->setPalette(originalPalette);
+    ui::setThemeMode(Qt::ColorScheme::Unknown);
     window.setFont(originalFont);
     window.resize(originalSize);
     QCoreApplication::processEvents();

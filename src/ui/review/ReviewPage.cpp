@@ -461,14 +461,18 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     previousMove_ = button(tr("Previous"), QStringLiteral("reviewPreviousMove"));
     nextMove_ = button(tr("Next"), QStringLiteral("reviewNextMove"));
     lastMove_ = button(tr("End"), QStringLiteral("reviewLastMove"));
-    const auto navigationIcon = [](QPushButton* control, const QString& iconName) {
+    const auto navigationIcon = [](QPushButton* control, const QString& iconName,
+                                   const QString& accessible, const QString& tip) {
         setIconOnly(*control, iconName);
+        control->setAccessibleName(accessible);
+        control->setToolTip(tip);
         control->setFixedWidth(36);
     };
-    navigationIcon(firstMove_, QStringLiteral("skip-start"));
-    navigationIcon(previousMove_, QStringLiteral("chevron-left"));
-    navigationIcon(nextMove_, QStringLiteral("chevron-right"));
-    navigationIcon(lastMove_, QStringLiteral("skip-end"));
+    navigationIcon(firstMove_, QStringLiteral("skip-start"), tr("Start"), tr("First move (Home)"));
+    navigationIcon(previousMove_, QStringLiteral("chevron-left"), tr("Previous"),
+                   tr("Previous move (Left)"));
+    navigationIcon(nextMove_, QStringLiteral("chevron-right"), tr("Next"), tr("Next move (Right)"));
+    navigationIcon(lastMove_, QStringLiteral("skip-end"), tr("End"), tr("Last move (End)"));
     auto* flip = button(tr("Flip Board"), QStringLiteral("reviewFlipBoard"));
     setIcon(*flip, QStringLiteral("flip"));
     actions->addStretch();
@@ -1166,6 +1170,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     auto* detailLayout = new QVBoxLayout(detailSection);
     inspectorFields_ = new QTableWidget(0, 2, detailSection);
     inspectorFields_->setObjectName(QStringLiteral("reviewInspectorFields"));
+    inspectorFields_->setAccessibleName(tr("Selected move properties"));
     inspectorFields_->setHorizontalHeaderLabels({tr("Field"), tr("Value")});
     inspectorFields_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     inspectorFields_->verticalHeader()->hide();
@@ -1180,6 +1185,7 @@ ReviewPage::ReviewPage(app::ReviewGameController& controller, QWidget* parent)
     auto* summaryLayout = new QVBoxLayout(summaryTab);
     overviewFields_ = new QTableWidget(0, 2, summaryTab);
     overviewFields_->setObjectName(QStringLiteral("reviewOverviewFields"));
+    overviewFields_->setAccessibleName(tr("Game summary metrics"));
     overviewFields_->setHorizontalHeaderLabels({tr("Measure"), tr("Value")});
     overviewFields_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     overviewFields_->verticalHeader()->hide();

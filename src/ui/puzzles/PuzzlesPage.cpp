@@ -112,8 +112,10 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
     setTextRole(*title, "title");
     headerRow->addWidget(title);
     headerRow->addStretch();
-    refresh_ = new QPushButton(libraryPage);
+    refresh_ = new QPushButton(tr("Refresh"), libraryPage);
     refresh_->setObjectName(QStringLiteral("refreshPuzzles"));
+    refresh_->setAccessibleName(tr("Refresh puzzles"));
+    refresh_->setToolTip(tr("Refresh saved puzzles"));
     setQuietAction(*refresh_);
     setIcon(*refresh_, QStringLiteral("refresh"));
     headerRow->addWidget(refresh_);
@@ -290,6 +292,23 @@ PuzzlesPage::PuzzlesPage(app::PuzzleController& controller,
         open_->setEnabled(library_->currentRow() >= 0);
         remove_->setEnabled(library_->currentRow() >= 0);
     });
+    setTabOrder(cancel_, jobs_);
+    setTabOrder(jobs_, resume_);
+    setTabOrder(resume_, saved_);
+    setTabOrder(saved_, refresh_);
+    setTabOrder(refresh_, library_);
+    setTabOrder(library_, open_);
+    setTabOrder(open_, remove_);
+    setTabOrder(remove_, previous_);
+    setTabOrder(previous_, next_);
+    setTabOrder(back, flip);
+    setTabOrder(flip, board_);
+    setTabOrder(board_, hint_);
+    setTabOrder(hint_, retry_);
+    setTabOrder(retry_, reveal_);
+    setTabOrder(reveal_, stepBack_);
+    setTabOrder(stepBack_, stepNext_);
+    setTabOrder(stepNext_, analyze_);
     refresh();
     refreshGeneration();
 }

@@ -275,6 +275,11 @@ qt_add_resources(chess_review_ui "pieces"
         assets/pieces/cburnett/LICENSE.txt
         assets/pieces/cburnett/provenance.json
 )
+qt_add_resources(chess_review_ui "notices"
+    PREFIX "/notices"
+    FILES
+        THIRD_PARTY_NOTICES.md
+)
 chess_review_apply_options(chess_review_ui)
 
 qt_add_executable(chess_review_app src/main.cpp)

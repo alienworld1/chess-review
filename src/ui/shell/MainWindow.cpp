@@ -48,6 +48,8 @@
 #include <map>
 #include <set>
 
+static void initializeNoticeResources() { Q_INIT_RESOURCE(notices); }
+
 namespace chess_review::ui {
 namespace {
 // Hidden workspaces must not force the active page beyond the scroll viewport.
@@ -220,6 +222,8 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     for (std::size_t i = 0; i < values.size(); ++i) {
         auto* action = new QAction(labels[i], this);
         action->setObjectName(app::destinationId(values[i]) + QStringLiteral("Action"));
+        action->setShortcut(
+            QKeySequence(Qt::CTRL | static_cast<Qt::Key>(Qt::Key_1 + static_cast<int>(i))));
         action->setCheckable(true);
         action->setData(QVariant::fromValue(values[i]));
         group->addAction(action);
@@ -288,35 +292,56 @@ MainWindow::MainWindow(app::NavigationController& navigation, QWidget* parent)
     reset_ = view->addAction(tr("Reset &Layout"));
     reset_->setObjectName(QStringLiteral("resetLayoutAction"));
     connect(reset_, &QAction::triggered, this, &MainWindow::resetLayout);
+    initializeNoticeResources();
     auto* help = menuBar()->addMenu(tr("&Help"));
     auto* diagnostics = help->addAction(tr("&Diagnostics…"));
     diagnostics->setObjectName(QStringLiteral("diagnosticsAction"));
     connect(diagnostics, &QAction::triggered, startup_, &StartupPanel::showDiagnostics);
-    auto* artwork = help->addAction(tr("Chess Piece Artwork License…"));
-    connect(artwork, &QAction::triggered, this, [this] {
+    const auto showNoticeDialog = [this](const QString& title, const QString& accessibleName,
+                                         const QString& body, QSize size) {
         auto* dialog = new QDialog(this);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->setWindowTitle(tr("Chess piece artwork license"));
+        dialog->setWindowTitle(title);
         auto* layout = new QVBoxLayout(dialog);
         auto* text = new QPlainTextEdit(dialog);
         text->setReadOnly(true);
-        text->setAccessibleName(tr("Piece artwork license and provenance"));
+        text->setAccessibleName(accessibleName);
+        text->setPlainText(body);
+        layout->addWidget(text);
+        auto* dialogButtons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+        connect(dialogButtons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+        layout->addWidget(dialogButtons);
+        dialog->resize(size);
+        dialog->show();
+    };
+    auto* artwork = help->addAction(tr("Chess Piece Artwork License…"));
+    artwork->setObjectName(QStringLiteral("artworkLicenseAction"));
+    connect(artwork, &QAction::triggered, this, [showNoticeDialog] {
         QFile license(QStringLiteral(":/pieces/LICENSE.txt"));
         QFile provenance(QStringLiteral(":/pieces/provenance.json"));
+        QString body;
         if (license.open(QIODevice::ReadOnly) && provenance.open(QIODevice::ReadOnly)) {
-            text->setPlainText(QString::fromUtf8(license.readAll()) + QLatin1Char('\n') +
-                               QString::fromUtf8(provenance.readAll()));
+            body = QString::fromUtf8(license.readAll()) + QLatin1Char('\n') +
+                   QString::fromUtf8(provenance.readAll());
         } else {
-            text->setPlainText(
-                tr("Cburnett pieces by Colin M. L. Burnett and contributors. "
-                   "See assets/pieces/cburnett/LICENSE.txt in the source distribution."));
+            body = tr("Cburnett pieces by Colin M. L. Burnett and contributors. "
+                      "See assets/pieces/cburnett/LICENSE.txt in the source distribution.");
         }
-        layout->addWidget(text);
-        auto* licenseButtons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
-        connect(licenseButtons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
-        layout->addWidget(licenseButtons);
-        dialog->resize(640, 480);
-        dialog->show();
+        showNoticeDialog(tr("Chess piece artwork license"),
+                         tr("Piece artwork license and provenance"), body, QSize(640, 480));
+    });
+    auto* notices = help->addAction(tr("&Third-Party Notices…"));
+    notices->setObjectName(QStringLiteral("thirdPartyNoticesAction"));
+    connect(notices, &QAction::triggered, this, [showNoticeDialog] {
+        initializeNoticeResources();
+        QFile noticeFile(QStringLiteral(":/notices/THIRD_PARTY_NOTICES.md"));
+        const QString body =
+            noticeFile.open(QIODevice::ReadOnly)
+                ? QString::fromUtf8(noticeFile.readAll())
+                : tr("See THIRD_PARTY_NOTICES.md in the application distribution for third-party "
+                     "software and asset notices.");
+        showNoticeDialog(tr("Third-party notices"), tr("Third-party software and asset notices"),
+                         body, QSize(700, 520));
     });
     auto* about = help->addAction(tr("&About chess-review…"));
     about->setMenuRole(QAction::AboutRole);
