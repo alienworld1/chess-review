@@ -2,15 +2,46 @@
 
 ## Add an engine
 
-Open **Settings → Engines**, or **Engine Settings…** from Analyze. Choose a local
-executable, check its resolved path, and select **Validate and add**. The app runs
-it with your normal user permissions, so choose software you trust. It does not
-download or sandbox engines.
+Open **Settings → Engines**, or **Engine Settings…** from Analyze. Click
+**Detect installed** to scan standard local executable folders (`PATH`,
+`/usr/games`, `/usr/bin`, `/usr/local/bin`, and `~/.local/bin`) for common UCI
+chess engine executable names without executing any file, or click **Choose
+executable…** directly. After selecting an entry from the detected list or
+file picker, review its resolved path and click **Validate and add**. The app
+runs validated engines with your normal user permissions, so choose software you
+trust. It does not bundle, download, or sandbox engines.
 
 The file must be a readable, executable regular file. **Validate and add** checks the
 UCI handshake and saves the profile after successful validation. The first
 engine becomes the default. The manager shows the reported engine name and author
 when provided.
+
+### Missing engines and executable relocation
+
+If a saved engine executable is moved, renamed, or deleted outside the app,
+refreshing profiles or attempting to connect marks the profile as `(Missing)` and
+prevents starting or resuming analysis with that engine while preserving saved
+games, review checkpoints, and profile options.
+
+To relink a moved executable:
+
+1. Select the `(Missing)` profile in **Settings -> Engines**.
+2. Click **Locate executable…** and pick the moved binary.
+3. Click **Validate and locate** (reuse of the existing registration button).
+
+`chess-review` compares the new file's SHA-256 digest against the saved profile
+fingerprint before updating the stored path. A different engine binary or modified
+executable is rejected so review provenance remains consistent; register a
+different engine as a separate profile instead.
+
+### Linux AppImage child-process isolation
+
+When `chess-review` launches a UCI engine from a Linux AppImage, it strips
+AppImage and Qt bundle environment overrides (`APPIMAGE`, `APPDIR`, `ARGV0`,
+`OWD`, `QT_PLUGIN_PATH`, `QML2_IMPORT_PATH`) from the child environment and
+restores `LD_LIBRARY_PATH` from `CHESS_REVIEW_ORIG_LD_LIBRARY_PATH` saved by
+`AppRun`. External system or custom-built engines do not inherit the AppImage's
+bundled Qt or ICU shared libraries.
 
 ## Manage and test an engine
 

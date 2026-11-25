@@ -16,13 +16,31 @@ local UCI engines. Games, review evidence, and preferences stay on your computer
 
 ## Requirements
 
-- C++20 compiler (GCC or Clang on Linux)
-- Qt **6.12+**, including Widgets, Network, SVG, SQL, and the QSQLITE driver
-- A working Qt TLS backend for optional game-link imports
-- CMake **3.24+**, Ninja, and GNU Make
-- Network access on initial configuration for pinned toml++ and, when testing,
-  Catch2, unless local source overrides are supplied
-- Qt Test for tests; clang-format 18 and clang-tidy 18 for formatting and linting
+- Linux x86-64 desktop for prebuilt AppImage releases (`chess-review` does not
+  bundle a chess engine; bring a local UCI engine such as Stockfish)
+- For building from source:
+  - C++20 compiler (GCC or Clang on Linux)
+  - Qt **6.12+**, including Widgets, Network, SVG, SQL, and the QSQLITE driver
+  - A working Qt TLS backend for optional game-link imports
+  - CMake **3.24+**, Ninja, and GNU Make
+  - Network access on initial configuration for pinned toml++ and, when testing,
+    Catch2, unless local source overrides are supplied
+  - Qt Test for tests; clang-format 18 and clang-tidy 18 for formatting and linting
+
+## Linux AppImage
+
+Prebuilt Linux releases ship as a standalone x86-64 AppImage (`1.0.0`):
+
+```sh
+sha256sum -c chess-review-1.0.0-x86_64.AppImage.sha256
+chmod +x chess-review-1.0.0-x86_64.AppImage
+./chess-review-1.0.0-x86_64.AppImage
+```
+
+If FUSE is not available on your host (for example inside containers), run with
+`--appimage-extract-and-run`. Then open **Settings -> Engines** to auto-detect or
+browse to your local UCI chess engine. See [Release notes](docs/release-notes.md)
+and [Local UCI engines](docs/engines.md).
 
 ## Build and run
 
@@ -43,6 +61,8 @@ See [development setup](docs/development.md) for installation and SDK overrides.
 | `make test PRESET=sanitized` | Run ASan/UBSan tests on Linux |
 | `make format` / `make format-check` | Format or check C++ source |
 | `make lint` | Run clang-tidy |
+| `make package-linux` | Build Linux x86-64 AppImage in `dist/` |
+| `make package-verify` | Verify Linux AppImage in a clean environment |
 
 Run `make` for all shortcuts. Development runs use the installed app's storage
 locations; see [storage paths](docs/storage.md#application-storage-paths) for
@@ -59,6 +79,7 @@ isolated manual runs. Automated tests use temporary storage.
 
 **Developing**
 
+- [Release notes (v1.0.0)](docs/release-notes.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)
 - [Development setup](docs/development.md) · [Testing](docs/testing.md) ·
   [Storage](docs/storage.md) ·
   [Storage internals](docs/storage-internals.md) · [Engine infrastructure](docs/engine-internals.md)

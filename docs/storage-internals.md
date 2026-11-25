@@ -213,9 +213,14 @@ and exposes `gameImports()` and `gameRepository()` for presentation code.
 
 One import may run per service; overlaps receive a separate `rejected(Busy)`
 signal. Input beyond the default 64 MiB parser limit is rejected before scheduling.
-The service's private parser pool has one worker and publishes one parsed game at
-a time, awaiting its repository outcome before reading the next. It retains the
-bounded input and report, not a queue of parsed trees. Source type is limited to
+The service's private parser pool has one worker and parses chunks bounded by
+chunk count and payload size. Under `Batch` mode, ordinal 1 commits on its own
+so early progress appears right away, and subsequent games (#2 onward) batch
+into chunks of up to 32 games or 4 MiB parsed text before committing through
+`Database::insertGameBatch`. Each batch uses one SQLite write transaction with
+per-item `SAVEPOINT batch_item` guards so individual duplicate or rejected items
+do not discard valid games in the same chunk. It retains only the bounded input
+and report, not an unbounded queue of parsed trees. Source type is limited to
 128 UTF-16 code units and URI to 65,536, with valid UTF-16 and no embedded NUL.
 These fields are opaque provenance, not instructions to fetch anything.
 
@@ -594,6 +599,13 @@ Serialized data remains versioned and bounded; unsupported or damaged records fa
 closed. Checksums detect corruption, not deliberate rewriting by the database
 owner. No learner history is stored.
 
+## Query indexes (schema 016)
+
+Schema 016 (`query_indexes`) adds `review_jobs_status` on
+`review_jobs(status, review_id)` for fast interrupted-review discovery and
+`games_result_imported` on `games(result, imported_at DESC, id DESC)` to cover
+result-filtered library sorting without temporary file sorts.
+
 ## Opening recognition (schema 012)
 
 The build replays the pinned Lichess reference PGNs through the PGN and chess
@@ -606,8 +618,9 @@ preferring a unique exact move order when names conflict at that position.
 
 `game_openings` holds one replaceable result per game. A cache hit requires the
 current dataset and policy versions. A row with null name and ECO records a
-completed lookup without a match. Imports commit the game before writing the
-derived cache. Migration adds the table without replaying games. Older results
+completed lookup without a match. Imports compute and write the derived cache
+inside `SAVEPOINT opening_cache` within the same transaction before commit (or
+per-game savepoint during batched multi-game imports). Migration adds the table without replaying games. Older results
 fill one game at a time as the library pages are viewed or games are opened.
 
 New reviews capture the opening result and dataset version in their immutable

@@ -54,3 +54,49 @@ Debug and release outputs live in `build/dev` and `build/release`.
 `build/dev/compile_commands.json` is available for C++ editors. Use
 `CMakeUserPresets.json` for local overrides. See [Testing](testing.md) for test
 presets, offline dependency setup, sanitizers, and CI.
+
+## Building without tests
+
+To build only the desktop application binary (`1.0.0`):
+
+```sh
+cmake -S . -B build/app-only -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+  -DCMAKE_PREFIX_PATH=.tools/Qt/6.12.0/gcc_64
+cmake --build build/app-only
+```
+
+Pass `-DFETCHCONTENT_SOURCE_DIR_TOMLPLUSPLUS=/path/to/tomlplusplus-3.4.0` when
+configuring offline.
+
+## Linux AppImage packaging
+
+Packaging targets produce a standalone x86-64 AppImage (`dist/chess-review-1.0.0-x86_64.AppImage`)
+and verify it under a scrubbed environment:
+
+```sh
+make package-linux
+make package-verify
+```
+
+`packaging/linux/build-appimage.sh` builds a Release `BUILD_TESTING=OFF` install
+with `INSTALL_RPATH "$ORIGIN/../lib"`, bundles required Qt 6.12 shared libraries,
+ICU runtime libraries, Qt plugins (including `qxcb`, `qoffscreen`, `qwayland`,
+`qsqlite`, `qsvg`, and `qopensslbackend`), and `libxcb-cursor.so.0` (when
+present in `.tools/xcb-cursor/` or the host library directories), strips debug
+symbols, checks all ELF binaries with `ldd`, validates desktop and AppStream
+metadata, and packages the AppDir with `appimagetool`. It rejects any AppDir
+containing engine binaries or unresolved shared libraries.
+
+Override defaults when needed with environment variables:
+
+- `QT_PREFIX` (defaults to `.tools/Qt/6.12.0/gcc_64`)
+- `APPIMAGETOOL` (defaults to `appimagetool` on `PATH` or `.tools/appimagetool-x86_64.AppImage`)
+- `APPIMAGE_RUNTIME` (defaults to `.tools/runtime-x86_64` when present for offline builds)
+
+`packaging/linux/verify-appimage.sh` checks the `.sha256` file, extracts the
+AppImage, confirms zero `.tools/` path leaks or missing shared libraries under
+`env -i`, runs `AppRun --version`, `AppRun --help`, and
+`--appimage-extract-and-run --version`, and launches `AppRun` under
+`QT_QPA_PLATFORM=offscreen` in isolated temporary XDG directories until the
+schema v16 SQLite database initializes cleanly.

@@ -104,9 +104,37 @@ game scores and exact reasoning witnesses; run it with `ctest --preset dev -L co
 ## CI and desktop checks
 
 Linux CI runs Debug and Release tests, ASan/UBSan with leak detection, formatting,
-and clang-tidy. It also builds the app with `BUILD_TESTING=OFF`. Offscreen tests
-exercise widget behavior but do not replace native checks of window management,
-file dialogs, screen readers, physical mixed-DPI transitions, or Windows.
+clang-tidy, and `desktop-file-validate` / `appstreamcli validate --no-net`
+packaging metadata checks. It also builds the app with `BUILD_TESTING=OFF`.
+Offscreen tests exercise widget behavior but do not replace native checks of
+window management, file dialogs, screen readers, physical mixed-DPI transitions,
+or Windows.
+
+To build and verify the Linux x86-64 AppImage locally in a scrubbed `env -i`
+environment (no dev tools or `.tools/` paths):
+
+```sh
+make package-linux
+make package-verify
+```
+
+For accessibility, piece artwork provenance, Light/Dark WCAG contrast, and
+keyboard shortcut checks (`Ctrl+1`..`Ctrl+5`, `Ctrl+F`, Help dialogs), run:
+
+```sh
+ctest --preset dev -R '^accessibility$' --output-on-failure
+```
+
+For interrupted-review plus moved-engine recovery (always runs with
+`fake_uci_engine`) and opt-in genuine Stockfish end-to-end regressions (review,
+blunder detection, puzzle generation/solving, live MultiPV analysis, and clean
+teardown):
+
+```sh
+ctest --preset dev -R '^stockfish_regression$' --output-on-failure
+CHESS_REVIEW_STOCKFISH=/absolute/path/to/stockfish \
+  ctest --preset dev -R '^(stockfish_regression|review_acceptance)$' --output-on-failure
+```
 
 For the connected review journey and optional real-engine checks:
 
