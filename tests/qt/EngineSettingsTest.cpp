@@ -722,8 +722,9 @@ class EngineSettingsTest final : public QObject {
         QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Selected);
         QCOMPARE(controller.state().relocatingProfileId, std::optional{savedId});
         add->click();
-        QTRY_VERIFY(!controller.state().missingProfiles.contains(savedId));
-        QTRY_COMPARE(controller.state().registration, app::EngineRegistrationState::Idle);
+        QTRY_VERIFY(controller.state().registration == app::EngineRegistrationState::Idle &&
+                    !controller.state().listing);
+        QVERIFY(!controller.state().missingProfiles.contains(savedId));
         QCOMPARE(controller.state().profiles.size(), std::size_t(1));
         QCOMPARE(controller.state().profiles.front().id, savedId);
         QCOMPARE(controller.state().profiles.front().engine.executablePath,

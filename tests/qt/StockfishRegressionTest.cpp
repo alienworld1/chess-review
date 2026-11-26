@@ -212,7 +212,8 @@ void StockfishRegressionTest::interruptedReviewWithMovedEngineRecoversAndResumes
     engines.selectExecutable(pathA);
     QTRY_COMPARE(engines.state().registration, app::EngineRegistrationState::Selected);
     engines.registerSelected();
-    QTRY_COMPARE(engines.state().registration, app::EngineRegistrationState::Idle);
+    QTRY_VERIFY(engines.state().registration == app::EngineRegistrationState::Idle &&
+                !engines.state().listing);
     QCOMPARE(engines.state().profiles.size(), std::size_t(1));
     const auto profileId = engines.state().profiles.front().id;
 
@@ -272,7 +273,8 @@ void StockfishRegressionTest::interruptedReviewWithMovedEngineRecoversAndResumes
     QTRY_COMPARE(engines.state().registration, app::EngineRegistrationState::Selected);
     QCOMPARE(engines.state().relocatingProfileId, std::optional{profileId});
     engines.registerSelected();
-    QTRY_COMPARE(engines.state().registration, app::EngineRegistrationState::Idle);
+    QTRY_VERIFY(engines.state().registration == app::EngineRegistrationState::Idle &&
+                !engines.state().listing);
     QVERIFY(!engines.state().missingProfiles.contains(profileId));
     QCOMPARE(engines.state().profiles.size(), std::size_t(1));
     QCOMPARE(engines.state().profiles.front().id, profileId);
@@ -316,8 +318,9 @@ void StockfishRegressionTest::stockfishEndToEndRegression() {
     engines.selectExecutable(stockfish);
     QTRY_COMPARE(engines.state().registration, app::EngineRegistrationState::Selected);
     engines.registerSelected();
-    QTRY_COMPARE_WITH_TIMEOUT(engines.state().registration, app::EngineRegistrationState::Idle,
-                              15000);
+    QTRY_VERIFY_WITH_TIMEOUT(engines.state().registration == app::EngineRegistrationState::Idle &&
+                                 !engines.state().listing,
+                             15000);
     QCOMPARE(engines.state().profiles.size(), std::size_t(1));
     const auto& profile = engines.state().profiles.front();
     QVERIFY2(profile.engine.reportedName.contains(QStringLiteral("Stockfish"), Qt::CaseInsensitive),
